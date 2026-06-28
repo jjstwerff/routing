@@ -54,6 +54,16 @@ higher zoom a fingertip covers fewer metres, so a point placed close to the inte
 where the match needs steering. This steering falls straight out of the cost model — a precisely
 placed point is a strong local deviation pull — so no extra mechanism is needed.
 
+**Start & finish, and round trips — inferred, not a mode.** The first and last points are a **distinct
+point type** (start / finish) from the intermediate points. The rough line is **always treated as
+open** — there is no "close the loop" action. But when **start and finish sit near each other
+*relative to the total length*** (a small ratio, tunable), the app **infers a round trip** and closes
+the **detailed** route into a continuous circuit — the **rough sketch stays open**. It's purely
+geometric, so it needs no button and no override: drag the finish away and the ratio grows and it
+un-loops; bring it back near the start and it closes again (the same "steering falls out of the model"
+idea). This also subsumes **out-and-backs**: draw out and back so the finish lands on the start, and it
+is simply a closed round trip whose detailed path faithfully retraces your line.
+
 **Length & goal — feedback, never auto-control.** The live length is the central instrument. You may
 optionally set a **goal length** (e.g. a 10 km run); when set, the readout shows the live **±delta**
 to it. But the app **never reshapes the route to hit a goal** — auto-fitting a target would violate
@@ -145,6 +155,9 @@ connected path that best follows the trace:
   small, *local* change — re-match only the affected stretch, don't re-derive the whole route, and
   never let a tiny edit make the path jump globally. Same input → same match. This determinism is what
   lets an expert nudge precisely and trust the result.
+- **Round-trip closure.** When start and finish are near each other *relative to total length*, close
+  the detailed circuit (join matched-start to matched-finish through the corridor); otherwise leave it
+  open point-to-point. The rough points are never closed — only the detailed route (§1).
 
 Algorithm family: HMM map-matching (Newson & Krumm) is the principled target; a v1 can densify the
 trace and do corridor-constrained least-cost routing with a strong deviation term. Re-match is
@@ -202,9 +215,11 @@ bonus, not a nicety.
 Route {
   activity: running | walking | cycling | driving
   subMode:  e.g. running→{fast,trail}, cycling→{road,gravel,mtb}, ...
-  rough:    [ {lat,lon}, ... ]                 // shape hints (imprecise)
-  detailed: { coords: [ {lat,lon}, ... ], lengthMeters }   // map-matched
+  rough:    [ {lat,lon}, ... ]                 // shape hints; first = start, last = finish (distinct types)
+  detailed: { coords: [ {lat,lon}, ... ], lengthMeters, ascentM, descentM, roundTrip }
+            // map-matched; roundTrip inferred from start≈finish relative to total length
   roughLengthMeters                            // haversine over rough[]
+  goalMeters?                                  // optional target; drives ±delta readout (feedback only)
 }
 ```
 Persistence: Mode A → `localStorage` / GPX. Mode B → loft `world` store, written through to disk on
