@@ -1,0 +1,220 @@
+# Route Planner — Basic Design
+
+Working title: **routing** (lives at `/home/jurjen/workspace/routing`, a sibling consumer of
+the loft language at `../loft`).
+
+A **phone-first** map tool for **quickly sketching a route** (running / cycling / walking / driving),
+seeing the length **instantly**, then having the rough sketch **matched onto real paths** suited to
+the activity, and finally **exporting GPX** with an accurate length.
+
+**Intent (and the non-goal):** the matched route stays **faithful to what you drew** — it cleans your
+imprecise sketch onto the nearest sensible real ways. It does **not** re-route for scenery (no "skip
+the boring road" 5 km detours, unlike komoot-style planners). The job is to *get up to speed and lock
+a route in fast*, not to discover a prettier one.
+
+**Design north-star — low floor, high ceiling.** *Easy to pick up:* open it, tap a few points, read
+the length, get a good matched route with **zero setup**; imprecise taps are forgiving by design and
+the activity defaults carry a beginner. *A precision knife for an expert:* the **same tiny primitive
+set** — place/drag/insert/remove points, **zoom-as-precision**, sub-mode, **live length** — gives a
+practised user *exact* control, *fast*. Precision comes from a **small, sharp, predictable** primitive
+set, **not** from piling on features. Two bindings this puts on the rest of the design:
+1. **Keep the surface tiny.** Defaults carry the novice; every "advanced" capability is just a
+   primitive used with intent, never a separate cluttering mode.
+2. **Matching must be stable, local, and deterministic.** Nudging one point changes the route
+   *locally and predictably* — otherwise an expert can't be precise (see §5).
+
+---
+
+## 1. Core idea — sketch a shape, match it to real paths
+
+Two independent geometry layers:
+
+1. **Rough layer (you draw it).** Tap the map to drop points; consecutive points join with
+   **straight lines**. A live length updates as you tap and drag. This is just a *shape sketch*.
+
+2. **Detailed layer (loft derives it).** The rough points are **shape hints, not anchors** — a
+   fingertip on a phone lands 10–30 m off the real way, so points are never snapped individually.
+   loft takes the **whole rough polyline as a trace** and finds the real-path route that **best
+   follows that shape** for the chosen activity (map-matching). It's drawn *under* the rough layer
+   as separate geometry, with its own accurate length.
+
+Editing the rough layer just reshapes the trace and re-matches:
+- **Drag** a point → reshapes the line near it.
+- **Tap a segment** → inserts a point.
+- **Tap-select + delete** (touch) / **double-click** (mouse) → removes a point.
+
+Because the rough points are only hints, the detailed route stays independent of them — exactly why
+the two layers are kept separate.
+
+**Correcting a wrong match = move the points, not the line.** The detailed route is **read-only** —
+you never drag the matched path itself. If the match goes the wrong way, you nudge / add / remove a
+rough point near that spot to indicate what you meant, and re-match. **Zoom in for precision:** at a
+higher zoom a fingertip covers fewer metres, so a point placed close to the intended way pulls the
+(tight-corridor, deviation-dominated) match firmly onto it. Sketch fast when zoomed out; zoom in only
+where the match needs steering. This steering falls straight out of the cost model — a precisely
+placed point is a strong local deviation pull — so no extra mechanism is needed.
+
+**Length & goal — feedback, never auto-control.** The live length is the central instrument. You may
+optionally set a **goal length** (e.g. a 10 km run); when set, the readout shows the live **±delta**
+to it. But the app **never reshapes the route to hit a goal** — auto-fitting a target would violate
+the precision/faithfulness principle (an optimizer deciding the route, not you). Instead **you choose
+where to deviate** from the plan, and every change or choice — move a point, insert one, switch
+sub-mode — **reports its effect instantly** (Δlength now; ascent later). The goal is just the
+reference the feedback is measured against; you remain the only actuator. (Instant effect-reporting is
+the other reason the match must be local/stable, §5 — fast, predictable feedback per edit.)
+
+---
+
+## 2. Division of labour — JS does pixels, loft does routes
+
+| | **JS (vanilla + Leaflet)** | **loft (compact AOT wasm service)** |
+|---|---|---|
+| Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay), **instant rough length** (haversine), **drawing** the detailed polyline loft returns, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, simplification |
+
+JS = points + pixels. loft = routes + data + math.
+
+---
+
+## 3. The loft kernel — compact, AOT, phone-first
+
+- **No loft parser in the browser.** loft is **AOT-compiled** to wasm (`loft --html` / cdylib,
+  `wasm32-unknown-unknown`) — only the *compiled* kernel ships, **not** the interpreter (~2.5 MB).
+  The AOT kernel is ~**200–400 KB raw wasm (~70–130 KB gzipped)**, `wasm-opt`-shrunk.
+- **Small startup, always precompiled.** Startup = load-and-instantiate a small module; no
+  in-browser compile, nothing to parse.
+- **Runs as a service in a Web Worker.** It owns its own loop and can block on downloads without
+  freezing the map. JS posts requests (`match these points, this profile`) and gets back the
+  detailed polyline + length (push/poll byte channel — the sanctioned loft browser model, see
+  `../loft/doc/claude/BROWSER_INTEROP.md`). The actual network syscall is a thin JS host-import,
+  but loft decides what to fetch and computes the route.
+- **Phone-first / PWA.** Pure static client + small wasm + Leaflet (~40 KB gzipped) → drops into a
+  phone browser, installs as a **PWA**, and wraps cleanly in a native WebView (Capacitor/Cordova)
+  later with no rearchitecting.
+
+Kernel compute surface (all f64 — loft `float` is double, confirmed in `../loft/src/data.rs`):
+geodesic length (WGS84 ellipsoidal), per-segment lengths, Douglas–Peucker simplify,
+nearest-segment projection, and the **map-matcher** (§5).
+
+---
+
+## 4. Hybrid deployment — one client, two modes
+
+Same client, mode chosen at runtime by whether it was loaded from a live loft server.
+
+- **Mode A — Standalone (fully independent, "for people to use").** Pure static files + the wasm
+  kernel. No server. Routes live in the browser (`localStorage`/IndexedDB) and travel as GPX. Road
+  data fetched from the public source directly. This is what a stranger just opens.
+- **Mode B — Server-backed (your own server + direct backup).** A **loft server** (built on
+  `../loft/lib/server` + `lib/world` + `lib/engine_host`) serves the client over HTTP, syncs edits
+  over WebSocket, and **persists the route store straight to disk on every accepted edit** — the
+  "direct backup" (mirrors audience-demo's `world.bin`). Modelled on `../loft/tools/audience-demo/`
+  (single-port HTTP+WS dev server; client derives its WS URL from `location.host`). May also
+  proxy/cache road-data fetches. Mode B only *adds* sync + backup; Standalone is a strict subset.
+
+---
+
+## 5. Matching — clean the line onto real paths (faithful, not scenic)
+
+**Faithfulness to the sketch dominates.** The match snaps your imprecise line onto the nearest
+sensible real ways; activity-suitability is only a *local tie-breaker*. It must never take a detour
+to find a nicer surface — the route roughly follows the points you already drew.
+
+loft downloads a **tight corridor (narrow buffer, ~tens of metres) around the rough line** from
+**Overpass** (OSM), filtered to activity-relevant ways and pulling `highway` + **`surface`/`tracktype`**
+tags. The narrow corridor both bounds the download (small, phone-friendly) **and physically caps
+deviation** — the match cannot leave it.
+
+It builds a graph from the corridor ways (nodes = OSM nodes, edges = way segments) and finds the
+connected path that best follows the trace:
+
+- **cost = deviation-from-your-line (dominant) + an activity-suitability penalty that is *decisive
+  within the envelope but bounded against detours*.** Strong enough to confidently pick the
+  activity-right way among the candidates already next to your line (the footpath vs the road beside
+  it), yet capped so it can never justify leaving the corridor or adding meaningful distance. Matched
+  length stays close to the rough length.
+- **A well-tuned profile is the main lever for first-match quality.** The better the activity
+  defaults, the more often the *initial* match is already right and the less the user has to nudge —
+  which is exactly the "lock in fast" win, and a big differentiator. So the profiles are a primary
+  investment, not an afterthought (see §6).
+- **Adaptive widening fallback:** if no connected path exists within the tight corridor (a gap where
+  you drew), widen locally just enough to reconnect, still minimising deviation — so matching
+  degrades gracefully instead of failing.
+- **Stable & local & deterministic (the precision-knife requirement).** Moving one point produces a
+  small, *local* change — re-match only the affected stretch, don't re-derive the whole route, and
+  never let a tiny edit make the path jump globally. Same input → same match. This determinism is what
+  lets an expert nudge precisely and trust the result.
+
+Algorithm family: HMM map-matching (Newson & Krumm) is the principled target; a v1 can densify the
+trace and do corridor-constrained least-cost routing with a strong deviation term. Re-match is
+**debounced on edit-release** (avoid hammering Overpass mid-drag); an explicit "match" action is also
+available.
+
+---
+
+## 6. Activity × sub-mode preference profiles
+
+Each `(activity, sub-mode)` is a small weighting over OSM tags (BRouter-style profile, owned by
+loft). Prefers/penalizes are starting points, to tune against real data. **Tuning these well is a
+primary product investment** — a strong default match is what minimises manual correction and
+delivers the fast lock-in, so a good initial match "for free" from the activity choice is a major
+bonus, not a nicety.
+
+| Activity | Sub-mode | Prefers | Penalizes | WMT overlay |
+|---|---|---|---|---|
+| Running | **Fast** | footway/cycleway/path with `surface=asphalt\|paved\|concrete`; residential/living_street/pedestrian | sand/ground/dirt/grass; primary/secondary/trunk; steps | hiking |
+| Running | **Trail** | path/track/bridleway, `surface=sand\|ground\|dirt\|gravel\|grass`; `tracktype` grade2–4 | asphalt/paved; primary/secondary/trunk | hiking |
+| Cycling | **Road** | cycleway; paved residential/tertiary/secondary; `surface=asphalt\|paved`; `bicycle=designated` | unpaved/sand/ground; steps; foot-only | cycling |
+| Cycling | **Gravel** | track/path/cycleway, `surface=gravel\|fine_gravel\|compacted\|unpaved`; `tracktype` grade1–3 | sand/mud (too soft); motorway/trunk | cycling |
+| Cycling | **MTB** | path/track/bridleway/singletrack; `mtb:scale` present; `surface=ground\|dirt\|rock\|gravel` | paved main roads; busy roads | **mtb** |
+| Walking | **Paved** | footway/sidewalk/pedestrian/path, `surface=paved\|asphalt\|concrete\|paving_stones` | sand/mud; trunk/primary | hiking |
+| Walking | **Trail** | path/track/footway/bridleway, `surface=ground\|dirt\|sand\|gravel\|grass`; `sac_scale=hiking` | motorway/trunk/primary; big paved roads | hiking |
+| Driving | **Fastest** | motorway/trunk/primary/secondary; `motor_vehicle=yes` | unpaved; service/track; foot/cycle-only | (none) |
+| Driving | **Avoid-motorways** | secondary/tertiary/residential/unclassified | motorway/trunk; unpaved | (none) |
+
+---
+
+## 7. Map layers
+- **Base:** OSM raster — `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png`.
+- **Activity overlay (Waymarkedtrails, transparent raster):**
+  `hiking` / `cycling` / `mtb` per the table above (driving: none).
+
+---
+
+## 8. GPX (loft owns import + export)
+- **Export:** loft emits a `<trk>` of the detailed route (optionally `simplify`-thinned), JS triggers
+  the download. Accurate **geodesic length** shown alongside.
+- **Import:** loft parses a GPX back into an editable route.
+
+---
+
+## 9. Data model (sketch)
+```
+Route {
+  activity: running | walking | cycling | driving
+  subMode:  e.g. running→{fast,trail}, cycling→{road,gravel,mtb}, ...
+  rough:    [ {lat,lon}, ... ]                 // shape hints (imprecise)
+  detailed: { coords: [ {lat,lon}, ... ], lengthMeters }   // map-matched
+  roughLengthMeters                            // haversine over rough[]
+}
+```
+Persistence: Mode A → `localStorage` / GPX. Mode B → loft `world` store, written through to disk on
+the server (direct backup), synced over WS.
+
+---
+
+## 10. Still open
+1. **Offline on the phone** — should matching work with no network (cached corridor data), or is
+   online-only (Overpass) acceptable for v1?
+2. **Map-matcher depth** — full HMM vs v1 corridor-routing-with-deviation.
+
+*Resolved:* **Project home** — standalone repo `jjstwerff/routing` (private), a sibling consumer of
+the loft language at `../loft`. **Goal length** — optional, feedback-only; never auto-reshapes the
+route (§1). **Target-distance auto-fit** — explicit non-goal.
+
+---
+
+## 11. Build & run (target)
+- **App (both modes):** static `index.html` + JS/CSS, no build step.
+- **loft kernel:** AOT-built from loft source (`loft --html`/cdylib), `wasm-opt`-shrunk; artifact
+  committed so running the app needs no toolchain.
+- **Mode B server:** `loft --lib ../loft/lib <server>.loft` (audience-demo shape).
