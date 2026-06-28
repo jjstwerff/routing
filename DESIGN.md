@@ -246,7 +246,25 @@ bonus, not a nicety.
 ## 8. GPX (loft owns import + export)
 - **Export:** loft emits a `<trk>` of the detailed route (optionally `simplify`-thinned), JS triggers
   the download. Accurate **geodesic length** shown alongside.
-- **Import:** loft parses a GPX back into an editable route.
+- **Import (easy to parse, but one careful step).** Parsing GPX is trivial, but a track is *detailed
+  and often dirty* — bad editors emit thousands of jittery points and **back-and-forth on the same
+  road**. And because our matcher is **faithful**, dirty rough input → dirty detailed output, so the
+  cleaning **must** happen at import. Import is therefore *not* "display the track" — it's **derive a
+  clean, sparse rough route from it** (the editable form our model wants, and the very "edit an existing
+  route" workflow that justified multi-select delete):
+  1. **Reduce to rough points** with the kernel's Douglas–Peucker simplify — launders over-sampling and
+     GPS jitter in one pass.
+  2. **Auto-collapse only *degenerate* artifacts** — duplicate/near-coincident points and tight
+     immediate doubles-back on the same segment (a near-zero-area out-and-return). That's **data
+     cleaning, not route-changing** — nobody intends a sub-metre spike.
+  3. **Preserve, but *flag*, substantial retraces** — a deliberate out-and-back is legitimate (the
+     round-trip rule already handles it), so never silently mangle it: highlight suspicious
+     back-and-forth and offer a one-tap clean, or let the user multi-select-delete it.
+  4. **Re-match** the cleaned rough route → a faithful detailed route on real ways.
+
+  The discriminator that keeps us honest: **degenerate spikes are noise (auto-safe to drop); long
+  retraces are shape (keep, or let the user decide)** — we clean data, we never auto-"improve" a route
+  the user meant.
 
 ---
 
