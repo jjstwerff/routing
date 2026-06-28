@@ -64,8 +64,10 @@ Editing the rough layer just reshapes the trace and re-matches:
   snackbar**: one tap restores the removed points. It's trivial (keep the last removed set),
   discoverable exactly when needed, and never fights map pan/zoom gestures. Because it's short-lived
   and *local*, it also sidesteps collaborative-undo footguns in multi-user mode — you only ever take
-  back your own last destructive action. (Desktop can additionally bind Ctrl+Z to a deeper linear
-  history later — high ceiling, not required for v1.)
+  back your own last destructive action. Undo state is **per-session (ephemeral)** by default — a future
+  *draft / "not-done" save* could bundle the undo data so an unfinished route resumes with its history
+  intact (§10). (Desktop can additionally bind Ctrl+Z to a deeper linear history later — high ceiling,
+  not required for v1.)
 
 Because the rough points are only hints, the detailed route stays independent of them — exactly why
 the two layers are kept separate.
@@ -276,6 +278,11 @@ the loft language at `../loft`. **Goal length** — optional, feedback-only; nev
 route (§1). **Target-distance auto-fit** — explicit non-goal. **Undo** — contextual *Undo* snackbar
 after destructive ops (chiefly bulk delete), local & short-lived; no global collaborative history
 (deeper desktop Ctrl+Z optional later, §1).
+
+*Later (deferred):* a **"not-done" / draft save** — a special save type bundling the work-in-progress
+state *including the undo data*, so an unfinished route can be put down and resumed with its undo
+history intact. Normal saves persist just the finished rough route; per-session undo is otherwise
+ephemeral.
 
 ---
 
