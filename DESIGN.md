@@ -86,7 +86,7 @@ match must be local/stable, §5.)
 
 | | **JS (vanilla + Leaflet)** | **loft (compact AOT wasm service)** |
 |---|---|---|
-| Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay + **overlay/chart toggles**), **instant rough length** (haversine), **drawing** the detailed polyline + **elevation chart**, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, **elevation sampling (ascent/descent + profile)**, simplification |
+| Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay + **overlay/chart toggles**), **instant rough length** (haversine), **drawing** the detailed polyline + **elevation chart**, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, **elevation sampling (ascent/descent + profile)**, simplification, **proposed names** (reverse-geocode area + length + type) |
 
 JS = points + pixels. loft = routes + data + math.
 
@@ -237,6 +237,13 @@ Persistence: the **rough route is the authoritative, named, persisted artifact**
 derived/cached, the elevation totals too). Mode A → a **local named library** in `localStorage`/
 IndexedDB + GPX. Mode B → a **shared multi-user** loft `world` store, written through to disk on the
 server (direct backup), synced over WS — multiple people load and change the same routes.
+
+**Auto-proposed names.** When a route is first saved, the app proposes a default name from the
+**general area + rough length + type** — e.g. *"Vondelpark · 8 km · Trail run"* — which you accept or
+override (low floor: never forced to invent a name; high ceiling: rename freely). loft composes it: it
+already has the length and type; the **area** comes from a light **reverse-geocode** of a
+representative point (e.g. Nominatim) or a named feature lifted from the corridor data it already
+downloaded. It's **lag-tolerant** (slower tier) — the name can fill in a moment after you open save.
 
 ---
 
