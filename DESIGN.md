@@ -58,16 +58,16 @@ Editing the rough layer just reshapes the trace and re-matches:
   **box/lasso** on desktop, then delete the lot. Deleting a range is the biggest lever when editing a
   route someone else already made; whatever points survive at the ends just become the new start/finish.
   This is the one editing primitive added specifically for the edit-existing-routes workflow.
-- **Undo, phone-first — a contextual *Undo* after destructive actions.** Full keyboard-style undo is
-  awkward on a phone, and single moves/inserts are **self-correcting** (just move or delete the point
-  again), so they need none. The one risky action — **bulk delete** — gets a brief **"Deleted N · Undo"
-  snackbar**: one tap restores the removed points. It's trivial (keep the last removed set),
-  discoverable exactly when needed, and never fights map pan/zoom gestures. Because it's short-lived
-  and *local*, it also sidesteps collaborative-undo footguns in multi-user mode — you only ever take
-  back your own last destructive action. Undo state is **per-session (ephemeral)** by default — a future
-  *draft / "not-done" save* could bundle the undo data so an unfinished route resumes with its history
-  intact (§10). (Desktop can additionally bind Ctrl+Z to a deeper linear history later — high ceiling,
-  not required for v1.)
+- **Undo — platform-adaptive, one history with two surfaces.** A single **per-session edit-history**
+  (move / insert / delete / bulk-delete) backs both surfaces, each exposed via whatever is frictionless
+  on the device — the "nobody hindered" rule applied to undo itself:
+  - **Desktop (full browser):** real **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level undo / redo.
+  - **Phone:** no keyboard, and swipe-undo would fight map pan/zoom, so the risky op — **bulk delete** —
+    gets a brief **"Deleted N · Undo" snackbar** (one tap restores). Single moves/inserts are
+    **self-correcting** there (just move or delete again), so they need no chrome.
+  Because the history is **per-session (ephemeral)** and *local*, undo only ever takes back **your own**
+  recent actions — sidestepping collaborative-undo footguns in multi-user mode. A future *draft /
+  "not-done" save* could bundle the undo data so an unfinished route resumes with its history (§10).
 
 Because the rough points are only hints, the detailed route stays independent of them — exactly why
 the two layers are kept separate.
@@ -275,9 +275,9 @@ downloaded. It's **lag-tolerant** (slower tier) — the name can fill in a momen
 
 *Resolved:* **Project home** — standalone repo `jjstwerff/routing` (private), a sibling consumer of
 the loft language at `../loft`. **Goal length** — optional, feedback-only; never auto-reshapes the
-route (§1). **Target-distance auto-fit** — explicit non-goal. **Undo** — contextual *Undo* snackbar
-after destructive ops (chiefly bulk delete), local & short-lived; no global collaborative history
-(deeper desktop Ctrl+Z optional later, §1).
+route (§1). **Target-distance auto-fit** — explicit non-goal. **Undo** — platform-adaptive over one
+per-session history: desktop **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level; phone **"Undo" snackbar** after
+bulk delete. Local & per-session; no global collaborative history (§1).
 
 *Later (deferred):* a **"not-done" / draft save** — a special save type bundling the work-in-progress
 state *including the undo data*, so an unfinished route can be put down and resumed with its undo
