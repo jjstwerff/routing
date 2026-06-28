@@ -59,9 +59,11 @@ optionally set a **goal length** (e.g. a 10 km run); when set, the readout shows
 to it. But the app **never reshapes the route to hit a goal** — auto-fitting a target would violate
 the precision/faithfulness principle (an optimizer deciding the route, not you). Instead **you choose
 where to deviate** from the plan, and every change or choice — move a point, insert one, switch
-sub-mode — **reports its effect instantly** (Δlength now; ascent later). The goal is just the
-reference the feedback is measured against; you remain the only actuator. (Instant effect-reporting is
-the other reason the match must be local/stable, §5 — fast, predictable feedback per edit.)
+sub-mode — **reports its effect**. Feedback comes in **two tiers**: **distance is instant** (every
+frame), while **ascent/descent and the elevation chart are lag-tolerant** and may trail the drawing by
+several seconds while loft fetches terrain and recomputes (§7). The goal is just the reference the
+feedback is measured against; you remain the only actuator. (Instant distance is the other reason the
+match must be local/stable, §5.)
 
 ---
 
@@ -69,7 +71,7 @@ the other reason the match must be local/stable, §5 — fast, predictable feedb
 
 | | **JS (vanilla + Leaflet)** | **loft (compact AOT wasm service)** |
 |---|---|---|
-| Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay), **instant rough length** (haversine), **drawing** the detailed polyline loft returns, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, simplification |
+| Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay + **overlay/chart toggles**), **instant rough length** (haversine), **drawing** the detailed polyline + **elevation chart**, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, **elevation sampling (ascent/descent + profile)**, simplification |
 
 JS = points + pixels. loft = routes + data + math.
 
@@ -173,10 +175,18 @@ bonus, not a nicety.
 
 ---
 
-## 7. Map layers
+## 7. Map layers & optional views
 - **Base:** OSM raster — `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png`.
 - **Activity overlay (Waymarkedtrails, transparent raster):**
   `hiking` / `cycling` / `mtb` per the table above (driving: none).
+- **Overlay toggle.** The Waymarkedtrails "known paths" lines can be **hidden**, leaving just the
+  route on the plain base map — a cleaner read on **scale** and the route's own shape.
+- **Optional elevation chart (bottom dock).** A dismissable chart along the bottom showing the
+  **elevation profile** of the detailed route, with **total ascent ↑ and descent ↓ beside it**. It is
+  **lag-tolerant**: computed async and allowed to trail the drawing by several seconds, so it never
+  blocks the instant length or the interaction. loft pulls **public terrain tiles** (e.g. AWS
+  terrarium PNG), decodes them via its imaging lib, and samples the matched route → profile + totals.
+  Closed by default (low floor); open it for detail (high ceiling).
 
 ---
 
