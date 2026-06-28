@@ -151,8 +151,17 @@ Same client, mode chosen at runtime by whether it was loaded from a live loft se
   and **syncs edits over WebSocket**: broadcasting changes to other open clients and replaying current
   state to new ones (the audience-demo collaborative pattern; single-port HTTP+WS, client derives its
   WS URL from `location.host`). The detailed match is derived/cached, not the stored truth. May also
-  proxy/cache road-data fetches. Mode B only *adds* naming + multi-user sync + backup; Standalone is a
-  strict subset (local named library + GPX).
+  proxy/cache road-data fetches.
+
+  **Close-the-browser-safe — the server mode's headline value.** Edits stream to the server
+  **out-of-band** as you make them and are write-through persisted, so the **browser is disposable**:
+  close a tab, drop the connection, or switch from phone to laptop and **nothing is lost** — reopen and
+  the working route is exactly where you left it, on any device. No "you have unsaved changes" prompt,
+  ever. This also gives the *"not-done" draft* (§10) essentially for free: the in-progress route is
+  always a live, server-persisted draft, named or not.
+
+  Mode B only *adds* naming + multi-user sync + close-the-browser-safe backup; Standalone is a strict
+  subset (local named library + GPX).
 
 ---
 
@@ -282,7 +291,8 @@ bulk delete. Local & per-session; no global collaborative history (§1).
 *Later (deferred):* a **"not-done" / draft save** — a special save type bundling the work-in-progress
 state *including the undo data*, so an unfinished route can be put down and resumed with its undo
 history intact. Normal saves persist just the finished rough route; per-session undo is otherwise
-ephemeral.
+ephemeral. (In **server mode** the route's working state is already continuously persisted out-of-band
+— §4 — so there the deferred piece is mainly persisting the *undo history* itself.)
 
 ---
 
