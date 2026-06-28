@@ -4,9 +4,11 @@ A **phone-first** map tool for quickly sketching a route (running / cycling / wa
 seeing the length **instantly**, having the rough sketch **matched onto real paths** suited to the
 activity, and **exporting GPX** with an accurate length.
 
-> **North-star:** easy to pick up, a precision knife in the hands of an expert. Low floor (tap a few
-> points, zero setup, forgiving imprecise taps, good activity defaults), high ceiling (the same tiny
-> primitive set — points, zoom-as-precision, sub-mode, live length — gives exact, fast control).
+> **North-star — low friction, high precision: nobody is hindered.** Easy to pick up, a precision
+> knife in the hands of an expert. Low floor (tap a few points, zero setup, forgiving imprecise taps,
+> good activity defaults), high ceiling (the same tiny primitive set — points, zoom-as-precision,
+> sub-mode, live length — gives exact, fast control). The test for every feature: does it hinder
+> anyone — the novice via complexity, or the expert via hand-holding? If so, it's a design bug.
 
 ## How it works (in one breath)
 

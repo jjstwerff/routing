@@ -12,12 +12,23 @@ imprecise sketch onto the nearest sensible real ways. It does **not** re-route f
 the boring road" 5 km detours, unlike komoot-style planners). The job is to *get up to speed and lock
 a route in fast*, not to discover a prettier one.
 
-**Design north-star — low floor, high ceiling.** *Easy to pick up:* open it, tap a few points, read
+**Design north-star — low friction, high precision: nobody is hindered.** Every interaction is
+frictionless and every result is exact, so neither the novice nor the expert is ever held back.
+*Easy to pick up:* open it, tap a few points, read
 the length, get a good matched route with **zero setup**; imprecise taps are forgiving by design and
 the activity defaults carry a beginner. *A precision knife for an expert:* the **same tiny primitive
 set** — place/drag/insert/remove points, **zoom-as-precision**, sub-mode, **live length** — gives a
 practised user *exact* control, *fast*. Precision comes from a **small, sharp, predictable** primitive
-set, **not** from piling on features. Two bindings this puts on the rest of the design:
+set, **not** from piling on features.
+
+**The test for every decision: does this hinder anyone?** It must not slow the novice with complexity
+*nor* limit the expert with hand-holding. The design keeps answering it the same way — instant length
+(never wait), lag-tolerant elevation (heavy work never blocks), inferred round trips (no mode),
+proposed names (no forced naming), optional chart/overlay (quiet defaults), forgiving taps (no
+precision demanded up front), multi-select delete (experts aren't slowed reworking a route). Anything
+that would hinder *either* end is a design bug.
+
+Two bindings this puts on the rest of the design:
 1. **Keep the surface tiny.** Defaults carry the novice; every "advanced" capability is just a
    primitive used with intent, never a separate cluttering mode.
 2. **Matching must be stable, local, and deterministic.** Nudging one point changes the route
