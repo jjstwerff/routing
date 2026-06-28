@@ -39,9 +39,14 @@ Two independent geometry layers:
    as separate geometry, with its own accurate length.
 
 Editing the rough layer just reshapes the trace and re-matches:
-- **Drag** a point → reshapes the line near it.
-- **Tap a segment** → inserts a point.
-- **Tap-select + delete** (touch) / **double-click** (mouse) → removes a point.
+- **Drag** a point → moves it. **Tap a segment** → inserts a point. (Single add/move are deliberately
+  quick — that's the common case and needs no ceremony.)
+- **Remove one** → tap-select + delete (touch) / double-click (mouse).
+- **Remove many — the key tool for reworking an *existing* route** → **multi-select, then bulk delete.**
+  Select a **contiguous range** by tapping the first and last point of the stretch (touch-first), or
+  **box/lasso** on desktop, then delete the lot. Deleting a range is the biggest lever when editing a
+  route someone else already made; whatever points survive at the ends just become the new start/finish.
+  This is the one editing primitive added specifically for the edit-existing-routes workflow.
 
 Because the rough points are only hints, the detailed route stays independent of them — exactly why
 the two layers are kept separate.
@@ -114,14 +119,19 @@ nearest-segment projection, and the **map-matcher** (§5).
 Same client, mode chosen at runtime by whether it was loaded from a live loft server.
 
 - **Mode A — Standalone (fully independent, "for people to use").** Pure static files + the wasm
-  kernel. No server. Routes live in the browser (`localStorage`/IndexedDB) and travel as GPX. Road
-  data fetched from the public source directly. This is what a stranger just opens.
+  kernel. No server. Routes are saved as a **local named-route library in the browser**
+  (`localStorage`/IndexedDB) — store a few routes, reopen and re-edit them — and travel between people
+  as GPX. Road data fetched from the public source directly. This is what a stranger just opens.
 - **Mode B — Server-backed (your own server + direct backup).** A **loft server** (built on
-  `../loft/lib/server` + `lib/world` + `lib/engine_host`) serves the client over HTTP, syncs edits
-  over WebSocket, and **persists the route store straight to disk on every accepted edit** — the
-  "direct backup" (mirrors audience-demo's `world.bin`). Modelled on `../loft/tools/audience-demo/`
-  (single-port HTTP+WS dev server; client derives its WS URL from `location.host`). May also
-  proxy/cache road-data fetches. Mode B only *adds* sync + backup; Standalone is a strict subset.
+  `../loft/lib/server` + `lib/world` + `lib/engine_host`) serves the client over HTTP and holds a
+  **shared, named route store that multiple people can load and change**. It **persists the rough
+  route** — the editable points, the *source of truth*, so anyone can reopen and quickly re-edit —
+  straight to disk on every accepted edit (the "direct backup", mirroring audience-demo's `world.bin`),
+  and **syncs edits over WebSocket**: broadcasting changes to other open clients and replaying current
+  state to new ones (the audience-demo collaborative pattern; single-port HTTP+WS, client derives its
+  WS URL from `location.host`). The detailed match is derived/cached, not the stored truth. May also
+  proxy/cache road-data fetches. Mode B only *adds* naming + multi-user sync + backup; Standalone is a
+  strict subset (local named library + GPX).
 
 ---
 
@@ -213,6 +223,7 @@ bonus, not a nicety.
 ## 9. Data model (sketch)
 ```
 Route {
+  name?:    route name (named & shared in server mode; named in the local browser library too)
   activity: running | walking | cycling | driving
   subMode:  e.g. running→{fast,trail}, cycling→{road,gravel,mtb}, ...
   rough:    [ {lat,lon}, ... ]                 // shape hints; first = start, last = finish (distinct types)
@@ -222,8 +233,10 @@ Route {
   goalMeters?                                  // optional target; drives ±delta readout (feedback only)
 }
 ```
-Persistence: Mode A → `localStorage` / GPX. Mode B → loft `world` store, written through to disk on
-the server (direct backup), synced over WS.
+Persistence: the **rough route is the authoritative, named, persisted artifact** (the detailed match is
+derived/cached, the elevation totals too). Mode A → a **local named library** in `localStorage`/
+IndexedDB + GPX. Mode B → a **shared multi-user** loft `world` store, written through to disk on the
+server (direct backup), synced over WS — multiple people load and change the same routes.
 
 ---
 
