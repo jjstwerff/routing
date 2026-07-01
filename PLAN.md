@@ -110,14 +110,25 @@ accurate length. Ship nothing fancy; prove the pipeline.
   - *Deferred:* true narrow **corridor** buffer (vs the bbox) + activity tag-filtering fold into the
     matcher (step 6); browser doesn't auto-fetch (it'll consume the matched route at step 7).
 
-### ☐ 6. v1 map-matcher (§5)  ⟵ *needs Q2*
+### ☑ 6. v1 map-matcher (§5)  ⟵ *Q2 answered: v1 corridor-routing-with-deviation*
 - **Goal:** clean the rough line onto real paths — faithful, deterministic, local.
-- **Build:** graph from corridor ways (nodes = OSM nodes, edges = way segments); least-cost path where
-  **cost = deviation-from-line (dominant) + bounded activity penalty**. Densify the trace; corridor
-  physically caps deviation. **Adaptive widening** fallback on a gap. **Same input → same match.**
-- **Check:** a line drawn ~15 m off a known path matches **onto** that path; running the match twice
-  on identical input yields an identical polyline; nudging one point changes only the **local**
-  stretch, not the whole route.
+- **Build:** graph from corridor ways (nodes deduped by coordinate; edges = way segments); least-cost
+  path where **cost = length · (1 + DEV_K · deviation-from-trace)** — deviation-dominant, so it hugs
+  the drawn line; corridor caps deviation. Activity penalty stubbed (step 8). Same input → same match.
+- **Check:** a line ~15 m off a path matches onto it; twice → identical; nudge → local change.
+- **DONE (2026-07-01):** in `routing_kernel` — `build_graph`, `match_route` (Dijkstra, deviation-
+  weighted edge cost, equirectangular point-to-segment geometry). Tests `tests/matcher.loft` pass
+  **interpret == native**: node-dedup merges shared coords (5 nodes/4 edges from 2 crossing ways); a
+  15 m-off trace snaps onto the street (all output points on it); deterministic. Real Overpass sample
+  built to **105 nodes / 112 edges** — *exactly* the Python instrument's prediction.
+  - **Rigor note:** the load-bearing assumption (dedup-by-coord → connected graph) was probed on real
+    data FIRST (1 connected component, 100%) before any matcher code.
+  - **loft perf bug hit + filed:** the natural `adj: vector<vector<int>>` mutated via a `&` ref was
+    **O(n²)** (100 nodes hung > 20 s) — a loft-interpreter pathology (nested-vector element mutation
+    through a `&` ref when the struct has a `hash` field). Restructured to a **flat edge list** scanned
+    in Dijkstra (O(V·E), instant). Filed **loft-lang/loft#475** with a minimal repro.
+  - **Not yet tested:** locality (nudge → local-only) — follows from the deviation-cost being a local
+    function of trace proximity, but no explicit test yet. Adaptive-widening gap fallback deferred.
 
 ### ☐ 7. Detailed layer + accurate length (§1, §2)
 - **Goal:** show the matched route with its own accurate length.

@@ -13,17 +13,22 @@ pub struct GeoPoint {
 // so the instant JS length and the loft length agree. The ellipsoidal (WGS84) upgrade is step 7.
 EARTH_R = 6371008.8;
 
-// Great-circle distance between two points, in metres.
-pub fn haversine_m(a: GeoPoint, b: GeoPoint) -> float {
+// Great-circle distance between two lat/lon pairs, in metres.
+pub fn haversine_ll(lat1: float, lon1: float, lat2: float, lon2: float) -> float {
   d2r = PI / 180.0;
-  dlat = (b.lat - a.lat) * d2r;
-  dlon = (b.lon - a.lon) * d2r;
+  dlat = (lat2 - lat1) * d2r;
+  dlon = (lon2 - lon1) * d2r;
   s1 = sin(dlat / 2.0);
   s2 = sin(dlon / 2.0);
-  h = s1 * s1 + cos(a.lat * d2r) * cos(b.lat * d2r) * s2 * s2;
+  h = s1 * s1 + cos(lat1 * d2r) * cos(lat2 * d2r) * s2 * s2;
   sq = sqrt(h);
   if sq > 1.0 { sq = 1.0; }
   2.0 * EARTH_R * asin(sq)
+}
+
+// Great-circle distance between two points, in metres.
+pub fn haversine_m(a: GeoPoint, b: GeoPoint) -> float {
+  haversine_ll(a.lat, a.lon, b.lat, b.lon)
 }
 
 // Summed length over consecutive points, in metres (0.0 for fewer than two points).
@@ -114,4 +119,182 @@ pub fn parse_ways(response: text) -> vector<Way> {
     }
   }
   ways
+}
+
+// --- v1 map-matcher (PLAN step 6) --------------------------------------------------------------
+// Build a graph from the corridor ways (nodes deduped by coordinate — VALIDATED on real Overpass
+// data: shared OSM intersection nodes merge into ONE connected graph), then find the least-cost
+// path from the node nearest the trace start to the node nearest the trace finish, where edge cost
+// is DOMINATED by deviation from the rough trace (so the route hugs the drawn line). Deterministic,
+// corridor-capped. Activity penalty is stubbed here — step 8 adds the profiles.
+
+BIG = 1000000000.0;   // stand-in for infinity in Dijkstra (real path costs stay far below this)
+DEV_K = 3.0;          // deviation weight: cost = length * (1 + DEV_K * deviation_m); >> 1 hugs the line
+
+struct CoordIdx { coord: text not null, idx: integer not null }
+struct GNode { lat: float not null, lon: float not null }
+struct GEdge {
+  a: integer not null, b: integer not null, length: float not null,
+  hw: text, surface: text, tracktype: text,
+}
+pub struct Graph {
+  index: hash<CoordIdx[coord]>,   // "lat,lon" → node idx (dedup)
+  nodes: vector<GNode>,
+  edges: vector<GEdge>,           // undirected; Dijkstra scans them per settled node (O(V*E),
+                                  // trivial at corridor size). NB: a nested-vector `adj` mutated
+                                  // via a `&` reference is O(n^2) in the loft interpreter — see
+                                  // docs/loft-feedback.md — so a flat edge list is deliberate.
+}
+
+// Deduped node index for (lat,lon); appends a fresh node (+ empty adjacency) when unseen.
+// `&Graph`: a live reference so the growing graph is mutated in place, NOT copied per call
+// (by-value passing of the hash+vectors is O(size) each call → O(n^2) build).
+fn node_idx(g: &Graph, lat: float, lon: float) -> integer {
+  k = "{lat},{lon}";
+  hit = g.index[k];
+  if hit != null { return hit.idx; }
+  idx = len(g.nodes);
+  g.nodes += [GNode { lat: lat, lon: lon }];
+  g.index += [CoordIdx { coord: k, idx: idx }];
+  idx
+}
+
+fn add_edge(g: &Graph, a: integer, b: integer, length: float, hw: text, surface: text, tracktype: text) {
+  g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype }];
+}
+
+// Build the corridor graph from the parsed ways.
+pub fn build_graph(ways: vector<Way>) -> Graph {
+  g = Graph { index: [], nodes: [], edges: [] };
+  for w in ways {
+    prev = -1;
+    for ci in 0..len(w.coords) {
+      p = w.coords[ci];
+      ni = node_idx(g, p.lat, p.lon);
+      if prev >= 0 && prev != ni {
+        d = haversine_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
+        add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype);
+      }
+      prev = ni;
+    }
+  }
+  g
+}
+
+// Distance (m) from point p to segment a-b, via a local equirectangular projection around p
+// (accurate at corridor scale). p sits at the origin after projecting.
+fn point_seg_m(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float) -> float {
+  kx = 111320.0 * cos(plat * PI / 180.0);   // metres per degree longitude at this latitude
+  ky = 111320.0;                             // metres per degree latitude
+  ax = (alon - plon) * kx;
+  ay = (alat - plat) * ky;
+  bx = (blon - plon) * kx;
+  by = (blat - plat) * ky;
+  dx = bx - ax;
+  dy = by - ay;
+  l2 = dx * dx + dy * dy;
+  if l2 == 0.0 { return sqrt(ax * ax + ay * ay); }
+  t = -(ax * dx + ay * dy) / l2;
+  if t < 0.0 { t = 0.0; }
+  if t > 1.0 { t = 1.0; }
+  cx = ax + t * dx;
+  cy = ay + t * dy;
+  sqrt(cx * cx + cy * cy)
+}
+
+// Min distance (m) from a point to the rough trace polyline.
+fn point_trace_m(plat: float, plon: float, trace: vector<GeoPoint>) -> float {
+  if len(trace) == 1 {
+    return haversine_ll(plat, plon, trace[0].lat, trace[0].lon);
+  }
+  best = BIG;
+  for si in 1..len(trace) {
+    d = point_seg_m(plat, plon, trace[si - 1].lat, trace[si - 1].lon, trace[si].lat, trace[si].lon);
+    if d < best { best = d; }
+  }
+  best
+}
+
+// Nearest graph node to a point (linear scan — corridor graphs are small).
+fn nearest_node(g: Graph, lat: float, lon: float) -> integer {
+  best = -1;
+  bestd = BIG;
+  for i in 0..len(g.nodes) {
+    d = haversine_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
+    if d < bestd { bestd = d; best = i; }
+  }
+  best
+}
+
+// Deviation-dominated cost of traversing edge ei, given the trace.
+fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>) -> float {
+  e = g.edges[ei];
+  mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
+  mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
+  dev = point_trace_m(mlat, mlon, trace);
+  e.length * (1.0 + DEV_K * dev)
+}
+
+// The matched detailed route: nodes along the least-cost (deviation-dominated) path from the node
+// nearest the trace start to the node nearest the trace finish. [] for a degenerate trace or when
+// the endpoints are unreachable within the corridor.
+pub fn match_route(g: Graph, trace: vector<GeoPoint>) -> vector<GeoPoint> {
+  n = len(g.nodes);
+  detailed: vector<GeoPoint> = [];
+  if n == 0 { return detailed; }
+  if len(trace) < 2 { return detailed; }
+
+  src = nearest_node(g, trace[0].lat, trace[0].lon);
+  dst = nearest_node(g, trace[len(trace) - 1].lat, trace[len(trace) - 1].lon);
+
+  dist: vector<float> = [];
+  prevn: vector<integer> = [];
+  seen: vector<boolean> = [];
+  for i in 0..n {
+    dist += [BIG];
+    prevn += [-1];
+    seen += [false];
+  }
+  dist[src] = 0.0;
+
+  for _it in 0..n {
+    u = -1;
+    ud = BIG;
+    for j in 0..n {
+      if !seen[j] && dist[j] < ud { ud = dist[j]; u = j; }
+    }
+    if u < 0 { break; }
+    seen[u] = true;
+    if u == dst { break; }
+    for ei in 0..len(g.edges) {
+      e = g.edges[ei];
+      v = -1;
+      if e.a == u { v = e.b; }
+      if e.b == u { v = e.a; }
+      if v >= 0 && !seen[v] {
+        cand = dist[u] + edge_cost(g, ei, trace);
+        if cand < dist[v] {
+          dist[v] = cand;
+          prevn[v] = u;
+        }
+      }
+    }
+  }
+
+  if dst != src && prevn[dst] < 0 { return detailed; }   // unreachable within the corridor
+
+  // Reconstruct dst→src, then emit start→finish.
+  rev: vector<integer> = [];
+  cur = dst;
+  for _k in 0..n {
+    rev += [cur];
+    if cur == src { break; }
+    cur = prevn[cur];
+    if cur < 0 { break; }
+  }
+  for r in 0..len(rev) {
+    ni = rev[len(rev) - 1 - r];
+    detailed += [GeoPoint { lat: g.nodes[ni].lat, lon: g.nodes[ni].lon }];
+  }
+  detailed
 }

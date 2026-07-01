@@ -1,0 +1,43 @@
+// Tests for the v1 map-matcher (PLAN step 6). Synthetic, deterministic — no network.
+//   loft --tests lib/routing_kernel/tests/matcher.loft --lib lib
+use routing_kernel::(GeoPoint, Way, build_graph, match_route);
+
+// Two ways crossing at a shared coordinate must merge into one node (the connectivity invariant,
+// validated on real Overpass data: shared OSM nodes have identical coords).
+fn test_build_graph_dedup() {
+  h = Way { highway: "residential", surface: "", tracktype: "",
+    coords: [GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 }] };
+  v = Way { highway: "footway", surface: "", tracktype: "",
+    coords: [GeoPoint { lat: 51.999, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.001, lon: 5.001 }] };
+  g = build_graph([h, v]);
+  // 6 vertices, but the shared (52.0, 5.001) merges → 5 unique nodes, 4 edges.
+  assert(len(g.nodes) == 5, "shared node merges: nodes = {len(g.nodes)}");
+  assert(len(g.edges) == 4, "edges = {len(g.edges)}");
+}
+
+// A trace drawn ~15 m off a straight street matches ONTO the street, and the match is deterministic.
+fn test_match_15m_off() {
+  street = Way { highway: "residential", surface: "asphalt", tracktype: "",
+    coords: [
+      GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 },
+      GeoPoint { lat: 52.0, lon: 5.003 }, GeoPoint { lat: 52.0, lon: 5.004 },
+    ] };
+  g = build_graph([street]);
+  off = 0.000135;   // ~15 m in latitude
+  trace = [
+    GeoPoint { lat: 52.0 + off, lon: 5.0001 },
+    GeoPoint { lat: 52.0 + off, lon: 5.0020 },
+    GeoPoint { lat: 52.0 + off, lon: 5.0039 },
+  ];
+  route = match_route(g, trace);
+  assert(len(route) == 5, "route follows the whole street: {len(route)} pts");
+  for i in 0..len(route) {
+    assert(route[i].lat == 52.0, "point {i} snapped onto the street (lat {route[i].lat})");
+  }
+
+  route2 = match_route(g, trace);
+  assert(len(route) == len(route2), "deterministic length");
+  for j in 0..len(route) {
+    assert(route[j].lat == route2[j].lat && route[j].lon == route2[j].lon, "deterministic point {j}");
+  }
+}

@@ -139,6 +139,14 @@ only for HTTP-shaped input; Option A is the general channel.
    Good that it's documented; `WASM.md` already flags auto-invalidation as a candidate fix — worth
    doing, it's a sharp edge.
 
+8. **Perf: nested-vector element mutation via a `&` ref is O(n²) with a hash in the struct — FILED
+   [loft-lang/loft#475](https://github.com/loft-lang/loft/issues/475).** The idiomatic incremental
+   adjacency list (`adj: vector<vector<int>>`; `adj[a] += [e]`) mutated through a `&Graph` ref is
+   O(size-of-struct) per call when the struct also holds a `hash` — a 100-node graph build hung
+   > 20 s. Workaround: flat edge list. This makes graph algorithms a trap for the natural
+   representation; worth an interpreter fix (probably a whole-struct deep-copy on nested-element
+   mutation through a reference).
+
 ---
 
 ## What routing does
