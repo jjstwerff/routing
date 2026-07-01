@@ -36,8 +36,21 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const routing = (window.routing = window.routing || {});
 routing.map = map;
 
-// Step 2: the rough sketch layer (DESIGN.md §1). onChange fires on every edit and during a drag;
-// step 3 hangs the live length readout off it. For now we just stash the current points.
+// Step 3: instant rough length (DESIGN.md §1) — a haversine sum, recomputed on every edit and
+// every drag frame and shown in the top readout. Never waits; loft's accurate geodesic length of
+// the *matched* route arrives later (step 7). Goal ±delta slots into this same readout in step 14.
+const lengthReadout = document.getElementById("length-readout");
+function renderLength(points) {
+  if (lengthReadout) {
+    lengthReadout.textContent = routing.geo.formatDistance(routing.geo.roughLength(points));
+  }
+}
+
+// Step 2: the rough sketch layer (DESIGN.md §1). onChange fires on every edit and during a drag.
 routing.rough = new routing.RoughLayer(map, {
-  onChange: (points) => { routing.roughPoints = points; },
+  onChange: (points) => {
+    routing.roughPoints = points;
+    renderLength(points);
+  },
 });
+renderLength([]); // initial "0 m"

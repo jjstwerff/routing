@@ -94,7 +94,8 @@
       });
       marker.on("click", () => this._toggleSelect(id));
       marker.on("dblclick", () => this._removeId(id));   // mouse delete
-      marker.on("drag", () => this._redrawLines());       // line follows the finger, live
+      // Line AND length follow the finger live, every frame (DESIGN.md §1: length is instant).
+      marker.on("drag", () => { this._redrawLines(); this._emit(); });
       marker.on("dragend", () => this._emit());
       marker.addTo(this.map);
 

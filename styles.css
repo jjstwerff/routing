@@ -62,6 +62,26 @@ html, body {
   box-shadow: 0 0 0 3px #fff, 0 0 0 6px rgba(249, 178, 51, 0.95); /* amber selection ring */
 }
 
+/* --- HUD: instant length readout (DESIGN.md §1) ---------------------------- */
+.hud-readout {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200; /* above the map + Leaflet controls */
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(31, 41, 51, 0.92);
+  color: #fff;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums; /* stable width so the pill doesn't jitter as digits change */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  pointer-events: none; /* never blocks a tap on the map beneath it */
+  user-select: none;
+}
+
 /* --- HUD buttons ----------------------------------------------------------- */
 .hud-btn {
   position: fixed;

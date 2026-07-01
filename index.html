@@ -16,8 +16,11 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- Full-bleed map is the whole UI for now; the HUD (length readout) lands in later steps. -->
+  <!-- Full-bleed map is the whole UI for now; the HUD grows in later steps. -->
   <div id="map" aria-label="Route map"></div>
+
+  <!-- Instant rough length (DESIGN.md §1): updates every frame as you tap and drag. -->
+  <div id="length-readout" class="hud-readout" role="status" aria-live="polite">0 m</div>
 
   <!-- Touch delete affordance: shown only while a rough point is selected (see rough.js).
        Mouse users can also double-click a point, or press Delete/Backspace. -->
@@ -25,6 +28,7 @@
           aria-label="Delete selected point">Delete point</button>
 
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="geo.js"></script>
   <script src="rough.js"></script>
   <script src="app.js"></script>
 </body>

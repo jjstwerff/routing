@@ -41,7 +41,7 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** place ~8 points, drag one, insert one mid-segment, delete one. The polyline updates
   correctly each time; start and finish are visually distinct from intermediates.
 
-### ☐ 3. Instant rough length (§1, §2)
+### ☑ 3. Instant rough length (§1, §2)
 - **Goal:** live length as you draw — never wait.
 - **Build:** haversine sum over `rough[]` in JS, recomputed every frame on place/drag.
 - **Check:** draw a straight ~1 km segment between two known points; the readout is within ~1% of the
