@@ -166,3 +166,29 @@ html, body {
 .hud-btn:active { transform: translateX(-50%) scale(0.97); }
 
 .hidden { display: none !important; }
+
+/* Undo snackbar (PLAN step 13) — brief toast after a bulk delete; one tap restores. */
+.snackbar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(72px + env(safe-area-inset-bottom)); /* above the bottom controls */
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  padding: 8px 8px 8px 16px;
+  border-radius: 999px;
+  background: #1f2933;
+  color: #fff;
+  font-size: 14px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.4);
+}
+.snackbar button {
+  font: inherit;
+  font-weight: 700;
+  color: #7db4ff;
+  background: none;
+  border: none;
+  padding: 4px 10px;
+  cursor: pointer;
+}

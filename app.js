@@ -72,10 +72,11 @@ function renderLength(points) {
 
 // Step 2: the rough sketch layer (DESIGN.md §1). onChange fires on every edit and during a drag.
 routing.rough = new routing.RoughLayer(map, {
-  onChange: (points) => {
+  onChange: (points, committed) => {
     routing.roughPoints = points;
     renderLength(points);
     if (routing.ws) routing.ws.sendPoints(points); // step 4: round-trip to the loft server
+    if (committed && routing.undo) routing.undo.record(points); // step 13: undo history
   },
 });
 renderLength([]); // initial "0 m"

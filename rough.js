@@ -99,8 +99,8 @@
       marker.on("click", () => this._toggleSelect(id));
       marker.on("dblclick", () => this._removeId(id));   // mouse delete
       // Line AND length follow the finger live, every frame (DESIGN.md §1: length is instant).
-      marker.on("drag", () => { this._redrawLines(); this._emit(); });
-      marker.on("dragend", () => this._emit());
+      marker.on("drag", () => { this._redrawLines(); this._emit(false); }); // live, not committed
+      marker.on("dragend", () => this._emit());                             // committed (one undo step)
       marker.addTo(this.map);
       return { id, marker };
     }
@@ -262,8 +262,10 @@
       this._hitLine.setLatLngs(lls);
     }
 
-    _emit() {
-      this.onChange(this.getPoints());
+    // committed=false during a drag (live length/match only); true on a discrete edit (append,
+    // insert, delete, drag-release, setPoints) — the undo history records only committed edits.
+    _emit(committed) {
+      this.onChange(this.getPoints(), committed !== false);
     }
   }
 

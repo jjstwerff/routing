@@ -240,13 +240,19 @@ accurate length. Ship nothing fancy; prove the pipeline.
   work. Delete emits → re-match. *(Box/lasso deferred — tap-first-last works on desktop via click A +
   click B; a drag-box is a later nicety.)*
 
-### ☐ 13. Undo — platform-adaptive, one per-session history (§1)
+### ☑ 13. Undo — platform-adaptive, one per-session history (§1)
 - **Goal:** take back your own recent edits, frictionlessly, per device.
-- **Build:** one **per-session** edit-history (move/insert/delete/bulk-delete). Desktop:
-  **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level. Phone: **"Deleted N · Undo" snackbar** after bulk delete
-  (single moves/inserts are self-correcting → no chrome). Local & ephemeral.
+- **Build:** one **per-session** edit-history. Desktop: **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level.
+  Phone: **"Deleted N · Undo" snackbar** after bulk delete. Local & ephemeral.
 - **Check:** desktop — several edits then `Ctrl+Z`×N walk back, `Ctrl+Shift+Z` redoes. Phone — bulk
   delete shows the snackbar; one tap restores exactly the deleted range.
+- **DONE (2026-07-02):** `undo.js` — snapshot history seeded with the empty state. `rough._emit` now
+  carries a `committed` flag (drag frames = live/uncommitted, discrete edits + drag-release =
+  committed); app.js records only committed edits, so a drag is one undo step, not per-frame. Desktop
+  `Ctrl/Cmd+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`; phone snackbar auto-shown when a record drops ≥2 points
+  (a bulk delete). Applying an undo doesn't re-record (guard flag). Headless-Chromium test (14/14):
+  undo walks back to empty + no-op past start, redo walks forward; bulk delete → "Deleted 4 · Undo"
+  → tap restores 8. Restored state re-matches (via onChange).
 
 ### ☐ 14. Goal length — feedback only (§1)
 - **Goal:** measure against a target without ever auto-reshaping.
