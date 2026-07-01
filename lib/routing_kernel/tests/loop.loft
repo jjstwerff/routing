@@ -1,0 +1,36 @@
+// Loop coverage (the §10.2 matcher-depth upgrade). The v1 src→dst matcher SHORTCUTS a loop (start
+// ≈ finish → the short path, not the way around; a start==finish trace returned nothing). Piecewise
+// routing must trace the whole loop.  loft --tests lib/routing_kernel/tests/loop.loft --lib lib
+use routing_kernel::(GeoPoint, Way, build_graph, match_route, match_route_closed);
+
+fn has_pt(route: vector<GeoPoint>, lat: float, lon: float) -> boolean {
+  found = false;
+  for i in 0..len(route) { if route[i].lat == lat && route[i].lon == lon { found = true; } }
+  found
+}
+
+fn test_loop_is_traced() {
+  // A square loop as a closed way (first coord == last → one merged node → a 4-node cycle).
+  square = Way { highway: "path", surface: "ground", tracktype: "",
+    coords: [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.002 },
+              GeoPoint { lat: 52.002, lon: 5.002 }, GeoPoint { lat: 52.002, lon: 5.000 },
+              GeoPoint { lat: 52.000, lon: 5.000 } ] };
+  g = build_graph([square]);
+  assert(len(g.nodes) == 4, "square loop = 4 nodes: {len(g.nodes)}");
+
+  // A trace drawn around the loop, back to the start.
+  trace = [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.002 },
+            GeoPoint { lat: 52.002, lon: 5.002 }, GeoPoint { lat: 52.002, lon: 5.000 },
+            GeoPoint { lat: 52.000, lon: 5.000 } ];
+
+  route = match_route(g, trace, "walking_trail");
+  assert(has_pt(route, 52.000, 5.000), "visits corner c0");
+  assert(has_pt(route, 52.000, 5.002), "visits corner c1");
+  assert(has_pt(route, 52.002, 5.002), "visits corner c2");
+  assert(has_pt(route, 52.002, 5.000), "visits corner c3");
+
+  // Round-trip: start == finish → the detailed route is a closed circuit (first == last).
+  closed = match_route_closed(g, trace, "walking_trail", 0.25);
+  last = len(closed) - 1;
+  assert(closed[0].lat == closed[last].lat && closed[0].lon == closed[last].lon, "loop closes");
+}

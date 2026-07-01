@@ -21,8 +21,9 @@ fn test_profile_picks_footpath_vs_road() {
               GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0002, lon: 5.003 },
               GeoPoint { lat: 52.0001, lon: 5.004 } ] };
   g = build_graph([road, foot]);
-  trace = [ GeoPoint { lat: 52.0001, lon: 5.0005 }, GeoPoint { lat: 52.0001, lon: 5.002 },
-            GeoPoint { lat: 52.0001, lon: 5.0035 } ];
+  // A 2-point trace straight down the middle: the SINGLE piece must choose between the two parallel
+  // start→finish ways (road vs footpath) — and only the profile can decide (equal deviation).
+  trace = [ GeoPoint { lat: 52.0001, lon: 5.0005 }, GeoPoint { lat: 52.0001, lon: 5.0035 } ];
 
   trail = match_route(g, trace, "running_trail");
   assert(has_lat(trail, 52.0002), "Trail routes via the footpath (north)");

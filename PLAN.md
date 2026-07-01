@@ -129,6 +129,16 @@ accurate length. Ship nothing fancy; prove the pipeline.
     in Dijkstra (O(V·E), instant). Filed **loft-lang/loft#475** with a minimal repro.
   - **Not yet tested:** locality (nudge → local-only) — follows from the deviation-cost being a local
     function of trace proximity, but no explicit test yet. Adaptive-widening gap fallback deferred.
+- **§10.2 MATCHER-DEPTH UPGRADE (2026-07-01):** v1's src→dst Dijkstra **shortcut loops/out-and-backs**
+  (it ignored the middle of the trace — a start==finish trace returned nothing). Upgraded `match_route`
+  to route **PIECEWISE through consecutive trace points** (extracted `dijkstra_path`; each segment is
+  its own deviation-to-that-segment + activity path, concatenated with join-dedup). This **covers the
+  whole trace** — loops and out-and-backs included — while a **2-point trace stays a single piece**, so
+  activity still decides between parallel start→finish ways (step 8 preserved). `tests/loop.loft` (a
+  square loop is traced + closes) added; all kernel tests green **interpret == native**; live match
+  unchanged for straight traces. **Remaining (full HMM):** an intermediate point drawn *exactly*
+  between two parallel ways snaps to one (candidate-set Viterbi would let activity decide there too);
+  plus the tight-corridor download (vs bbox) and an adaptive-widening gap fallback.
 
 ### ☑ 7. Detailed layer + accurate length (§1, §2)
 - **Goal:** show the matched route with its own accurate length.
@@ -169,24 +179,20 @@ accurate length. Ship nothing fancy; prove the pipeline.
   footpath-vs-road choice flips purely by profile (Trail→footpath, Road→road); penalty signs + clamp.
   Live match with a profile round-trips. *(Weights are §6 starting points — tune against real data.)*
 
-### ◐ 9. Round-trip inference (§1, §5)
+### ☑ 9. Round-trip inference (§1, §5)
 - **Goal:** loops close themselves, no button.
 - **Build:** when start & finish sit near each other **relative to total length** (tunable ratio),
   close the **detailed** circuit; leave the **rough** open. Purely geometric.
 - **Check:** draw a near-loop → detailed route closes; drag the finish away → it un-loops; bring it
   back → it closes again. An out-and-back whose finish lands on the start reads as a closed circuit.
-- **DONE — inference logic (◐):** `is_round_trip(start, finish, total_m, ratio)` (pure geometry) +
+- **DONE (2026-07-01):** `is_round_trip(start, finish, total_m, ratio)` (pure geometry) +
   `match_route_closed(g, trace, profile, ratio)` (closes the polyline back to the matched start when
-  it reads as a round trip). Server uses ratio **0.25**. Tests `tests/roundtrip.loft` pass
-  **interpret == native**: the ratio decides (near→true, far→false, zero→false); the SAME route is
-  left open below threshold and closed above it. The client already draws a closed polyline (first ==
-  last) as a loop — no client change.
-- **BLOCKED for ☑ — the visual loop needs the matcher-depth upgrade.** The v1 src→dst matcher
-  **shortcuts loops** (Dijkstra takes the short start→finish path, not the way around — true even in a
-  pure ring), so a real drawn loop doesn't yet trace as a loop and the closure is degenerate on it.
-  The inference/closure are correct and tested in isolation; making them *visually* faithful needs
-  the **§10.2 matcher-depth** work (via-point / HMM routing through the trace, + the tight corridor).
-  Deferred there; a corridor-routed closer (vs the straight one) folds in too.
+  it reads as a round trip, unless it already returns there). Server uses ratio **0.25**. The client
+  draws a closed polyline (first == last) as a loop — no client change.
+- **UNBLOCKED by the matcher-depth upgrade (see step 6):** now that the matcher routes PIECEWISE
+  through the trace, a drawn loop is actually traced and closes. `tests/roundtrip.loft` (the ratio
+  decides; open below threshold, closed above) **and** `tests/loop.loft` (a square loop is traced —
+  all 4 corners — and closes) pass **interpret == native**.
 
 ### ☑ 10. GPX export (§8)
 - **Goal:** get an accurate route out.

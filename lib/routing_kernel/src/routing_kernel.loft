@@ -314,18 +314,12 @@ fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>, profile: text) -> f
   e.length * (1.0 + DEV_K * dev + way_penalty(profile, e.hw, e.surface, e.tracktype))
 }
 
-// The matched detailed route: nodes along the least-cost (deviation-dominated) path from the node
-// nearest the trace start to the node nearest the trace finish. [] for a degenerate trace or when
-// the endpoints are unreachable within the corridor.
-pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
+// Least-cost (deviation + activity) node path from src to dst; [] if dst is unreachable. `trace` is
+// the polyline the deviation term measures against — for piecewise matching, the single local segment.
+fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, profile: text) -> vector<integer> {
   n = len(g.nodes);
-  detailed: vector<GeoPoint> = [];
-  if n == 0 { return detailed; }
-  if len(trace) < 2 { return detailed; }
-
-  src = nearest_node(g, trace[0].lat, trace[0].lon);
-  dst = nearest_node(g, trace[len(trace) - 1].lat, trace[len(trace) - 1].lon);
-
+  out: vector<integer> = [];
+  if n == 0 { return out; }
   dist: vector<float> = [];
   prevn: vector<integer> = [];
   seen: vector<boolean> = [];
@@ -335,7 +329,6 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
     seen += [false];
   }
   dist[src] = 0.0;
-
   for _it in 0..n {
     u = -1;
     ud = BIG;
@@ -359,10 +352,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
       }
     }
   }
-
-  if dst != src && prevn[dst] < 0 { return detailed; }   // unreachable within the corridor
-
-  // Reconstruct dst→src, then emit start→finish.
+  if dst != src && prevn[dst] < 0 { return out; }   // unreachable
   rev: vector<integer> = [];
   cur = dst;
   for _k in 0..n {
@@ -371,9 +361,35 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
     cur = prevn[cur];
     if cur < 0 { break; }
   }
-  for r in 0..len(rev) {
-    ni = rev[len(rev) - 1 - r];
-    detailed += [GeoPoint { lat: g.nodes[ni].lat, lon: g.nodes[ni].lon }];
+  for r in 0..len(rev) { out += [rev[len(rev) - 1 - r]]; }   // src → dst order
+  out
+}
+
+// The matched detailed route (PLAN step 6 + the §10.2 matcher-depth upgrade). Routes PIECEWISE
+// through consecutive trace points — each segment is its own least-cost (deviation-to-that-segment +
+// activity) path — so the route COVERS THE WHOLE TRACE, loops and out-and-backs included, not just
+// the endpoints. A 2-point trace is a single piece (endpoint-to-endpoint, where activity still
+// decides between parallel ways); a multi-point loop becomes many pieces that trace it. (Full HMM
+// with candidate sets — for an intermediate point drawn *exactly* between two parallel ways — is the
+// further refinement; an unreachable piece leaves a gap, pending adaptive widening.)
+pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
+  detailed: vector<GeoPoint> = [];
+  if len(g.nodes) == 0 { return detailed; }
+  if len(trace) < 2 { return detailed; }
+  for i in 1..len(trace) {
+    src = nearest_node(g, trace[i - 1].lat, trace[i - 1].lon);
+    dst = nearest_node(g, trace[i].lat, trace[i].lon);
+    if src == dst { continue; }
+    seg: vector<GeoPoint> = [trace[i - 1], trace[i]];
+    path = dijkstra_path(g, src, dst, seg, profile);
+    for j in 0..len(path) {
+      p = GeoPoint { lat: g.nodes[path[j]].lat, lon: g.nodes[path[j]].lon };
+      if len(detailed) > 0 {
+        last = detailed[len(detailed) - 1];
+        if last.lat == p.lat && last.lon == p.lon { continue; }   // skip the duplicate join node
+      }
+      detailed += [p];
+    }
   }
   detailed
 }
@@ -397,7 +413,10 @@ pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text, rati
   detailed = match_route(g, trace, profile);
   if len(detailed) >= 2 {
     if is_round_trip(trace[0], trace[len(trace) - 1], path_length_m(detailed), ratio) {
-      detailed += [detailed[0]];   // close the circuit
+      last = detailed[len(detailed) - 1];
+      if last.lat != detailed[0].lat || last.lon != detailed[0].lon {
+        detailed += [detailed[0]];   // close the circuit (unless it already returns to start)
+      }
     }
   }
   detailed
