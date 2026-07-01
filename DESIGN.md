@@ -105,90 +105,86 @@ match must be local/stable, §5.)
 
 ## 2. Division of labour — JS does pixels, loft does routes
 
-| | **JS (vanilla + Leaflet)** | **loft (compact AOT wasm service)** |
+| | **JS (vanilla + Leaflet)** | **loft (native server, reached over WebSocket)** |
 |---|---|---|
 | Owns | interactive rough points (place/drag/insert/remove), Leaflet map (OSM base + Waymarkedtrails overlay + **overlay/chart toggles**), **instant rough length** (haversine), **drawing** the detailed polyline + **elevation chart**, UI | **import/export of routes (GPX)**, **downloading road-pattern data**, **map-matching / routing**, **accurate geodesic length**, **elevation sampling (ascent/descent + profile)**, simplification, **proposed names** (reverse-geocode area + length + type) |
 
-JS = points + pixels. loft = routes + data + math.
+JS = points + pixels. loft = routes + data + math — running **native on a server** (§3/§4), reached
+over a WebSocket. (Running loft *in the browser* is deferred to an offline mode, §3/§4.)
 
 ---
 
-## 3. The loft kernel — compact, AOT, phone-first
+## 3. The loft engine — a native server (browser kernel deferred)
 
-- **No loft parser or compiler in the browser.** loft is **AOT-compiled** to wasm (`loft --html` /
-  cdylib, `wasm32-unknown-unknown`) — only the *compiled* kernel + loft's minimal no-std **runtime
-  engine** ship, **not** the interpreter/compiler (~2.5 MB). Codegen already emits reachable-only
-  functions and rustc runs `-O`, so the size is the engine, not dead code. *(Measured, loft 2026.6.0:
-  trivial kernel = 165 KB wasm; the real `routing_kernel` client (geodesic + lib + float formatting)
-  = **1.1 MB raw / 330 KB gzipped** via `--html`, and it runs in headless Chromium — larger than the
-  original 70–130 KB hope, but one-time and PWA-cached.)* **Do not use `--native-wasm` for the browser:**
-  its `wasm32-wasip2` target links full `std` + WASI + a component adapter (5.4 MB / 1.5 MB gz; 2.1 MB
-  core even after `wasm-opt`) — ~4× heavier than `--html`. wasip2 is kept only as the **headless CI
-  parity harness** (`tools/kernel_headless_test.sh`), never shipped to the phone.
-- **Small startup, always precompiled.** Startup = load-and-instantiate a small module; no
-  in-browser compile, nothing to parse.
-- **loft owns its loop and its downloads.** The kernel runs its own loop, yielding to the page via
-  loft's shipped **asyncify** suspend (`frame_yield` / `ws_yield`, from the `web` library) so heavy
-  work never freezes the map, and it fetches its **own** road data in-browser through the `web`
-  library's blocking `http_get` (Overpass is a loft-side call, not JS).
-- **The JS↔loft data channel uses shipped mechanisms only — no custom bridge crate.** The compute is
-  **pure loft** (Tier 1), so nothing needs a `[wasm.bridge]`. *Verified* (import-dump of a `--html`
-  build): a `--html` module exposes host imports for **output** (`loft_io.loft_host_print` — so a
-  result JSON crosses loft→JS via print, for free) plus `loft_gl.*`, and **no generic data-in**
-  channel (`file()`/`arguments()` compile to in-wasm stubs there). So the rough-points **in** hop
-  rides a **shipped, generic** path — the `web` library's http/ws (a registry bridge we *consume*),
-  or the WASI/`loftHost` file/args bridge — **not** a routing-authored bridge. The generic push/poll
-  "byte channel" in `../loft/doc/claude/BROWSER_INTEROP.md` is a *design doc*, not shipped. **The
-  step-4 spike picks and proves the specific no-bridge channel** (candidates in PLAN.md); nothing here
-  is assumed until it round-trips.
-- **Phone-first / PWA.** Pure static client + small wasm + Leaflet (~40 KB gzipped) → drops into a
-  phone browser, installs as a **PWA**, and wraps cleanly in a native WebView (Capacitor/Cordova)
-  later with no rearchitecting.
+loft runs **native, on a server** — not in the browser. The browser stays thin (**vanilla JS +
+Leaflet**) and talks to the server over a **WebSocket** (§4). This is the audience-demo shape, and it
+dissolves the browser-wasm constraints: server-side, loft has full **HTTP** (Overpass via
+`web.http_get`), files, and persistence, with no bundle-size budget and no host-import gymnastics.
+(This replaced an earlier browser-wasm-kernel plan; see the "browser kernel — deferred" note below for
+why.)
 
-Kernel compute surface (all f64 — loft `float` is double, confirmed in `../loft/src/data.rs`):
-geodesic length (WGS84 ellipsoidal), per-segment lengths, Douglas–Peucker simplify,
-nearest-segment projection, and the **map-matcher** (§5).
+- **The server is three loft libraries + our code.** `server` (registry — single-port HTTP+WS
+  multi-client event loop, built on `web`) + `web` (native **HTTP client** for Overpass/Nominatim +
+  native **WebSocket**) + **`routing_kernel`** (our pure-loft compute). `../loft/lib/engine_host`
+  optionally adds hot-reload. There is no stock `lib/server`/`lib/world` — the route store is our own
+  struct (§4).
+- **`routing_kernel` — the pure-loft compute (shipped, tested).** A platform-agnostic library
+  (`lib/routing_kernel`, all f64 — loft `float` is double): geodesic length (WGS84 ellipsoidal — the
+  spherical haversine is in place, the ellipsoidal upgrade is step 7), per-segment lengths,
+  Douglas–Peucker simplify, nearest-segment projection, and the **map-matcher** (§5). Proven identical
+  across `--interpret` / `--native` / `--native-wasm` (`tools/kernel_headless_test.sh`), so it runs the
+  same on the server today and in a browser kernel later, with no code change.
+- **JS owns pixels + the WebSocket; loft owns routes + data + math.** JS sends the rough points over
+  WS; loft fetches the corridor, matches, computes the accurate length + elevation, and returns the
+  **detailed polyline + length**; JS renders it on Leaflet. The **instant rough length stays JS-side**
+  (haversine, every frame) so drawing never waits on the round-trip (§1).
+- **Phone-first / PWA.** The shipped client is still pure static files + Leaflet (~40 KB gz) — a tiny
+  PWA that installs on a phone and wraps cleanly in a native WebView (Capacitor/Cordova). The *weight*
+  (loft) lives on the server, so the phone downloads almost nothing.
 
-**One kernel, two targets.** This compute surface lives in a **pure-loft library `lib/routing_kernel`**
-(no platform code), compiled unchanged to **both** wasm (this client) and native (the Mode B server,
-§4) — the *same* geodesic / simplify / match code on both sides, so a matched length can never
-disagree between server and client. Platform bridges stay outside it: the client adds the `web`
-library (HTTP/WS) plus the JS bridge above; the server adds the `server` library (§4). *(The
-`server`/`web` libraries are registry packages — `../loft/lib` has `engine_host` but no
-`server`/`world` module; see §4.)*
+**Browser kernel — deferred (offline Mode A only).** Running loft *in the browser* (`loft --html`,
+`wasm32-unknown-unknown`, ~330 KB gz — measured; AOT, no parser/compiler shipped) is only needed for a
+**pure-static, offline, no-server** build. It is **blocked** today: `--html` has loft→JS output
+(`loft_io.loft_host_print`) but **no generic data-in** (verified — `file()`/`arguments()` are in-wasm
+stubs; `web` bridges only WebSocket, not HTTP), so JS can't feed it points without an **upstream loft
+change** (a generic `loft_io` input primitive — written up in [docs/loft-feedback.md](docs/loft-feedback.md)).
+Deferred until that lands; the server path needs none of it, and the same `routing_kernel` will compile
+to the browser unchanged. *(`--native-wasm`/wasip2 is ~4× heavier — 5.4 MB / 1.5 MB gz — and can't run
+in a browser without jco; kept only as the headless CI parity harness.)*
 
 ---
 
-## 4. Hybrid deployment — one client, two modes
+## 4. Deployment — server-first (offline standalone deferred)
 
-Same client, mode chosen at runtime by whether it was loaded from a live loft server.
+**v1 is server-backed.** A loft server serves the static client over HTTP and does all the routing
+work; the browser is thin JS + Leaflet on a WebSocket. Chosen over a browser-wasm kernel because it is
+the shipped, proven audience-demo pattern and it sidesteps every `--html` limitation (§3) — HTTP
+(Overpass), files, persistence, and heavy compute all just work, natively.
 
-- **Mode A — Standalone (fully independent, "for people to use").** Pure static files + the wasm
-  kernel. No server. Routes are saved as a **local named-route library in the browser**
-  (`localStorage`/IndexedDB) — store a few routes, reopen and re-edit them — and travel between people
-  as GPX. Road data fetched from the public source directly. This is what a stranger just opens.
-- **Mode B — Server-backed (your own server + direct backup).** A **loft server** — the `server`
-  registry library (single-port HTTP+WS multi-client, itself built on `web`; `../loft/lib/engine_host`
-  optionally adds hot-reload) — serves the client over HTTP and holds a **shared, named route store
-  that multiple people can load and change**. That store is an **app-defined struct** persisted
-  write-through to disk (there is no stock `lib/server`/`lib/world` — the store and its snapshot are
-  ours, following the audience-demo `single_port_server.loft` pattern). It **persists the rough
-  route** — the editable points, the *source of truth*, so anyone can reopen and quickly re-edit —
-  straight to disk on every accepted edit (the "direct backup", the audience-demo `world.bin` shape),
-  and **syncs edits over WebSocket**: broadcasting changes to other open clients and replaying current
-  state to new ones (the audience-demo collaborative pattern; single-port HTTP+WS, client derives its
-  WS URL from `location.host`). The detailed match is derived/cached, not the stored truth. May also
-  proxy/cache road-data fetches.
+- **The server.** `loft --native` on `server` + `web` + `routing_kernel` (the audience-demo
+  `single_port_server.loft` shape): **one port** serves the client (HTTP) *and* the sync channel (WS at
+  `/ws`; the client derives the URL from `location.host`). It holds a **shared, named route store** that
+  multiple people load and change — an **app-defined struct** persisted **write-through to disk** on
+  every accepted edit (the "direct backup", the audience-demo `world.bin` shape). The **rough route** is
+  the persisted source of truth; the detailed match is derived/cached. loft fetches Overpass itself
+  (`web.http_get`, native).
+- **The data transfer is WebSocket, both ways.** JS sends `points:<json>`; the server matches and
+  replies `matched:<polyline + length>`; edits **broadcast** to other open clients and **replay** to
+  newly-connected ones (the audience-demo collaborative pattern). Simple `id:payload` text frames. The
+  browser side is a plain `new WebSocket(...)` — no loft, no bridge.
 
-  **Close-the-browser-safe — the server mode's headline value.** Edits stream to the server
-  **out-of-band** as you make them and are write-through persisted, so the **browser is disposable**:
-  close a tab, drop the connection, or switch from phone to laptop and **nothing is lost** — reopen and
-  the working route is exactly where you left it, on any device. No "you have unsaved changes" prompt,
-  ever. This also gives the *"not-done" draft* (§10) essentially for free: the in-progress route is
-  always a live, server-persisted draft, named or not.
+**Close-the-browser-safe — the headline value.** Edits stream to the server **out-of-band** and are
+write-through persisted, so the **browser is disposable**: close a tab, drop the connection, switch
+phone→laptop, and **nothing is lost** — reopen and the working route is exactly where you left it, on
+any device. No "unsaved changes" prompt, ever. This also gives the *"not-done" draft* (§10) for free —
+the in-progress route is always a live, server-persisted draft, named or not.
 
-  Mode B only *adds* naming + multi-user sync + close-the-browser-safe backup; Standalone is a strict
-  subset (local named library + GPX).
+**Mode A — offline standalone (deferred).** A pure-static, no-server build where loft runs *in the
+browser* (§3), routes saved to `localStorage`/IndexedDB, travelling as GPX — what a stranger opens with
+no server at all. **Deferred:** it needs the `--html` data-in primitive (§3,
+[docs/loft-feedback.md](docs/loft-feedback.md)). When that lands, the same `routing_kernel` compiles to
+the browser unchanged and Mode A becomes a strict subset of the server build (drop naming + multi-user
+sync + backup).
 
 ---
 
@@ -334,9 +330,11 @@ per-session history: desktop **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level; phone **
 bulk delete. Local & per-session; no global collaborative history (§1). **loft toolchain** — scoped &
 verified (2026-07-01, loft 2026.6.0): `loft --html` AOT-compiles the kernel to `wasm32-unknown-unknown`
 and runs in-browser (tested); road-data fetch + WS sync are loft-side via the `web`/`server` registry
-libraries; Mode B's store is an app-defined struct persisted write-through (no stock
-`lib/server`/`lib/world`). The one JS↔loft data bridge is still to be built and is validated in step 4
-(§3, §11).
+libraries; the store is an app-defined struct persisted write-through (no stock
+`lib/server`/`lib/world`). **Architecture (2026-07-01): server-first** — loft runs native on a server,
+the browser is thin JS + Leaflet over a WebSocket (audience-demo pattern); loft-in-browser is deferred
+to an offline mode that needs an upstream `--html` data-in primitive ([docs/loft-feedback.md](docs/loft-feedback.md)).
+See §3/§4.
 
 *Later (deferred):* a **"not-done" / draft save** — a special save type bundling the work-in-progress
 state *including the undo data*, so an unfinished route can be put down and resumed with its undo
@@ -347,12 +345,12 @@ ephemeral. (In **server mode** the route's working state is already continuously
 ---
 
 ## 11. Build & run (target)
-- **App (both modes):** static `index.html` + JS/CSS, no build step.
-- **Shared kernel:** pure-loft `lib/routing_kernel`, consumed by both targets below (§3).
-- **loft client kernel:** `loft --html client/kernel.loft --lib lib` → cdylib on
-  `wasm32-unknown-unknown`, `wasm-opt`-shrunk; artifact **committed** so *running* the app needs no
-  toolchain. (Build-time needs `rustc` + the `wasm32-unknown-unknown` target + `wasm-opt` — all
-  present and verified here.)
-- **Mode B server:** `loft --native server/server.loft --lib lib` (audience-demo shape). Registry
+- **Client:** static `index.html` + JS/CSS, no build step — served by the loft server over HTTP.
+- **Shared compute:** pure-loft `lib/routing_kernel` (§3), consumed by the server (and later the
+  browser kernel, unchanged).
+- **The server (v1):** `loft --native server/server.loft --lib lib` (audience-demo shape). Registry
   deps (`server`, `web`) resolve via `loft install`, or path-dep to the local
-  `../loft-libs-net/{server,web}` checkouts.
+  `../loft-libs-net/{server,web}` checkouts. Serves the static client + the WS on one port.
+- **Deferred — offline browser kernel (Mode A):** `loft --html client/kernel.loft --lib lib` → cdylib
+  on `wasm32-unknown-unknown`, `wasm-opt`-shrunk (~330 KB gz), committed so running needs no toolchain.
+  Blocked on the `--html` data-in primitive (§3).

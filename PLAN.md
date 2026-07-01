@@ -16,15 +16,19 @@ resist adding a primitive a step doesn't need.
 - **Q2 — Matcher depth (§10.2):** full HMM (Newson & Krumm) or v1 corridor-routing-with-deviation?
   This plan assumes the **v1 corridor-routing** answer for step 6; revisit if we choose HMM.
 
-**loft toolchain — scoped & verified (2026-07-01, loft 2026.6.0; see DESIGN.md §3/§4/§11).** Prereqs
-present here (rustc + `wasm32-unknown-unknown` + `wasm-opt`); `loft --html` builds a kernel that runs
-in-browser (tested: 165 KB wasm, output reaches the DOM). Plan corrections that follow from scoping:
-one **pure-loft `lib/routing_kernel`** compiles to both wasm (client) and native (server); the client
-fetches Overpass itself via the `web` library's blocking `http_get` and syncs via `web`'s WebSocket
-(so step 5's "JS host-import for fetch" becomes a loft-side call); Mode B uses the `server` registry
-library + an app-defined store (no stock `lib/server`/`lib/world`). The one piece NOT yet proven is
-the **JS↔loft data bridge** (points in / polyline out) — that is exactly step 4's spike; nothing is
-assumed to work until that round-trips.
+**ARCHITECTURE PIVOT — server-first (2026-07-01; see DESIGN.md §3/§4/§11).** After scoping the loft
+toolchain we moved loft **out of the browser and onto a native server** (the audience-demo pattern):
+- **loft runs native, on a server** (`server` + `web` + pure-loft `lib/routing_kernel`); the browser is
+  **thin JS + Leaflet on a WebSocket**. This dissolves the browser-wasm blockers — server-side loft has
+  full HTTP (Overpass via `web.http_get`), files, and persistence; nothing heavy ships to the phone.
+- **Why:** `loft --html` has no shipped JS→loft data-in (verified — `file()`/`arguments()` are in-wasm
+  stubs; `web` bridges only WebSocket, not HTTP), and the wasip2 alternative is ~4× heavier. Rather than
+  wait on an upstream loft primitive, WebSocket-to-a-server is shipped, proven, and small.
+- **Consequence:** this **re-sequences the plan** — the server + WS transport (old Phase 4, steps
+  18–20) becomes the **Phase 1 spine**. **Offline standalone (Mode A — loft in the browser) is
+  deferred**; it's the only thing that needs the upstream `--html` primitive
+  ([docs/loft-feedback.md](docs/loft-feedback.md)). `lib/routing_kernel` is already built + parity-tested
+  and is consumed by the server now.
 
 **Legend:** ☐ not started · ◐ in progress · ☑ done — update the box as you go.
 
@@ -57,50 +61,36 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** draw a straight ~1 km segment between two known points; the readout is within ~1% of the
   known distance and updates live while dragging (no perceptible lag).
 
-### ◐ 4. loft WASM kernel + JS↔loft round-trip (the de-risking spike)
-- **Goal:** prove the JS↔loft-wasm round-trip end-to-end using **only shipped mechanisms — no custom
-  `[wasm.bridge]` crate** (the compute is pure loft; the channel must be something loft already
-  ships). Everything downstream rides on this, so build it as an isolated spike before the real kernel.
-- **Tested facts to build on (DESIGN.md §3):** the compute is **Tier 1 pure loft** (no bridge);
-  `loft --html` runs in-browser and gives loft→JS **out** for free via `loft_io.loft_host_print`
-  (print a result JSON); a `--html` build exposes **no generic data-in** (verified: `file()`/
-  `arguments()` are in-wasm stubs there). So the open question is only the **points-in** hop.
-- **Build:**
-  1. Scaffold the pure-loft **`lib/routing_kernel`** (`loft.toml` + `src/routing_kernel.loft`) and put
-     **geodesic length** (WGS84, f64) in it — the first op shared by client and server (§3).
-  2. **Pick and prove a shipped, no-bridge data-in channel** — candidates, cheapest first:
-     (a) `--native-wasm` (WASI) driven by a **generic** shim via stdin/args→stdout (loft's own
-     `tools/wasm_repro.mjs` / `tests/wasm/*.mjs` are the model); (b) the `web` registry lib's http/ws
-     (a bridge we *consume*, not author); (c) the IDE wasm-bindgen `loftHost` VirtFS/args bridge.
-     Measure the smallest working one; don't presume — test each candidate's round-trip.
-  3. `wasm-opt`-shrink and **commit the artifact**. Run it in a **Web Worker** (loft owns its loop via
-     `frame_yield`).
-- **Check:** JS posts the step-3 points to the worker; the returned geodesic length is within a few
-  metres of the JS haversine value, and the map never freezes during the call. *(Validate headless
-  first — Node/`wasm_repro` — then in a Web Worker under the headless-Chromium harness, like steps 1–3.)*
-- **Progress (2026-07-01) — candidate (a) proven headless (◐):** `lib/routing_kernel` (pure loft:
-  `haversine_m`, `path_length_m`) + `client/kernel.loft` (args-in / println-out) compile to
-  `--native-wasm` and run under **wasmtime** with points as a WASI arg — **no custom bridge**. Parity
-  holds: `--interpret == --native == --native-wasm`, byte-identical, matching geo.js to full f64
-  precision (`tools/kernel_headless_test.sh`, all cases PASS).
-- **Browser-leg decision (sizing spike ran):** `--native-wasm` emits wasip2, too heavy for the phone
-  — measured 5.4 MB / 1.5 MB gz (2.1 MB core even after jco `-O`+`wasm-opt`) because wasip2 links full
-  `std`+WASI+component adapter. The **same kernel via `--html`** (the minimal no-std engine) is
-  **1.1 MB / 330 KB gz** and runs in-browser. **So: browser client = `--html`; wasip2 kept only as the
-  headless CI parity harness.** jco path rejected.
-- **Remaining for ☑:** `--html` has no generic data-in (verified), so wire **points-in** over a
-  **shipped** channel — no custom bridge — and round-trip it in a Web Worker under headless Chromium.
+### ◐ 4. loft server + WebSocket round-trip (the transport spine)
+- **Goal:** stand up the native loft server and prove the end-to-end **JS↔server** channel — the
+  browser sends rough points over a WebSocket, the server computes the length with `routing_kernel` and
+  replies, no UI freeze. This is the transport everything downstream rides on (was the old Phase-4 work,
+  promoted by the server-first pivot).
+- **Build (audience-demo `single_port_server.loft` shape):**
+  1. `server/server.loft` using `server` + `web` + `routing_kernel`; run `loft --native --lib lib`.
+     Deps via `loft install` or path-dep to `../loft-libs-net/{server,web}`.
+  2. **One port** serves the static client (HTTP `/`) **and** the WebSocket (`/ws`); the client derives
+     the URL from `location.host`.
+  3. On a `points:<json>` frame → parse → `routing_kernel::path_length_m` → reply `length:<m>` (the
+     matcher slots in at step 6; for now the length is the round-trip payload).
+  4. Browser: a small `ws.js` — `new WebSocket(...)`, send points on edit (debounced), apply the reply.
+- **Check:** the browser posts the step-3 points over WS; the server returns the length within a few
+  metres of the JS haversine; a second client can connect; closing/reopening a tab reconnects.
+  *(Headless: drive the WS client in headless Chromium and assert the returned length.)*
+- **Already done (feeds this step):** `lib/routing_kernel` (pure loft: `haversine_m`, `path_length_m`)
+  is built and **parity-tested** `--interpret == --native == --native-wasm`, byte-identical, matching
+  geo.js to full f64 precision (`tools/kernel_headless_test.sh`). The server consumes it directly.
+- **Deferred (not this step):** running the kernel **in the browser** (`--html`) for the offline mode —
+  blocked on an upstream loft data-in primitive ([docs/loft-feedback.md](docs/loft-feedback.md)); the
+  wasip2 alternative is ~4× heavier (rejected). `--native-wasm` is kept only as the CI parity harness.
   *(Minor: a benign "arguments() vector<text> not freed" warning at exit — stdlib-side, exit 0.)*
 
-### ☐ 5. Corridor download (loft owns data) (§5)  ⟵ *needs Q1*
+### ☐ 5. Corridor download — the server fetches Overpass (§5)  ⟵ *needs Q1*
 - **Goal:** loft fetches a tight corridor of real ways around the rough line.
-- **Build:** loft builds a **narrow buffer (~tens of m)** around the rough polyline, queries
-  **Overpass** via the `web` library's blocking **`http_get`** (a loft-side call, in `routing_kernel`
-  or the client kernel — not a hand-rolled JS fetch), filters to activity-relevant `highway` ways and
-  pulls `surface`/`tracktype` tags. (Q1 decides whether the result is cached for offline.)
-- **First verify (do this before trusting step 5):** that `web`'s **wasm** `http_get` actually does
-  browser fetch-over-asyncify — proven for WebSocket, not yet confirmed here for HTTP. Test a trivial
-  `--html` program that `http_get`s a small URL and prints the status.
+- **Build:** the **server** builds a narrow buffer (~tens of m) around the rough polyline and queries
+  **Overpass** via `web.http_get` — a **native** loft call (HTTP is bridged natively; only `--html`
+  lacked it, and loft isn't in the browser now). Filter to activity-relevant `highway` + `surface`/
+  `tracktype`. (Q1 decides offline caching; may proxy/cache on the server.)
 - **Check:** for a hand-drawn line over a known street, loft returns a bounded set of ways that
   includes the expected roads/paths and excludes ways well outside the buffer.
 
@@ -217,6 +207,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
 ---
 
 ## Phase 4 — Server mode (Mode B)
+
+> **Promoted by the server-first pivot (2026-07-01).** In the pivot, loft *only* runs on a server, so
+> these steps are no longer a final add-on — they start at **step 4** (basic serve + WS round-trip).
+> What remains distinctly "Phase 4" is the richer server behaviour below: multi-client sync,
+> write-through persistence, and close-the-browser-safe backup. Steps 18–20 layer onto the step-4 base.
 
 ### ☐ 18. loft server serves the client (§4, §11)
 - **Goal:** the same client, loaded from a live loft server, detects Mode B at runtime.
