@@ -82,10 +82,14 @@ accurate length. Ship nothing fancy; prove the pipeline.
   `haversine_m`, `path_length_m`) + `client/kernel.loft` (args-in / println-out) compile to
   `--native-wasm` and run under **wasmtime** with points as a WASI arg — **no custom bridge**. Parity
   holds: `--interpret == --native == --native-wasm`, byte-identical, matching geo.js to full f64
-  precision (`tools/kernel_headless_test.sh`, all cases PASS). **Remaining for ☑:** the **browser**
-  Worker leg — `--native-wasm` emits wasip2 (component model), which a browser can't run directly, so
-  either (i) jco-transpile the component for the browser, or (ii) build the browser client with
-  `--html` and pair it with a shipped in-channel (the `web` lib, candidate b). Decide next.
+  precision (`tools/kernel_headless_test.sh`, all cases PASS).
+- **Browser-leg decision (sizing spike ran):** `--native-wasm` emits wasip2, too heavy for the phone
+  — measured 5.4 MB / 1.5 MB gz (2.1 MB core even after jco `-O`+`wasm-opt`) because wasip2 links full
+  `std`+WASI+component adapter. The **same kernel via `--html`** (the minimal no-std engine) is
+  **1.1 MB / 330 KB gz** and runs in-browser. **So: browser client = `--html`; wasip2 kept only as the
+  headless CI parity harness.** jco path rejected.
+- **Remaining for ☑:** `--html` has no generic data-in (verified), so wire **points-in** over a
+  **shipped** channel — no custom bridge — and round-trip it in a Web Worker under headless Chromium.
   *(Minor: a benign "arguments() vector<text> not freed" warning at exit — stdlib-side, exit 0.)*
 
 ### ☐ 5. Corridor download (loft owns data) (§5)  ⟵ *needs Q1*

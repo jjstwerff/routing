@@ -115,11 +115,16 @@ JS = points + pixels. loft = routes + data + math.
 
 ## 3. The loft kernel — compact, AOT, phone-first
 
-- **No loft parser in the browser.** loft is **AOT-compiled** to wasm (`loft --html` / cdylib,
-  `wasm32-unknown-unknown`) — only the *compiled* kernel ships, **not** the interpreter (~2.5 MB).
-  The AOT kernel is ~**200–400 KB raw wasm (~70–130 KB gzipped)**, `wasm-opt`-shrunk. *(Verified
-  against loft 2026.6.0: a trivial kernel builds to 165 KB wasm / 242 KB self-contained HTML and
-  instantiates + runs in headless Chromium; a full kernel lands in the range above.)*
+- **No loft parser or compiler in the browser.** loft is **AOT-compiled** to wasm (`loft --html` /
+  cdylib, `wasm32-unknown-unknown`) — only the *compiled* kernel + loft's minimal no-std **runtime
+  engine** ship, **not** the interpreter/compiler (~2.5 MB). Codegen already emits reachable-only
+  functions and rustc runs `-O`, so the size is the engine, not dead code. *(Measured, loft 2026.6.0:
+  trivial kernel = 165 KB wasm; the real `routing_kernel` client (geodesic + lib + float formatting)
+  = **1.1 MB raw / 330 KB gzipped** via `--html`, and it runs in headless Chromium — larger than the
+  original 70–130 KB hope, but one-time and PWA-cached.)* **Do not use `--native-wasm` for the browser:**
+  its `wasm32-wasip2` target links full `std` + WASI + a component adapter (5.4 MB / 1.5 MB gz; 2.1 MB
+  core even after `wasm-opt`) — ~4× heavier than `--html`. wasip2 is kept only as the **headless CI
+  parity harness** (`tools/kernel_headless_test.sh`), never shipped to the phone.
 - **Small startup, always precompiled.** Startup = load-and-instantiate a small module; no
   in-browser compile, nothing to parse.
 - **loft owns its loop and its downloads.** The kernel runs its own loop, yielding to the page via
