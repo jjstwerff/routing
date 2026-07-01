@@ -153,15 +153,21 @@ accurate length. Ship nothing fancy; prove the pipeline.
 
 ## Phase 2 — Make the match good and complete the core loop
 
-### ☐ 8. Activity × sub-mode profiles (§6)
+### ☑ 8. Activity × sub-mode profiles (§6)
 - **Goal:** a good *first* match from the activity choice — the "lock in fast" win (a primary product
   investment, §6).
-- **Build:** per-`(activity, sub-mode)` tag weightings owned by loft (BRouter-style), feeding the
-  activity-penalty term in step 6. Wire the UI selector (running Fast/Trail, cycling Road/Gravel/MTB,
-  walking Paved/Trail, driving Fastest/Avoid-motorways). Switch the Waymarkedtrails overlay per the §6
-  table.
-- **Check:** on a spot with a footpath beside a road, **Running·Trail** picks the path and
-  **Cycling·Road** picks the road, with no point edits — just the sub-mode change.
+- **Build:** per-`(activity, sub-mode)` tag weightings owned by loft, feeding the activity-penalty term
+  in step 6. Wire the UI selector; switch the Waymarkedtrails overlay per the §6 table.
+- **Check:** footpath beside a road → **Running·Trail** picks the path, **Cycling·Road** picks the
+  road, just by the sub-mode change.
+- **DONE (2026-07-01):** `routing_kernel.way_penalty(profile, hw, surface, tracktype)` — all 9 §6
+  profiles as a **bounded** per-metre penalty `[-0.7, +2]` (prefers < 0 < penalizes), fed into
+  `edge_cost` so it's a *tie-breaker*, decisive among equal-deviation candidates but unable to leave
+  the corridor. `match_route` takes the profile; server parses `"4:<profile>|<points>"`. Client
+  `controls.js`: activity + sub-mode selectors → profile (re-matches on change) + WMT overlay
+  (hiking/cycling/mtb/none, MTB→mtb). Tests `tests/profiles.loft` pass **interpret == native**: the
+  footpath-vs-road choice flips purely by profile (Trail→footpath, Road→road); penalty signs + clamp.
+  Live match with a profile round-trips. *(Weights are §6 starting points — tune against real data.)*
 
 ### ☐ 9. Round-trip inference (§1, §5)
 - **Goal:** loops close themselves, no button.

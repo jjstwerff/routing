@@ -87,12 +87,20 @@ fn encode_points(pts: vector<GeoPoint>) -> text {
 // real ways → reply "5:<matched_length_m>|<lat,lon;lat,lon;...>". The client draws the polyline
 // under the rough sketch and shows the length.
 fn reply_match(srv: server::Server, cid: integer, payload: text) {
-  pts = parse_points(payload);
+  // payload = "<profile>|<lat,lon;lat,lon;...>"
+  bar = payload.find("|");
+  profile = "walking_paved";
+  spec = payload;
+  if bar >= 0 {
+    profile = payload[..bar];
+    spec = payload[bar + 1..];
+  }
+  pts = parse_points(spec);
   if len(pts) < 2 { _ = srv.send_to(cid, "5:0|"); return; }
   resp = web::http_post(OVERPASS, overpass_query(bounds(pts, CORRIDOR_MARGIN_M)));
   if resp.status != 200 { _ = srv.send_to(cid, "5:0|"); return; }
   g = build_graph(parse_ways(resp.body));
-  matched = match_route(g, pts);
+  matched = match_route(g, pts, profile);
   _ = srv.send_to(cid, "5:{path_length_m(matched)}|{encode_points(matched)}");
 }
 

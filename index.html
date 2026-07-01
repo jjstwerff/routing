@@ -30,10 +30,17 @@
   <button id="rough-delete" class="hud-btn hud-btn--danger hidden" type="button"
           aria-label="Delete selected point">Delete point</button>
 
+  <!-- Activity × sub-mode (PLAN step 8): the match profile + Waymarkedtrails overlay (see controls.js). -->
+  <div id="controls" class="hud-controls">
+    <select id="activity" aria-label="Activity"></select>
+    <select id="submode" aria-label="Sub-mode"></select>
+  </div>
+
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="geo.js"></script>
   <script src="rough.js"></script>
   <script src="app.js"></script>
   <script src="ws.js"></script>
+  <script src="controls.js"></script>
 </body>
 </html>

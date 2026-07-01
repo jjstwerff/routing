@@ -29,13 +29,13 @@ fn test_match_15m_off() {
     GeoPoint { lat: 52.0 + off, lon: 5.0020 },
     GeoPoint { lat: 52.0 + off, lon: 5.0039 },
   ];
-  route = match_route(g, trace);
+  route = match_route(g, trace, "walking_paved");
   assert(len(route) == 5, "route follows the whole street: {len(route)} pts");
   for i in 0..len(route) {
     assert(route[i].lat == 52.0, "point {i} snapped onto the street (lat {route[i].lat})");
   }
 
-  route2 = match_route(g, trace);
+  route2 = match_route(g, trace, "walking_paved");
   assert(len(route) == len(route2), "deterministic length");
   for j in 0..len(route) {
     assert(route[j].lat == route2[j].lat && route[j].lon == route2[j].lon, "deterministic point {j}");

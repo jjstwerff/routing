@@ -226,19 +226,98 @@ fn nearest_node(g: Graph, lat: float, lon: float) -> integer {
   best
 }
 
-// Deviation-dominated cost of traversing edge ei, given the trace.
-fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>) -> float {
+// --- Activity × sub-mode profiles (PLAN step 8, DESIGN §6) -------------------------------------
+// A profile is a per-metre penalty over a way's tags: "prefers" → negative (a discount), "penalizes"
+// → positive. It's a *tie-breaker*: strong enough to pick the activity-right way among candidates
+// already next to the trace (the footpath vs the road beside it), but BOUNDED [-0.7, +2] so it can
+// never overcome the deviation term (DEV_K·dev) and leave the corridor. Profile id = "<activity>_
+// <submode>", e.g. "running_trail". These weights are starting points, to tune against real data.
+
+fn is_bigroad(hw: text) -> boolean {
+  hw == "primary" || hw == "secondary" || hw == "trunk" || hw == "motorway"
+}
+fn is_pathish(hw: text) -> boolean {
+  hw == "footway" || hw == "path" || hw == "track" || hw == "bridleway" ||
+  hw == "cycleway" || hw == "pedestrian" || hw == "steps"
+}
+fn is_foot_only(hw: text) -> boolean {
+  hw == "footway" || hw == "pedestrian" || hw == "steps"
+}
+fn is_unpaved(surface: text) -> boolean {
+  surface == "ground" || surface == "dirt" || surface == "sand" || surface == "gravel" ||
+  surface == "grass" || surface == "fine_gravel" || surface == "compacted" || surface == "unpaved" ||
+  surface == "mud" || surface == "earth" || surface == "rock"
+}
+fn is_paved(hw: text, surface: text) -> boolean {
+  surface == "asphalt" || surface == "paved" || surface == "concrete" || surface == "paving_stones" ||
+  (surface == "" && !is_pathish(hw))   // a road with no surface tag → assume paved
+}
+
+// Per-metre activity penalty for a way under a profile (see the header + DESIGN §6 table).
+pub fn way_penalty(profile: text, hw: text, surface: text, tracktype: text) -> float {
+  _ = tracktype;   // reserved (tracktype grades) — tune later
+  p = 0.0;
+  if profile == "running_trail" {
+    if is_pathish(hw) && is_unpaved(surface) { p = -0.7; }
+    else if is_pathish(hw) { p = -0.2; }
+    if is_paved(hw, surface) && !is_pathish(hw) { p = p + 0.6; }
+    if is_bigroad(hw) { p = p + 1.5; }
+  } else if profile == "running_fast" {
+    if is_pathish(hw) && is_paved(hw, surface) { p = -0.7; }
+    else if hw == "residential" || hw == "living_street" || hw == "pedestrian" { p = -0.4; }
+    if is_unpaved(surface) { p = p + 0.6; }
+    if is_bigroad(hw) { p = p + 1.5; }
+    if hw == "steps" { p = p + 1.0; }
+  } else if profile == "cycling_road" {
+    if hw == "cycleway" { p = -0.7; }
+    else if (hw == "residential" || hw == "tertiary" || hw == "secondary") && is_paved(hw, surface) { p = -0.4; }
+    if is_unpaved(surface) { p = p + 1.0; }
+    if is_foot_only(hw) || hw == "path" { p = p + 1.0; }
+  } else if profile == "cycling_gravel" {
+    if (hw == "track" || hw == "path" || hw == "cycleway") &&
+       (surface == "gravel" || surface == "fine_gravel" || surface == "compacted" || surface == "unpaved") { p = -0.7; }
+    if surface == "sand" || surface == "mud" { p = p + 1.0; }
+    if hw == "motorway" || hw == "trunk" { p = p + 1.5; }
+  } else if profile == "cycling_mtb" {
+    if hw == "path" || hw == "track" || hw == "bridleway" { p = -0.6; }
+    if is_bigroad(hw) && is_paved(hw, surface) { p = p + 1.0; }
+  } else if profile == "walking_paved" {
+    if is_foot_only(hw) && is_paved(hw, surface) { p = -0.7; }
+    else if is_foot_only(hw) || hw == "path" { p = -0.3; }
+    if is_unpaved(surface) { p = p + 0.6; }
+    if is_bigroad(hw) { p = p + 1.0; }
+  } else if profile == "walking_trail" {
+    if (hw == "path" || hw == "track" || hw == "footway" || hw == "bridleway") && is_unpaved(surface) { p = -0.7; }
+    else if hw == "path" || hw == "track" || hw == "footway" { p = -0.3; }
+    if is_bigroad(hw) { p = p + 1.5; }
+  } else if profile == "driving_fastest" {
+    if hw == "motorway" || hw == "trunk" || hw == "primary" || hw == "secondary" { p = -0.5; }
+    if is_unpaved(surface) { p = p + 1.5; }
+    if hw == "service" || hw == "track" || is_pathish(hw) { p = p + 2.0; }
+  } else if profile == "driving_avoid" {
+    if hw == "secondary" || hw == "tertiary" || hw == "residential" || hw == "unclassified" { p = -0.4; }
+    if hw == "motorway" || hw == "trunk" { p = p + 1.5; }
+    if is_unpaved(surface) { p = p + 1.0; }
+    if is_pathish(hw) { p = p + 2.0; }
+  }
+  if p < -0.7 { p = -0.7; }
+  if p > 2.0 { p = 2.0; }
+  p
+}
+
+// Deviation-dominated cost of traversing edge ei, plus a bounded activity tie-breaker (§6).
+fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>, profile: text) -> float {
   e = g.edges[ei];
   mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
   mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
   dev = point_trace_m(mlat, mlon, trace);
-  e.length * (1.0 + DEV_K * dev)
+  e.length * (1.0 + DEV_K * dev + way_penalty(profile, e.hw, e.surface, e.tracktype))
 }
 
 // The matched detailed route: nodes along the least-cost (deviation-dominated) path from the node
 // nearest the trace start to the node nearest the trace finish. [] for a degenerate trace or when
 // the endpoints are unreachable within the corridor.
-pub fn match_route(g: Graph, trace: vector<GeoPoint>) -> vector<GeoPoint> {
+pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
   n = len(g.nodes);
   detailed: vector<GeoPoint> = [];
   if n == 0 { return detailed; }
@@ -272,7 +351,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>) -> vector<GeoPoint> {
       if e.a == u { v = e.b; }
       if e.b == u { v = e.a; }
       if v >= 0 && !seen[v] {
-        cand = dist[u] + edge_cost(g, ei, trace);
+        cand = dist[u] + edge_cost(g, ei, trace, profile);
         if cand < dist[v] {
           dist[v] = cand;
           prevn[v] = u;

@@ -1,0 +1,43 @@
+// Tests for activity × sub-mode profiles (PLAN step 8, DESIGN §6). Synthetic, deterministic.
+//   loft --tests lib/routing_kernel/tests/profiles.loft --lib lib
+use routing_kernel::(GeoPoint, Way, build_graph, match_route, way_penalty);
+
+fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
+  found = false;
+  for i in 0..len(route) { if route[i].lat == lat { found = true; } }
+  found
+}
+
+// The key check: a footpath and a road between the SAME two endpoints, with the trace drawn straight
+// between them (equal deviation to each). The activity profile — nothing else — decides which is
+// taken. Road dips south (lat 52.0); footpath runs north (lat 52.0002); both meet at 52.0001.
+fn test_profile_picks_footpath_vs_road() {
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "",
+    coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 },
+              GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.003 },
+              GeoPoint { lat: 52.0001, lon: 5.004 } ] };
+  foot = Way { highway: "path", surface: "ground", tracktype: "",
+    coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.001 },
+              GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0002, lon: 5.003 },
+              GeoPoint { lat: 52.0001, lon: 5.004 } ] };
+  g = build_graph([road, foot]);
+  trace = [ GeoPoint { lat: 52.0001, lon: 5.0005 }, GeoPoint { lat: 52.0001, lon: 5.002 },
+            GeoPoint { lat: 52.0001, lon: 5.0035 } ];
+
+  trail = match_route(g, trace, "running_trail");
+  assert(has_lat(trail, 52.0002), "Trail routes via the footpath (north)");
+  assert(!has_lat(trail, 52.0), "Trail avoids the road");
+
+  onroad = match_route(g, trace, "cycling_road");
+  assert(has_lat(onroad, 52.0), "Cycling·Road routes via the road (south)");
+  assert(!has_lat(onroad, 52.0002), "Cycling·Road avoids the footpath");
+}
+
+// Sanity on the penalty ordering (prefers < 0 < penalizes), and the clamp.
+fn test_penalty_signs() {
+  assert(way_penalty("running_trail", "path", "ground", "") < 0.0, "trail prefers unpaved path");
+  assert(way_penalty("running_trail", "primary", "asphalt", "") > 0.0, "trail penalizes a primary road");
+  assert(way_penalty("cycling_road", "cycleway", "asphalt", "") < 0.0, "road prefers a cycleway");
+  assert(way_penalty("cycling_road", "path", "ground", "") > 0.0, "road penalizes an unpaved path");
+  assert(way_penalty("running_trail", "primary", "asphalt", "") <= 2.0, "penalty is clamped");
+}

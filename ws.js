@@ -37,7 +37,8 @@
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
     if (latest.length < 2) { if (NS.detailed) NS.detailed.set([], 0); return; }
-    ws.send("4:" + latest.map((p) => p.lat + "," + p.lon).join(";"));
+    const profile = NS.getProfile ? NS.getProfile() : "walking_paved";
+    ws.send("4:" + profile + "|" + latest.map((p) => p.lat + "," + p.lon).join(";"));
   }
 
   function connect() {
