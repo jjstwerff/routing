@@ -1,0 +1,32 @@
+// Tests for the corridor helpers (PLAN step 5): bbox, Overpass query, and response parsing.
+// Deterministic — parses a checked-in fixture, no network. Run:
+//   loft --tests --lib lib lib/routing_kernel/tests/corridor.loft
+use routing_kernel::(GeoPoint, bounds, overpass_query, parse_ways);
+
+fn test_parse_ways() {
+  ways = parse_ways(file("fixtures/overpass_sample.json").content());
+  assert(len(ways) == 2, "2 ways (the node is skipped), got {len(ways)}");
+
+  assert(ways[0].highway == "residential", "way0 highway = {ways[0].highway}");
+  assert(ways[0].surface == "paving_stones", "way0 surface = {ways[0].surface}");
+  assert(ways[0].tracktype == "", "way0 tracktype should be empty");
+  assert(len(ways[0].coords) == 2, "way0 coords = {len(ways[0].coords)}");
+  assert(ways[0].coords[0].lat == 52.374, "way0 first lat");
+
+  assert(ways[1].highway == "footway", "way1 highway = {ways[1].highway}");
+  assert(ways[1].surface == "", "way1 missing surface -> empty, got {ways[1].surface}");
+  assert(len(ways[1].coords) == 3, "way1 coords = {len(ways[1].coords)}");
+}
+
+fn test_bounds_and_query() {
+  pts = [GeoPoint { lat: 52.00, lon: 5.00 }, GeoPoint { lat: 52.01, lon: 5.02 }];
+  b = bounds(pts, 30.0);
+  // a 30 m margin pushes the box out past the raw min/max on every side
+  assert(b.min_lat < 52.00 && b.max_lat > 52.01, "lat expanded by margin");
+  assert(b.min_lon < 5.00 && b.max_lon > 5.02, "lon expanded by margin");
+
+  q = overpass_query(b);
+  assert(q.contains("[out:json]"), "query is out:json");
+  assert(q.contains("way[\"highway\"]"), "query filters highways");
+  assert(q.contains("out geom;"), "query asks for geometry");
+}

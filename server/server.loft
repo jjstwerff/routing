@@ -11,9 +11,24 @@
 #cwd
 
 use server;
-use routing_kernel::(GeoPoint, path_length_m);
+use web;
+use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways);
 
 PORT = 18080;
+OVERPASS = "https://overpass-api.de/api/interpreter";
+CORRIDOR_MARGIN_M = 30.0;
+
+// Parse "lat,lon;lat,lon;..." into points.
+fn parse_points(payload: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for pair in payload.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 {
+      pts += [GeoPoint { lat: xy[0] as float, lon: xy[1] as float }];
+    }
+  }
+  pts
+}
 
 fn content_type(path: text) -> text {
   if path.ends_with(".html") { return "text/html; charset=utf-8"; }
@@ -38,16 +53,24 @@ fn serve(srv: server::Server, path: text) {
   srv.respond_typed(200, f.content(), content_type(rel));
 }
 
-// Parse "lat,lon;lat,lon;..." → route length in metres, reply to the client that sent it.
+// "lat,lon;lat,lon;..." → route length in metres, reply to the client that sent it.
 fn reply_length(srv: server::Server, cid: integer, payload: text) {
-  pts: vector<GeoPoint> = [];
-  for pair in payload.split(';') {
-    xy = pair.split(',');
-    if len(xy) == 2 {
-      pts += [GeoPoint { lat: xy[0] as float, lon: xy[1] as float }];
-    }
+  _ = srv.send_to(cid, "2:{path_length_m(parse_points(payload))}");
+}
+
+// Fetch the Overpass corridor for these points and reply with the way count (PLAN step 5; step 6
+// replaces the payload with the matched route). Overpass is a NATIVE loft HTTP call — no browser
+// gap. Blocking: it stalls the event loop for the fetch, fine for single-user dev.
+fn reply_corridor(srv: server::Server, cid: integer, payload: text) {
+  pts = parse_points(payload);
+  if len(pts) < 1 { _ = srv.send_to(cid, "3:0"); return; }
+  q = overpass_query(bounds(pts, CORRIDOR_MARGIN_M));
+  resp = web::http_post(OVERPASS, q);
+  if resp.status != 200 {
+    _ = srv.send_to(cid, "3:err {resp.status}");
+    return;
   }
-  _ = srv.send_to(cid, "2:{path_length_m(pts)}");
+  _ = srv.send_to(cid, "3:{len(parse_ways(resp.body))}");
 }
 
 fn main() {
@@ -62,6 +85,7 @@ fn main() {
       serve(srv, ev.path);
     } else if ev.message {
       if ev.msg_id == 1 { reply_length(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 2 { reply_corridor(srv, ev.cid, ev.payload); }
     }
   });
 }

@@ -34,3 +34,84 @@ pub fn path_length_m(pts: vector<GeoPoint>) -> float {
   }
   total
 }
+
+// --- Corridor download (PLAN step 5) --------------------------------------------------------
+// Pure computation: bbox of the rough line, the Overpass query, and parsing the response. The
+// actual HTTP GET is a platform call the server makes (web.http_post) — kept OUT of the kernel so
+// it stays target-agnostic.
+
+pub struct BBox {
+  min_lat: float not null,
+  min_lon: float not null,
+  max_lat: float not null,
+  max_lon: float not null,
+}
+
+// One OSM way from the corridor: its activity-relevant tags + its geometry.
+pub struct Way {
+  highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
+  surface:   text,   // `surface=` or "" when absent
+  tracktype: text,   // `tracktype=` or ""
+  coords:    vector<GeoPoint>,
+}
+
+// Bounding box of the rough points, expanded by `margin_m` metres on every side. (A true narrow
+// corridor around the polyline is a step-6 refinement; the bbox is the download bound for now.)
+pub fn bounds(pts: vector<GeoPoint>, margin_m: float) -> BBox {
+  min_lat = pts[0].lat;
+  max_lat = pts[0].lat;
+  min_lon = pts[0].lon;
+  max_lon = pts[0].lon;
+  for i in 1..len(pts) {
+    p = pts[i];
+    if p.lat < min_lat { min_lat = p.lat; }
+    if p.lat > max_lat { max_lat = p.lat; }
+    if p.lon < min_lon { min_lon = p.lon; }
+    if p.lon > max_lon { max_lon = p.lon; }
+  }
+  d_lat = margin_m / 111320.0;                                  // ~metres per degree latitude
+  mid = (min_lat + max_lat) / 2.0;
+  d_lon = margin_m / (111320.0 * cos(mid * PI / 180.0));        // longitude shrinks with latitude
+  BBox {
+    min_lat: min_lat - d_lat, min_lon: min_lon - d_lon,
+    max_lat: max_lat + d_lat, max_lon: max_lon + d_lon,
+  }
+}
+
+// Overpass QL for every `highway` way in the bbox, geometry inlined (`out geom`).
+pub fn overpass_query(b: BBox) -> text {
+  "[out:json][timeout:25];way[\"highway\"]({b.min_lat},{b.min_lon},{b.max_lat},{b.max_lon});out geom;"
+}
+
+// A string tag value, or "" when the tag is absent (`field` on a missing key returns JNull, whose
+// as_text() is the literal "null" — so gate on the JString kind).
+fn tag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+// Parse an Overpass JSON response into the corridor's ways. Missing tags read as "".
+pub fn parse_ways(response: text) -> vector<Way> {
+  root = json_parse(response);
+  elements = root.field("elements");
+  ways: vector<Way> = [];
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if tag(el, "type") == "way" {
+      tags = el.field("tags");
+      geom = el.field("geometry");
+      coords: vector<GeoPoint> = [];
+      for j in 0..len(geom) {
+        g = geom.item(j);
+        coords += [GeoPoint { lat: g.field("lat").as_number(), lon: g.field("lon").as_number() }];
+      }
+      ways += [Way {
+        highway:   tag(tags, "highway"),
+        surface:   tag(tags, "surface"),
+        tracktype: tag(tags, "tracktype"),
+        coords:    coords,
+      }];
+    }
+  }
+  ways
+}

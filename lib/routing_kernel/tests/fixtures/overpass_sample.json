@@ -1,0 +1,5 @@
+{"version":0.6,"elements":[
+  {"type":"way","id":1,"tags":{"highway":"residential","surface":"paving_stones","name":"Bloemstraat"},"geometry":[{"lat":52.374,"lon":4.879},{"lat":52.3745,"lon":4.8795}]},
+  {"type":"node","id":9,"lat":52.374,"lon":4.879},
+  {"type":"way","id":2,"tags":{"highway":"footway"},"geometry":[{"lat":52.375,"lon":4.880},{"lat":52.3752,"lon":4.8802},{"lat":52.3754,"lon":4.8804}]}
+]}

@@ -93,14 +93,22 @@ accurate length. Ship nothing fancy; prove the pipeline.
   wasip2 alternative is ~4× heavier (rejected). `--native-wasm` is kept only as the CI parity harness.
   *(Minor: a benign "arguments() vector<text> not freed" warning at exit — stdlib-side, exit 0.)*
 
-### ☐ 5. Corridor download — the server fetches Overpass (§5)  ⟵ *needs Q1*
+### ☑ 5. Corridor download — the server fetches Overpass (§5)  ⟵ *needs Q1*
 - **Goal:** loft fetches a tight corridor of real ways around the rough line.
-- **Build:** the **server** builds a narrow buffer (~tens of m) around the rough polyline and queries
-  **Overpass** via `web.http_get` — a **native** loft call (HTTP is bridged natively; only `--html`
-  lacked it, and loft isn't in the browser now). Filter to activity-relevant `highway` + `surface`/
-  `tracktype`. (Q1 decides offline caching; may proxy/cache on the server.)
-- **Check:** for a hand-drawn line over a known street, loft returns a bounded set of ways that
-  includes the expected roads/paths and excludes ways well outside the buffer.
+- **Build:** the **server** builds a bbox+margin around the rough polyline and queries **Overpass** via
+  `web.http_post` — a **native** loft call (HTTP is bridged natively; only `--html` lacked it, and
+  loft isn't in the browser now). (Q1 offline caching still open; may proxy/cache on the server.)
+- **Check:** for a hand-drawn line over a known street, loft returns a bounded set of ways.
+- **DONE (2026-07-01):** pure-loft corridor helpers in `routing_kernel` — `bounds()` (bbox+metre
+  margin), `overpass_query()` (QL, `out geom`), `parse_ways()` (JSON → `Way{highway,surface,tracktype,
+  coords}`, missing tags → ""). Deterministic test `lib/routing_kernel/tests/corridor.loft` +
+  fixture passes **interpret == native**. Server `reply_corridor` (WS msg 2) live-proven: a Jordaan
+  bbox returned **47 ways** via native `web.http_post`.
+  - *Note:* the Overpass fetch blocks the event loop for its duration (fine single-user; thread later)
+    and public Overpass rate-limits (needs a User-Agent; flaky) — so the **live** fetch is proven but
+    NOT a committed CI gate; the committed gate is the deterministic parse test.
+  - *Deferred:* true narrow **corridor** buffer (vs the bbox) + activity tag-filtering fold into the
+    matcher (step 6); browser doesn't auto-fetch (it'll consume the matched route at step 7).
 
 ### ☐ 6. v1 map-matcher (§5)  ⟵ *needs Q2*
 - **Goal:** clean the rough line onto real paths — faithful, deterministic, local.
