@@ -57,7 +57,7 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** draw a straight ~1 km segment between two known points; the readout is within ~1% of the
   known distance and updates live while dragging (no perceptible lag).
 
-### ☐ 4. loft WASM kernel + JS↔loft round-trip (the de-risking spike)
+### ◐ 4. loft WASM kernel + JS↔loft round-trip (the de-risking spike)
 - **Goal:** prove the JS↔loft-wasm round-trip end-to-end using **only shipped mechanisms — no custom
   `[wasm.bridge]` crate** (the compute is pure loft; the channel must be something loft already
   ships). Everything downstream rides on this, so build it as an isolated spike before the real kernel.
@@ -78,6 +78,15 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** JS posts the step-3 points to the worker; the returned geodesic length is within a few
   metres of the JS haversine value, and the map never freezes during the call. *(Validate headless
   first — Node/`wasm_repro` — then in a Web Worker under the headless-Chromium harness, like steps 1–3.)*
+- **Progress (2026-07-01) — candidate (a) proven headless (◐):** `lib/routing_kernel` (pure loft:
+  `haversine_m`, `path_length_m`) + `client/kernel.loft` (args-in / println-out) compile to
+  `--native-wasm` and run under **wasmtime** with points as a WASI arg — **no custom bridge**. Parity
+  holds: `--interpret == --native == --native-wasm`, byte-identical, matching geo.js to full f64
+  precision (`tools/kernel_headless_test.sh`, all cases PASS). **Remaining for ☑:** the **browser**
+  Worker leg — `--native-wasm` emits wasip2 (component model), which a browser can't run directly, so
+  either (i) jco-transpile the component for the browser, or (ii) build the browser client with
+  `--html` and pair it with a shipped in-channel (the `web` lib, candidate b). Decide next.
+  *(Minor: a benign "arguments() vector<text> not freed" warning at exit — stdlib-side, exit 0.)*
 
 ### ☐ 5. Corridor download (loft owns data) (§5)  ⟵ *needs Q1*
 - **Goal:** loft fetches a tight corridor of real ways around the rough line.

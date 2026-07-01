@@ -1,0 +1,36 @@
+// routing_kernel — the pure-loft compute surface shared by BOTH the wasm client and the
+// native Mode-B server (DESIGN.md §3, "one kernel, two targets"). Tier 1 (pure loft): the
+// compiler emits the right variant for interpreter / --native / --native-wasm / --html with
+// no bridge. Keep it platform-agnostic — no I/O, no #native, no web/server calls.
+
+// A rough or matched point. lat/lon in degrees (WGS84).
+pub struct GeoPoint {
+  lat: float not null,
+  lon: float not null,
+}
+
+// Mean Earth radius (m), IUGG — the spherical haversine constant, matching the client's geo.js
+// so the instant JS length and the loft length agree. The ellipsoidal (WGS84) upgrade is step 7.
+EARTH_R = 6371008.8;
+
+// Great-circle distance between two points, in metres.
+pub fn haversine_m(a: GeoPoint, b: GeoPoint) -> float {
+  d2r = PI / 180.0;
+  dlat = (b.lat - a.lat) * d2r;
+  dlon = (b.lon - a.lon) * d2r;
+  s1 = sin(dlat / 2.0);
+  s2 = sin(dlon / 2.0);
+  h = s1 * s1 + cos(a.lat * d2r) * cos(b.lat * d2r) * s2 * s2;
+  sq = sqrt(h);
+  if sq > 1.0 { sq = 1.0; }
+  2.0 * EARTH_R * asin(sq)
+}
+
+// Summed length over consecutive points, in metres (0.0 for fewer than two points).
+pub fn path_length_m(pts: vector<GeoPoint>) -> float {
+  total = 0.0;
+  for i in 1..len(pts) {
+    total += haversine_m(pts[i - 1], pts[i]);
+  }
+  total
+}

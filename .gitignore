@@ -13,6 +13,9 @@ npm-debug.log*
 target/
 .loft/
 *.rlib
+# loft per-library native cross-compile cache (generated on build; large .so)
+native-auto/
+*.so
 
 # Local scratch / env
 scratch/

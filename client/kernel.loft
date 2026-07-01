@@ -1,0 +1,26 @@
+// The wasm CLIENT entry (PLAN step 4 spike). Reads the rough points from one argument
+// "lat,lon;lat,lon;..." and prints the route length in metres, computed by routing_kernel.
+//
+// Channel = arguments()-in / println-out — a shipped, generic path, NO custom bridge
+// (DESIGN.md §3). The same source compiles to --native-wasm (headless via wasmtime/args —
+// proven, see tools/kernel_headless_test.sh) and to native (the Mode-B server reuses the
+// kernel). The browser-Worker leg is a later sub-step.
+
+use routing_kernel::(GeoPoint, path_length_m);
+
+fn main() {
+  // Pick the argument holding the point list (the one with a comma).
+  spec = "";
+  for arg in arguments() {
+    if arg.find(",") >= 0 { spec = arg; }
+  }
+
+  pts: vector<GeoPoint> = [];
+  for pair in spec.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 {
+      pts += [GeoPoint { lat: xy[0] as float, lon: xy[1] as float }];
+    }
+  }
+  println("{path_length_m(pts)}");
+}
