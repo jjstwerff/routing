@@ -377,3 +377,28 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
   }
   detailed
 }
+
+// --- Round-trip inference (PLAN step 9, DESIGN §1/§5) ------------------------------------------
+// When start and finish sit near each other *relative to the total length*, the DETAILED route is a
+// round trip — close it into a circuit. Purely geometric (no button): drag the finish away and the
+// ratio grows and it un-closes; bring it back and it closes again. The ROUGH sketch is never closed.
+
+// True iff start/finish are within `ratio` of the total length of each other (a small ratio = a loop).
+pub fn is_round_trip(start: GeoPoint, finish: GeoPoint, total_m: float, ratio: float) -> boolean {
+  total_m > 0.0 && haversine_m(start, finish) / total_m < ratio
+}
+
+// The matched route, closed into a circuit when it reads as a round trip. v1 closes with a straight
+// segment back to the matched start (the gap is small by definition of the ratio test).
+// LIMITATION: the v1 src→dst matcher shortcuts loops (Dijkstra takes the short start→finish path,
+// not the way around), so a *visually faithful* loop needs the deferred via-point/HMM matcher
+// (§10.2). The inference + closure below are correct and testable regardless.
+pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text, ratio: float) -> vector<GeoPoint> {
+  detailed = match_route(g, trace, profile);
+  if len(detailed) >= 2 {
+    if is_round_trip(trace[0], trace[len(trace) - 1], path_length_m(detailed), ratio) {
+      detailed += [detailed[0]];   // close the circuit
+    }
+  }
+  detailed
+}

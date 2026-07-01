@@ -169,12 +169,24 @@ accurate length. Ship nothing fancy; prove the pipeline.
   footpath-vs-road choice flips purely by profile (Trail→footpath, Road→road); penalty signs + clamp.
   Live match with a profile round-trips. *(Weights are §6 starting points — tune against real data.)*
 
-### ☐ 9. Round-trip inference (§1, §5)
+### ◐ 9. Round-trip inference (§1, §5)
 - **Goal:** loops close themselves, no button.
 - **Build:** when start & finish sit near each other **relative to total length** (tunable ratio),
-  close the **detailed** circuit through the corridor; leave the **rough** open. Purely geometric.
+  close the **detailed** circuit; leave the **rough** open. Purely geometric.
 - **Check:** draw a near-loop → detailed route closes; drag the finish away → it un-loops; bring it
   back → it closes again. An out-and-back whose finish lands on the start reads as a closed circuit.
+- **DONE — inference logic (◐):** `is_round_trip(start, finish, total_m, ratio)` (pure geometry) +
+  `match_route_closed(g, trace, profile, ratio)` (closes the polyline back to the matched start when
+  it reads as a round trip). Server uses ratio **0.25**. Tests `tests/roundtrip.loft` pass
+  **interpret == native**: the ratio decides (near→true, far→false, zero→false); the SAME route is
+  left open below threshold and closed above it. The client already draws a closed polyline (first ==
+  last) as a loop — no client change.
+- **BLOCKED for ☑ — the visual loop needs the matcher-depth upgrade.** The v1 src→dst matcher
+  **shortcuts loops** (Dijkstra takes the short start→finish path, not the way around — true even in a
+  pure ring), so a real drawn loop doesn't yet trace as a loop and the closure is degenerate on it.
+  The inference/closure are correct and tested in isolation; making them *visually* faithful needs
+  the **§10.2 matcher-depth** work (via-point / HMM routing through the trace, + the tight corridor).
+  Deferred there; a corridor-routed closer (vs the straight one) folds in too.
 
 ### ☐ 10. GPX export (§8)
 - **Goal:** get an accurate route out.

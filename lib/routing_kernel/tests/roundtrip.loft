@@ -1,0 +1,39 @@
+// Tests for round-trip inference (PLAN step 9, DESIGN §1/§5). Synthetic, deterministic.
+//   loft --tests lib/routing_kernel/tests/roundtrip.loft --lib lib
+use routing_kernel::(GeoPoint, Way, build_graph, match_route_closed, is_round_trip);
+
+// The geometric decision: start/finish near each other *relative to total length* ⇒ round trip.
+fn test_is_round_trip() {
+  a = GeoPoint { lat: 52.0, lon: 5.0 };
+  near = GeoPoint { lat: 52.0, lon: 5.0001 };  // ~7 m
+  far = GeoPoint { lat: 52.0, lon: 5.01 };      // ~680 m
+  assert(is_round_trip(a, near, 1000.0, 0.25), "near endpoints over a long route → round trip");
+  assert(!is_round_trip(a, far, 1000.0, 0.25), "far finish → not a round trip");
+  assert(!is_round_trip(a, near, 0.0, 0.25), "zero-length route → not a round trip");
+}
+
+// The closure toggles on the ratio: the SAME route is left open below threshold and closed above it
+// (detailed[0] appended so the polyline returns to the matched start).
+fn test_closure_toggles() {
+  street = Way { highway: "residential", surface: "asphalt", tracktype: "",
+    coords: [
+      GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 },
+      GeoPoint { lat: 52.0, lon: 5.003 }, GeoPoint { lat: 52.0, lon: 5.004 },
+    ] };
+  g = build_graph([street]);
+  off = 0.000135;
+  trace = [
+    GeoPoint { lat: 52.0 + off, lon: 5.0001 },
+    GeoPoint { lat: 52.0 + off, lon: 5.0020 },
+    GeoPoint { lat: 52.0 + off, lon: 5.0039 },
+  ];
+
+  // This open route has gap/total ~0.95: below 0.05 it stays open, above 2.0 it closes.
+  open = match_route_closed(g, trace, "walking_paved", 0.05);
+  assert(len(open) == 5, "not a round trip: {len(open)} pts");
+  assert(open[0].lon != open[4].lon, "open route does not return to start");
+
+  closed = match_route_closed(g, trace, "walking_paved", 2.0);
+  assert(len(closed) == 6, "closed route appends the start: {len(closed)} pts");
+  assert(closed[0].lat == closed[5].lat && closed[0].lon == closed[5].lon, "closed route returns to start");
+}

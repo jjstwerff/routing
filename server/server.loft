@@ -12,11 +12,12 @@
 
 use server;
 use web;
-use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways, build_graph, match_route);
+use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways, build_graph, match_route_closed);
 
 PORT = 18080;
 OVERPASS = "https://overpass-api.de/api/interpreter";
 CORRIDOR_MARGIN_M = 30.0;
+ROUND_TRIP_RATIO = 0.25;   // start≈finish within this fraction of total length ⇒ close the loop (§1)
 
 // Parse "lat,lon;lat,lon;..." into points.
 fn parse_points(payload: text) -> vector<GeoPoint> {
@@ -100,7 +101,7 @@ fn reply_match(srv: server::Server, cid: integer, payload: text) {
   resp = web::http_post(OVERPASS, overpass_query(bounds(pts, CORRIDOR_MARGIN_M)));
   if resp.status != 200 { _ = srv.send_to(cid, "5:0|"); return; }
   g = build_graph(parse_ways(resp.body));
-  matched = match_route(g, pts, profile);
+  matched = match_route_closed(g, pts, profile, ROUND_TRIP_RATIO);
   _ = srv.send_to(cid, "5:{path_length_m(matched)}|{encode_points(matched)}");
 }
 
