@@ -63,11 +63,28 @@ routing.detailed = {
 // Step 3: instant rough length (DESIGN.md §1) — a haversine sum, recomputed on every edit and
 // every drag frame and shown in the top readout. Never waits; loft's accurate geodesic length of
 // the *matched* route arrives later (step 7). Goal ±delta slots into this same readout in step 14.
+// Step 14: optional goal length — feedback ONLY. When set, the readout shows the live ±delta; the
+// app never reshapes the route to hit it (DESIGN.md §1 — you remain the only actuator).
 const lengthReadout = document.getElementById("length-readout");
 function renderLength(points) {
-  if (lengthReadout) {
-    lengthReadout.textContent = routing.geo.formatDistance(routing.geo.roughLength(points));
+  if (!lengthReadout) return;
+  const m = routing.geo.roughLength(points);
+  let text = routing.geo.formatDistance(m);
+  const goal = routing.goalMeters;
+  if (goal && goal > 0) {
+    const delta = m - goal;
+    const sign = delta >= 0 ? "+" : "−";
+    text += ` (${sign}${routing.geo.formatDistance(Math.abs(delta))})`;
   }
+  lengthReadout.textContent = text;
+}
+const goalInput = document.getElementById("goal-km");
+if (goalInput) {
+  goalInput.addEventListener("input", () => {
+    const km = parseFloat(goalInput.value);
+    routing.goalMeters = Number.isFinite(km) && km > 0 ? km * 1000 : 0;
+    renderLength(routing.roughPoints || []); // re-render feedback only; the route is untouched
+  });
 }
 
 // Step 2: the rough sketch layer (DESIGN.md §1). onChange fires on every edit and during a drag.

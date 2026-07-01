@@ -62,6 +62,29 @@ html, body {
   box-shadow: 0 0 0 3px #fff, 0 0 0 6px rgba(249, 178, 51, 0.95); /* amber selection ring */
 }
 
+/* Goal length input (PLAN step 14) — under the readouts, top-center. */
+.hud-goal {
+  position: fixed;
+  top: calc(76px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(31, 41, 51, 0.72);
+  color: #cdd6df;
+  font-size: 12px;
+}
+.hud-goal input {
+  width: 3.2em;
+  font: inherit;
+  color: #fff;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #6b7683;
+  text-align: right;
+}
+
 /* --- HUD: instant length readout (DESIGN.md §1) ---------------------------- */
 .hud-readout {
   position: fixed;

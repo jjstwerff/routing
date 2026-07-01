@@ -25,6 +25,11 @@
   <!-- Matched-route length (PLAN step 7): the geodesic length of the server's map-matched route. -->
   <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">matched —</div>
 
+  <!-- Optional goal length (PLAN step 14): feedback only — drives the ±delta, never reshapes. -->
+  <div id="goal-bar" class="hud-goal">
+    <label>goal <input id="goal-km" type="number" min="0" step="0.5" inputmode="decimal" placeholder="—"> km</label>
+  </div>
+
   <!-- Touch delete affordance: shown only while a rough point is selected (see rough.js).
        Mouse users can also double-click a point, or press Delete/Backspace. -->
   <button id="rough-delete" class="hud-btn hud-btn--danger hidden" type="button"

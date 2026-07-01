@@ -254,12 +254,18 @@ accurate length. Ship nothing fancy; prove the pipeline.
   undo walks back to empty + no-op past start, redo walks forward; bulk delete → "Deleted 4 · Undo"
   → tap restores 8. Restored state re-matches (via onChange).
 
-### ☐ 14. Goal length — feedback only (§1)
+### ☑ 14. Goal length — feedback only (§1)
 - **Goal:** measure against a target without ever auto-reshaping.
 - **Build:** optional `goalMeters`; readout shows live **±delta**. The app **never** moves points to
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **DONE (2026-07-02):** a `goal … km` input; `renderLength` appends `(±delta)` to the instant
+  readout when `routing.goalMeters > 0`, recomputed every frame (feedback-only — the goal input
+  handler re-renders but never touches the points). Headless-Chromium test (5/5): goal 10 km →
+  "1.00 km (−9.00 km)", goal 0.5 km → "(+501 m)", clearing removes it, and setting a goal leaves the
+  points byte-identical. *(Delta is on the instant rough length — the live tier; the matched length
+  shows separately.)*
 
 ### ☐ 15. Elevation chart — lag-tolerant tier (§1, §7)
 - **Goal:** ascent/descent + profile without blocking anything.
