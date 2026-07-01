@@ -16,6 +16,16 @@ resist adding a primitive a step doesn't need.
 - **Q2 — Matcher depth (§10.2):** full HMM (Newson & Krumm) or v1 corridor-routing-with-deviation?
   This plan assumes the **v1 corridor-routing** answer for step 6; revisit if we choose HMM.
 
+**loft toolchain — scoped & verified (2026-07-01, loft 2026.6.0; see DESIGN.md §3/§4/§11).** Prereqs
+present here (rustc + `wasm32-unknown-unknown` + `wasm-opt`); `loft --html` builds a kernel that runs
+in-browser (tested: 165 KB wasm, output reaches the DOM). Plan corrections that follow from scoping:
+one **pure-loft `lib/routing_kernel`** compiles to both wasm (client) and native (server); the client
+fetches Overpass itself via the `web` library's blocking `http_get` and syncs via `web`'s WebSocket
+(so step 5's "JS host-import for fetch" becomes a loft-side call); Mode B uses the `server` registry
+library + an app-defined store (no stock `lib/server`/`lib/world`). The one piece NOT yet proven is
+the **JS↔loft data bridge** (points in / polyline out) — that is exactly step 4's spike; nothing is
+assumed to work until that round-trips.
+
 **Legend:** ☐ not started · ◐ in progress · ☑ done — update the box as you go.
 
 ---
@@ -47,21 +57,32 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** draw a straight ~1 km segment between two known points; the readout is within ~1% of the
   known distance and updates live while dragging (no perceptible lag).
 
-### ☐ 4. loft WASM kernel + Web Worker channel
-- **Goal:** the sanctioned loft-in-browser plumbing works, proven with the simplest kernel function.
-- **Build:** AOT-build loft to wasm (`loft --html`/cdylib, `wasm32-unknown-unknown`), `wasm-opt`
-  shrink, **commit the artifact** (§3, §11). Run it as a **service in a Web Worker** over the
-  push/poll byte channel (`../loft/doc/claude/BROWSER_INTEROP.md`). First exported op: **geodesic
-  length** (WGS84, f64) over a posted point list.
+### ☐ 4. loft WASM kernel + JS↔loft bridge (the de-risking spike)
+- **Goal:** prove the JS↔loft-wasm round-trip end-to-end — the one piece scoping could NOT confirm
+  (the generic byte channel is a design doc, not shipped; DESIGN.md §3). Everything downstream rides
+  on this, so build it as an isolated spike before the real kernel.
+- **Build:**
+  1. Scaffold the pure-loft **`lib/routing_kernel`** (`loft.toml` + `src/routing_kernel.loft`) and put
+     **geodesic length** (WGS84, f64) in it — the first op shared by client and server (§3).
+  2. Author a minimal routing **`[wasm.bridge]`** (a few host imports: request-in / response-out),
+     modelled on the shipped `web` library bridge (`../loft-libs-net/web/wasm/{src/lib.rs,host.js}`).
+  3. `loft --html client/kernel.loft --lib lib`, `wasm-opt`-shrunk; **commit the artifact**. Run it in
+     a **Web Worker**; loft owns its loop via `frame_yield`.
 - **Check:** JS posts the step-3 points to the worker; the returned geodesic length is within a few
-  metres of the JS haversine value, and the map never freezes during the call.
+  metres of the JS haversine value, and the map never freezes during the call. *(Headless-Chromium
+  harness, like steps 1–3.)*
+- **If the custom bridge proves costly:** fall back to routing the data over `web`'s WebSocket/HTTP
+  (already shipped) and note the trade-off — don't presume; measure the spike first.
 
 ### ☐ 5. Corridor download (loft owns data) (§5)  ⟵ *needs Q1*
 - **Goal:** loft fetches a tight corridor of real ways around the rough line.
 - **Build:** loft builds a **narrow buffer (~tens of m)** around the rough polyline, queries
-  **Overpass**, filters to activity-relevant `highway` ways and pulls `surface`/`tracktype` tags. The
-  network syscall is a thin JS host-import; loft decides what to fetch. (Q1 decides whether the result
-  is cached for offline.)
+  **Overpass** via the `web` library's blocking **`http_get`** (a loft-side call, in `routing_kernel`
+  or the client kernel — not a hand-rolled JS fetch), filters to activity-relevant `highway` ways and
+  pulls `surface`/`tracktype` tags. (Q1 decides whether the result is cached for offline.)
+- **First verify (do this before trusting step 5):** that `web`'s **wasm** `http_get` actually does
+  browser fetch-over-asyncify — proven for WebSocket, not yet confirmed here for HTTP. Test a trivial
+  `--html` program that `http_get`s a small URL and prints the status.
 - **Check:** for a hand-drawn line over a known street, loft returns a bounded set of ways that
   includes the expected roads/paths and excludes ways well outside the buffer.
 

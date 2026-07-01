@@ -117,14 +117,21 @@ JS = points + pixels. loft = routes + data + math.
 
 - **No loft parser in the browser.** loft is **AOT-compiled** to wasm (`loft --html` / cdylib,
   `wasm32-unknown-unknown`) — only the *compiled* kernel ships, **not** the interpreter (~2.5 MB).
-  The AOT kernel is ~**200–400 KB raw wasm (~70–130 KB gzipped)**, `wasm-opt`-shrunk.
+  The AOT kernel is ~**200–400 KB raw wasm (~70–130 KB gzipped)**, `wasm-opt`-shrunk. *(Verified
+  against loft 2026.6.0: a trivial kernel builds to 165 KB wasm / 242 KB self-contained HTML and
+  instantiates + runs in headless Chromium; a full kernel lands in the range above.)*
 - **Small startup, always precompiled.** Startup = load-and-instantiate a small module; no
   in-browser compile, nothing to parse.
-- **Runs as a service in a Web Worker.** It owns its own loop and can block on downloads without
-  freezing the map. JS posts requests (`match these points, this profile`) and gets back the
-  detailed polyline + length (push/poll byte channel — the sanctioned loft browser model, see
-  `../loft/doc/claude/BROWSER_INTEROP.md`). The actual network syscall is a thin JS host-import,
-  but loft decides what to fetch and computes the route.
+- **loft owns its loop and its downloads.** The kernel runs its own loop, yielding to the page via
+  loft's shipped **asyncify** suspend (`frame_yield` / `ws_yield`, from the `web` library) so heavy
+  work never freezes the map, and it fetches its **own** road data in-browser through the `web`
+  library's blocking `http_get` (Overpass is a loft-side call, not JS). The one JS↔loft hop — rough
+  points **in**, detailed polyline + length **out** — crosses a small routing-specific **host-import
+  bridge** built on loft's shipped `[wasm.bridge]` mechanism (the `web` library is the working
+  template). The generic push/poll "byte channel" in `../loft/doc/claude/BROWSER_INTEROP.md` is a
+  *design doc*, not a shipped library, so routing supplies this thin bridge itself; the bridge and the
+  Web-Worker wrapper are **validated by the step-4 spike** (PLAN.md), not assumed. loft still decides
+  what to fetch and computes the route.
 - **Phone-first / PWA.** Pure static client + small wasm + Leaflet (~40 KB gzipped) → drops into a
   phone browser, installs as a **PWA**, and wraps cleanly in a native WebView (Capacitor/Cordova)
   later with no rearchitecting.
@@ -132,6 +139,14 @@ JS = points + pixels. loft = routes + data + math.
 Kernel compute surface (all f64 — loft `float` is double, confirmed in `../loft/src/data.rs`):
 geodesic length (WGS84 ellipsoidal), per-segment lengths, Douglas–Peucker simplify,
 nearest-segment projection, and the **map-matcher** (§5).
+
+**One kernel, two targets.** This compute surface lives in a **pure-loft library `lib/routing_kernel`**
+(no platform code), compiled unchanged to **both** wasm (this client) and native (the Mode B server,
+§4) — the *same* geodesic / simplify / match code on both sides, so a matched length can never
+disagree between server and client. Platform bridges stay outside it: the client adds the `web`
+library (HTTP/WS) plus the JS bridge above; the server adds the `server` library (§4). *(The
+`server`/`web` libraries are registry packages — `../loft/lib` has `engine_host` but no
+`server`/`world` module; see §4.)*
 
 ---
 
@@ -143,11 +158,14 @@ Same client, mode chosen at runtime by whether it was loaded from a live loft se
   kernel. No server. Routes are saved as a **local named-route library in the browser**
   (`localStorage`/IndexedDB) — store a few routes, reopen and re-edit them — and travel between people
   as GPX. Road data fetched from the public source directly. This is what a stranger just opens.
-- **Mode B — Server-backed (your own server + direct backup).** A **loft server** (built on
-  `../loft/lib/server` + `lib/world` + `lib/engine_host`) serves the client over HTTP and holds a
-  **shared, named route store that multiple people can load and change**. It **persists the rough
+- **Mode B — Server-backed (your own server + direct backup).** A **loft server** — the `server`
+  registry library (single-port HTTP+WS multi-client, itself built on `web`; `../loft/lib/engine_host`
+  optionally adds hot-reload) — serves the client over HTTP and holds a **shared, named route store
+  that multiple people can load and change**. That store is an **app-defined struct** persisted
+  write-through to disk (there is no stock `lib/server`/`lib/world` — the store and its snapshot are
+  ours, following the audience-demo `single_port_server.loft` pattern). It **persists the rough
   route** — the editable points, the *source of truth*, so anyone can reopen and quickly re-edit —
-  straight to disk on every accepted edit (the "direct backup", mirroring audience-demo's `world.bin`),
+  straight to disk on every accepted edit (the "direct backup", the audience-demo `world.bin` shape),
   and **syncs edits over WebSocket**: broadcasting changes to other open clients and replaying current
   state to new ones (the audience-demo collaborative pattern; single-port HTTP+WS, client derives its
   WS URL from `location.host`). The detailed match is derived/cached, not the stored truth. May also
@@ -304,7 +322,12 @@ downloaded. It's **lag-tolerant** (slower tier) — the name can fill in a momen
 the loft language at `../loft`. **Goal length** — optional, feedback-only; never auto-reshapes the
 route (§1). **Target-distance auto-fit** — explicit non-goal. **Undo** — platform-adaptive over one
 per-session history: desktop **`Ctrl+Z` / `Ctrl+Shift+Z`** multi-level; phone **"Undo" snackbar** after
-bulk delete. Local & per-session; no global collaborative history (§1).
+bulk delete. Local & per-session; no global collaborative history (§1). **loft toolchain** — scoped &
+verified (2026-07-01, loft 2026.6.0): `loft --html` AOT-compiles the kernel to `wasm32-unknown-unknown`
+and runs in-browser (tested); road-data fetch + WS sync are loft-side via the `web`/`server` registry
+libraries; Mode B's store is an app-defined struct persisted write-through (no stock
+`lib/server`/`lib/world`). The one JS↔loft data bridge is still to be built and is validated in step 4
+(§3, §11).
 
 *Later (deferred):* a **"not-done" / draft save** — a special save type bundling the work-in-progress
 state *including the undo data*, so an unfinished route can be put down and resumed with its undo
@@ -316,6 +339,11 @@ ephemeral. (In **server mode** the route's working state is already continuously
 
 ## 11. Build & run (target)
 - **App (both modes):** static `index.html` + JS/CSS, no build step.
-- **loft kernel:** AOT-built from loft source (`loft --html`/cdylib), `wasm-opt`-shrunk; artifact
-  committed so running the app needs no toolchain.
-- **Mode B server:** `loft --lib ../loft/lib <server>.loft` (audience-demo shape).
+- **Shared kernel:** pure-loft `lib/routing_kernel`, consumed by both targets below (§3).
+- **loft client kernel:** `loft --html client/kernel.loft --lib lib` → cdylib on
+  `wasm32-unknown-unknown`, `wasm-opt`-shrunk; artifact **committed** so *running* the app needs no
+  toolchain. (Build-time needs `rustc` + the `wasm32-unknown-unknown` target + `wasm-opt` — all
+  present and verified here.)
+- **Mode B server:** `loft --native server/server.loft --lib lib` (audience-demo shape). Registry
+  deps (`server`, `web`) resolve via `loft install`, or path-dep to the local
+  `../loft-libs-net/{server,web}` checkouts.
