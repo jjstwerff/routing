@@ -125,13 +125,17 @@ JS = points + pixels. loft = routes + data + math.
 - **loft owns its loop and its downloads.** The kernel runs its own loop, yielding to the page via
   loft's shipped **asyncify** suspend (`frame_yield` / `ws_yield`, from the `web` library) so heavy
   work never freezes the map, and it fetches its **own** road data in-browser through the `web`
-  library's blocking `http_get` (Overpass is a loft-side call, not JS). The one JS↔loft hop — rough
-  points **in**, detailed polyline + length **out** — crosses a small routing-specific **host-import
-  bridge** built on loft's shipped `[wasm.bridge]` mechanism (the `web` library is the working
-  template). The generic push/poll "byte channel" in `../loft/doc/claude/BROWSER_INTEROP.md` is a
-  *design doc*, not a shipped library, so routing supplies this thin bridge itself; the bridge and the
-  Web-Worker wrapper are **validated by the step-4 spike** (PLAN.md), not assumed. loft still decides
-  what to fetch and computes the route.
+  library's blocking `http_get` (Overpass is a loft-side call, not JS).
+- **The JS↔loft data channel uses shipped mechanisms only — no custom bridge crate.** The compute is
+  **pure loft** (Tier 1), so nothing needs a `[wasm.bridge]`. *Verified* (import-dump of a `--html`
+  build): a `--html` module exposes host imports for **output** (`loft_io.loft_host_print` — so a
+  result JSON crosses loft→JS via print, for free) plus `loft_gl.*`, and **no generic data-in**
+  channel (`file()`/`arguments()` compile to in-wasm stubs there). So the rough-points **in** hop
+  rides a **shipped, generic** path — the `web` library's http/ws (a registry bridge we *consume*),
+  or the WASI/`loftHost` file/args bridge — **not** a routing-authored bridge. The generic push/poll
+  "byte channel" in `../loft/doc/claude/BROWSER_INTEROP.md` is a *design doc*, not shipped. **The
+  step-4 spike picks and proves the specific no-bridge channel** (candidates in PLAN.md); nothing here
+  is assumed until it round-trips.
 - **Phone-first / PWA.** Pure static client + small wasm + Leaflet (~40 KB gzipped) → drops into a
   phone browser, installs as a **PWA**, and wraps cleanly in a native WebView (Capacitor/Cordova)
   later with no rearchitecting.
