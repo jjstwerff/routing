@@ -36,6 +36,30 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const routing = (window.routing = window.routing || {});
 routing.map = map;
 
+// Step 7: the detailed (matched) layer — the server's map-matched route, drawn UNDER the rough
+// sketch and READ-ONLY (DESIGN.md §1: correct a wrong match by moving the rough points, never the
+// line). A dedicated low-z pane keeps it beneath the rough dashed line and markers.
+map.createPane("detailed");
+map.getPane("detailed").style.zIndex = 350; // < overlayPane (~400, rough line) and markerPane (~600)
+const detailedLine = L.polyline([], {
+  pane: "detailed",
+  interactive: false, // read-only — not draggable, doesn't eat taps
+  color: "#e0562d",
+  weight: 5,
+  opacity: 0.85,
+  lineCap: "round",
+  lineJoin: "round",
+}).addTo(map);
+routing.detailed = {
+  // points: [{lat,lon}], lengthM: matched geodesic length. Draws the line + shows the length.
+  set(points, lengthM) {
+    detailedLine.setLatLngs(points.map((p) => [p.lat, p.lon]));
+    const el = document.getElementById("server-length");
+    if (el) el.textContent = points.length > 0 ? "matched " + routing.geo.formatDistance(lengthM) : "matched —";
+  },
+  clear() { detailedLine.setLatLngs([]); },
+};
+
 // Step 3: instant rough length (DESIGN.md §1) — a haversine sum, recomputed on every edit and
 // every drag frame and shown in the top readout. Never waits; loft's accurate geodesic length of
 // the *matched* route arrives later (step 7). Goal ±delta slots into this same readout in step 14.

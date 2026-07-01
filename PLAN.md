@@ -130,12 +130,21 @@ accurate length. Ship nothing fancy; prove the pipeline.
   - **Not yet tested:** locality (nudge → local-only) — follows from the deviation-cost being a local
     function of trace proximity, but no explicit test yet. Adaptive-widening gap fallback deferred.
 
-### ☐ 7. Detailed layer + accurate length (§1, §2)
+### ☑ 7. Detailed layer + accurate length (§1, §2)
 - **Goal:** show the matched route with its own accurate length.
 - **Build:** JS draws the detailed polyline **under** the rough layer as separate, **read-only**
   geometry; show its geodesic length (from loft) alongside the rough length.
 - **Check:** after drawing, a distinct detailed line appears beneath the rough points with a length
   close to the rough length; the detailed line cannot be dragged.
+- **DONE (2026-07-01):** server `reply_match` (WS msg 4 → `5:<length>|<lat,lon;…>`): fetch corridor →
+  `build_graph` → `match_route` → geodesic length. Browser: `ws.js` sends a match request debounced on
+  edit-release (700 ms — Overpass is heavy), draws the matched polyline in a dedicated low-z `detailed`
+  pane (orange, `interactive:false` = read-only, under the rough dashed line + markers), shows
+  "matched <len>". Live-proven: a Jordaan trace returned an **11-point matched route, 633 m**.
+  - *Note:* the full match hits Overpass (flaky/rate-limited) so the round-trip is proven live but not
+    a CI gate; the matcher itself is gated deterministically (step 6). Matched length is haversine —
+    the WGS84-ellipsoidal upgrade is deferred. Browser render is manual-visual (async-WS timing makes
+    a headless gate flaky).
 
 > **Phase 1 exit:** draw a sketch → see a real, deterministic, activity-agnostic matched route with an
 > accurate length, entirely from committed static files + wasm. This is the demo the rest builds on.

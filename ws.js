@@ -1,9 +1,10 @@
-// routing — browser WebSocket client (PLAN step 4). The thin-JS half of the server-first
-// architecture (DESIGN.md §3/§4): send the rough points to the loft server, show the length it
-// computes. Plain browser WebSocket — no loft in the browser, no bridge.
+// routing — browser WebSocket client (PLAN steps 4 + 7). The thin-JS half of the server-first
+// architecture (DESIGN.md §3/§4): send the rough points to the loft server on edit-release, and draw
+// the matched route it computes. Plain browser WebSocket — no loft in the browser, no bridge.
 //
-// Wire: send "1:lat,lon;lat,lon;..." ; receive "2:<length_m>". (Step 6 makes the reply the
-// matched-route length; step 7 also returns the detailed polyline.)
+// Wire: send "4:lat,lon;lat,lon;..." (a match request); receive "5:<length_m>|<lat,lon;lat,lon;...>"
+// (the matched route + its geodesic length). Re-match is debounced on edit-release — Overpass +
+// matching is heavy, so we don't fire mid-drag (DESIGN.md §5).
 
 "use strict";
 
@@ -12,45 +13,51 @@
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const URL = `${proto}://${location.host || "localhost:18080"}/ws`;
-  const DEBOUNCE_MS = 150; // don't flood the socket mid-drag
+  const MATCH_DEBOUNCE_MS = 700;
 
   let ws = null;
-  let latest = null;       // most recent points (sent once connected / after debounce)
-  let sentAny = false;
+  let latest = null;   // most recent points; sent once connected / after debounce
   let debounce = null;
 
-  const el = () => document.getElementById("server-length");
-  function show(text) { const e = el(); if (e) e.textContent = text; }
+  // Parse "5:<length_m>|<lat,lon;lat,lon;...>" and hand it to the detailed layer.
+  function applyMatched(raw) {
+    const bar = raw.indexOf("|");
+    const head = raw.slice(0, bar);
+    const lengthM = parseFloat(head.slice(head.indexOf(":") + 1)) || 0;
+    const spec = raw.slice(bar + 1);
+    const points = spec
+      ? spec.split(";").map((pair) => {
+          const c = pair.split(",");
+          return { lat: parseFloat(c[0]), lon: parseFloat(c[1]) };
+        }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
+      : [];
+    if (NS.detailed) NS.detailed.set(points, lengthM);
+  }
 
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
-    const spec = latest.map((p) => p.lat + "," + p.lon).join(";");
-    ws.send("1:" + spec);
-    sentAny = true;
+    if (latest.length < 2) { if (NS.detailed) NS.detailed.set([], 0); return; }
+    ws.send("4:" + latest.map((p) => p.lat + "," + p.lon).join(";"));
   }
 
   function connect() {
-    try { ws = new WebSocket(URL); } catch (e) { show("server —"); return; }
-    ws.addEventListener("open", () => { show("server ✓"); flush(); });
+    try { ws = new WebSocket(URL); } catch (e) { return; }
+    ws.addEventListener("open", flush);
     ws.addEventListener("message", (e) => {
       const raw = String(e.data);
-      const i = raw.indexOf(":");
-      if (raw.slice(0, i) === "2") {
-        const m = parseFloat(raw.slice(i + 1));
-        show("server " + (NS.geo ? NS.geo.formatDistance(m) : m + " m"));
-      }
+      if (raw.slice(0, raw.indexOf(":")) === "5") applyMatched(raw);
     });
-    ws.addEventListener("close", () => { show("server …"); setTimeout(connect, 1000); });
+    ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
   }
 
-  // Called from app.js on every rough-layer change (debounced).
+  // Called from app.js on every rough-layer change (debounced — re-match on edit-release).
   function sendPoints(points) {
     latest = points;
     clearTimeout(debounce);
-    debounce = setTimeout(flush, DEBOUNCE_MS);
+    debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }
 
-  NS.ws = { sendPoints, connect, get connected() { return !!ws && ws.readyState === WebSocket.OPEN; }, get sentAny() { return sentAny; } };
+  NS.ws = { sendPoints, connect, get connected() { return !!ws && ws.readyState === WebSocket.OPEN; } };
   connect();
 })();

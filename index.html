@@ -22,8 +22,8 @@
   <!-- Instant rough length (DESIGN.md §1): updates every frame as you tap and drag. -->
   <div id="length-readout" class="hud-readout" role="status" aria-live="polite">0 m</div>
 
-  <!-- Server round-trip readout (PLAN step 4): the length the loft server computes over WebSocket. -->
-  <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">server …</div>
+  <!-- Matched-route length (PLAN step 7): the geodesic length of the server's map-matched route. -->
+  <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">matched —</div>
 
   <!-- Touch delete affordance: shown only while a rough point is selected (see rough.js).
        Mouse users can also double-click a point, or press Delete/Backspace. -->
