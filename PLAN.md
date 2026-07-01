@@ -222,14 +222,23 @@ accurate length. Ship nothing fancy; prove the pipeline.
 
 ---
 
-## Phase 3 — Feedback, persistence, edit safety (Mode A)
+## Phase 3 — Feedback, persistence, edit safety
+> *Server-first note: this phase's persistence (steps 16/17) targets the server route store, not a
+> browser-local Mode-A library — Mode A (loft in the browser) is deferred (§3). The interaction steps
+> (12–15) are pure client and apply either way.*
 
-### ☐ 12. Multi-select + bulk delete (§1)
+### ☑ 12. Multi-select + bulk delete (§1)
 - **Goal:** the key lever for reworking an existing route.
-- **Build:** select a **contiguous range** by tapping first + last point (touch), or **box/lasso** on
-  desktop; delete the lot. Surviving end points become the new start/finish.
+- **Build:** select a **contiguous range** by tapping first + last point; delete the lot. Surviving end
+  points become the new start/finish.
 - **Check:** select a mid-route stretch and delete it; the ends rejoin and re-match; the route stays
   valid.
+- **DONE (2026-07-02):** `RoughLayer` selection is now a contiguous **range** between two anchors
+  (tap first + last; a single tap = one point). `deleteSelected` removes the whole range; survivors'
+  roles recompute; the delete button reads "Delete N points". Headless-Chromium test (13/13): range
+  [2..5] of 8 → 4 left (the ends), one start/one finish after, single-select + re-tap-deselect still
+  work. Delete emits → re-match. *(Box/lasso deferred — tap-first-last works on desktop via click A +
+  click B; a drag-box is a later nicety.)*
 
 ### ☐ 13. Undo — platform-adaptive, one per-session history (§1)
 - **Goal:** take back your own recent edits, frictionlessly, per device.

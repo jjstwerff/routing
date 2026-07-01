@@ -44,7 +44,10 @@
       this.map = map;
       this.onChange = opts.onChange || function () {};
       this._pts = [];            // ordered [{ id, marker }]
-      this._selectedId = null;
+      // Selection is a contiguous RANGE between two anchors (tap first + last point of a stretch;
+      // a single tap selects one point). ids, not indices — stable across the session.
+      this._anchorA = null;
+      this._anchorB = null;
       this._lastMapClick = null; // { t, p } for double-tap dedupe
 
       // Two stacked polylines: a fat transparent hit target (catches insert taps) and, on top of
@@ -112,14 +115,26 @@
     setPoints(points) {
       for (const pt of this._pts) this.map.removeLayer(pt.marker);
       this._pts = [];
-      this._selectedId = null;
+      this._anchorA = null;
+      this._anchorB = null;
       for (const p of points) this._pts.push(this._makeMarker(L.latLng(p.lat, p.lon)));
       this._refresh();
       this._emit();
     }
 
+    // Bulk delete: remove the whole selected range (§1 — the key lever for reworking a route). The
+    // survivors at the ends just become the new start/finish; roles recompute in _refresh().
     deleteSelected() {
-      if (this._selectedId !== null) this._removeId(this._selectedId);
+      const sel = this._selectedIds();
+      if (sel.size === 0) return;
+      this._pts = this._pts.filter((pt) => {
+        if (sel.has(pt.id)) { this.map.removeLayer(pt.marker); return false; }
+        return true;
+      });
+      this._anchorA = null;
+      this._anchorB = null;
+      this._refresh();
+      this._emit();
     }
 
     _removeId(id) {
@@ -127,7 +142,8 @@
       if (i < 0) return;
       this.map.removeLayer(this._pts[i].marker);
       this._pts.splice(i, 1);
-      if (this._selectedId === id) this._selectedId = null;
+      if (this._anchorA === id) this._anchorA = null;
+      if (this._anchorB === id) this._anchorB = null;
       this._refresh();
       this._emit();
     }
@@ -156,7 +172,7 @@
     }
 
     _onKey(e) {
-      if (this._selectedId === null) return;
+      if (this._anchorA === null) return;
       const tag = (e.target && e.target.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -169,16 +185,42 @@
 
     // ---- selection -------------------------------------------------------
 
+    // Tap logic: first tap sets anchor A (single); a second tap on a different point forms the
+    // contiguous range A..B; tapping the same single anchor deselects; a tap once a range exists
+    // starts a fresh single selection.
     _toggleSelect(id) {
-      this._selectedId = (this._selectedId === id) ? null : id;
+      if (this._anchorA === null) {
+        this._anchorA = id;
+        this._anchorB = null;
+      } else if (this._anchorB === null) {
+        if (id === this._anchorA) this._anchorA = null;
+        else this._anchorB = id;
+      } else {
+        this._anchorA = id;
+        this._anchorB = null;
+      }
       this._refresh();
     }
 
     _clearSelection() {
-      if (this._selectedId !== null) {
-        this._selectedId = null;
+      if (this._anchorA !== null || this._anchorB !== null) {
+        this._anchorA = null;
+        this._anchorB = null;
         this._refresh();
       }
+    }
+
+    // The ids in the currently-selected contiguous index range (A..B inclusive); empty if none.
+    _selectedIds() {
+      const ids = new Set();
+      if (this._anchorA === null) return ids;
+      const ia = this._pts.findIndex((p) => p.id === this._anchorA);
+      if (ia < 0) return ids;
+      const ib = this._anchorB === null ? ia : this._pts.findIndex((p) => p.id === this._anchorB);
+      const lo = Math.min(ia, ib < 0 ? ia : ib);
+      const hi = Math.max(ia, ib < 0 ? ia : ib);
+      for (let i = lo; i <= hi; i++) ids.add(this._pts[i].id);
+      return ids;
     }
 
     // ---- geometry helpers ------------------------------------------------
@@ -202,13 +244,15 @@
 
     _refresh() {
       const n = this._pts.length;
+      const sel = this._selectedIds();
       this._pts.forEach((pt, i) => {
         const role = (i === 0) ? "start" : (i === n - 1 ? "finish" : "mid");
-        pt.marker.setIcon(pointIcon(role, pt.id === this._selectedId));
+        pt.marker.setIcon(pointIcon(role, sel.has(pt.id)));
       });
       this._redrawLines();
       if (this._deleteBtn) {
-        this._deleteBtn.classList.toggle("hidden", this._selectedId === null);
+        this._deleteBtn.classList.toggle("hidden", this._anchorA === null);
+        this._deleteBtn.textContent = sel.size > 1 ? `Delete ${sel.size} points` : "Delete point";
       }
     }
 
