@@ -34,6 +34,7 @@ activity, and **exporting GPX** with an accurate length.
 
 ## Status
 
-Design phase. The full design lives in **[DESIGN.md](DESIGN.md)**.
+Design phase. The full design lives in **[DESIGN.md](DESIGN.md)**; the step-by-step build plan
+(20 checkable steps across 4 phases) lives in **[PLAN.md](PLAN.md)**.
 
 This project is a sibling consumer of the loft language (expected at `../loft`).
