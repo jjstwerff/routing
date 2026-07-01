@@ -36,11 +36,20 @@
     <select id="submode" aria-label="Sub-mode"></select>
   </div>
 
+  <!-- GPX export/import (PLAN steps 10/11, see gpx.js). -->
+  <div id="gpx-bar" class="hud-gpx">
+    <button id="gpx-export" type="button">Export GPX</button>
+    <label class="gpx-import" title="Import a .gpx track">Import GPX
+      <input id="gpx-import" type="file" accept=".gpx,application/gpx+xml" hidden>
+    </label>
+  </div>
+
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="geo.js"></script>
   <script src="rough.js"></script>
   <script src="app.js"></script>
   <script src="ws.js"></script>
   <script src="controls.js"></script>
+  <script src="gpx.js"></script>
 </body>
 </html>

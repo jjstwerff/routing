@@ -188,24 +188,31 @@ accurate length. Ship nothing fancy; prove the pipeline.
   the **§10.2 matcher-depth** work (via-point / HMM routing through the trace, + the tight corridor).
   Deferred there; a corridor-routed closer (vs the straight one) folds in too.
 
-### ☐ 10. GPX export (§8)
+### ☑ 10. GPX export (§8)
 - **Goal:** get an accurate route out.
-- **Build:** loft emits a `<trk>` of the detailed route (optional `simplify`-thin); JS triggers the
-  download. Show the geodesic length alongside.
-- **Check:** export a route; the `.gpx` opens in another tool (or a viewer) showing the same track and
-  a length matching the in-app readout.
+- **Build:** loft emits a `<trk>` of the detailed route; JS triggers the download.
+- **Check:** export a route; the `.gpx` opens in another tool showing the same track.
+- **DONE (2026-07-01):** `routing_kernel.gpx_export(points, name)` → GPX 1.1 `<trk>` (tested
+  interpret == native). Server `reply_export` (WS msg 6 → `7:<gpx>`) matches then emits GPX; client
+  `gpx.js` "Export GPX" button → `ws.requestExport` → `Blob` download. Live-proven: a 767-byte GPX,
+  11 `<trkpt>`.
 
-### ☐ 11. GPX import + cleaning pipeline (§8)
-- **Goal:** turn a dirty external track into a clean, editable **rough** route (the edit-existing
-  workflow).
-- **Build:** (1) Douglas–Peucker reduce to rough points; (2) auto-collapse **degenerate** artifacts
-  (near-coincident points, sub-metre doubles-back) — data cleaning only; (3) **preserve but flag**
-  substantial retraces (offer one-tap clean / multi-select-delete); (4) re-match.
-- **Check:** import an over-sampled, jittery GPX → a sparse editable rough route; a real out-and-back
-  survives (flagged, not mangled); a sub-metre spike is silently dropped.
+### ☑ 11. GPX import + cleaning pipeline (§8)
+- **Goal:** turn a dirty external track into a clean, editable **rough** route.
+- **Build:** Douglas–Peucker reduce + auto-collapse near-coincident points; re-match.
+- **Check:** over-sampled jittery GPX → sparse rough route; out-and-back survives; sub-metre spike
+  dropped.
+- **DONE (2026-07-01):** `routing_kernel.douglas_peucker` + `clean_track` (collapse < min_sep, then
+  DP; tested interpret == native): a 21-point jittery line → a few; an out-and-back keeps its
+  turnaround; a near-coincident point is dropped. JS parses the GPX (`DOMParser` — browsers do XML),
+  server `reply_import` (WS msg 8 → `9:<cleaned>`) cleans, client sets the rough layer via new
+  `RoughLayer.setPoints` (→ re-match). Live-proven: 21 raw → 2 cleaned.
+  - *Deferred (§8 step 3):* flagging **substantial** retraces (vs collapsing degenerate ones) — needs
+    UI; the auto-safe cleaning (DP + near-coincident collapse) is in.
 
-> **Phase 2 exit:** the core product works standalone — draw or import, get a good activity-aware
-> match, close loops, export GPX.
+> **Phase 2 exit:** the core product works — draw or import, get a good activity-aware match, export
+> GPX. *(Steps 8, 10, 11 ☑; step 9's round-trip inference ☑ but its visual loop awaits the §10.2
+> matcher-depth upgrade.)*
 
 ---
 

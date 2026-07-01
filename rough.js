@@ -85,12 +85,13 @@
       this._insertAt(this._pts.length, latlng);
     }
 
-    _insertAt(index, latlng) {
+    // Create a draggable point marker (no refresh/emit — callers batch that).
+    _makeMarker(latlng) {
       const id = nextId();
       const marker = L.marker(latlng, {
         draggable: true,
         keyboard: false,
-        icon: pointIcon("mid", false), // role fixed up by _refresh() below
+        icon: pointIcon("mid", false), // role fixed up by _refresh()
       });
       marker.on("click", () => this._toggleSelect(id));
       marker.on("dblclick", () => this._removeId(id));   // mouse delete
@@ -98,8 +99,21 @@
       marker.on("drag", () => { this._redrawLines(); this._emit(); });
       marker.on("dragend", () => this._emit());
       marker.addTo(this.map);
+      return { id, marker };
+    }
 
-      this._pts.splice(index, 0, { id, marker });
+    _insertAt(index, latlng) {
+      this._pts.splice(index, 0, this._makeMarker(latlng));
+      this._refresh();
+      this._emit();
+    }
+
+    // Replace the whole rough route (PLAN step 11 — a cleaned imported GPX track).
+    setPoints(points) {
+      for (const pt of this._pts) this.map.removeLayer(pt.marker);
+      this._pts = [];
+      this._selectedId = null;
+      for (const p of points) this._pts.push(this._makeMarker(L.latLng(p.lat, p.lon)));
       this._refresh();
       this._emit();
     }

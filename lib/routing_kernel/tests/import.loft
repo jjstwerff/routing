@@ -1,0 +1,37 @@
+// Tests for GPX import cleaning (PLAN step 11, DESIGN §8). Deterministic.
+//   loft --tests lib/routing_kernel/tests/import.loft --lib lib
+use routing_kernel::(GeoPoint, clean_track, douglas_peucker);
+
+// An over-sampled, jittery straight line collapses to a handful of points.
+fn test_simplify_jittery_line() {
+  pts: vector<GeoPoint> = [];
+  for i in 0..21 {
+    j = 0.0;
+    if i % 2 == 1 { j = 0.00001; }   // ~1 m jitter on odd points, well under the 8 m tolerance
+    pts += [GeoPoint { lat: 52.0 + j, lon: 5.0 + (i as float) * 0.0005 }];
+  }
+  simplified = clean_track(pts, 8.0, 2.0);
+  assert(len(simplified) >= 2, "keeps the endpoints");
+  assert(len(simplified) <= 4, "21 jittery collinear points → a few: {len(simplified)}");
+}
+
+// A deliberate out-and-back keeps its turnaround (it's shape, not noise).
+fn test_out_and_back_preserved() {
+  pts: vector<GeoPoint> = [];
+  for a in 0..11 { pts += [GeoPoint { lat: 52.0, lon: 5.0 + (a as float) * 0.0005 }]; }   // 0 → B
+  for b in 0..11 { pts += [GeoPoint { lat: 52.0, lon: 5.005 - (b as float) * 0.0005 }]; }  // B → 0
+  cleaned = clean_track(pts, 8.0, 2.0);
+  found_b = false;
+  for c in 0..len(cleaned) { if cleaned[c].lon > 5.0049 { found_b = true; } }
+  assert(found_b, "the out-and-back turnaround survives");
+  assert(len(cleaned) >= 3, "start, turnaround, end kept: {len(cleaned)}");
+}
+
+// A sub-metre spike (near-coincident point) is silently dropped.
+fn test_collapse_near_coincident() {
+  pts = [ GeoPoint { lat: 52.0, lon: 5.0 },
+          GeoPoint { lat: 52.0, lon: 5.0000001 },  // ~0.007 m from the previous → collapse
+          GeoPoint { lat: 52.0, lon: 5.001 } ];
+  cleaned = clean_track(pts, 8.0, 2.0);
+  assert(len(cleaned) == 2, "the near-coincident point is dropped: {len(cleaned)}");
+}

@@ -99,6 +99,29 @@ html, body {
   user-select: none;
 }
 
+/* GPX export/import (PLAN steps 10/11) — top-right. */
+.hud-gpx {
+  position: fixed;
+  right: calc(8px + env(safe-area-inset-right));
+  top: calc(12px + env(safe-area-inset-top));
+  z-index: 1200;
+  display: flex;
+  gap: 6px;
+}
+.hud-gpx button,
+.hud-gpx .gpx-import {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  background: rgba(31, 41, 51, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Activity × sub-mode selectors (PLAN step 8) — bottom-left, thumb-reachable. */
 .hud-controls {
   position: fixed;

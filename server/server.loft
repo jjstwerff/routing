@@ -12,12 +12,14 @@
 
 use server;
 use web;
-use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways, build_graph, match_route_closed);
+use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways, build_graph, match_route_closed, gpx_export, clean_track);
 
 PORT = 18080;
 OVERPASS = "https://overpass-api.de/api/interpreter";
 CORRIDOR_MARGIN_M = 30.0;
 ROUND_TRIP_RATIO = 0.25;   // start≈finish within this fraction of total length ⇒ close the loop (§1)
+IMPORT_EPSILON_M = 8.0;    // Douglas–Peucker tolerance for import cleaning (§8)
+IMPORT_MIN_SEP_M = 2.0;    // collapse consecutive GPX points closer than this
 
 // Parse "lat,lon;lat,lon;..." into points.
 fn parse_points(payload: text) -> vector<GeoPoint> {
@@ -87,8 +89,9 @@ fn encode_points(pts: vector<GeoPoint>) -> text {
 // The full match (PLAN step 7): fetch the corridor → build the graph → match the rough trace onto
 // real ways → reply "5:<matched_length_m>|<lat,lon;lat,lon;...>". The client draws the polyline
 // under the rough sketch and shows the length.
-fn reply_match(srv: server::Server, cid: integer, payload: text) {
-  // payload = "<profile>|<lat,lon;lat,lon;...>"
+// Parse "<profile>|<points>", fetch the corridor, and return the matched (possibly closed) route.
+fn match_for(payload: text) -> vector<GeoPoint> {
+  empty: vector<GeoPoint> = [];
   bar = payload.find("|");
   profile = "walking_paved";
   spec = payload;
@@ -97,12 +100,28 @@ fn reply_match(srv: server::Server, cid: integer, payload: text) {
     spec = payload[bar + 1..];
   }
   pts = parse_points(spec);
-  if len(pts) < 2 { _ = srv.send_to(cid, "5:0|"); return; }
+  if len(pts) < 2 { return empty; }
   resp = web::http_post(OVERPASS, overpass_query(bounds(pts, CORRIDOR_MARGIN_M)));
-  if resp.status != 200 { _ = srv.send_to(cid, "5:0|"); return; }
+  if resp.status != 200 { return empty; }
   g = build_graph(parse_ways(resp.body));
-  matched = match_route_closed(g, pts, profile, ROUND_TRIP_RATIO);
+  match_route_closed(g, pts, profile, ROUND_TRIP_RATIO)
+}
+
+// WS msg 4 → "5:<length>|<polyline>": the matched route + its length (drawn under the sketch).
+fn reply_match(srv: server::Server, cid: integer, payload: text) {
+  matched = match_for(payload);
   _ = srv.send_to(cid, "5:{path_length_m(matched)}|{encode_points(matched)}");
+}
+
+// WS msg 6 → "7:<gpx>": the matched route as a GPX document (JS triggers the download).
+fn reply_export(srv: server::Server, cid: integer, payload: text) {
+  _ = srv.send_to(cid, "7:{gpx_export(match_for(payload), "routing route")}");
+}
+
+// WS msg 8 → "9:<cleaned points>": clean a raw GPX track into a sparse editable rough route (§8).
+fn reply_import(srv: server::Server, cid: integer, payload: text) {
+  cleaned = clean_track(parse_points(payload), IMPORT_EPSILON_M, IMPORT_MIN_SEP_M);
+  _ = srv.send_to(cid, "9:{encode_points(cleaned)}");
 }
 
 fn main() {
@@ -119,6 +138,8 @@ fn main() {
       if ev.msg_id == 1 { reply_length(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 2 { reply_corridor(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 4 { reply_match(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 6 { reply_export(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 8 { reply_import(srv, ev.cid, ev.payload); }
     }
   });
 }

@@ -402,3 +402,68 @@ pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text, rati
   }
   detailed
 }
+
+// --- GPX export (PLAN step 10, DESIGN §8) ------------------------------------------------------
+// Emit the detailed route as a GPX 1.1 <trk>. loft owns import/export (§2). JS triggers the actual
+// download.
+pub fn gpx_export(points: vector<GeoPoint>, name: text) -> text {
+  s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+  s += "<gpx version=\"1.1\" creator=\"routing\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n";
+  s += "  <trk><name>{name}</name><trkseg>\n";
+  for i in 0..len(points) {
+    s += "    <trkpt lat=\"{points[i].lat}\" lon=\"{points[i].lon}\"></trkpt>\n";
+  }
+  s += "  </trkseg></trk>\n</gpx>\n";
+  s
+}
+
+// --- GPX import cleaning (PLAN step 11, DESIGN §8) ---------------------------------------------
+// Derive a clean, sparse, editable ROUGH route from a dirty GPX track: collapse near-coincident
+// points, then Douglas–Peucker simplify. (Flagging substantial retraces is a later refinement.)
+
+fn dp_recurse(points: vector<GeoPoint>, s: integer, e: integer, epsilon_m: float, keep: &vector<boolean>) {
+  if e <= s + 1 { return; }
+  maxd = -1.0;
+  maxi = -1;
+  for i in s + 1..e {
+    d = point_seg_m(points[i].lat, points[i].lon,
+                    points[s].lat, points[s].lon, points[e].lat, points[e].lon);
+    if d > maxd { maxd = d; maxi = i; }
+  }
+  if maxd > epsilon_m && maxi > s {
+    keep[maxi] = true;
+    dp_recurse(points, s, maxi, epsilon_m, keep);
+    dp_recurse(points, maxi, e, epsilon_m, keep);
+  }
+}
+
+// Douglas–Peucker: keep only points deviating more than epsilon_m from the simplified line.
+pub fn douglas_peucker(points: vector<GeoPoint>, epsilon_m: float) -> vector<GeoPoint> {
+  n = len(points);
+  out: vector<GeoPoint> = [];
+  if n < 3 {
+    for i in 0..n { out += [points[i]]; }
+    return out;
+  }
+  keep: vector<boolean> = [];
+  for i in 0..n { keep += [false]; }
+  keep[0] = true;
+  keep[n - 1] = true;
+  dp_recurse(points, 0, n - 1, epsilon_m, keep);
+  for i in 0..n { if keep[i] { out += [points[i]]; } }
+  out
+}
+
+// Collapse near-coincident consecutive points (< min_sep_m apart), then Douglas–Peucker simplify.
+pub fn clean_track(points: vector<GeoPoint>, epsilon_m: float, min_sep_m: float) -> vector<GeoPoint> {
+  collapsed: vector<GeoPoint> = [];
+  for i in 0..len(points) {
+    if len(collapsed) == 0 {
+      collapsed += [points[i]];
+    } else {
+      last = collapsed[len(collapsed) - 1];
+      if haversine_m(last, points[i]) >= min_sep_m { collapsed += [points[i]]; }
+    }
+  }
+  douglas_peucker(collapsed, epsilon_m)
+}

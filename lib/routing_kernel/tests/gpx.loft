@@ -1,0 +1,20 @@
+// Tests for GPX export (PLAN step 10, DESIGN §8). Deterministic.
+//   loft --tests lib/routing_kernel/tests/gpx.loft --lib lib
+use routing_kernel::(GeoPoint, gpx_export);
+
+fn test_gpx_export() {
+  gpx = gpx_export([GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.1, lon: 5.1 }], "test route");
+  assert(gpx.contains("<gpx"), "has a gpx root");
+  assert(gpx.contains("</gpx>"), "closes the gpx element");
+  assert(gpx.contains("<trk>"), "has a track");
+  assert(gpx.contains("<name>test route</name>"), "carries the name");
+  assert(gpx.contains("lat=\"52\""), "first trkpt lat");
+  assert(gpx.contains("lat=\"52.1\""), "second trkpt lat");
+  assert(gpx.contains("lon=\"5.1\""), "second trkpt lon");
+}
+
+fn test_gpx_empty() {
+  empty: vector<GeoPoint> = [];
+  gpx = gpx_export(empty, "e");
+  assert(gpx.contains("<trkseg>") && gpx.contains("</trkseg>"), "empty route is still valid GPX");
+}
