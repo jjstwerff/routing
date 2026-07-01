@@ -35,3 +35,54 @@ html, body {
 .leaflet-control-container .leaflet-bottom {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+
+/* --- Rough layer: points (DESIGN.md §1) ------------------------------------
+   Each marker is a small colour-coded dot centered in a larger transparent square, so the tap
+   target is finger-sized without making the visible dot big. Start/finish are distinct from mids. */
+.rough-pt-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+}
+.rough-pt-wrap:active { cursor: grabbing; }
+
+.rough-pt {
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-sizing: border-box;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+.rough-pt--mid    { background: #2b6cff; }          /* intermediate hint */
+.rough-pt--start  { background: #17b26a; }          /* start — green */
+.rough-pt--finish { background: #f04438; }          /* finish — red */
+.rough-pt.is-selected {
+  box-shadow: 0 0 0 3px #fff, 0 0 0 6px rgba(249, 178, 51, 0.95); /* amber selection ring */
+}
+
+/* --- HUD buttons ----------------------------------------------------------- */
+.hud-btn {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 1200; /* above the map and its Leaflet controls */
+  padding: 12px 22px;
+  border: none;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #1f2933;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+.hud-btn--danger { background: #d92d20; }
+.hud-btn:active { transform: translateX(-50%) scale(0.97); }
+
+.hidden { display: none !important; }

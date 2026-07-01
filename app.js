@@ -17,9 +17,11 @@ const map = L.map("map", {
   zoom: DEFAULT_ZOOM,
   zoomControl: true,
   // Phone-first: keep momentum panning, but tap-tolerance a touch higher so a fingertip that
-  // drifts a few pixels still reads as a tap (matters once we place points in step 2).
+  // drifts a few pixels still reads as a tap when placing points (step 2).
   tapTolerance: 20,
   worldCopyJump: true,
+  // Double-click has route semantics here (delete a point / a deduped empty-map add), not zoom.
+  doubleClickZoom: false,
 });
 
 // OSM raster base (DESIGN.md §7). {s} spreads tile requests across the subdomains OSM allows.
@@ -30,5 +32,12 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
 }).addTo(map);
 
-// Keep a handle around for the console and for later steps to build on.
-window.routing = { map };
+// Shared namespace (rough.js also contributes to it). Keep a map handle for the console.
+const routing = (window.routing = window.routing || {});
+routing.map = map;
+
+// Step 2: the rough sketch layer (DESIGN.md §1). onChange fires on every edit and during a drag;
+// step 3 hangs the live length readout off it. For now we just stash the current points.
+routing.rough = new routing.RoughLayer(map, {
+  onChange: (points) => { routing.roughPoints = points; },
+});

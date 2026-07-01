@@ -32,7 +32,7 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** open `index.html` locally; the map loads, pans, and zooms on **both** a desktop browser
   and a phone browser. No console errors.
 
-### ☐ 2. Rough layer — the tiny primitive set (§1)
+### ☑ 2. Rough layer — the tiny primitive set (§1)
 - **Goal:** draw and edit the rough shape.
 - **Build (JS owns pixels, §2):** tap/click to drop points joined by **straight lines**; **drag** a
   point to move; **tap a segment** to insert a point; **tap-select + delete** to remove one
