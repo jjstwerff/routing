@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Phone-first: fill the device, lock page zoom so pinch drives the map, not the page. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#1f2933">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>routing — sketch a route</title>
+
+  <!-- Vendored Leaflet (no CDN): pure static files, so the app drops into a phone browser
+       and can be served whole by the Mode B loft server. See DESIGN.md §3. -->
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Full-bleed map is the whole UI for now; the HUD (length readout, controls) lands in later steps. -->
+  <div id="map" aria-label="Route map"></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

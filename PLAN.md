@@ -25,7 +25,7 @@ resist adding a primitive a step doesn't need.
 The goal of Phase 1 is one honest vertical slice: draw a line, get a real map-matched route with an
 accurate length. Ship nothing fancy; prove the pipeline.
 
-### ☐ 1. Static shell + map
+### ☑ 1. Static shell + map
 - **Goal:** the app loads as pure static files and shows a pannable map.
 - **Build:** `index.html` + a little JS/CSS, no build step (§11). Leaflet (~40 KB gz) + OSM raster
   base `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png` (§7). No framework.

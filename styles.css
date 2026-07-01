@@ -1,0 +1,37 @@
+/* routing — phone-first static shell.
+   Step 1 is just a full-viewport map; HUD and controls come in later steps (see PLAN.md). */
+
+:root {
+  color-scheme: light dark;
+  /* Reference so later HUD/controls sit above the map. */
+  --z-map: 0;
+  --z-hud: 400; /* Leaflet controls live at z ~1000; HUD chrome will layer relative to that. */
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  /* dvh tracks the *visible* viewport as mobile browser chrome shows/hides — avoids a map
+     that's cut off behind the URL bar. Fallback to vh for older engines. */
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent; /* no grey flash on tap — this is a drawing surface */
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-map);
+  background: #e8e8e8; /* neutral fill while tiles load, so a slow phone connection isn't a white flash */
+}
+
+/* Respect notch / rounded-corner safe areas on phones. */
+.leaflet-control-container .leaflet-top,
+.leaflet-control-container .leaflet-bottom {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
