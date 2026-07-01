@@ -1,0 +1,11 @@
+[package]
+name    = "routing"
+version = "0.0.0"
+loft    = ">=0.8"
+
+# All loft deps are provided locally via `--lib lib` at build time (see tools/ scripts):
+#   lib/routing_kernel — our pure-loft compute
+#   lib/server, lib/web — vendored from the registry with a one-line compile fix
+#     (`try_recv`/`next` return `text?`, not `text` — the shipped 0.2.x won't compile under
+#     loft 2026.6.0; see docs/loft-feedback.md). Vendored so the build is self-contained and
+#     needs no registry lockfile entry.

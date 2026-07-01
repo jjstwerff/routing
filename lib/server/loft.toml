@@ -1,0 +1,15 @@
+[package]
+name = "server"
+version = "0.2.0"
+loft = ">=0.8"
+repository = "loft-libs-net"
+
+[library]
+entry = "src/server.loft"
+native = "loft_server"
+
+[native]
+crate = "loft-server"
+
+[dependencies]
+web = ">=0.1"

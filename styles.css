@@ -82,6 +82,23 @@ html, body {
   user-select: none;
 }
 
+/* Server round-trip readout — sits just under the instant length pill (PLAN step 4). */
+.hud-subreadout {
+  position: fixed;
+  top: calc(52px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(31, 41, 51, 0.72);
+  color: #cdd6df;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* --- HUD buttons ----------------------------------------------------------- */
 .hud-btn {
   position: fixed;

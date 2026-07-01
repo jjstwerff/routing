@@ -61,7 +61,7 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** draw a straight ~1 km segment between two known points; the readout is within ~1% of the
   known distance and updates live while dragging (no perceptible lag).
 
-### ◐ 4. loft server + WebSocket round-trip (the transport spine)
+### ☑ 4. loft server + WebSocket round-trip (the transport spine)
 - **Goal:** stand up the native loft server and prove the end-to-end **JS↔server** channel — the
   browser sends rough points over a WebSocket, the server computes the length with `routing_kernel` and
   replies, no UI freeze. This is the transport everything downstream rides on (was the old Phase-4 work,
@@ -77,9 +77,17 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** the browser posts the step-3 points over WS; the server returns the length within a few
   metres of the JS haversine; a second client can connect; closing/reopening a tab reconnects.
   *(Headless: drive the WS client in headless Chromium and assert the returned length.)*
-- **Already done (feeds this step):** `lib/routing_kernel` (pure loft: `haversine_m`, `path_length_m`)
-  is built and **parity-tested** `--interpret == --native == --native-wasm`, byte-identical, matching
-  geo.js to full f64 precision (`tools/kernel_headless_test.sh`). The server consumes it directly.
+- **DONE (2026-07-01):** `server/server.loft` (`server` + `web` + `routing_kernel`, single-port
+  HTTP+WS) builds and runs native; the browser `ws.js` sends `1:<points>` and shows the server's
+  `2:<length>` in the `#server-length` readout. `tools/server_test.sh` proves it end-to-end (HTTP
+  serves index.html; Node WS round-trip returns `1000.7557221018342` = the kernel value; clean
+  shutdown). `lib/routing_kernel` parity-tested (`tools/kernel_headless_test.sh`) feeds it.
+  - **Ecosystem workaround:** the shipped `server`/`web` 0.2.x **don't compile under loft 2026.6.0**
+    (`try_recv`/`next` return `text` with `return null` → must be `text?`). Vendored both into
+    `lib/{server,web}` with that one-line fix, resolved via `--lib lib`. Proper fix is upstream
+    (loft-libs-net) — see [docs/loft-feedback.md](docs/loft-feedback.md) Part 2 #6.
+  - **Op note:** `loft --native` detaches the compiled server binary; kill it by **port**
+    (`fuser -k 18080/tcp`), not the wrapper — the harness does this.
 - **Deferred (not this step):** running the kernel **in the browser** (`--html`) for the offline mode —
   blocked on an upstream loft data-in primitive ([docs/loft-feedback.md](docs/loft-feedback.md)); the
   wasip2 alternative is ~4× heavier (rejected). `--native-wasm` is kept only as the CI parity harness.

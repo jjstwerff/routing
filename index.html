@@ -22,6 +22,9 @@
   <!-- Instant rough length (DESIGN.md §1): updates every frame as you tap and drag. -->
   <div id="length-readout" class="hud-readout" role="status" aria-live="polite">0 m</div>
 
+  <!-- Server round-trip readout (PLAN step 4): the length the loft server computes over WebSocket. -->
+  <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">server …</div>
+
   <!-- Touch delete affordance: shown only while a rough point is selected (see rough.js).
        Mouse users can also double-click a point, or press Delete/Backspace. -->
   <button id="rough-delete" class="hud-btn hud-btn--danger hidden" type="button"
@@ -31,5 +34,6 @@
   <script src="geo.js"></script>
   <script src="rough.js"></script>
   <script src="app.js"></script>
+  <script src="ws.js"></script>
 </body>
 </html>

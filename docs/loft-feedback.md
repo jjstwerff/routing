@@ -121,12 +121,18 @@ only for HTTP-shaped input; Option A is the general channel.
    (wasmtime) and is much larger. Also note `--native-wasm` **compiles only** (doesn't run) — it needs
    an external runtime (wasmtime), which `--help` doesn't mention.
 
-6. **`web` monorepo checkout is version-skewed and won't compile.** `loft-libs-net/web` is **0.1.1**
-   locally but the registry ships **0.2.0**; the 0.1.1 source **fails to compile under current loft**:
-   `web/src/web.loft:206` — `if !ws_client_recv_native(self.id) { return null; }` →
-   *"`null` cannot be stored into the return value of the non-null scalar type `text` — declare it
-   `text?`"*. Anyone path-dep'ing the local source (instead of the registry) hits this immediately.
-   **Fix:** sync the checkout to 0.2.0, or fix line 206 to return `text?` / a non-null sentinel.
+6. **`server` AND `web` do not compile under loft 2026.6.0 — this BLOCKS every consumer (HIGH).**
+   Not a papercut: a `text`-returning function does `return null`, which is now a hard error
+   (*"`null` cannot be stored into the return value of the non-null scalar type `text` — declare it
+   `text?`"*). Confirmed in **every** version available:
+   - `web/src/web.loft` `pub fn try_recv(self: WsHandler) -> text { … return null; }` — in 0.1.1,
+     0.2.0, 0.2.1, **0.2.2** (its own doc says "null otherwise", so the return type is simply wrong).
+   - `server/src/server.loft` `pub fn next(self: WebSocket) -> text { … return null; }` — 0.2.0.
+   Because `server` depends on `web`, **any `use server;` fails to build.** The audience-demo only
+   works because it was built under an older loft. **Fix:** change both signatures to `-> text?`
+   (the error's own suggestion; one line each), bump patch versions, and republish. Until then a
+   consumer must vendor + patch (which routing had to do — `lib/{server,web}`). This should probably
+   gate the registry: no shipped package should fail to compile on the current stable loft.
 
 7. **`~/.cache/loft` staleness gotcha** (already documented at `WASM.md:686`) bit us when iterating
    `--html` after an `--interpret` run of the same program — the fix (`rm -rf ~/.cache/loft`) works.

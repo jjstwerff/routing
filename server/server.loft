@@ -1,0 +1,67 @@
+// routing server (PLAN step 4) — serves the static client AND does the routing work, over ONE port
+// (HTTP for files, WebSocket for the data transfer). loft runs NATIVE here, so it has full HTTP/fs;
+// the browser is thin JS (DESIGN.md §3/§4, the audience-demo shape).
+//
+// Wire = text frames "<id>:<payload>" (the server lib pre-splits id + payload):
+//   client → 1:<lat,lon;lat,lon;...>   server → 2:<length_m>
+// The map-matcher replaces the length payload at step 6.
+//
+// Run from the repo root (so #cwd resolves the static files):
+//   loft --native server/server.loft
+#cwd
+
+use server;
+use routing_kernel::(GeoPoint, path_length_m);
+
+PORT = 18080;
+
+fn content_type(path: text) -> text {
+  if path.ends_with(".html") { return "text/html; charset=utf-8"; }
+  if path.ends_with(".js")   { return "text/javascript; charset=utf-8"; }
+  if path.ends_with(".css")  { return "text/css; charset=utf-8"; }
+  "application/octet-stream"
+}
+
+// Serve a static file for an HTTP request. Relative to the launch dir (#cwd); no path traversal.
+fn serve(srv: server::Server, path: text) {
+  rel = path;
+  if rel == "/" { rel = "/index.html"; }
+  if rel.contains("..") {
+    srv.respond_404();
+    return;
+  }
+  f = file(".{rel}");
+  if !f.exists() {
+    srv.respond_404();
+    return;
+  }
+  srv.respond_typed(200, f.content(), content_type(rel));
+}
+
+// Parse "lat,lon;lat,lon;..." → route length in metres, reply to the client that sent it.
+fn reply_length(srv: server::Server, cid: integer, payload: text) {
+  pts: vector<GeoPoint> = [];
+  for pair in payload.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 {
+      pts += [GeoPoint { lat: xy[0] as float, lon: xy[1] as float }];
+    }
+  }
+  _ = srv.send_to(cid, "2:{path_length_m(pts)}");
+}
+
+fn main() {
+  srv = server::listen(PORT);
+  if srv.handle < 0 {
+    println("routing server: FAILED to listen on {PORT}");
+    return;
+  }
+  println("routing server: http + ws on http://localhost:{PORT}");
+  srv.run(fn(ev: server::WsEvent) {
+    if ev.http {
+      serve(srv, ev.path);
+    } else if ev.message {
+      if ev.msg_id == 1 { reply_length(srv, ev.cid, ev.payload); }
+    }
+  });
+}

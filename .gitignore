@@ -16,6 +16,10 @@ target/
 # loft per-library native cross-compile cache (generated on build; large .so)
 native-auto/
 *.so
+# loft dep resolution artifacts. We vendor server/web into lib/ and resolve via `--lib lib`,
+# so a registry lockfile (auto-written by `loft install`) is stale/misleading here.
+loft.lock
+.loft/
 
 # Local scratch / env
 scratch/

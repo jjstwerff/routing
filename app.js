@@ -51,6 +51,7 @@ routing.rough = new routing.RoughLayer(map, {
   onChange: (points) => {
     routing.roughPoints = points;
     renderLength(points);
+    if (routing.ws) routing.ws.sendPoints(points); // step 4: round-trip to the loft server
   },
 });
 renderLength([]); // initial "0 m"
