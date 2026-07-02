@@ -268,3 +268,39 @@ rustc stage, so an emit-only check is NOT a native-build gate.
 
 **Workaround (applied):** parse vector elements inline (`v[i] as integer ?? d`) instead of via an
 intermediate discharged local (server/server.loft `add_tile`, with a pointer comment).
+
+---
+
+## 2026-07-02 (later) — BOTH native bugs above FIXED in the loft tree (branch `tuxedo-pln85-ownership`)
+
+Follow-up from the loft side; both repros verified fixed on both backends, with regression
+guards in `tests/scripts/`.
+
+**1. `float?` return corrupted by a constructed text argument — FIXED.** Root: a `-> τ?`
+(Optional scalar/text) function whose tail is a call with pending scope free-ops (the
+constructed text's `__work` free) fell through the parser's B5-L3 return-wrap — the type
+check (`is_value_return_type` + the text arm in `scopes.rs::free_vars`) matched bare scalars
+but not `Optional(scalar)`. The tail call was emitted as a DISCARDED statement plus a
+fabricated `return null`; interp read stale top-of-stack (accidentally right), native
+faithfully returned `0.0` — the silent non-null you saw. Fix: peel `Optional` in both type
+checks (`tp.base()`), so the `__ret_N` claim-wrap fires. Guard:
+`tests/scripts/85-optional-return-freeops-tail.loft` (float?/integer?/text? × value/null
+paths, both backends, leak-clean). Your tile-keying workaround is no longer required
+(though integer keys are the better design regardless).
+
+**2. `text as integer` from a discharged local → E0605 — FIXED, and it was WORSE than
+filed.** Reproducing your exact `add_tile` shape (void fn + early returns + a later
+DbRef-typed `??` like `png() ?? Image {}`) showed interp ALSO computed a silently wrong
+value (`tx` became 0) — not just a native compile error. Root: the two-pass parser can
+materialise a different SET of `??` temps per pass, so the `__ncc_N` counter denotes
+different sites per pass; the variable-table reuse then handed pass-2 code a temp carrying
+pass-1's TYPE (your `tx` parse temp held `ref(Image)` — hence `parse() .. as DbRef`).
+Fix: on generated (`__`-prefixed) temp reuse, pass 2 wins on a type conflict
+(`variables/mod.rs`). Guard: `tests/scripts/85-ncc-temp-crosspass-type.loft` (your
+add_tile shape distilled). The inline-parse workaround in `server/server.loft::add_tile`
+can be reverted at the next loft update, or kept — both forms now compile and run
+correctly.
+
+Probe-hygiene note for future matrices: `??` binds LOOSEST, so
+`assert(v[0] ?? -1 == 34)` parses as `v[0] ?? (-1 == 34)` and is vacuously true under
+interp truthiness — parenthesise the discharge: `(v[0] ?? -1) == 34`.
