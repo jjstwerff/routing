@@ -315,13 +315,26 @@ accurate length. Ship nothing fancy; prove the pipeline.
   remains for Phase 4: multi-client broadcast/replay (19) and per-edit streaming beyond the
   debounced match-commit granularity (20).
 
-### ☐ 17. Auto-proposed names (§9)
+### ☑ 17. Auto-proposed names (§9)
 - **Goal:** never force naming; offer a good default.
 - **Build:** on first save, loft composes **area + length + type** (e.g. *"Vondelpark · 8 km · Trail
   run"*) — length/type it has; area via light reverse-geocode (Nominatim) or a named feature from the
   corridor data. Lag-tolerant; accept or override.
 - **Check:** save an unnamed route → a sensible name is proposed within a moment; editing the name
   sticks.
+- **DONE (2026-07-02):** WS `20:<profile>|<points>` → `21:<proposed>`. Server composes
+  `area · length · type`: length from `path_length_m` (`nice_length`: "850 m" / "7.5 km" /
+  "12 km"), type from the profile (`profile_label`: "Trail run", "Gravel ride", …), area from a
+  Nominatim reverse-geocode of the route midpoint (zoom 16; prefers the feature name unless it's
+  just a road, then falls back neighbourhood → suburb → village → town → city; proper User-Agent).
+  A failed lookup degrades to "length · type" — which keeps the committed gates offline. Client:
+  opening the panel prefills the name input (only while empty or still holding the previous
+  proposal — typed text always wins; dedup per sketch). Gates: `tools/routes_test.sh` (reply ends
+  "2.1 km · Trail run" for the 2053.76 m test sketch; degenerate → empty) +
+  `tools/client_routes_test.sh` (prefill lands, override sticks through save). Live (unsandboxed
+  CDP run): **"Benschop · 2.1 km · Trail run"** — the correct village for the test coordinates.
+  Two more loft bugs found + written up (parser ICE on precision-0 float format; native E0308 on a
+  text tail-call with a heap-param callee — see docs/loft-feedback.md).
 
 > **Phase 3 exit:** a complete standalone app (Mode A) — the strict subset a stranger just opens.
 

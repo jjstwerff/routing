@@ -77,6 +77,7 @@
       else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
       else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
       else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));
+      else if (id === "21" && NS.routes) NS.routes.applyName(raw.slice(raw.indexOf(":") + 1));
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
@@ -125,9 +126,15 @@
     ws.send("18:" + name);
   }
 
+  // Step 17: ask for a proposed name for the current sketch ("21:" lands in routes.js).
+  function requestName() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !latest || latest.length < 2) return;
+    ws.send("20:" + profileOf() + "|" + encode(latest));
+  }
+
   NS.ws = {
     sendPoints, requestExport, requestImport, requestElevation, connect,
-    saveRoute, requestRoutesList, openRoute, deleteRoute,
+    saveRoute, requestRoutesList, openRoute, deleteRoute, requestName,
     get connected() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
   connect();

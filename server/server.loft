@@ -25,6 +25,7 @@ IMPORT_MIN_SEP_M = 2.0;    // collapse consecutive GPX points closer than this
 
 ROUTES_DIR = "routes";     // the named-route store: one file per route; the DISK is the store,
                            // so every save is write-through and a server restart loses nothing
+NOMINATIM = "https://nominatim.openstreetmap.org/reverse";   // area part of a proposed name
 
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
@@ -139,6 +140,86 @@ fn reply_export(srv: server::Server, cid: integer, payload: text) {
 fn reply_import(srv: server::Server, cid: integer, payload: text) {
   cleaned = clean_track(parse_points(payload), IMPORT_EPSILON_M, IMPORT_MIN_SEP_M);
   _ = srv.send_to(cid, "9:{encode_points(cleaned)}");
+}
+
+// --- Auto-proposed names (PLAN step 17) ----------------------------------------------------------
+// "area · length · type" (e.g. "Vondelpark · 8 km · Trail run"). Length + type come free from the
+// request; the area is a light Nominatim reverse-geocode of the route's midpoint. Lag-tolerant and
+// never forced: the client prefills the name input with the reply; anything typed wins. A failed
+// lookup just degrades the name to "length · type" — which also keeps the committed tests offline.
+
+// Friendly activity label — the "type" part of a proposed name.
+fn profile_label(profile: text) -> text {
+  if profile == "running_fast"   { return "Run"; }
+  if profile == "running_trail"  { return "Trail run"; }
+  if profile == "walking_paved"  { return "Walk"; }
+  if profile == "walking_trail"  { return "Trail walk"; }
+  if profile == "cycling_road"   { return "Road ride"; }
+  if profile == "cycling_gravel" { return "Gravel ride"; }
+  if profile == "cycling_mtb"    { return "MTB ride"; }
+  if profile.starts_with("driving") { return "Drive"; }
+  "Route"
+}
+
+// A name-friendly length: "850 m" / "7.5 km" / "12 km". (Integer cases round through `as
+// integer` — a float format with precision 0, "{m:1.0}", is a parser ICE; see loft-feedback.md.)
+fn nice_length(m: float) -> text {
+  if m < 950.0 { return "{round(m) as integer} m"; }
+  km = m / 1000.0;
+  if km < 10.0 { return "{km:1.1} km"; }
+  "{round(km) as integer} km"
+}
+
+// A string field of a JSON object, or "" when absent/not a string (the corridor parser's `tag`
+// shape — `field` on a missing key returns JNull, so gate on the kind).
+fn jtext(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+// The area part via Nominatim (zoom 16 ≈ neighbourhood/park level). Prefers the feature's own
+// name (Vondelpark) unless the hit is just a road; then falls back through the address levels.
+// "" on any failure.
+fn area_name(lat: float, lon: float) -> text {
+  resp = web::http_get_h("{NOMINATIM}?lat={lat}&lon={lon}&format=jsonv2&zoom=16",
+                         ["User-Agent: routing-dev/0.1 (personal dev tool)"]);
+  if resp.status != 200 { return ""; }
+  root = json_parse(resp.body);
+  if jtext(root, "category") != "highway" {
+    nm = jtext(root, "name");
+    if nm != "" { return nm; }
+  }
+  addr = root.field("address");
+  nm = jtext(addr, "neighbourhood");
+  if nm != "" { return nm; }
+  nm = jtext(addr, "suburb");
+  if nm != "" { return nm; }
+  nm = jtext(addr, "village");
+  if nm != "" { return nm; }
+  nm = jtext(addr, "town");
+  if nm != "" { return nm; }
+  // Bound-then-returned: a text-returning tail CALL emits Str::new(&Str) under --native (E0308;
+  // see loft-feedback.md).
+  nm = jtext(addr, "city");
+  nm
+}
+
+// WS msg 20 → "21:<proposed name>" for "<profile>|<points>" (bare "21:" for a degenerate sketch).
+fn reply_name(srv: server::Server, cid: integer, payload: text) {
+  nbar = payload.find("|");
+  profile = "walking_paved";
+  spec = payload;
+  if nbar >= 0 {
+    profile = payload[..nbar];
+    spec = payload[nbar + 1..];
+  }
+  pts = parse_points(spec);
+  if len(pts) < 2 { _ = srv.send_to(cid, "21:"); return; }
+  mid = pts[len(pts) / 2];
+  proposed = "{nice_length(path_length_m(pts))} · {profile_label(profile)}";
+  area = area_name(mid.lat, mid.lon);
+  if area != "" { proposed = "{area} · {proposed}"; }
+  _ = srv.send_to(cid, "21:{proposed}");
 }
 
 // --- Named route store (PLAN step 16) -----------------------------------------------------------
@@ -281,6 +362,7 @@ fn main() {
       else if ev.msg_id == 14 { _ = srv.send_to(ev.cid, "13:{routes_list()}"); }
       else if ev.msg_id == 16 { reply_open(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 18 { reply_delete(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 20 { reply_name(srv, ev.cid, ev.payload); }
     }
   });
 }

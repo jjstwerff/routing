@@ -49,6 +49,14 @@ check("open unknown → empty", r === "17:");
 r = await send(`18:${B}`);
 check("delete B removes it", names(r).includes(A) && !names(r).includes(B));
 
+// Auto-proposed name (step 17): length + type are deterministic (2053.76 m → "2.1 km"); the
+// area prefix depends on a live Nominatim lookup, so assert the tail only (offline → no prefix).
+r = await send(`20:running_trail|${pts}`, 60000);
+check("proposed name ends with length · type", r.startsWith("21:") && r.endsWith("2.1 km · Trail run"), r.slice(0, 80));
+
+r = await send("20:walking_paved|52.0,4.97");
+check("degenerate sketch → empty proposal", r === "21:");
+
 // Working-route autosave: a match request (4:) persists "_working" BEFORE matching, so the
 // assertion holds even when the corridor fetch fails offline.
 await send(`4:walking_paved|${pts}`, 60000);

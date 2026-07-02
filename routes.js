@@ -16,12 +16,36 @@
 
   let open = false;
   let names = [];
+  let proposed = "";     // the last auto-proposed name — typed text always wins (step 17)
+  let proposedFor = "";  // sketch encoding the proposal was asked for (dedupe)
 
   function setOpen(want) {
     open = want;
     panel.classList.toggle("hidden", !open);
     toggle.classList.toggle("is-active", open);
-    if (open && NS.ws) NS.ws.requestRoutesList();
+    if (open && NS.ws) {
+      NS.ws.requestRoutesList();
+      maybePropose();
+    }
+  }
+
+  // Step 17: prefill the name input with "area · length · type" — only while the field is empty
+  // (or still holding an earlier proposal), so editing the name sticks. Lag-tolerant by nature.
+  function maybePropose() {
+    const pts = NS.roughPoints || [];
+    if (pts.length < 2) return;
+    if (nameInput.value !== "" && nameInput.value !== proposed) return;
+    const spec = pts.map((p) => p.lat + "," + p.lon).join(";");
+    if (spec === proposedFor) return;
+    proposedFor = spec;
+    if (NS.ws) NS.ws.requestName();
+  }
+
+  // "21:" payload — the proposed name (from ws.js).
+  function applyName(name) {
+    if (!name) return;
+    if (nameInput.value === "" || nameInput.value === proposed) nameInput.value = name;
+    proposed = name;
   }
 
   function renderList() {
@@ -96,5 +120,5 @@
   });
   toggle.addEventListener("click", () => setOpen(!open));
 
-  NS.routes = { applyList, applyRoute, onConnect };
+  NS.routes = { applyList, applyRoute, applyName, onConnect };
 })();

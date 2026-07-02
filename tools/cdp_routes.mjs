@@ -51,6 +51,13 @@ const s1 = await evaluate(`(async () => {
   await sleep(2500);                                  // debounce (700ms) + autosave round-trip
   routing.setProfile("running_trail");
   document.getElementById("routes-toggle").click();
+  // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Trail run"); typing overrides.
+  let prop = "";
+  for (let i = 0; i < 60 && !prop; i++) {
+    await sleep(250);
+    prop = document.getElementById("route-name").value;
+  }
+  out.proposedName = prop;
   document.getElementById("route-name").value = "CDP Test Route";
   document.getElementById("route-save").click();
   let has = false;
@@ -80,10 +87,16 @@ const s2 = await evaluate(`(async () => {
   }
   if (!btn) { out.openFailed = true; return JSON.stringify(out); }
   btn.click();
-  await sleep(500);
+  // applyRoute closes the panel; poll for it — the name-proposal lookup (msg 20) can hold the
+  // single-threaded server for a moment, so the open reply may trail.
+  let closed = false;
+  for (let i = 0; i < 60 && !closed; i++) {
+    await sleep(250);
+    closed = document.getElementById("routes-panel").classList.contains("hidden");
+  }
+  out.panelClosedAfterOpen = closed;
   out.openedProfile = routing.getProfile();
   out.openedPoints = (routing.roughPoints || []).length;
-  out.panelClosedAfterOpen = document.getElementById("routes-panel").classList.contains("hidden");
   document.getElementById("routes-toggle").click();
   const del = [...document.querySelectorAll("#routes-list .route-del")].find(
     (b) => b.previousSibling && b.previousSibling.textContent === "CDP Test Route");
@@ -101,6 +114,7 @@ ws.close();
 console.log("PHASE1", JSON.stringify(s1));
 console.log("PHASE2", JSON.stringify(s2));
 const ok = s1.panelClosedByDefault && s1.savedListed
+  && s1.proposedName.endsWith("2.1 km · Trail run")
   && s2.restoredPoints === 2 && s2.restoredProfile === "cycling_gravel"
   && s2.openedPoints === 2 && s2.openedProfile === "running_trail"
   && s2.panelClosedAfterOpen && s2.deleted;

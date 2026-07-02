@@ -271,6 +271,56 @@ intermediate discharged local (server/server.loft `add_tile`, with a pointer com
 
 ---
 
+## 2026-07-02 — parser ICE: float format with precision 0 (`"{m:1.0}"`)
+
+3-line repro (step-17 session, same dev build):
+
+```loft
+fn main() {
+  m = 850.5;
+  println("{m:1.0}");   // panics: src/parser/collections.rs:1097:45 unwrap on None
+}
+```
+
+`{m:1.1}` and `{m:4.2}` are fine; only **precision 0** panics — an ICE, not a diagnostic, so a
+consumer sees a raw `Option::unwrap()` backtrace with no source location.
+**Workaround (applied):** round through an integer for whole-number display:
+`"{round(m) as integer} m"` (server/server.loft `nice_length`).
+
+## 2026-07-02 — native: text-returning TAIL CALL of a fn with a HEAP param emits `Str::new(&Str)` (E0308)
+
+A `-> text` function whose TAIL expression calls another `-> text` function miscompiles under
+`--native` **when the callee takes a store-backed param** (here `JsonValue`): the generated
+`return Str::new(&n_jtext(cell, var_root, "b"))` double-wraps an already-`Str` value → rustc
+E0308. The trivial all-`text` case (`fn inner(s: text) -> text { s }` tail-called) does NOT
+reproduce — the heap param is part of the trigger. Earlier explicit `return jtext(...)` calls in
+the same function are fine; only tail position breaks. Interpret runs it (with, incidentally, a
+`1 stores not freed at program exit: kt=65535` warning on this shape — possibly its own minor
+store-lifetime wrinkle).
+
+```loft
+fn jtext(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+fn pick(root: JsonValue) -> text {
+  nm = jtext(root, "a");
+  if nm != "" { return nm; }
+  jtext(root, "b")      // --native: return Str::new(&n_jtext(...)) → E0308
+}
+
+fn main() {
+  println(pick(json_parse("{{\"b\":\"world\"}}")));
+}
+```
+
+**Workaround (applied):** bind then return — `nm = jtext(addr, "city"); nm` (server/server.loft
+`area_name`, with a pointer comment). Same family as the morning's two (both since fixed
+loft-side): return-position codegen around wrapped/heap values is the recurring theme.
+
+---
+
 ## 2026-07-02 (later) — BOTH native bugs above FIXED in the loft tree (branch `tuxedo-pln85-ownership`)
 
 Follow-up from the loft side; both repros verified fixed on both backends, with regression

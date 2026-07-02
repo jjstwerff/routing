@@ -34,7 +34,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
 | `elevation.js` | bottom-dock elevation profile (canvas) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
-| `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect |
+| `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect + the proposed-name prefill (typed text wins) |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 
 ### Server
@@ -81,6 +81,7 @@ import, elevation), all asserted **interpret == native**.
 | `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
 | `16:<name>` | `17:<name>\|<profile>\|<pts>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch |
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
+| `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
@@ -156,7 +157,10 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   edit-release) — a tab killed inside that window loses the last gesture (per-edit streaming is
   step 20). Deleting all points doesn't clear `_working` (a reload restores the last real sketch —
   deliberate: never lose work). No multi-client sync yet (step 19).
-- **Phase 3 remaining:** auto-proposed names (17 — Nominatim).
+- **Name proposal:** the Nominatim lookup runs on the single-threaded event loop, so a slow
+  reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
+- **Phase 3 is complete** (steps 12–17) — next is Phase 4: multi-client sync (19), per-edit
+  persistence (20).
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces
