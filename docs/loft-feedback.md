@@ -160,3 +160,39 @@ only for HTTP-shaped input; Option A is the general channel.
   (`tools/kernel_headless_test.sh`) — so the same code runs on the server now and in a browser kernel
   once Part 1 lands.
 - **Offline/standalone (loft in the browser) is deferred** and is the one path that wants Part 1.
+
+---
+
+## 2026-07-02 — one-judgment typing: the reported `--dump` divergence, investigated
+
+**Reported (this session):** `loft --dump` accepted `client/kernel.loft` while `--interpret` and
+`--native-wasm` rejected the identical program — suggesting the null-discharge (N-Store) check is
+not anchored at a single phase, and that a formal definition must state well-typedness as **one
+static judgment, independent of backend or invocation mode**.
+
+**Investigated in the loft tree (both binaries × both modes, on the PRE-migration `kernel.loft`
+= `git show 20290ae:client/kernel.loft`, the version that carries the undischarged
+`xy[0] as float` sites):**
+
+| binary | `--interpret` | `--dump` |
+|---|---|---|
+| `/usr/local/bin/loft` 2026.6.0 (PATH) | accepts, exit 0 | accepts, exit 0 |
+| dev build (`workspace/loft`, DN1 + parse-flip) | **rejects**, exit 1 (2× `float?` N-Store) | **rejects**, exit 1, same 2 errors |
+
+No single binary diverges: `--dump` runs the same two-pass parse (+ bytecode) and rejects
+identically. The parsimonious explanation for the observed split is **two different binaries** —
+the installed `loft` on PATH (2026.6.0, which predates the DN1/N-Store checks entirely) answering
+one invocation and the dev build answering the other. Consumer sessions should pin
+`which loft` when comparing modes; only the dev build carries the DN1 model until the next release.
+
+**The class is still real.** A same-day in-tree instance: a whole-file CLI run whose FIRST-pass /
+lexer errors abort compilation never *reports* the second-pass (N-Store) family — the exit is
+still 1, so soundness holds, but the **diagnostic set is phase-dependent** (the test harness runs
+both passes and sees errors the CLI never prints). That is the lesser sibling of the reported
+wrinkle: judgment-stability across drivers is a property that needs a guard, not an assumption.
+
+**Where it landed in the formal register:** the loft repo's differential oracle (@PLN89,
+`formal/ROADMAP.md` D1) now explicitly includes **driver agreement** in scope — for each corpus
+program, accept/reject must agree across `--interpret` / `--dump` / `--native` / `--native-wasm`,
+alongside the existing runtime value/null/halt/stdout/leak agreement. A future divergence of this
+kind then fails a test instead of surfacing in a consumer session.
