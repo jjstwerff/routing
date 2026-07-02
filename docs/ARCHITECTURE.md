@@ -51,6 +51,11 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
   points; filename = a safe slug). The **disk is the store** — list scans the dir, save writes,
   delete unlinks — so persistence is write-through by construction and restarts are safe. The
   working sketch autosaves under `_working` on every match request, before the corridor fetch.
+- **Live sync (step 19):** the server's only in-memory state — `SyncState{subs: [{cid, name}]}`,
+  captured by the `run` lambda (heap-struct field mutation aliases). Opening/saving a non-`_`
+  route subscribes that connection; an accepted edit write-through saves the named route and
+  fans out msg 23 (with the match) to the other subscribers; a failed send drops the
+  subscription. Concurrency is last-writer-wins.
 
 ### Kernel — `lib/routing_kernel/` (pure loft, target-agnostic)
 The compute surface. Public API:
@@ -82,6 +87,7 @@ import, elevation), all asserted **interpret == native**.
 | `16:<name>` | `17:<name>\|<profile>\|<pts>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch |
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
+| — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
@@ -123,6 +129,8 @@ loft --tests lib/routing_kernel/tests/<name>.loft --lib lib          # unit (add
 ./tools/client_elev_test.sh                                          # elevation dock in headless Chromium (CDP, offline)
 ./tools/routes_test.sh                                               # named store + _working autosave over WS (offline)
 ./tools/client_routes_test.sh                                        # routes panel + reload-restore in headless Chromium (CDP)
+./tools/sync_test.sh                                                 # live sync, 3 WS clients: broadcast/no-echo/replay (offline)
+./tools/client_sync_test.sh                                          # live sync across two headless-Chromium tabs (CDP)
 ```
 
 - Kernel logic is gated deterministically (interpret == native). The **live match/export/import**
@@ -159,8 +167,10 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   deliberate: never lose work). No multi-client sync yet (step 19).
 - **Name proposal:** the Nominatim lookup runs on the single-threaded event loop, so a slow
   reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
-- **Phase 3 is complete** (steps 12–17) — next is Phase 4: multi-client sync (19), per-edit
-  persistence (20).
+- **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
+  unit is the accepted (debounced) edit, so mid-drag states don't stream.
+- **Phase 3 is complete** (steps 12–17); of Phase 4, live sync (19) is in — per-edit persistence
+  granularity (20) remains.
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces

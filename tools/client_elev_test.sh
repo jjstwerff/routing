@@ -39,7 +39,7 @@ for i in $(seq 1 120); do
 done
 
 echo "== headless chromium (CDP) =="
-"$chromium" --headless=new --disable-gpu --no-sandbox --remote-debugging-port=$dtport "$url/" >/dev/null 2>&1 &
+"$chromium" --headless=new --disable-gpu --no-sandbox --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port=$dtport "$url/" >/dev/null 2>&1 &
 chr=$!
 sleep 4
 node "$here/tools/cdp_elev.mjs" "127.0.0.1:$dtport" "$url" \

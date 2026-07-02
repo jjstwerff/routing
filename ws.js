@@ -20,6 +20,7 @@
   let ws = null;
   let latest = null;   // most recent points; sent once connected / after debounce
   let debounce = null;
+  let remoteApply = false;   // step 19: applying a peer's edit — don't echo it back
 
   const profileOf = () => (NS.getProfile ? NS.getProfile() : "walking_paved");
   const encode = (points) => points.map((p) => p.lat + "," + p.lon).join(";");
@@ -38,6 +39,28 @@
     const pts = decode(raw.slice(bar + 1));
     if (NS.detailed) NS.detailed.set(pts, lengthM);
     if (NS.elevation) NS.elevation.onMatched(pts);
+  }
+
+  // Step 19 — "23:<name>|<profile>|<rough>|<len>|<matched>": a peer edited the shared route we're
+  // on. Apply it directly — the broadcast carries the server's match, so nothing is re-requested
+  // and nothing echoes (rough.setPoints fires onChange → sendPoints, gated by remoteApply).
+  function applyRemoteSync(raw) {
+    const p = raw.slice(raw.indexOf(":") + 1).split("|");
+    if (p.length < 5) return;
+    const profile = p[1];
+    const rough = decode(p[2]);
+    const lengthM = parseFloat(p[3]) || 0;
+    const matched = decode(p[4]);
+    if (rough.length < 2) return;
+    remoteApply = true;
+    try {
+      if (NS.setProfile) NS.setProfile(profile);
+      if (NS.rough && NS.rough.setPoints) NS.rough.setPoints(rough);
+    } finally {
+      remoteApply = false;
+    }
+    if (NS.detailed) NS.detailed.set(matched, lengthM);
+    if (NS.elevation) NS.elevation.onMatched(matched);
   }
 
   function downloadGpx(gpx) {
@@ -78,14 +101,18 @@
       else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
       else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));
       else if (id === "21" && NS.routes) NS.routes.applyName(raw.slice(raw.indexOf(":") + 1));
+      else if (id === "23") applyRemoteSync(raw);
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
   }
 
   // Called from app.js on every rough-layer change (debounced — re-match on edit-release).
+  // During a remote-sync apply only `latest` updates (so later local edits build on the synced
+  // state) — no flush is scheduled, or the peers would ping-pong the same edit forever.
   function sendPoints(points) {
     latest = points;
+    if (remoteApply) return;
     clearTimeout(debounce);
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }

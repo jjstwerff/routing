@@ -47,10 +47,10 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 | 15 | **Elevation dock** — profile + ↑/↓ totals from AWS terrarium tiles (server fetch + decode, pure-loft sampling); closed by default, lag-tolerant |
 | 16 | **Route store** — named save/open/delete (disk-is-the-store, write-through) + the working sketch autosaves and **survives closing the browser** |
 | 17 | **Auto-proposed names** — "Benschop · 2.1 km · Trail run": area (Nominatim) · length · type prefills the save field; typing wins |
+| 19 | **Live sync** — open the same route in two browsers: an edit in one appears in the other (echo-free); late joiners see the current state |
 
-**Phase 3 complete. Deferred / next:** multi-client sync (19), per-edit persistence (20);
-full HMM matcher, tight-corridor download, offline Mode A. See **[PLAN.md](PLAN.md)** for the
-exact status of every step.
+**Deferred / next:** per-edit persistence granularity (20); full HMM matcher, tight-corridor
+download, offline Mode A. See **[PLAN.md](PLAN.md)** for the exact status of every step.
 
 ## Run it
 
@@ -76,6 +76,8 @@ loft --tests lib/routing_kernel/tests/<name>.loft --lib lib   # kernel unit test
 ./tools/client_elev_test.sh                                   # elevation dock in headless Chromium (offline)
 ./tools/routes_test.sh                                        # named route store + autosave over WS (offline)
 ./tools/client_routes_test.sh                                 # routes panel + reload-restore in headless Chromium
+./tools/sync_test.sh                                          # live sync, 3 WS clients (offline)
+./tools/client_sync_test.sh                                   # live sync across two headless-Chromium tabs
 ```
 
 Kernel tests cover the geodesic, corridor parse, matcher, profiles, round-trip, loop, GPX export,

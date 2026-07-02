@@ -355,13 +355,25 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Check:** load the app from the server URL → it reports Mode B; load the static files directly →
   Mode A. Same client build both times.
 
-### ☐ 19. Shared route store + WebSocket sync (§4)
+### ☑ 19. Shared route store + WebSocket sync (§4)
 - **Goal:** multiple people load and change the same named routes, live.
 - **Build:** on the step-16 named store, add the live layer: broadcast accepted edits to open
   clients; replay current state to new ones (audience-demo collaborative pattern). Single-port
   HTTP+WS and `location.host`-derived WS URL are already in.
 - **Check:** two browsers open the same route; an edit in one appears in the other; a third client
   opening later sees the current state.
+- **DONE (2026-07-02):** per-connection subscriptions (`SyncState{subs}` captured by the run
+  lambda; set on **open** or **save** of a non-`_` route, dropped on send failure). An accepted
+  edit (match request) by a subscriber write-through saves the NAMED route and fans out
+  `23:<name>|<profile>|<rough>|<len>|<matched>` to the other subscribers — the broadcast carries
+  the server's own match, so receivers apply it directly (`ws.applyRemoteSync`: silent
+  `setPoints` under a `remoteApply` gate → **no echo loop**), and late joiners just open the
+  route (the disk is always current — open IS the replay). Save/delete broadcast the updated
+  list to every client. Gates: `tools/sync_test.sh` (3 clients: subscribe, broadcast, no echo,
+  non-subscriber quiet, late-join replay, unsubscribe-by-switching) and
+  `tools/client_sync_test.sh` (two headless-Chromium tabs: an edit in one appears in the other
+  and stays stable — no ping-pong). Fixed on the way: static `serve()` now strips query strings
+  ("/?x" 404'd). Last-writer-wins on concurrent edits (no OT/merge — fine at this scale).
 
 ### ☐ 20. Write-through persistence — close-the-browser-safe (§4, the headline)
 - **Goal:** the browser is disposable; nothing is ever lost.

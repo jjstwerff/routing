@@ -55,8 +55,11 @@ fn content_type(path: text) -> text {
 }
 
 // Serve a static file for an HTTP request. Relative to the launch dir (#cwd); no path traversal.
+// A query string ("/?tab2") is not part of the file path — strip it.
 fn serve(srv: server::Server, path: text) {
   rel = path;
+  q = rel.find("?");
+  if q >= 0 { rel = rel[..q]; }
   if rel == "/" { rel = "/index.html"; }
   if rel.contains("..") {
     srv.respond_404();
@@ -124,11 +127,19 @@ fn match_for(payload: text) -> vector<GeoPoint> {
 // WS msg 4 → "5:<length>|<polyline>": the matched route + its length (drawn under the sketch).
 // Step 16: the working sketch is write-through persisted under "_working" BEFORE matching, so a
 // closed tab / killed server loses nothing even when the match itself fails.
-fn reply_match(srv: server::Server, cid: integer, payload: text) {
+// Step 19: when the editor is ON a shared route, the accepted edit also write-through saves the
+// NAMED route and fans out to its other subscribers (rough + profile + this match — msg 23).
+fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: text) {
   wbar = payload.find("|");
   if wbar >= 0 { save_route("_working", payload[..wbar], payload[wbar + 1..]); }
   matched = match_for(payload);
-  _ = srv.send_to(cid, "5:{path_length_m(matched)}|{encode_points(matched)}");
+  reply = "{path_length_m(matched)}|{encode_points(matched)}";
+  _ = srv.send_to(cid, "5:{reply}");
+  rname = sub_name(state, cid);
+  if rname != "" && wbar >= 0 {
+    save_route(rname, payload[..wbar], payload[wbar + 1..]);
+    sync_edit(srv, state, cid, rname, "{payload}|{reply}");
+  }
 }
 
 // WS msg 6 → "7:<gpx>": the matched route as a GPX document (JS triggers the download).
@@ -222,6 +233,43 @@ fn reply_name(srv: server::Server, cid: integer, payload: text) {
   _ = srv.send_to(cid, "21:{proposed}");
 }
 
+// --- Live sync (PLAN step 19) --------------------------------------------------------------------
+// Per-connection subscription: opening or saving a named route puts that cid "on" the route.
+// Every accepted edit (match request) by a subscriber write-through saves the NAMED route and
+// broadcasts the new state — rough + profile + the just-computed match — to the other subscribers
+// (msg 23). Receivers apply it directly (no re-request), so there is no echo loop; late joiners
+// simply open the route — the disk is always current, so open IS the replay.
+
+struct ClientSub { cid: integer, name: text }
+struct SyncState { subs: vector<ClientSub> }
+
+// Put `cid` on `name` ("" = not on any shared route). In-place update or append.
+fn set_sub(state: SyncState, cid: integer, name: text) {
+  for s in state.subs {
+    if s.cid == cid { s.name = name; return; }
+  }
+  state.subs += [ClientSub { cid: cid, name: name }];
+}
+
+// The route `cid` is on, or "".
+fn sub_name(state: SyncState, cid: integer) -> text {
+  for s in state.subs {
+    if s.cid == cid { return s.name; }
+  }
+  ""
+}
+
+// Broadcast an accepted edit of `name` to every OTHER subscriber of it. A failed send means the
+// client is gone (lib/server absorbs disconnects) — drop its subscription.
+fn sync_edit(srv: server::Server, state: SyncState, from_cid: integer, name: text, body: text) {
+  for s in state.subs {
+    if s.name == name && s.cid != from_cid {
+      ok = srv.send_to(s.cid, "23:{name}|{body}");
+      if !ok { s.name = ""; }
+    }
+  }
+}
+
 // --- Named route store (PLAN step 16) -----------------------------------------------------------
 // One file per route under ROUTES_DIR: line 1 = display name, line 2 = profile, line 3 = points.
 // The disk IS the store (list = dir scan, open = read, save = write, delete = unlink) — no
@@ -265,32 +313,37 @@ fn routes_list() -> text {
   names
 }
 
-// WS msg 12 → "13:<names>": save/overwrite "<name>|<profile>|<points>", reply the updated list.
-fn reply_save(srv: server::Server, cid: integer, payload: text) {
+// WS msg 12 → "13:<names>": save/overwrite "<name>|<profile>|<points>". The saver is now ON that
+// route (step 19), and the updated list goes to EVERY client (panels stay fresh).
+fn reply_save(srv: server::Server, state: SyncState, cid: integer, payload: text) {
   bar = payload.find("|");
   rest = payload[bar + 1..];
   bar2 = rest.find("|");
   if bar >= 0 && bar2 >= 0 {
     save_route(payload[..bar], rest[..bar2], rest[bar2 + 1..]);
+    set_sub(state, cid, payload[..bar]);
   }
-  _ = srv.send_to(cid, "13:{routes_list()}");
+  _ = srv.broadcast("13:{routes_list()}");
 }
 
-// WS msg 16 → "17:<name>|<profile>|<points>" (or bare "17:" when the name is unknown).
-fn reply_open(srv: server::Server, cid: integer, payload: text) {
+// WS msg 16 → "17:<name>|<profile>|<points>" (or bare "17:" when the name is unknown). Opening a
+// shared (non-"_") route subscribes the opener to its live edits (step 19); since every accepted
+// edit write-through saves the file, this open IS the late-joiner replay.
+fn reply_open(srv: server::Server, state: SyncState, cid: integer, payload: text) {
   f = file("{ROUTES_DIR}/{route_slug(payload)}.route");
   if !f.exists() { _ = srv.send_to(cid, "17:"); return; }
   entry_lines = f.lines();
   nm = entry_lines[0] ?? "";
   pr = entry_lines[1] ?? "";
   pts = entry_lines[2] ?? "";
+  if nm != "" && !nm.starts_with("_") { set_sub(state, cid, nm); }
   _ = srv.send_to(cid, "17:{nm}|{pr}|{pts}");
 }
 
-// WS msg 18 → "13:<names>": delete by name, reply the updated list.
+// WS msg 18 → "13:<names>": delete by name; the updated list goes to every client.
 fn reply_delete(srv: server::Server, cid: integer, payload: text) {
   _ = delete("{ROUTES_DIR}/{route_slug(payload)}.route");
-  _ = srv.send_to(cid, "13:{routes_list()}");
+  _ = srv.broadcast("13:{routes_list()}");
 }
 
 // Fetch (disk-cached) + decode one terrain tile "z/x/y" and append its heights to `tiles`.
@@ -348,19 +401,20 @@ fn main() {
     return;
   }
   println("routing server: http + ws on http://localhost:{PORT}");
+  state = SyncState { subs: [] };   // step 19: per-connection route subscriptions
   srv.run(fn(ev: server::WsEvent) {
     if ev.http {
       serve(srv, ev.path);
     } else if ev.message {
       if ev.msg_id == 1 { reply_length(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 2 { reply_corridor(srv, ev.cid, ev.payload); }
-      else if ev.msg_id == 4 { reply_match(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 4 { reply_match(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 6 { reply_export(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 8 { reply_import(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 10 { reply_elevation(srv, ev.cid, ev.payload); }
-      else if ev.msg_id == 12 { reply_save(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 12 { reply_save(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 14 { _ = srv.send_to(ev.cid, "13:{routes_list()}"); }
-      else if ev.msg_id == 16 { reply_open(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 16 { reply_open(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 18 { reply_delete(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 20 { reply_name(srv, ev.cid, ev.payload); }
     }
