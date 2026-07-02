@@ -41,3 +41,33 @@ fn test_match_15m_off() {
     assert(route[j].lat == route2[j].lat && route[j].lon == route2[j].lon, "deterministic point {j}");
   }
 }
+
+// §10.2 full matcher: an INTERMEDIATE tap between two parallel ways (road south at 52.0, unpaved
+// path north at 52.0002, shared endpoints) placed marginally NEARER the wrong-for-profile way.
+// The old nearest-node matcher committed the tap to the road by geometry; the Viterbi's candidate
+// set lets the ACTIVITY decide the whole assignment — running_trail must stay on the path.
+fn test_candidate_tap_resolves_by_activity() {
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "",
+    coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 },
+              GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.003 },
+              GeoPoint { lat: 52.0001, lon: 5.004 } ] };
+  foot = Way { highway: "path", surface: "ground", tracktype: "",
+    coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.001 },
+              GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0002, lon: 5.003 },
+              GeoPoint { lat: 52.0001, lon: 5.004 } ] };
+  g = build_graph([road, foot]);
+  // Middle tap ~0.5 m nearer the ROAD (52.0000995 vs the 52.0001 centreline): both parallel nodes
+  // sit inside the anchor band, deviations are near-equal, and only the profile should decide.
+  trace = [ GeoPoint { lat: 52.0001, lon: 5.0005 },
+            GeoPoint { lat: 52.0000995, lon: 5.002 },
+            GeoPoint { lat: 52.0001, lon: 5.0035 } ];
+  trail = match_route(g, trace, "running_trail");
+  found_path = false;
+  found_road = false;
+  for ti in 0..len(trail) {
+    if trail[ti].lat == 52.0002 { found_path = true; }
+    if trail[ti].lat == 52.0 { found_road = true; }
+  }
+  assert(found_path, "Trail stays on the unpaved path despite the road-leaning tap");
+  assert(!found_road, "Trail never dips onto the road");
+}

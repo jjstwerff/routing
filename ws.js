@@ -89,6 +89,7 @@
     try { ws = new WebSocket(WS_URL); } catch (e) { return; }
     ws.addEventListener("open", () => {
       flush();
+      persistNow();                         // edits made while offline reach the store (msg 4 no longer writes _working)
       if (NS.routes) NS.routes.onConnect(); // step 16: restore _working + prefetch the list
     });
     ws.addEventListener("message", (e) => {
@@ -107,6 +108,15 @@
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
   }
 
+  // Step 20: the instant persist — `_working`'s SINGLE writer. Carries the recent undo stack
+  // ("#"-separated snapshots) so an unfinished sketch resumes with undo intact (draft save).
+  function persistNow() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !latest || latest.length < 2) return;
+    const hist = NS.undo && NS.undo.exportHistory
+      ? NS.undo.exportHistory().map(encode).join("#") : "";
+    ws.send("24:" + profileOf() + "|" + encode(latest) + "|" + hist);
+  }
+
   // Called from app.js on every rough-layer change (debounced — re-match on edit-release).
   // During a remote-sync apply only `latest` updates (so later local edits build on the synced
   // state) — no flush is scheduled, or the peers would ping-pong the same edit forever.
@@ -115,9 +125,7 @@
   function sendPoints(points, committed) {
     latest = points;
     if (remoteApply) return;
-    if (committed && ws && ws.readyState === WebSocket.OPEN && points.length >= 2) {
-      ws.send("24:" + profileOf() + "|" + encode(points));
-    }
+    if (committed) persistNow();
     clearTimeout(debounce);
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }

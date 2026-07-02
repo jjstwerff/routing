@@ -88,6 +88,20 @@ pub fn overpass_query(b: BBox) -> text {
   "[out:json][timeout:25];way[\"highway\"]({b.min_lat},{b.min_lon},{b.max_lat},{b.max_lon});out geom;"
 }
 
+// Overpass QL for every `highway` way within `margin_m` of the rough polyline — the TIGHT
+// corridor (§10: a long thin route downloads a sliver instead of its whole bounding rectangle).
+// The polyline is Douglas–Peucker-decimated to a third of the margin first, which bounds the
+// query size while keeping every original point within margin/3 of the queried line.
+pub fn overpass_corridor_query(pts: vector<GeoPoint>, margin_m: float) -> text {
+  slim = douglas_peucker(pts, margin_m / 3.0);
+  coords = "";
+  for ci in 0..len(slim) {
+    if coords.len() > 0 { coords += ","; }
+    coords += "{slim[ci].lat},{slim[ci].lon}";
+  }
+  "[out:json][timeout:25];way[\"highway\"](around:{margin_m},{coords});out geom;"
+}
+
 // A string tag value, or "" when the tag is absent (`field` on a missing key returns JNull, whose
 // as_text() is the literal "null" — so gate on the JString kind).
 fn tag(obj: JsonValue, name: text) -> text {
@@ -130,6 +144,10 @@ pub fn parse_ways(response: text) -> vector<Way> {
 
 BIG = 1000000000.0;   // stand-in for infinity in Dijkstra (real path costs stay far below this)
 DEV_K = 3.0;          // deviation weight: cost = length * (1 + DEV_K * deviation_m); >> 1 hugs the line
+VITERBI_K = 4;        // max candidate anchors per tap (§10.2 full matcher)
+ANCHOR_BAND_M = 25.0; // tap accuracy: only nodes within nearest+band are candidate anchors —
+                      // within the band the Viterbi decides, beyond it geometry already has
+EMIT_K = 1.0;         // per-metre anchor-distance cost (orders equal-deviation candidates)
 
 struct CoordIdx { coord: text, idx: integer }
 struct GNode { lat: float, lon: float }
@@ -215,15 +233,30 @@ fn point_trace_m(plat: float, plon: float, trace: vector<GeoPoint>) -> float {
   best
 }
 
-// Nearest graph node to a point (linear scan — corridor graphs are small).
-fn nearest_node(g: Graph, lat: float, lon: float) -> integer {
-  best = -1;
-  bestd = BIG;
-  for i in 0..len(g.nodes) {
-    d = haversine_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
-    if d < bestd { bestd = d; best = i; }
+// Candidate anchors for a tap: the nodes within ANCHOR_BAND_M of the nearest one (max VITERBI_K),
+// nearest first. Linear selection scan — corridor graphs are small. A lone candidate degenerates
+// the Viterbi to the old nearest-node matcher by construction.
+fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
+  out: vector<integer> = [];
+  taken: vector<boolean> = [];
+  for i in 0..len(g.nodes) { taken += [false]; }
+  first_d = -1.0;
+  for _k in 0..VITERBI_K {
+    best = -1;
+    bestd = BIG;
+    for i in 0..len(g.nodes) {
+      if !(taken[i] ?? true) {
+        d = haversine_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
+        if d < bestd { bestd = d; best = i; }
+      }
+    }
+    if best < 0 { break; }
+    if first_d < 0.0 { first_d = bestd; }
+    if bestd > first_d + ANCHOR_BAND_M { break; }
+    out += [best];
+    taken[best] = true;
   }
-  best
+  out
 }
 
 // --- Activity × sub-mode profiles (PLAN step 8, DESIGN §6) -------------------------------------
@@ -314,12 +347,15 @@ fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>, profile: text) -> f
   e.length * (1.0 + DEV_K * dev + way_penalty(profile, e.hw, e.surface, e.tracktype))
 }
 
-// Least-cost (deviation + activity) node path from src to dst; [] if dst is unreachable. `trace` is
-// the polyline the deviation term measures against — for piecewise matching, the single local segment.
-fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, profile: text) -> vector<integer> {
+// A single-source least-cost tree (deviation-to-`trace` + activity), over the whole graph — one
+// run serves every candidate target of the next Viterbi stage.
+struct DijTree { dist: vector<float>, prevn: vector<integer> }
+
+// One assignment's accumulated node path (a vector field needs a struct wrapper to live in a vector).
+struct NodePath { nodes: vector<integer> }
+
+fn dijkstra_tree(g: Graph, src: integer, trace: vector<GeoPoint>, profile: text) -> DijTree {
   n = len(g.nodes);
-  out: vector<integer> = [];
-  if n == 0 { return out; }
   dist: vector<float> = [];
   prevn: vector<integer> = [];
   seen: vector<boolean> = [];
@@ -328,6 +364,7 @@ fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, 
     prevn += [-1];
     seen += [false];
   }
+  if n == 0 { return DijTree { dist: dist, prevn: prevn }; }
   dist[src] = 0.0;
   for _it in 0..n {
     u = -1;
@@ -337,7 +374,6 @@ fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, 
     }
     if u < 0 { break; }
     seen[u] = true;
-    if u == dst { break; }
     for ei in 0..len(g.edges) {
       e = g.edges[ei];
       v = -1;
@@ -352,44 +388,131 @@ fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, 
       }
     }
   }
-  if dst != src && prevn[dst] < 0 { return out; }   // unreachable
+  DijTree { dist: dist, prevn: prevn }
+}
+
+// The src→dst node path recorded in a tree; [] when dst is unreachable.
+fn tree_path(t: DijTree, src: integer, dst: integer) -> vector<integer> {
+  out: vector<integer> = [];
+  n = len(t.prevn);
+  if dst < 0 || dst >= n { return out; }
+  if dst != src && (t.prevn[dst] ?? -1) < 0 { return out; }
   rev: vector<integer> = [];
   cur = dst;
   for _k in 0..n {
     rev += [cur];
     if cur == src { break; }
-    cur = prevn[cur] ?? -1;
+    cur = t.prevn[cur] ?? -1;
     if cur < 0 { break; }
   }
   for r in 0..len(rev) { out += [rev[len(rev) - 1 - r]]; }   // src → dst order
   out
 }
 
-// The matched detailed route (PLAN step 6 + the §10.2 matcher-depth upgrade). Routes PIECEWISE
-// through consecutive trace points — each segment is its own least-cost (deviation-to-that-segment +
-// activity) path — so the route COVERS THE WHOLE TRACE, loops and out-and-backs included, not just
-// the endpoints. A 2-point trace is a single piece (endpoint-to-endpoint, where activity still
-// decides between parallel ways); a multi-point loop becomes many pieces that trace it. (Full HMM
-// with candidate sets — for an intermediate point drawn *exactly* between two parallel ways — is the
-// further refinement; an unreachable piece leaves a gap, pending adaptive widening.)
+// The matched detailed route — the §10.2 FULL matcher. Per tap, a CANDIDATE anchor set
+// (nearest_nodes — everything within tap accuracy); over the trace, a Viterbi: the route is the
+// globally least-cost combination of anchors (deviation-to-each-piece + activity + anchor
+// distance), so no tap is ever committed to an anchor except as part of the winning assignment —
+// a tap drawn exactly between two parallel ways resolves by ACTIVITY, not by float luck. One
+// candidate per tap degenerates to the old nearest-node piecewise matcher by construction. An
+// unreachable stage freezes the best prefix and restarts there (the piece gap survives, as before).
 pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
   detailed: vector<GeoPoint> = [];
   if len(g.nodes) == 0 { return detailed; }
   if len(trace) < 2 { return detailed; }
+
+  cands = nearest_nodes(g, trace[0].lat, trace[0].lon);
+  if len(cands) == 0 { return detailed; }
+  costs: vector<float> = [];
+  paths: vector<NodePath> = [];
+  for c0 in 0..len(cands) {
+    a0 = cands[c0] ?? 0;
+    costs += [EMIT_K * haversine_ll(trace[0].lat, trace[0].lon, g.nodes[a0].lat, g.nodes[a0].lon)];
+    paths += [NodePath { nodes: [a0] }];
+  }
+
   for i in 1..len(trace) {
-    src = nearest_node(g, trace[i - 1].lat, trace[i - 1].lon);
-    dst = nearest_node(g, trace[i].lat, trace[i].lon);
-    if src == dst { continue; }
     seg: vector<GeoPoint> = [trace[i - 1], trace[i]];
-    path = dijkstra_path(g, src, dst, seg, profile);
-    for j in 0..len(path) {
-      p = GeoPoint { lat: g.nodes[path[j]].lat, lon: g.nodes[path[j]].lon };
-      if len(detailed) > 0 {
-        last = detailed[len(detailed) - 1];
-        if last.lat == p.lat && last.lon == p.lon { continue; }   // skip the duplicate join node
-      }
-      detailed += [p];
+    nxt = nearest_nodes(g, trace[i].lat, trace[i].lon);
+    if len(nxt) == 0 { continue; }
+    ncosts: vector<float> = [];
+    nfrom: vector<integer> = [];
+    npiece: vector<NodePath> = [];
+    for x0 in 0..len(nxt) {
+      ncosts += [BIG];
+      nfrom += [-1];
+      npiece += [NodePath { nodes: [] }];
     }
+    for c in 0..len(cands) {
+      tree = dijkstra_tree(g, cands[c] ?? 0, seg, profile);
+      for x in 0..len(nxt) {
+        ax = nxt[x] ?? 0;
+        td = tree.dist[ax] ?? BIG;
+        if td >= BIG { continue; }
+        total = (costs[c] ?? BIG) + td
+              + EMIT_K * haversine_ll(trace[i].lat, trace[i].lon, g.nodes[ax].lat, g.nodes[ax].lon);
+        if total < (ncosts[x] ?? BIG) {
+          ncosts[x] = total;
+          nfrom[x] = c;
+          npiece[x] = NodePath { nodes: tree_path(tree, cands[c] ?? 0, ax) };
+        }
+      }
+    }
+
+    reachable = false;
+    for x1 in 0..len(nxt) { if (ncosts[x1] ?? BIG) < BIG { reachable = true; } }
+    if !reachable {
+      // Gap: no candidate pair connects. Freeze the best prefix and restart the chain at this
+      // tap — matching v1's per-piece gap semantics (the route resumes at the next anchor).
+      bi = 0;
+      for b in 0..len(costs) { if (costs[b] ?? BIG) < (costs[bi] ?? BIG) { bi = b; } }
+      frozen = paths[bi];
+      costs = [];
+      paths = [];
+      for x2 in 0..len(nxt) {
+        a2 = nxt[x2] ?? 0;
+        costs += [EMIT_K * haversine_ll(trace[i].lat, trace[i].lon, g.nodes[a2].lat, g.nodes[a2].lon)];
+        pn: vector<integer> = [];
+        for q0 in 0..len(frozen.nodes) { pn += [frozen.nodes[q0] ?? -1]; }
+        pn += [a2];
+        paths += [NodePath { nodes: pn }];
+      }
+      cands = nxt;
+      continue;
+    }
+
+    // Extend: new path = winning predecessor's path + the piece (minus its duplicated src node).
+    npaths: vector<NodePath> = [];
+    for x3 in 0..len(nxt) {
+      f = nfrom[x3] ?? -1;
+      pn2: vector<integer> = [];
+      if f >= 0 {
+        base = paths[f];
+        for q1 in 0..len(base.nodes) { pn2 += [base.nodes[q1] ?? -1]; }
+        piece = npiece[x3];
+        for q2 in 1..len(piece.nodes) { pn2 += [piece.nodes[q2] ?? -1]; }
+      }
+      npaths += [NodePath { nodes: pn2 }];
+    }
+    cands = nxt;
+    costs = ncosts;
+    paths = npaths;
+  }
+
+  // The winning assignment → GeoPoints (skipping consecutive coordinate duplicates, as before).
+  wi = 0;
+  for w in 0..len(costs) { if (costs[w] ?? BIG) < (costs[wi] ?? BIG) { wi = w; } }
+  win = paths[wi];
+  if len(win.nodes) < 2 { return detailed; }   // nothing routable — [] like the old matcher
+  for j in 0..len(win.nodes) {
+    nj = win.nodes[j] ?? -1;
+    if nj < 0 { continue; }
+    p = GeoPoint { lat: g.nodes[nj].lat, lon: g.nodes[nj].lon };
+    if len(detailed) > 0 {
+      last = detailed[len(detailed) - 1];
+      if last.lat == p.lat && last.lon == p.lon { continue; }
+    }
+    detailed += [p];
   }
   detailed
 }

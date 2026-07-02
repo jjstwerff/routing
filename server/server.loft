@@ -13,7 +13,7 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, path_length_m, bounds, overpass_query, parse_ways, build_graph, match_route_closed, gpx_export, clean_track,
+use routing_kernel::(GeoPoint, path_length_m, overpass_corridor_query, parse_ways, build_graph, match_route_closed, gpx_export, clean_track,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
@@ -84,7 +84,7 @@ fn reply_length(srv: server::Server, cid: integer, payload: text) {
 fn reply_corridor(srv: server::Server, cid: integer, payload: text) {
   pts = parse_points(payload);
   if len(pts) < 1 { _ = srv.send_to(cid, "3:0"); return; }
-  q = overpass_query(bounds(pts, CORRIDOR_MARGIN_M));
+  q = overpass_corridor_query(pts, CORRIDOR_MARGIN_M);
   resp = web::http_post(OVERPASS, q);
   if resp.status != 200 {
     _ = srv.send_to(cid, "3:err {resp.status}");
@@ -106,7 +106,9 @@ fn encode_points(pts: vector<GeoPoint>) -> text {
 // The full match (PLAN step 7): fetch the corridor → build the graph → match the rough trace onto
 // real ways → reply "5:<matched_length_m>|<lat,lon;lat,lon;...>". The client draws the polyline
 // under the rough sketch and shows the length.
-// Parse "<profile>|<points>", fetch the corridor, and return the matched (possibly closed) route.
+// Parse "<profile>|<points>", fetch the TIGHT corridor (§10 — around: the polyline, not a bbox),
+// and return the matched (possibly closed) route. An empty match ADAPTIVELY WIDENS the corridor
+// (3× per try, twice) before giving up — a sketch drawn across a field finds the nearest ways.
 fn match_for(payload: text) -> vector<GeoPoint> {
   empty: vector<GeoPoint> = [];
   bar = payload.find("|");
@@ -118,20 +120,28 @@ fn match_for(payload: text) -> vector<GeoPoint> {
   }
   pts = parse_points(spec);
   if len(pts) < 2 { return empty; }
-  resp = web::http_post(OVERPASS, overpass_query(bounds(pts, CORRIDOR_MARGIN_M)));
-  if resp.status != 200 { return empty; }
-  g = build_graph(parse_ways(resp.body));
-  match_route_closed(g, pts, profile, ROUND_TRIP_RATIO)
+  margin = CORRIDOR_MARGIN_M;
+  for _try in 0..3 {
+    resp = web::http_post(OVERPASS, overpass_corridor_query(pts, margin));
+    if resp.status == 200 {
+      g = build_graph(parse_ways(resp.body));
+      matched = match_route_closed(g, pts, profile, ROUND_TRIP_RATIO);
+      if len(matched) >= 2 { return matched; }
+      margin = margin * 3.0;   // empty corridor → widen: 30 → 90 → 270 m
+    }
+    // non-200 (Overpass 504/rate limit) — transient; just try again
+  }
+  empty
 }
 
 // WS msg 4 → "5:<length>|<polyline>": the matched route + its length (drawn under the sketch).
-// Step 16: the working sketch is write-through persisted under "_working" BEFORE matching, so a
-// closed tab / killed server loses nothing even when the match itself fails.
-// Step 19: when the editor is ON a shared route, the accepted edit also write-through saves the
-// NAMED route and fans out to its other subscribers (rough + profile + this match — msg 23).
+// `_working` is NOT written here — msg 24 (the instant persist, which carries the undo history)
+// is its single writer; every committed edit and every reconnect sends one, so a 3-line rewrite
+// here would only clobber the history line.
+// Step 19: when the editor is ON a shared route, the accepted edit write-through saves the NAMED
+// route and fans out to its other subscribers (rough + profile + this match — msg 23).
 fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: text) {
   wbar = payload.find("|");
-  if wbar >= 0 { save_route("_working", payload[..wbar], payload[wbar + 1..]); }
   matched = match_for(payload);
   reply = "{path_length_m(matched)}|{encode_points(matched)}";
   _ = srv.send_to(cid, "5:{reply}");
@@ -336,8 +346,9 @@ fn reply_open(srv: server::Server, state: SyncState, cid: integer, payload: text
   nm = entry_lines[0] ?? "";
   pr = entry_lines[1] ?? "";
   pts = entry_lines[2] ?? "";
+  hist = entry_lines[3] ?? "";   // only `_working` carries one (the persisted undo stack)
   if nm != "" && !nm.starts_with("_") { set_sub(state, cid, nm); }
-  _ = srv.send_to(cid, "17:{nm}|{pr}|{pts}");
+  _ = srv.send_to(cid, "17:{nm}|{pr}|{pts}|{hist}");
 }
 
 // WS msg 18 → "13:<names>": delete by name; the updated list goes to every client. Subscriptions
@@ -352,15 +363,27 @@ fn reply_delete(srv: server::Server, state: SyncState, cid: integer, payload: te
 }
 
 // WS msg 24 → "25:": persist the working sketch (and the subscribed named route) WITHOUT
-// matching — the instant-durability half of step 20. The client sends this on EVERY committed
-// edit, un-debounced, so a tab killed inside the match-debounce window loses nothing; the
-// debounced match-commit follows and does the step-19 sync fan-out.
+// matching — the instant-durability half of step 20. "<profile>|<points>[|<history>]": the
+// optional third field is the client's undo stack (opaque here — "#"-separated snapshots), stored
+// as line 4 of `_working` only, so an unfinished sketch resumes WITH its undo intact (the PLAN's
+// deferred draft-save). This handler is `_working`'s single writer.
 fn reply_persist(srv: server::Server, state: SyncState, cid: integer, payload: text) {
   pbar = payload.find("|");
   if pbar >= 0 {
-    save_route("_working", payload[..pbar], payload[pbar + 1..]);
+    profile = payload[..pbar];
+    rest = payload[pbar + 1..];
+    hbar = rest.find("|");
+    points = rest;
+    history = "";
+    if hbar >= 0 {
+      points = rest[..hbar];
+      history = rest[hbar + 1..];
+    }
+    _ = mkdir_all(ROUTES_DIR);
+    f = file("{ROUTES_DIR}/_working.route");
+    f.write("_working\n{profile}\n{points}\n{history}");
     rname = sub_name(state, cid);
-    if rname != "" { save_route(rname, payload[..pbar], payload[pbar + 1..]); }
+    if rname != "" { save_route(rname, profile, points); }   // named saves stay history-free
   }
   _ = srv.send_to(cid, "25:");
 }

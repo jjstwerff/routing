@@ -398,10 +398,31 @@ accurate length. Ship nothing fancy; prove the pipeline.
 ---
 
 ## Deferred (post-v1) — from DESIGN.md §10
-- **"Not-done" / draft save:** a save type bundling work-in-progress state **including the undo
-  history**, so an unfinished route resumes with undo intact. In Mode B the working state is already
-  continuously persisted (step 20); there the remaining piece is persisting the **undo history**
-  itself.
+- **☑ "Not-done" / draft save (2026-07-02):** the instant persist (msg 24) now carries the recent
+  undo stack ("#"-separated snapshots, last 30) as `_working`'s 4th line; restoring the working
+  sketch imports it, so an unfinished route resumes **with undo intact** (CDP gate: reload →
+  `canUndo`, one undo steps the restored 3-point sketch back to 2). `_working` gained a SINGLE
+  writer on the way: msg 24 (the match no longer autosaves it — a 3-line rewrite would clobber
+  the history; offline edits persist via a reconnect-persist instead).
+
+## Post-v1 matcher/corridor upgrades (§10.2) — 2026-07-02
+
+- **☑ Full matcher — candidate sets + Viterbi:** per tap, ALL nodes within tap accuracy
+  (`ANCHOR_BAND_M` = 25 m of the nearest, max `VITERBI_K` = 4) are candidate anchors; a Viterbi
+  over the trace picks the globally least-cost assignment (deviation + activity + `EMIT_K`·anchor
+  distance), so a tap drawn between two parallel ways resolves by ACTIVITY. One candidate
+  degenerates to the old nearest-node matcher by construction (whole suite stayed green
+  unchanged). Gate: a tap 0.5 m nearer the wrong-for-profile way stays on the profile's way —
+  and the control (band = 0 → old behaviour) fails it. One shared Dijkstra (`dijkstra_tree`)
+  serves all candidate targets per stage.
+- **☑ Tight corridor + adaptive widening:** the corridor download is now Overpass
+  `around:<margin>` along the Douglas–Peucker-decimated rough polyline (a long route downloads a
+  sliver, not its bounding rectangle); an EMPTY match widens the margin 3× (30 → 90 → 270 m)
+  before giving up, and a non-200 (Overpass 504/rate-limit) simply retries. Live: Vondelpark
+  matched 386.7 m / 20 pts off the first tight fetch, byte-identical to the offline fixture.
+- **Still deferred:** offline Mode A (blocked upstream — loft browser data-in), WGS84-ellipsoidal
+  length, box/lasso select, GPX retrace flagging, elevation crosshair/tooltip, taking Nominatim/
+  Overpass calls off the single-threaded event loop.
 
 ---
 

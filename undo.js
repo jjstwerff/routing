@@ -76,8 +76,22 @@
     if (snackEl) snackEl.classList.add("hidden");
   }
 
+  // Draft save (post-v1 deferred item): the recent history travels with the working sketch, so an
+  // unfinished route resumes with undo intact. Export = the last EXPORT_MAX states up to the
+  // current one (the redo tail doesn't survive a reload); import replaces the stack wholesale.
+  const EXPORT_MAX = 30;
+  function exportHistory() {
+    const from = Math.max(0, idx - (EXPORT_MAX - 1));
+    return stack.slice(from, idx + 1).map(snap);
+  }
+  function importHistory(snapshots) {
+    stack.length = 0;
+    for (const s of snapshots) stack.push(snap(s));
+    idx = stack.length - 1;
+  }
+
   NS.undo = {
-    record, undo, redo,
+    record, undo, redo, exportHistory, importHistory,
     get canUndo() { return idx > 0; },
     get canRedo() { return idx < stack.length - 1; },
   };

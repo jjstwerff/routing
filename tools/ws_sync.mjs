@@ -58,7 +58,7 @@ const prevWorking = await A.request("16:_working", (r) => r.startsWith("17:"));
 await A.request(`12:${X}|walking_paved|${pts1}`, (r) => r.startsWith("13:"));
 
 let r = await B.request(`16:${X}`, (r2) => r2.startsWith("17:"));
-check("B opens X at pts1", r === `17:${X}|walking_paved|${pts1}`, r.slice(0, 60));
+check("B opens X at pts1", r === `17:${X}|walking_paved|${pts1}|`, r.slice(0, 60));
 
 A.drain(); B.drain(); C.drain();
 A.send(`4:walking_paved|${pts2}`);
@@ -69,7 +69,7 @@ check("A gets no echo", await A.quiet(is23, 800));
 check("C (not subscribed) stays quiet", await C.quiet(is23, 200));
 
 r = await C.request(`16:${X}`, (r2) => r2.startsWith("17:"));
-check("late joiner C opens X at pts2", r === `17:${X}|walking_paved|${pts2}`, r.slice(0, 60));
+check("late joiner C opens X at pts2", r === `17:${X}|walking_paved|${pts2}|`, r.slice(0, 60));
 
 await B.request(`12:${Y}|cycling_road|${pts1}`, (r2) => r2.startsWith("13:"));
 A.drain(); B.drain(); C.drain();
@@ -81,7 +81,11 @@ check("B (switched to Y) stays quiet", await B.quiet(is23, 1200));
 
 await A.request(`18:${X}`, (r2) => r2.startsWith("13:"));
 await A.request(`18:${Y}`, (r2) => r2.startsWith("13:"));
-if (prevWorking.length > "17:".length) await A.request("12:" + prevWorking.slice(3), (r2) => r2.startsWith("13:"));
+if (prevWorking.length > "17:".length) {
+  // Restore via msg 24 (_working's single writer), passing the profile|points|history tail through.
+  const body = prevWorking.slice(3);
+  await A.request("24:" + body.slice(body.indexOf("|") + 1), (r2) => r2.startsWith("25:"));
+}
 
 console.log(fail ? "FAILURES" : "ALL PASS — subscribe, broadcast (echo-free), late-join replay, unsubscribe-by-switch.");
 for (const c of [A, B, C]) c.ws.close();

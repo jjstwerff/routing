@@ -51,9 +51,11 @@ const s1 = await evaluate(`(async () => {
   routing.rough.setPoints([{ lat: 52.0, lon: 4.97 }, { lat: 52.0, lon: 5.0 }]);
   await sleep(1500);   // let persist + match-commit settle
   document.getElementById("routes-toggle").click();
-  // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Gravel ride"); typing overrides.
+  // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Gravel ride"); typing
+  // overrides. Up to 30 s: the reply always comes (failed geocode → the length·type fallback),
+  // but the live Nominatim lookup blocks the single-threaded server while it runs.
   let prop = "";
-  for (let i = 0; i < 60 && !prop; i++) {
+  for (let i = 0; i < 120 && !prop; i++) {
     await sleep(250);
     prop = document.getElementById("route-name").value;
   }
@@ -82,6 +84,11 @@ const s2 = await evaluate(`(async () => {
   for (let i = 0; i < 100 && !(routing.roughPoints && routing.roughPoints.length >= 2); i++) await sleep(100);
   out.restoredPoints = (routing.roughPoints || []).length;
   out.restoredProfile = routing.getProfile();
+  // Draft save: the undo stack survives the reload — one undo steps 3 points back to 2.
+  out.canUndo = routing.undo.canUndo;
+  routing.undo.undo();
+  out.undonePoints = (routing.roughPoints || []).length;
+  routing.undo.redo();
   document.getElementById("routes-toggle").click();
   let btn = null;
   for (let i = 0; i < 40 && !btn; i++) {
@@ -122,6 +129,7 @@ console.log("PHASE2", JSON.stringify(s2));
 const ok = s1.panelClosedByDefault && s1.savedListed
   && s1.proposedName.endsWith("2.1 km · Gravel ride")
   && s2.restoredPoints === 3 && s2.restoredProfile === "running_trail"
+  && s2.canUndo && s2.undonePoints === 2
   && s2.openedPoints === 3 && s2.openedProfile === "running_trail"
   && s2.panelClosedAfterOpen && s2.deleted;
 console.log(ok ? "PASS" : "FAIL");

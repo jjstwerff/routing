@@ -1,7 +1,7 @@
 // Tests for the corridor helpers (PLAN step 5): bbox, Overpass query, and response parsing.
 // Deterministic — parses a checked-in fixture, no network. Run:
 //   loft --tests --lib lib lib/routing_kernel/tests/corridor.loft
-use routing_kernel::(GeoPoint, bounds, overpass_query, parse_ways);
+use routing_kernel::(GeoPoint, bounds, overpass_query, overpass_corridor_query, parse_ways);
 
 fn test_parse_ways() {
   ways = parse_ways(file("fixtures/overpass_sample.json").content());
@@ -29,4 +29,19 @@ fn test_bounds_and_query() {
   assert(q.contains("[out:json]"), "query is out:json");
   assert(q.contains("way[\"highway\"]"), "query filters highways");
   assert(q.contains("out geom;"), "query asks for geometry");
+}
+
+// The tight corridor (§10): an around:-polyline query, Douglas–Peucker-decimated — a straight
+// run keeps only its endpoints, a real bend survives. Exact strings, hand-checked.
+fn test_corridor_query() {
+  straight = [ GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.0, lon: 5.001 },
+               GeoPoint { lat: 52.0, lon: 5.002 } ];
+  q1 = overpass_corridor_query(straight, 30.0);
+  assert(q1 == "[out:json][timeout:25];way[\"highway\"](around:30,52,5,52,5.002);out geom;",
+         "straight decimates to endpoints: {q1}");
+  bent = [ GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.001, lon: 5.001 },
+           GeoPoint { lat: 52.0, lon: 5.002 } ];
+  q2 = overpass_corridor_query(bent, 30.0);
+  assert(q2 == "[out:json][timeout:25];way[\"highway\"](around:30,52,5,52.001,5.001,52,5.002);out geom;",
+         "a bend survives decimation: {q2}");
 }

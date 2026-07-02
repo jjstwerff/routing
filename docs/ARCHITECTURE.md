@@ -84,28 +84,35 @@ import, elevation), all asserted **interpret == native**.
 | `10:<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open |
 | `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |
 | `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
-| `16:<name>` | `17:<name>\|<profile>\|<pts>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch |
+| `16:<name>` | `17:<name>\|<profile>\|<pts>\|<history>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch WITH its undo stack (history is empty for named routes) |
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
-| `24:<profile>\|<pts>` | `25:` | **instant persist** — sent on every COMMITTED edit, un-debounced: saves `_working` + the subscribed route, no match, no fan-out (durability unit = the gesture; sync unit = the accepted edit) |
+| `24:<profile>\|<pts>\|<history>` | `25:` | **instant persist** — sent on every COMMITTED edit (and on reconnect), un-debounced: saves `_working` (its SINGLE writer; history = the undo stack, "#"-separated snapshots ≤30, stored as line 4) + the subscribed route (history-free), no match, no fan-out |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
 `<profile>` = `<activity>_<submode>`, e.g. `running_trail`, `cycling_road`.
 
-## The matcher (step 6 + the depth upgrade)
+## The matcher (step 6 → the §10.2 full matcher)
 
 1. `build_graph`: nodes are OSM way vertices **deduped by exact coordinate** (validated on real data:
    shared intersection nodes have identical coords → one connected graph). Edges = way segments in a
    **flat list** (not a nested adjacency — that hit a loft O(n²) perf bug, [loft-lang/loft#475](https://github.com/loft-lang/loft/issues/475); Dijkstra scans the edge list, O(V·E)).
-2. `match_route` routes **piecewise through consecutive trace points** — each segment is its own
-   least-cost path, `cost = length · (1 + DEV_K·deviation_to_that_segment + way_penalty)`
-   (`DEV_K=3`, deviation-dominant so it hugs the drawn line; `way_penalty ∈ [-0.7,+2]` is a bounded
-   activity tie-breaker). Piecewise = it **covers the whole trace** (loops, out-and-backs); a 2-point
-   trace is a single piece where activity decides between parallel start→finish ways.
+2. `match_route` — **candidate sets + Viterbi**: per tap, every node within tap accuracy
+   (`ANCHOR_BAND_M` = 25 m of the nearest, max `VITERBI_K` = 4) is a candidate anchor; the route is
+   the globally least-cost assignment over all combinations, where a piece's cost is
+   `length · (1 + DEV_K·deviation_to_that_segment + way_penalty)` (`DEV_K=3`, deviation-dominant;
+   `way_penalty ∈ [-0.7,+2]` the bounded activity tie-breaker) plus `EMIT_K`·anchor-distance. So a
+   tap drawn between two parallel ways resolves by **activity**, not float luck; one candidate
+   degenerates to plain nearest-node piecewise matching. Pieces still cover the **whole trace**
+   (loops, out-and-backs); an unreachable stage freezes the best prefix and restarts (a gap).
+   One `dijkstra_tree` per (stage, source-candidate) serves all next-stage targets.
 3. `match_route_closed` appends a closing segment when `is_round_trip` (start≈finish relative to
    total length, ratio 0.25).
+4. **Corridor download**: Overpass `around:<margin>` along the Douglas–Peucker-decimated rough
+   polyline (`overpass_corridor_query` — a sliver, not a bbox); an empty match **adaptively
+   widens** 3× (30→90→270 m), and a non-200 retries (Overpass 504s are routine).
 
 ## Build & run
 
@@ -156,9 +163,10 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
 
 ## Known limitations & deferred work
 
-- **Matcher:** an intermediate point drawn *exactly* between two parallel ways snaps to one (full HMM
-  candidate-set Viterbi would let activity decide there too). The corridor is a **bbox+margin**, not
-  a tight polyline buffer. No **adaptive widening** on a gap yet (an unreachable piece leaves a gap).
+- **Matcher:** a PARTIAL gap (one unreachable piece inside an otherwise-matched trace) doesn't
+  trigger corridor widening — only a fully-empty match does. Candidate anchors are graph NODES;
+  a tap far from any vertex of the right way can still anchor elsewhere (edge-projection anchors
+  are the next refinement).
 - **Length** is spherical haversine; the WGS84-ellipsoidal upgrade is deferred.
 - **Elevation:** nearest-pixel sampling (no bilinear/tile-seam blend) at z ≤ 13 — fine for ↑/↓
   totals, a touch steppy on a zoomed-in profile. No tooltip/crosshair on the dock chart yet.
@@ -169,9 +177,10 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
-- **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot). Deferred
-  post-v1 work: full HMM matcher, tight-corridor download, offline Mode A, draft saves with undo
-  history (see PLAN.md).
+- **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot), plus the
+  post-v1 sweep: full candidate-set matcher, tight corridor + widening, draft saves with undo
+  history. Still deferred: offline Mode A (blocked upstream), WGS84 length, box/lasso select,
+  GPX retrace flagging, elevation crosshair (see PLAN.md).
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces

@@ -92,8 +92,9 @@ routing.rough = new routing.RoughLayer(map, {
   onChange: (points, committed) => {
     routing.roughPoints = points;
     renderLength(points);
+    if (committed && routing.undo) routing.undo.record(points); // step 13: undo history — BEFORE the
+                                                                // persist, so the draft save carries it
     if (routing.ws) routing.ws.sendPoints(points, committed); // step 4 round-trip; step 20 persists committed edits instantly
-    if (committed && routing.undo) routing.undo.record(points); // step 13: undo history
   },
 });
 renderLength([]); // initial "0 m"

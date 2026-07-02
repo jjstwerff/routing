@@ -18,6 +18,10 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 
 fuser -k "$port"/tcp 2>/dev/null || true
 sleep 1
+# Hermetic run: no chromium session restore, no stale test route, no leftover working sketch
+# (this test overwrites _working anyway — see the NOTE above).
+rm -rf "$here/scratch/chromium-$dtport"
+rm -f "$here/routes/CDP_Sync_Route.route" "$here/routes/_working.route"
 echo "building + starting server (loft --native)…"
 ( cd "$here" && LOFT_TIMEOUT=0 "$loft" --native server/server.loft --lib "$here/lib" >"$here/scratch/srv_csync.log" 2>&1 ) &
 srv=$!

@@ -79,16 +79,8 @@
     renderList();
   }
 
-  // "17:" payload — "<name>|<profile>|<points>", or "" when unknown (from ws.js).
-  function applyRoute(payload) {
-    if (!payload) return;
-    const bar = payload.indexOf("|");
-    const bar2 = payload.indexOf("|", bar + 1);
-    if (bar < 0 || bar2 < 0) return;
-    const nm = payload.slice(0, bar);
-    const profile = payload.slice(bar + 1, bar2);
-    const pts = payload
-      .slice(bar2 + 1)
+  const decodePts = (spec) =>
+    spec
       .split(";")
       .filter(Boolean)
       .map((pair) => {
@@ -96,11 +88,29 @@
         return { lat: parseFloat(c[0]), lon: parseFloat(c[1]) };
       })
       .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+
+  // "17:" payload — "<name>|<profile>|<points>|<history>" ("" when unknown; history only for
+  // `_working` — the persisted undo stack, "#"-separated snapshots) (from ws.js).
+  function applyRoute(payload) {
+    if (!payload) return;
+    const bar = payload.indexOf("|");
+    const bar2 = payload.indexOf("|", bar + 1);
+    if (bar < 0 || bar2 < 0) return;
+    const nm = payload.slice(0, bar);
+    const profile = payload.slice(bar + 1, bar2);
+    const bar3 = payload.indexOf("|", bar2 + 1);
+    const pts = decodePts(bar3 >= 0 ? payload.slice(bar2 + 1, bar3) : payload.slice(bar2 + 1));
+    const hist = bar3 >= 0 ? payload.slice(bar3 + 1) : "";
     // The silent working-route restore must never clobber a sketch the user already started.
     if (nm === "_working" && NS.roughPoints && NS.roughPoints.length > 0) return;
     if (pts.length < 2) return;
     if (NS.setProfile) NS.setProfile(profile);
     if (NS.rough && NS.rough.setPoints) NS.rough.setPoints(pts);
+    // Draft save: the working sketch resumes WITH its undo stack (imported after setPoints so the
+    // restore itself doesn't append a duplicate entry).
+    if (nm === "_working" && hist && NS.undo && NS.undo.importHistory) {
+      NS.undo.importHistory(hist.split("#").map(decodePts));
+    }
     if (NS.map && pts.length) NS.map.fitBounds(pts.map((p) => [p.lat, p.lon]), { padding: [40, 40] });
     if (nm !== "_working") {
       nameInput.value = nm;
