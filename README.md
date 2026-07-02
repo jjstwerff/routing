@@ -49,11 +49,11 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 | 17 | **Auto-proposed names** — "Benschop · 2.1 km · Trail run": area (Nominatim) · length · type prefills the save field; typing wins |
 | 19 | **Live sync** — open the same route in two browsers: an edit in one appears in the other (echo-free); late joiners see the current state |
 | 20 | **Gesture-fresh persistence** — every committed edit persists instantly (no debounce window); kill the tab any time, nothing is lost |
-| +  | **Post-v1 sweep** — candidate-set Viterbi matcher (a tap between parallel ways resolves by *activity*) · tight `around:` corridor + adaptive widening · draft save (undo history survives a reload) |
+| +  | **Post-v1 sweeps** — candidate-set Viterbi matcher (a tap between parallel ways resolves by *activity*) · tight `around:` corridor + adaptive widening · draft save (undo survives a reload) · WGS84 geodesic length · elevation crosshair · GPX retrace flag · box select |
 
-**Deferred (post-v1):** offline Mode A (blocked upstream), WGS84-ellipsoidal length, box/lasso
-select, GPX retrace flagging, elevation crosshair. See **[PLAN.md](PLAN.md)** for the exact
-status of every step. (Step 18 folded into step 4 by the server-first pivot.)
+**Deferred:** offline Mode A and async Nominatim/Overpass (both blocked upstream), a touch
+lasso. See **[PLAN.md](PLAN.md)** for the exact status of every step. (Step 18 folded into
+step 4 by the server-first pivot.)
 
 ## Run it
 

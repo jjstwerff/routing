@@ -50,6 +50,23 @@ const s1 = await evaluate(`(async () => {
   routing.setProfile("cycling_gravel");
   routing.rough.setPoints([{ lat: 52.0, lon: 4.97 }, { lat: 52.0, lon: 5.0 }]);
   await sleep(1500);   // let persist + match-commit settle
+  // Box select: SHIFT+drag a marquee around both points → the range selects (then Esc clears).
+  routing.map.setView([52.0, 4.985], 12);
+  await sleep(300);
+  const mapEl = document.getElementById("map");
+  const mr = mapEl.getBoundingClientRect();
+  const cp1 = routing.map.latLngToContainerPoint({ lat: 52.0, lng: 4.97 });
+  const cp2 = routing.map.latLngToContainerPoint({ lat: 52.0, lng: 5.0 });
+  const mev = (type, x, y) => new MouseEvent(type, {
+    clientX: mr.left + x, clientY: mr.top + y, shiftKey: true, bubbles: true,
+  });
+  mapEl.dispatchEvent(mev("mousedown", Math.min(cp1.x, cp2.x) - 20, cp1.y - 20));
+  mapEl.dispatchEvent(mev("mousemove", Math.max(cp1.x, cp2.x) + 20, cp1.y + 20));
+  document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  await sleep(300);
+  out.boxSelected = document.querySelectorAll(".rough-pt.is-selected").length;
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await sleep(200);
   document.getElementById("routes-toggle").click();
   // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Gravel ride"); typing
   // overrides. Up to 30 s: the reply always comes (failed geocode → the length·type fallback),
@@ -127,6 +144,7 @@ console.log("PHASE2", JSON.stringify(s2));
 // 3-point restore proves the instant persist. The saved route is updated too (the saver is
 // subscribed — step 19), so open returns the same 3-point state.
 const ok = s1.panelClosedByDefault && s1.savedListed
+  && s1.boxSelected === 2
   && s1.proposedName.endsWith("2.1 km · Gravel ride")
   && s2.restoredPoints === 3 && s2.restoredProfile === "running_trail"
   && s2.canUndo && s2.undonePoints === 2

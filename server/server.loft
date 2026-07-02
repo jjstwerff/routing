@@ -13,7 +13,7 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, path_length_m, overpass_corridor_query, parse_ways, build_graph, match_route_closed, gpx_export, clean_track,
+use routing_kernel::(GeoPoint, path_length_m, overpass_corridor_query, parse_ways, build_graph, match_route_closed, gpx_export, clean_track, retrace_m,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
@@ -22,6 +22,7 @@ CORRIDOR_MARGIN_M = 30.0;
 ROUND_TRIP_RATIO = 0.25;   // start≈finish within this fraction of total length ⇒ close the loop (§1)
 IMPORT_EPSILON_M = 8.0;    // Douglas–Peucker tolerance for import cleaning (§8)
 IMPORT_MIN_SEP_M = 2.0;    // collapse consecutive GPX points closer than this
+RETRACE_EPS_M = 15.0;      // a segment this close to earlier ground, headed back, counts as retrace
 
 ROUTES_DIR = "routes";     // the named-route store: one file per route; the DISK is the store,
                            // so every save is write-through and a server restart loses nothing
@@ -157,10 +158,13 @@ fn reply_export(srv: server::Server, cid: integer, payload: text) {
   _ = srv.send_to(cid, "7:{gpx_export(match_for(payload), "routing route")}");
 }
 
-// WS msg 8 → "9:<cleaned points>": clean a raw GPX track into a sparse editable rough route (§8).
+// WS msg 8 → "9:<retrace_m>|<cleaned points>": clean a raw GPX track into a sparse editable
+// rough route (§8), flagging how much of it retraces earlier ground (kept as drawn — the
+// client just shows a notice).
 fn reply_import(srv: server::Server, cid: integer, payload: text) {
   cleaned = clean_track(parse_points(payload), IMPORT_EPSILON_M, IMPORT_MIN_SEP_M);
-  _ = srv.send_to(cid, "9:{encode_points(cleaned)}");
+  rr = round(retrace_m(cleaned, RETRACE_EPS_M)) as integer;
+  _ = srv.send_to(cid, "9:{rr}|{encode_points(cleaned)}");
 }
 
 // --- Auto-proposed names (PLAN step 17) ----------------------------------------------------------

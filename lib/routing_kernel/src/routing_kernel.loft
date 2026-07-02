@@ -631,6 +631,35 @@ pub fn douglas_peucker(points: vector<GeoPoint>, epsilon_m: float) -> vector<Geo
   out
 }
 
+// Metres of the track that RETRACE earlier ground: a segment whose midpoint lies within `eps_m`
+// of an earlier, non-adjacent segment AND heads the opposite way (planar antiparallel test).
+// Import FLAGS this rather than second-guessing it — an honest out-and-back is a real route
+// shape; a GPS mess is the user's call (§8/§10). O(n²) over the cleaned, sparse track.
+pub fn retrace_m(points: vector<GeoPoint>, eps_m: float) -> float {
+  total = 0.0;
+  for i in 1..len(points) {
+    a = points[i - 1];
+    b = points[i];
+    mlat = (a.lat + b.lat) / 2.0;
+    mlon = (a.lon + b.lon) / 2.0;
+    klon = cos(mlat * PI / 180.0);   // planar lon scale at this latitude
+    for j in 1..i {                  // earlier segments, ADJACENT included — a hairpin back over
+                                     // the previous segment IS a retrace; an ordinary corner is
+                                     // saved by the antiparallel test (dot ≥ 0 at right angles)
+      c = points[j - 1];
+      d = points[j];
+      if point_seg_m(mlat, mlon, c.lat, c.lon, d.lat, d.lon) < eps_m {
+        dot = (b.lat - a.lat) * (d.lat - c.lat) + (b.lon - a.lon) * klon * (d.lon - c.lon) * klon;
+        if dot < 0.0 {
+          total += geodesic_m(a, b);
+          break;
+        }
+      }
+    }
+  }
+  total
+}
+
 // Collapse near-coincident consecutive points (< min_sep_m apart), then Douglas–Peucker simplify.
 pub fn clean_track(points: vector<GeoPoint>, epsilon_m: float, min_sep_m: float) -> vector<GeoPoint> {
   collapsed: vector<GeoPoint> = [];

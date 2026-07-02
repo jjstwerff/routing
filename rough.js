@@ -66,6 +66,16 @@
       map.on("click", (e) => this._onMapClick(e));
       document.addEventListener("keydown", (e) => this._onKey(e));
 
+      // Box select (desktop): SHIFT+drag a rectangle → select the contiguous range spanning
+      // every point inside it (the same range model as tap-first-last, which stays the touch
+      // path). boxZoom is off in app.js so shift-drag is free.
+      this._box = null;   // { start: containerPoint, el }
+      map.on("mousedown", (e) => {
+        if (e.originalEvent && e.originalEvent.shiftKey) this._boxBegin(e);
+      });
+      map.on("mousemove", (e) => this._boxMove(e));
+      document.addEventListener("mouseup", () => this._boxEnd());
+
       this._deleteBtn = document.getElementById("rough-delete");
       if (this._deleteBtn) {
         this._deleteBtn.addEventListener("click", () => this.deleteSelected());
@@ -150,7 +160,58 @@
 
     // ---- input handlers --------------------------------------------------
 
+    // ---- box select (desktop) ---------------------------------------------
+
+    _boxBegin(e) {
+      this.map.dragging.disable();
+      const el = document.createElement("div");
+      el.className = "select-box";
+      this.map.getContainer().appendChild(el);
+      this._box = { start: e.containerPoint, el };
+      this._boxDraw(e.containerPoint);
+    }
+
+    _boxMove(e) {
+      if (this._box) this._boxDraw(e.containerPoint);
+    }
+
+    _boxDraw(p) {
+      const s = this._box.start;
+      const el = this._box.el;
+      el.style.left = Math.min(s.x, p.x) + "px";
+      el.style.top = Math.min(s.y, p.y) + "px";
+      el.style.width = Math.abs(p.x - s.x) + "px";
+      el.style.height = Math.abs(p.y - s.y) + "px";
+      this._box.end = p;
+    }
+
+    _boxEnd() {
+      if (!this._box) return;
+      const { start, end, el } = this._box;
+      el.remove();
+      this._box = null;
+      this.map.dragging.enable();
+      this._suppressClick = true;   // the trailing click must not append a point
+      if (!end || (Math.abs(end.x - start.x) < 5 && Math.abs(end.y - start.y) < 5)) return;
+      const lox = Math.min(start.x, end.x), hix = Math.max(start.x, end.x);
+      const loy = Math.min(start.y, end.y), hiy = Math.max(start.y, end.y);
+      let first = -1, last = -1;
+      this._pts.forEach((pt, i) => {
+        const p = this.map.latLngToContainerPoint(pt.marker.getLatLng());
+        if (p.x >= lox && p.x <= hix && p.y >= loy && p.y <= hiy) {
+          if (first < 0) first = i;
+          last = i;
+        }
+      });
+      if (first < 0) { this._clearSelection(); return; }
+      this._anchorA = this._pts[first].id;
+      this._anchorB = last > first ? this._pts[last].id : null;
+      this._refresh();
+    }
+
     _onMapClick(e) {
+      // A box select's trailing click is selection chrome, not a point tap.
+      if (this._suppressClick) { this._suppressClick = false; return; }
       // Empty-map tap extends the route. Collapse the 2nd click of a same-spot double-click so a
       // double-tap doesn't drop two stacked points (doubleClickZoom is off — see app.js).
       const now = (e.originalEvent && e.originalEvent.timeStamp) || performance.now();

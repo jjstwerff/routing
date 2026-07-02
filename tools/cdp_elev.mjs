@@ -42,10 +42,20 @@ const driver = `(async () => {
   out.totals = txt;
   out.dockOpen = !document.getElementById("elev-dock").classList.contains("hidden");
   const c = document.getElementById("elev-canvas");
-  let filled = 0;
-  const img = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
-  for (let i = 3; i < img.length; i += 4) if (img[i] > 0) filled++;
-  out.filledPx = filled;
+  const count = () => {
+    let n = 0;
+    const img = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    for (let i = 3; i < img.length; i += 4) if (img[i] > 0) n++;
+    return n;
+  };
+  out.filledPx = count();
+  // Crosshair: a pointer over the chart adds the hairline + dot + label pixels.
+  const rect = c.getBoundingClientRect();
+  c.dispatchEvent(new PointerEvent("pointermove", {
+    clientX: rect.left + rect.width * 0.5, clientY: rect.top + rect.height * 0.5, bubbles: true,
+  }));
+  await sleep(200);
+  out.crosshairPx = count() - out.filledPx;
   return JSON.stringify(out);
 })()`;
 
@@ -56,6 +66,7 @@ if (!v) { console.log("FAIL: evaluate error", JSON.stringify(r.result, null, 2).
 const o = JSON.parse(v);
 console.log("RESULT", v);
 const ok = o.closedByDefault && o.wsConnected && o.dockOpen
-  && /↑ 100 m/.test(o.totals) && /↓ 0 m/.test(o.totals) && o.filledPx > 1000;
+  && /↑ 100 m/.test(o.totals) && /↓ 0 m/.test(o.totals) && o.filledPx > 1000
+  && o.crosshairPx > 50;
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

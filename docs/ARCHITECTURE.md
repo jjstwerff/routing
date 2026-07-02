@@ -27,13 +27,13 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 |---|---|
 | `index.html` | shell: map div, HUD readouts, controls, script tags |
 | `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
-| `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors); `setPoints`; emits `onChange(points, committed)` |
+| `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
 | `app.js` | creates the map + the read-only "detailed" pane; wires `rough.onChange` → instant length (+ goal ±delta) → `ws.sendPoints` → `undo.record` |
 | `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
 | `controls.js` | activity + sub-mode selectors → the match profile; Waymarkedtrails overlay switch |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
-| `elevation.js` | bottom-dock elevation profile (canvas) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
+| `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
 | `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect + the proposed-name prefill (typed text wins) |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 
@@ -63,7 +63,7 @@ The compute surface. Public API:
 - **Geodesic:** `geodesic_ll`, `geodesic_m`, `path_length_m` — WGS84 Vincenty inverse (~0.5 mm; geo.js mirrors it f64-identically).
 - **Corridor:** `bounds(pts, margin_m)`, `overpass_query(bbox)`, `parse_ways(json)`.
 - **Match:** `build_graph(ways)`, `match_route(g, trace, profile)`, `match_route_closed(g, trace, profile, ratio)`, `is_round_trip(start, finish, total_m, ratio)`, `way_penalty(profile, hw, surface, tracktype)`.
-- **GPX / import:** `gpx_export(points, name)`, `douglas_peucker(points, eps_m)`, `clean_track(points, eps_m, min_sep_m)`.
+- **GPX / import:** `gpx_export(points, name)`, `douglas_peucker(points, eps_m)`, `clean_track(points, eps_m, min_sep_m)`, `retrace_m(points, eps_m)`.
 - **Elevation (step 15):** `TileHeights{tx,ty,heights}`, `ElevProfile{up,down,samples}`,
   `tile_xf/tile_yf/tile_key` (slippy math), `terrarium_h(r,g,b)`, `elev_tiles_for(pts, zoom)`,
   `elev_zoom(pts, max_z, max_tiles)`, `updown(heights, hysteresis_m)`,
@@ -80,7 +80,7 @@ import, elevation), all asserted **interpret == native**.
 |---|---|---|
 | `4:<profile>\|<lat,lon;…>` | `5:<length_m>\|<lat,lon;…>` | **match** — the matched route + length (drawn under the sketch); sent debounced on edit-release |
 | `6:<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as a GPX document (JS downloads it) |
-| `8:<lat,lon;…>` | `9:<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route |
+| `8:<lat,lon;…>` | `9:<retrace_m>\|<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route; a substantial retrace (`retrace_m`) is flagged with a toast, never silently edited |
 | `10:<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open |
 | `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |
 | `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
@@ -169,7 +169,7 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   are the next refinement).
 - **Length** is the WGS84 geodesic (Vincenty inverse, ~0.5 mm) — validated against the analytic equatorial arc and Karney/geographiclib; kernel and geo.js produce bit-identical f64s.
 - **Elevation:** nearest-pixel sampling (no bilinear/tile-seam blend) at z ≤ 13 — fine for ↑/↓
-  totals, a touch steppy on a zoomed-in profile. No tooltip/crosshair on the dock chart yet.
+  totals, a touch steppy on a zoomed-in profile.
 - **Route store:** every committed edit persists instantly (msg 24 — step 20), so nothing is lost
   to the match debounce. Deleting all points doesn't clear `_working` (a reload restores the last
   real sketch — deliberate: never lose work).
@@ -178,9 +178,10 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
 - **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot), plus the
-  post-v1 sweep: full candidate-set matcher, tight corridor + widening, draft saves with undo
-  history. Still deferred: offline Mode A (blocked upstream), WGS84 length, box/lasso select,
-  GPX retrace flagging, elevation crosshair (see PLAN.md).
+  post-v1 sweeps: full candidate-set matcher, tight corridor + widening, draft saves with undo
+  history, WGS84 geodesic length, elevation crosshair, GPX retrace flagging, box select. Still
+  deferred: offline Mode A and async Nominatim/Overpass (both blocked upstream), a touch lasso
+  (see PLAN.md).
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces

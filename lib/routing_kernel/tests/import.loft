@@ -1,6 +1,6 @@
 // Tests for GPX import cleaning (PLAN step 11, DESIGN §8). Deterministic.
 //   loft --tests lib/routing_kernel/tests/import.loft --lib lib
-use routing_kernel::(GeoPoint, clean_track, douglas_peucker);
+use routing_kernel::(GeoPoint, clean_track, douglas_peucker, retrace_m);
 
 // An over-sampled, jittery straight line collapses to a handful of points.
 fn test_simplify_jittery_line() {
@@ -34,4 +34,22 @@ fn test_collapse_near_coincident() {
           GeoPoint { lat: 52.0, lon: 5.001 } ];
   cleaned = clean_track(pts, 8.0, 2.0);
   assert(len(cleaned) == 2, "the near-coincident point is dropped: {len(cleaned)}");
+}
+
+// Retrace flagging (§8/§10): an out-and-back doubles over earlier ground (within eps,
+// antiparallel) — the return leg counts; a simple loop shares no ground and counts ~0.
+fn test_retrace_out_and_back() {
+  // Out along lat 52.0, back over the same line: the two return segments retrace.
+  oab = [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 },
+          GeoPoint { lat: 52.0, lon: 5.004 }, GeoPoint { lat: 52.0, lon: 5.0021 },
+          GeoPoint { lat: 52.0, lon: 5.0001 } ];
+  r = retrace_m(oab, 15.0);
+  // Return legs ≈ (5.004→5.0021) + (5.0021→5.0001) ≈ 130 + 137 m at 52°N.
+  assert(r > 200.0 && r < 350.0, "out-and-back flags the return: {r} m");
+
+  // A rectangular loop never rides its own ground → ~0.
+  loop_pts = [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.004 },
+               GeoPoint { lat: 52.002, lon: 5.004 }, GeoPoint { lat: 52.002, lon: 5.000 },
+               GeoPoint { lat: 52.0, lon: 5.000 } ];
+  assert(retrace_m(loop_pts, 15.0) == 0.0, "a loop is not a retrace: {retrace_m(loop_pts, 15.0)}");
 }

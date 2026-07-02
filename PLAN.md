@@ -420,9 +420,23 @@ accurate length. Ship nothing fancy; prove the pipeline.
   sliver, not its bounding rectangle); an EMPTY match widens the margin 3× (30 → 90 → 270 m)
   before giving up, and a non-200 (Overpass 504/rate-limit) simply retries. Live: Vondelpark
   matched 386.7 m / 20 pts off the first tight fetch, byte-identical to the offline fixture.
-- **Still deferred:** offline Mode A (blocked upstream — loft browser data-in), WGS84-ellipsoidal
-  length, box/lasso select, GPX retrace flagging, elevation crosshair/tooltip, taking Nominatim/
-  Overpass calls off the single-threaded event loop.
+- **☑ WGS84 geodesic length (2026-07-03):** Vincenty inverse in `routing_kernel.geodesic_ll` AND
+  `geo.js` (line-for-line — probed bit-identical f64s), replacing the spherical haversine
+  (~0.65 m short per km at 52°N). Validated against INDEPENDENT truth: the analytic equatorial
+  arc (a·Δλ, exact) + Karney/geographiclib, both <1 mm (`tests/geodesic.loft`). Wasm parity gate
+  became numeric at 1e-6 m — Vincenty's tan/atan2 differ by an ULP across targets.
+- **☑ Elevation crosshair (2026-07-03):** pointer over the dock chart → hairline + dot +
+  "distance · elevation" label (tap works on touch); CDP gate counts the added pixels.
+- **☑ GPX retrace flagging (2026-07-03):** `retrace_m` (segment within eps of EARLIER ground and
+  antiparallel — hairpins count, corners don't) flags the cleaned import; reply is now
+  `9:<retrace_m>|<points>` and the client toasts ≥200 m ("kept as recorded" — never a silent
+  edit). Kernel gate: out-and-back flags its return legs, a loop flags 0.
+- **☑ Box select (2026-07-03):** SHIFT+drag a marquee → selects the contiguous range spanning
+  the boxed points (the §1 range model; tap-first-last remains the touch path; Leaflet boxZoom
+  off). CDP gate: marquee over both points → "2 selected".
+- **Still deferred:** offline Mode A (blocked upstream — loft browser data-in primitive), taking
+  Nominatim/Overpass calls off the single-threaded event loop (needs loft-level async HTTP —
+  also upstream), a touch lasso.
 
 ---
 

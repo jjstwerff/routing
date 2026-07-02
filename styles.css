@@ -190,6 +190,15 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* Box select (shift+drag, see rough.js) — the marquee rectangle. */
+.select-box {
+  position: absolute;
+  z-index: 900;
+  border: 1.5px dashed #2b6cff;
+  background: rgba(43, 108, 255, 0.12);
+  pointer-events: none;
+}
+
 /* Named route store (PLAN step 16) — a Routes button under the GPX bar; the panel lists saved
    routes with open/delete and a save row. Same dark HUD chrome. */
 .hud-routes-toggle {

@@ -22,6 +22,8 @@ const map = L.map("map", {
   worldCopyJump: true,
   // Double-click has route semantics here (delete a point / a deduped empty-map add), not zoom.
   doubleClickZoom: false,
+  // Shift+drag has select semantics here (box select — see rough.js), not zoom.
+  boxZoom: false,
 });
 
 // OSM raster base (DESIGN.md §7). {s} spreads tile requests across the subdomains OSM allows.
@@ -98,3 +100,19 @@ routing.rough = new routing.RoughLayer(map, {
   },
 });
 renderLength([]); // initial "0 m"
+
+// A small shared toast (auto-hiding, same chrome as the undo snackbar) — e.g. the GPX-import
+// retrace notice. One at a time; a new message replaces the current one.
+let toastEl = null;
+let toastTimer = null;
+routing.toast = (msg) => {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.className = "snackbar hidden";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.add("hidden"), 6000);
+};

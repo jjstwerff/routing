@@ -18,6 +18,7 @@
   let matched = [];       // latest matched route (pushed from ws.js)
   let profile = null;     // { up, down, samples: [{d, e}] } | null
   let requested = "";     // encoding of the route last asked about (dedupe re-requests)
+  let hover = -1;         // crosshair: index into profile.samples (-1 = none)
 
   const encode = (points) => points.map((p) => p.lat + "," + p.lon).join(";");
 
@@ -96,6 +97,42 @@
     ctx.fillText(`${Math.round(lo)} m`, padX, h - 3);
     const dTxt = dMax >= 1000 ? `${(dMax / 1000).toFixed(1)} km` : `${Math.round(dMax)} m`;
     ctx.fillText(dTxt, w - padX - ctx.measureText(dTxt).width, h - 3);
+
+    // Crosshair (pointer over the chart): vertical hairline + dot + "distance · elevation" label.
+    if (hover >= 0 && hover < ss.length) {
+      const s = ss[hover];
+      const x = px(s), y = py(s);
+      ctx.strokeStyle = "#9aa5b1";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, padTop);
+      ctx.lineTo(x, h - padBot);
+      ctx.stroke();
+      ctx.fillStyle = "#2b6cff";
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, 2 * Math.PI);
+      ctx.fill();
+      const label = `${NS.geo.formatDistance(s.d)} · ${Math.round(s.e)} m`;
+      ctx.font = "12px system-ui, sans-serif";
+      const tw = ctx.measureText(label).width;
+      const tx = Math.min(Math.max(x - tw / 2, padX), w - padX - tw);
+      ctx.fillStyle = "#e7ecf2";
+      ctx.fillText(label, tx, padTop + 4);
+    }
+  }
+
+  // Pointer → the nearest sample by distance-along-route (works for mouse and touch alike).
+  function onPointer(e) {
+    const ss = profile ? profile.samples : [];
+    if (!open || ss.length < 2) return;
+    const w = canvas.clientWidth, padX = 6;
+    const dMax = ss[ss.length - 1].d || 1;
+    const d = (e.offsetX - padX) / (w - 2 * padX) * dMax;
+    let best = 0;
+    for (let i = 1; i < ss.length; i++) {
+      if (Math.abs(ss[i].d - d) < Math.abs(ss[best].d - d)) best = i;
+    }
+    if (best !== hover) { hover = best; render(); }
   }
 
   function setOpen(want) {
@@ -108,6 +145,9 @@
   toggle.addEventListener("click", () => setOpen(!open));
   close.addEventListener("click", () => setOpen(false));
   window.addEventListener("resize", () => { if (open) render(); });
+  canvas.addEventListener("pointermove", onPointer);
+  canvas.addEventListener("pointerdown", onPointer);   // a tap places the crosshair on touch
+  canvas.addEventListener("pointerleave", () => { hover = -1; render(); });
 
   NS.elevation = { apply, onMatched };
 })();

@@ -63,6 +63,18 @@
     if (NS.elevation) NS.elevation.onMatched(matched);
   }
 
+  // "9:<retrace_m>|<cleaned points>" — the cleaned import becomes the rough route; a substantial
+  // retrace (out-and-back over the same ground) gets a notice, never a silent edit (§8).
+  function applyImported(raw) {
+    const body = raw.slice(raw.indexOf(":") + 1);
+    const bar = body.indexOf("|");
+    const retraceM = bar >= 0 ? parseFloat(body.slice(0, bar)) || 0 : 0;
+    NS.rough.setPoints(decode(bar >= 0 ? body.slice(bar + 1) : body));
+    if (retraceM >= 200 && NS.toast) {
+      NS.toast("Track retraces ~" + NS.geo.formatDistance(retraceM) + " of itself — kept as recorded");
+    }
+  }
+
   function downloadGpx(gpx) {
     const blob = new Blob([gpx], { type: "application/gpx+xml" });
     const href = URL.createObjectURL(blob);
@@ -97,7 +109,7 @@
       const id = raw.slice(0, raw.indexOf(":"));
       if (id === "5") applyMatched(raw);
       else if (id === "7") downloadGpx(raw.slice(2));
-      else if (id === "9" && NS.rough && NS.rough.setPoints) NS.rough.setPoints(decode(raw.slice(2)));
+      else if (id === "9" && NS.rough && NS.rough.setPoints) applyImported(raw);
       else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
       else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
       else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));

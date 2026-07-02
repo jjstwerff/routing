@@ -69,6 +69,10 @@ check("persist round-trips points + history", r === `17:_working|cycling_road|${
 r = await send(`16:${A}`);
 check("persist updates the subscribed route (history-free)", r === `17:${A}|cycling_road|${ptsP}|`, r.slice(0, 80));
 
+// Import (8:) replies "<retrace_m>|<cleaned points>" — a zigzag out-and-back gets flagged.
+r = await send("8:52.0,5.0;52.0,5.004;52.0,5.0002");
+check("import reply carries a retrace flag", /^9:\d+\|52,/.test(r) && parseInt(r.slice(2)) > 200, r.slice(0, 60));
+
 // _working has ONE writer (msg 24): a match request must leave it — history included — untouched.
 await send(`4:walking_paved|${pts}`, 60000);
 r = await send("16:_working");
