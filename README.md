@@ -28,7 +28,7 @@ activity, and **exporting GPX** with an accurate length.
 [docs/loft-feedback.md](docs/loft-feedback.md) for why. An offline, loft-in-browser "Mode A" is
 deferred until loft ships a browser data-in primitive.)*
 
-## Status — Phases 1–3 complete; Phase 4 (richer server behaviour) remains
+## Status — all 20 plan steps complete (v1 feature-complete)
 
 Working end to end: **draw or import → activity-aware match that faithfully follows the line
 (including loops) → export GPX.** Built + tested:
@@ -48,9 +48,11 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 | 16 | **Route store** — named save/open/delete (disk-is-the-store, write-through) + the working sketch autosaves and **survives closing the browser** |
 | 17 | **Auto-proposed names** — "Benschop · 2.1 km · Trail run": area (Nominatim) · length · type prefills the save field; typing wins |
 | 19 | **Live sync** — open the same route in two browsers: an edit in one appears in the other (echo-free); late joiners see the current state |
+| 20 | **Gesture-fresh persistence** — every committed edit persists instantly (no debounce window); kill the tab any time, nothing is lost |
 
-**Deferred / next:** per-edit persistence granularity (20); full HMM matcher, tight-corridor
-download, offline Mode A. See **[PLAN.md](PLAN.md)** for the exact status of every step.
+**Deferred (post-v1):** full HMM matcher, tight-corridor download, offline Mode A, draft saves
+with undo history. See **[PLAN.md](PLAN.md)** for the exact status of every step. (Step 18 folded
+into step 4 by the server-first pivot.)
 
 ## Run it
 

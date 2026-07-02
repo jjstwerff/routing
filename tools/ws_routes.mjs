@@ -63,8 +63,23 @@ await send(`4:walking_paved|${pts}`, 60000);
 r = await send("16:_working");
 check("match request autosaves _working", r === `17:_working|walking_paved|${pts}`, r.slice(0, 80));
 
-// Cleanup: remove test names; restore (or clear) the prior working sketch.
+// Instant persist (step 20): msg 24 saves _working AND the subscribed route (we're on A via the
+// earlier open) without matching — no Overpass, gesture-fresh durability.
+const ptsP = "52.0,4.97;52.0,4.99";
+r = await send(`24:cycling_road|${ptsP}`);
+check("persist acks", r === "25:");
+r = await send("16:_working");
+check("persist updates _working", r === `17:_working|cycling_road|${ptsP}`, r.slice(0, 80));
+r = await send(`16:${A}`);
+check("persist updates the subscribed route", r === `17:${A}|cycling_road|${ptsP}`, r.slice(0, 80));
+
+// Deleting a route clears subscriptions to it — a later edit must NOT resurrect the file.
 await send(`18:${A}`);
+await send(`4:walking_paved|${pts}`, 60000);
+r = await send("14:");
+check("deleted route is not resurrected by a later edit", !names(r).includes(A), r.slice(0, 60));
+
+// Cleanup: restore (or clear) the prior working sketch (A/B already deleted above).
 if (hadWorking) await send("12:" + prevWorking.slice(3));
 console.log(fail ? "FAILURES" : "ALL PASS — named store + working-route autosave round-trip.");
 ws.close();

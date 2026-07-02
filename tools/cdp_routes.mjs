@@ -39,8 +39,9 @@ const evaluate = async (expr) => {
   return JSON.parse(v);
 };
 
-// Phase 1: sketch (profile cycling_gravel autosaves via the debounced match), then save the named
-// route under a DIFFERENT profile (running_trail) so restore-vs-open are distinguishable.
+// Phase 1: sketch 2 points, save; then a 3-point COMMITTED edit with the reload only 400 ms
+// later — under the 700 ms match debounce, and the reload kills the pending debounce timer, so
+// only the step-20 instant persist (msg 24) can carry the 3rd point across the reload.
 const s1 = await evaluate(`(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const out = {};
@@ -48,10 +49,9 @@ const s1 = await evaluate(`(async () => {
   out.panelClosedByDefault = document.getElementById("routes-panel").classList.contains("hidden");
   routing.setProfile("cycling_gravel");
   routing.rough.setPoints([{ lat: 52.0, lon: 4.97 }, { lat: 52.0, lon: 5.0 }]);
-  await sleep(2500);                                  // debounce (700ms) + autosave round-trip
-  routing.setProfile("running_trail");
+  await sleep(1500);   // let persist + match-commit settle
   document.getElementById("routes-toggle").click();
-  // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Trail run"); typing overrides.
+  // Step 17: the panel prefills a proposed name ("[area ·] 2.1 km · Gravel ride"); typing overrides.
   let prop = "";
   for (let i = 0; i < 60 && !prop; i++) {
     await sleep(250);
@@ -66,6 +66,9 @@ const s1 = await evaluate(`(async () => {
     has = [...document.querySelectorAll("#routes-list .route-open")].some((b) => b.textContent === "CDP Test Route");
   }
   out.savedListed = has;
+  routing.setProfile("running_trail");
+  routing.rough.setPoints([{ lat: 52.0, lon: 4.97 }, { lat: 52.0, lon: 5.0 }, { lat: 52.0, lon: 5.01 }]);
+  await sleep(400);    // reload inside the debounce window — msg 24 already fired
   return JSON.stringify(out);
 })()`);
 
@@ -113,10 +116,13 @@ const s2 = await evaluate(`(async () => {
 ws.close();
 console.log("PHASE1", JSON.stringify(s1));
 console.log("PHASE2", JSON.stringify(s2));
+// The 3-point edit was committed only 400 ms before the reload (inside the match debounce), so a
+// 3-point restore proves the instant persist. The saved route is updated too (the saver is
+// subscribed — step 19), so open returns the same 3-point state.
 const ok = s1.panelClosedByDefault && s1.savedListed
-  && s1.proposedName.endsWith("2.1 km · Trail run")
-  && s2.restoredPoints === 2 && s2.restoredProfile === "cycling_gravel"
-  && s2.openedPoints === 2 && s2.openedProfile === "running_trail"
+  && s1.proposedName.endsWith("2.1 km · Gravel ride")
+  && s2.restoredPoints === 3 && s2.restoredProfile === "running_trail"
+  && s2.openedPoints === 3 && s2.openedProfile === "running_trail"
   && s2.panelClosedAfterOpen && s2.deleted;
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

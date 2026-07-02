@@ -340,10 +340,29 @@ fn reply_open(srv: server::Server, state: SyncState, cid: integer, payload: text
   _ = srv.send_to(cid, "17:{nm}|{pr}|{pts}");
 }
 
-// WS msg 18 → "13:<names>": delete by name; the updated list goes to every client.
-fn reply_delete(srv: server::Server, cid: integer, payload: text) {
-  _ = delete("{ROUTES_DIR}/{route_slug(payload)}.route");
+// WS msg 18 → "13:<names>": delete by name; the updated list goes to every client. Subscriptions
+// to the deleted route are cleared — else a subscriber's next edit would silently recreate it.
+fn reply_delete(srv: server::Server, state: SyncState, cid: integer, payload: text) {
+  dslug = route_slug(payload);
+  _ = delete("{ROUTES_DIR}/{dslug}.route");
+  for s in state.subs {
+    if route_slug(s.name) == dslug { s.name = ""; }
+  }
   _ = srv.broadcast("13:{routes_list()}");
+}
+
+// WS msg 24 → "25:": persist the working sketch (and the subscribed named route) WITHOUT
+// matching — the instant-durability half of step 20. The client sends this on EVERY committed
+// edit, un-debounced, so a tab killed inside the match-debounce window loses nothing; the
+// debounced match-commit follows and does the step-19 sync fan-out.
+fn reply_persist(srv: server::Server, state: SyncState, cid: integer, payload: text) {
+  pbar = payload.find("|");
+  if pbar >= 0 {
+    save_route("_working", payload[..pbar], payload[pbar + 1..]);
+    rname = sub_name(state, cid);
+    if rname != "" { save_route(rname, payload[..pbar], payload[pbar + 1..]); }
+  }
+  _ = srv.send_to(cid, "25:");
 }
 
 // Fetch (disk-cached) + decode one terrain tile "z/x/y" and append its heights to `tiles`.
@@ -415,8 +434,9 @@ fn main() {
       else if ev.msg_id == 12 { reply_save(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 14 { _ = srv.send_to(ev.cid, "13:{routes_list()}"); }
       else if ev.msg_id == 16 { reply_open(srv, state, ev.cid, ev.payload); }
-      else if ev.msg_id == 18 { reply_delete(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 18 { reply_delete(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 20 { reply_name(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 24 { reply_persist(srv, state, ev.cid, ev.payload); }
     }
   });
 }

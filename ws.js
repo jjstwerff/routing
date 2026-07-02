@@ -110,9 +110,14 @@
   // Called from app.js on every rough-layer change (debounced — re-match on edit-release).
   // During a remote-sync apply only `latest` updates (so later local edits build on the synced
   // state) — no flush is scheduled, or the peers would ping-pong the same edit forever.
-  function sendPoints(points) {
+  // Step 20: a COMMITTED edit persists immediately (msg 24, no debounce, no match) — a tab killed
+  // inside the match-debounce window loses nothing. The match + sync fan-out stay debounced.
+  function sendPoints(points, committed) {
     latest = points;
     if (remoteApply) return;
+    if (committed && ws && ws.readyState === WebSocket.OPEN && points.length >= 2) {
+      ws.send("24:" + profileOf() + "|" + encode(points));
+    }
     clearTimeout(debounce);
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }

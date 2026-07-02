@@ -88,6 +88,7 @@ import, elevation), all asserted **interpret == native**.
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
+| `24:<profile>\|<pts>` | `25:` | **instant persist** — sent on every COMMITTED edit, un-debounced: saves `_working` + the subscribed route, no match, no fan-out (durability unit = the gesture; sync unit = the accepted edit) |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
@@ -161,16 +162,16 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
 - **Length** is spherical haversine; the WGS84-ellipsoidal upgrade is deferred.
 - **Elevation:** nearest-pixel sampling (no bilinear/tile-seam blend) at z ≤ 13 — fine for ↑/↓
   totals, a touch steppy on a zoomed-in profile. No tooltip/crosshair on the dock chart yet.
-- **Route store:** persistence granularity is the debounced match-commit (~0.7 s after
-  edit-release) — a tab killed inside that window loses the last gesture (per-edit streaming is
-  step 20). Deleting all points doesn't clear `_working` (a reload restores the last real sketch —
-  deliberate: never lose work). No multi-client sync yet (step 19).
+- **Route store:** every committed edit persists instantly (msg 24 — step 20), so nothing is lost
+  to the match debounce. Deleting all points doesn't clear `_working` (a reload restores the last
+  real sketch — deliberate: never lose work).
 - **Name proposal:** the Nominatim lookup runs on the single-threaded event loop, so a slow
   reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
-- **Phase 3 is complete** (steps 12–17); of Phase 4, live sync (19) is in — per-edit persistence
-  granularity (20) remains.
+- **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot). Deferred
+  post-v1 work: full HMM matcher, tight-corridor download, offline Mode A, draft saves with undo
+  history (see PLAN.md).
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces

@@ -347,13 +347,10 @@ accurate length. Ship nothing fancy; prove the pipeline.
 > What remains distinctly "Phase 4" is the richer server behaviour below: multi-client sync,
 > write-through persistence, and close-the-browser-safe backup. Steps 18–20 layer onto the step-4 base.
 
-### ☐ 18. loft server serves the client (§4, §11)
-- **Goal:** the same client, loaded from a live loft server, detects Mode B at runtime.
-- **Build:** `loft --lib ../loft/lib <server>.loft` (audience-demo shape) on `lib/server` +
-  `lib/world` + `lib/engine_host`; serve the static client over HTTP. Client picks mode by whether it
-  was loaded from a loft server.
-- **Check:** load the app from the server URL → it reports Mode B; load the static files directly →
-  Mode A. Same client build both times.
+### ☑ 18. loft server serves the client (§4, §11)
+- **Folded into step 4 by the server-first pivot (2026-07-01):** the loft server serving the
+  static client + WS on one port IS the step-4 base and has been in since. Runtime Mode-A/Mode-B
+  detection is moot until an offline Mode A exists (deferred with it).
 
 ### ☑ 19. Shared route store + WebSocket sync (§4)
 - **Goal:** multiple people load and change the same named routes, live.
@@ -375,7 +372,7 @@ accurate length. Ship nothing fancy; prove the pipeline.
   and stays stable — no ping-pong). Fixed on the way: static `serve()` now strips query strings
   ("/?x" 404'd). Last-writer-wins on concurrent edits (no OT/merge — fine at this scale).
 
-### ☐ 20. Write-through persistence — close-the-browser-safe (§4, the headline)
+### ☑ 20. Write-through persistence — close-the-browser-safe (§4, the headline)
 - **Goal:** the browser is disposable; nothing is ever lost.
 - **Status:** the core landed in step 16 — named saves and the `_working` sketch are write-through
   persisted (disk-is-the-store), and reopening on ANY device restores the working route. What
@@ -384,6 +381,16 @@ accurate length. Ship nothing fancy; prove the pipeline.
   gesture), plus the multi-client consistency story with 19.
 - **Check:** edit a route, **close the tab / kill the connection**, reopen on another device → the
   working route is exactly where you left it, with no "unsaved changes" prompt.
+- **DONE (2026-07-02):** every COMMITTED edit now persists instantly — `ws.sendPoints` gained the
+  `committed` flag from `rough.onChange` and fires `24:<profile>|<points>` un-debounced (ack
+  `25:`); the server saves `_working` AND the subscribed named route, with **no match and no
+  sync fan-out** (the debounced match-commit still does that — durability unit = the gesture,
+  sync unit = the accepted edit). Also fixed: deleting a route clears subscriptions to it, so a
+  subscriber's next edit can't silently recreate the file. Gates: `tools/routes_test.sh` (persist
+  ack; `_working` + subscribed route updated with no Overpass involved; deleted route not
+  resurrected) and `tools/client_routes_test.sh` (a 3-point committed edit followed by a reload
+  400 ms later — inside the debounce window, pending timer killed by the reload — restores all
+  3 points: only the instant persist could have carried them).
 
 > **Phase 4 exit:** Mode B adds naming + multi-user sync + close-the-browser-safe backup on top of the
 > Mode A subset — no rearchitecting.
