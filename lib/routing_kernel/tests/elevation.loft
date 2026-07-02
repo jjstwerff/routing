@@ -1,0 +1,75 @@
+// Tests for the elevation profile (PLAN step 15). Synthetic, deterministic — no network, no PNG:
+// the kernel only ever sees decoded height grids (TileHeights); tile fetch/decode is the server's.
+//   loft --tests lib/routing_kernel/tests/elevation.loft --lib lib
+use routing_kernel::(GeoPoint, TileHeights, tile_xf, tile_yf, tile_key, terrarium_h,
+                     elev_tiles_for, elev_zoom, updown, elev_profile);
+
+fn close(a: float, b: float, tol: float) -> boolean {
+  diff = a - b;
+  if diff < 0.0 { diff = 0.0 - diff; }
+  diff <= tol
+}
+
+// Slippy tile coordinates, hand-computed for (52.0, 5.0) at z13: xf = (5+180)/360·8192,
+// yf = (1 − ln(tan φ + sec φ)/π)/2 · 8192.
+fn test_tile_math() {
+  assert(close(tile_xf(5.0, 13), 4209.777777777777, 0.000001), "xf = {tile_xf(5.0, 13)}");
+  assert(close(tile_yf(52.0, 13), 2705.941246949761, 0.000001), "yf = {tile_yf(52.0, 13)}");
+  assert(tile_key(52.0, 5.0, 13) == "13/4209/2705", "key = {tile_key(52.0, 5.0, 13)}");
+}
+
+// Terrarium decode: h = r·256 + g + b/256 − 32768, hand-computed.
+fn test_terrarium() {
+  assert(close(terrarium_h(93, 200, 128), -8759.5, 0.0000001), "h = {terrarium_h(93, 200, 128)}");
+  assert(close(terrarium_h(128, 0, 0), 0.0, 0.0000001), "sea level = {terrarium_h(128, 0, 0)}");
+}
+
+// A bbox spanning two tile columns at z13 → exactly those two keys; the tile cap steps the zoom
+// down (z12 still needs 2 tiles, z11 is the first that fits in 1 — hand-checked).
+fn test_tiles_and_zoom() {
+  pts = [GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.01, lon: 5.05 }];
+  keys = elev_tiles_for(pts, 13);
+  assert(len(keys) == 2, "2 tiles: {len(keys)}");
+  assert(keys[0] == "13/4209/2705" && keys[1] == "13/4210/2705", "keys {keys[0]} {keys[1]}");
+  assert(elev_zoom(pts, 13, 16) == 13, "fits at 13: {elev_zoom(pts, 13, 16)}");
+  assert(elev_zoom(pts, 13, 1) == 11, "cap of 1 tile → z11: {elev_zoom(pts, 13, 1)}");
+}
+
+// Dead-band ascent/descent: wiggles below the band don't count; committed moves do.
+fn test_updown() {
+  (u, d) = updown([100.0, 101.0, 100.5, 104.0, 103.0, 96.0, 97.0], 3.0);
+  assert(close(u, 4.0, 0.0000001), "up = {u}");
+  assert(close(d, 8.0, 0.0000001), "down = {d}");
+}
+
+// A synthetic step tile (west half 100 m, east half 200 m) under a west→east route: the profile
+// crosses the step once — up 100, down 0, samples 100-valued then 200-valued. Route lat 52.0,
+// lon 4.97→5.0 sits in tile 13/4209/2705 (px 24→199); length ≈ 2053.756 m → 22 samples at 100 m.
+fn test_profile_step_tile() {
+  hs: vector<float> = [];
+  for i in 0..65536 {
+    if i % 256 < 128 { hs += [100.0]; } else { hs += [200.0]; }
+  }
+  tiles = [TileHeights { tx: 4209, ty: 2705, heights: hs }];
+  pts = [GeoPoint { lat: 52.0, lon: 4.97 }, GeoPoint { lat: 52.0, lon: 5.0 }];
+  prof = elev_profile(pts, tiles, 13, 100.0, 3.0);
+  assert(len(prof.samples) == 22, "22 samples: {len(prof.samples)}");
+  assert(close(prof.up, 100.0, 0.0000001), "up = {prof.up}");
+  assert(close(prof.down, 0.0, 0.0000001), "down = {prof.down}");
+  assert(close(prof.samples[0].d, 0.0, 0.0000001), "first sample at d=0: {prof.samples[0].d}");
+  assert(close(prof.samples[0].e, 100.0, 0.0000001), "west end at 100 m: {prof.samples[0].e}");
+  assert(close(prof.samples[21].d, 2053.7557997979634, 0.001), "last sample at the route end: {prof.samples[21].d}");
+  assert(close(prof.samples[21].e, 200.0, 0.0000001), "east end at 200 m: {prof.samples[21].e}");
+  low = 0;
+  for s in prof.samples { if s.e < 150.0 { low += 1; } }
+  assert(low == 13, "13 samples west of the step: {low}");
+}
+
+// No tiles provided → no samples, zero totals (the server's graceful-degrade path).
+fn test_profile_missing_tile() {
+  tiles: vector<TileHeights> = [];
+  pts = [GeoPoint { lat: 52.0, lon: 4.97 }, GeoPoint { lat: 52.0, lon: 5.0 }];
+  prof = elev_profile(pts, tiles, 13, 100.0, 3.0);
+  assert(len(prof.samples) == 0, "no tiles → no samples: {len(prof.samples)}");
+  assert(prof.up == 0.0 && prof.down == 0.0, "no tiles → zero totals: {prof.up}/{prof.down}");
+}

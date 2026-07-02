@@ -267,13 +267,26 @@ accurate length. Ship nothing fancy; prove the pipeline.
   points byte-identical. *(Delta is on the instant rough length — the live tier; the matched length
   shows separately.)*
 
-### ☐ 15. Elevation chart — lag-tolerant tier (§1, §7)
+### ☑ 15. Elevation chart — lag-tolerant tier (§1, §7)
 - **Goal:** ascent/descent + profile without blocking anything.
 - **Build:** loft pulls public terrain tiles (e.g. AWS terrarium PNG), decodes via its imaging lib,
   samples the detailed route → profile + total ↑/↓. Dismissable bottom dock, **closed by default**.
   Computed async; allowed to trail the drawing by seconds.
 - **Check:** on a known hilly route the ascent/descent are plausibly correct; while it computes, the
   instant length and interaction stay responsive (never blocked).
+- **DONE (2026-07-02):** WS `10:<detailed pts>` → `11:<up>|<down>|<d,e;…>`. The server pulls AWS
+  terrarium tiles (z ≤ 13, a 12-tile bbox cap steps the zoom down) through a new binary-safe
+  `web::http_get_file` into a disk cache (`scratch/tiles/`, which doubles as the offline test
+  fixture), decodes them with the vendored `imaging` lib; the PURE kernel does the tile math +
+  ≥25 m-step sampling + dead-band (3 m) ↑/↓ totals (`tests/elevation.loft`, 6 fns,
+  interpret == native). Client: `elevation.js` bottom dock, closed by default, re-requests on
+  open/re-match (lag-tolerant; never touches the instant length path). Offline e2e:
+  `tools/elevation_test.sh` (synthetic step tile → up=100/down=0, 84 samples) +
+  `tools/client_elev_test.sh` (headless-Chromium CDP: closed by default, opens, draws, ↑100/↓0).
+  Live ad-hoc: Grenoble→Chamrousse straight line → first 218 m, last 1604 m, ↑1855/↓469
+  (up−down == last−first exactly). Found + reported a loft `--native` codegen bug on the way
+  (constructed-text arg zeroes a `float?` return — see docs/loft-feedback.md; kernel tiles are
+  integer-keyed as the clean workaround).
 
 ### ☐ 16. Mode A — local named library (§4, §9)
 - **Goal:** save, reopen, and re-edit routes with no server.

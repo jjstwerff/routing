@@ -1,0 +1,37 @@
+// Write a synthetic terrarium terrain tile into the server's disk cache (scratch/tiles), so the
+// elevation path can be tested fully OFFLINE: west half 100 m, east half 200 m — a route crossing
+// the middle must report up=100/down=0 (mirrors the kernel's step-tile test).
+//   loft --interpret tools/make_terrarium_tile.loft --lib lib <z> <x> <y>   (run from repo root)
+#cwd
+
+use imaging;
+
+fn main() {
+  z = -1;
+  x = -1;
+  y = -1;
+  for arg in arguments() {
+    v = arg as integer ?? -1;
+    if v >= 0 {
+      if z < 0 { z = v; }
+      else if x < 0 { x = v; }
+      else if y < 0 { y = v; }
+    }
+  }
+  if y < 0 {
+    println("usage: make_terrarium_tile.loft <z> <x> <y>");
+    return;
+  }
+  px: vector<Pixel> = [];
+  for i in 0..65536 {
+    h = 100;
+    if i % 256 >= 128 { h = 200; }
+    v = h + 32768;                          // terrarium: h = r·256 + g + b/256 − 32768
+    px += [Pixel { r: v / 256, g: v % 256, b: 0 }];
+  }
+  img = Image { name: "tile", width: 256, height: 256, data: px };
+  _ = mkdir_all("scratch/tiles");
+  path = "scratch/tiles/{z}_{x}_{y}.png";
+  okv = img.save_png(path);
+  println("wrote {path}: {okv}");
+}

@@ -31,11 +31,13 @@
         }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
       : [];
 
-  // "5:<length_m>|<matched points>" → the detailed layer.
+  // "5:<length_m>|<matched points>" → the detailed layer (+ the elevation dock, lag-tolerant).
   function applyMatched(raw) {
     const bar = raw.indexOf("|");
     const lengthM = parseFloat(raw.slice(raw.indexOf(":") + 1, bar)) || 0;
-    if (NS.detailed) NS.detailed.set(decode(raw.slice(bar + 1)), lengthM);
+    const pts = decode(raw.slice(bar + 1));
+    if (NS.detailed) NS.detailed.set(pts, lengthM);
+    if (NS.elevation) NS.elevation.onMatched(pts);
   }
 
   function downloadGpx(gpx) {
@@ -52,7 +54,11 @@
 
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
-    if (latest.length < 2) { if (NS.detailed) NS.detailed.set([], 0); return; }
+    if (latest.length < 2) {
+      if (NS.detailed) NS.detailed.set([], 0);
+      if (NS.elevation) NS.elevation.onMatched([]);
+      return;
+    }
     ws.send("4:" + profileOf() + "|" + encode(latest));
   }
 
@@ -65,6 +71,7 @@
       if (id === "5") applyMatched(raw);
       else if (id === "7") downloadGpx(raw.slice(2));
       else if (id === "9" && NS.rough && NS.rough.setPoints) NS.rough.setPoints(decode(raw.slice(2)));
+      else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
@@ -88,8 +95,15 @@
     ws.send("8:" + encode(points));
   }
 
+  // Step 15: the elevation profile of the DETAILED route (the client sends the matched polyline
+  // back, so the server needs no re-match). Reply "11:" lands in elevation.js.
+  function requestElevation(points) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !points || points.length < 2) return;
+    ws.send("10:" + encode(points));
+  }
+
   NS.ws = {
-    sendPoints, requestExport, requestImport, connect,
+    sendPoints, requestExport, requestImport, requestElevation, connect,
     get connected() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
   connect();

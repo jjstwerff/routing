@@ -486,3 +486,153 @@ pub fn clean_track(points: vector<GeoPoint>, epsilon_m: float, min_sep_m: float)
   }
   douglas_peucker(collapsed, epsilon_m)
 }
+
+// --- Elevation profile (PLAN step 15, DESIGN §7) ------------------------------------------------
+// Pure compute for the elevation dock: slippy-tile coordinates for terrarium terrain tiles, route
+// sampling at regular distance steps, and ascent/descent totals with a dead-band. The server
+// fetches + PNG-decodes the tiles (imaging is native-only) and hands the kernel plain height
+// grids, so the kernel stays target-agnostic.
+
+ELEV_TILE_PX = 256;   // terrarium tile edge in pixels
+
+// One decoded terrain tile: ELEV_TILE_PX² heights in metres, row-major from the NW corner.
+// Tile coordinates are INTEGERS (not a "z/x/y" text key): the per-sample lookup must not build
+// text — a constructed-text argument to a `float?`-returning fn zeroes the result under --native
+// (loft codegen bug, minimal repro in docs/loft-feedback.md; text keys stay in the fetch API).
+pub struct TileHeights {
+  tx: integer,           // slippy tile column at the profile's zoom
+  ty: integer,           // slippy tile row
+  heights: vector<float>,
+}
+
+// One profile sample: `d` metres along the route, `e` metres elevation.
+pub struct ElevSample { d: float, e: float }
+
+pub struct ElevProfile {
+  up: float,             // total ascent (m)
+  down: float,           // total descent (m)
+  samples: vector<ElevSample>,
+}
+
+// Fractional slippy-map tile column for a longitude (tile = floor, pixel = fraction · 256).
+pub fn tile_xf(lon: float, zoom: integer) -> float {
+  (lon + 180.0) / 360.0 * pow(2.0, zoom as float)
+}
+
+// Fractional slippy-map tile row for a latitude (y grows SOUTH — Web-Mercator).
+pub fn tile_yf(lat: float, zoom: integer) -> float {
+  lr = lat * PI / 180.0;
+  (1.0 - ln(tan(lr) + 1.0 / cos(lr)) / PI) / 2.0 * pow(2.0, zoom as float)
+}
+
+// The "z/x/y" key of the tile containing (lat, lon).
+pub fn tile_key(lat: float, lon: float, zoom: integer) -> text {
+  "{zoom}/{floor(tile_xf(lon, zoom)) as integer}/{floor(tile_yf(lat, zoom)) as integer}"
+}
+
+// Terrarium RGB → height in metres: h = r·256 + g + b/256 − 32768 (128,0,0 = sea level).
+pub fn terrarium_h(r: integer, g: integer, b: integer) -> float {
+  (r * 256 + g) as float + (b as float) / 256.0 - 32768.0
+}
+
+// Keys ("z/x/y") of every tile the route's bbox touches at `zoom`, row-major from the NW.
+pub fn elev_tiles_for(pts: vector<GeoPoint>, zoom: integer) -> vector<text> {
+  keys: vector<text> = [];
+  if len(pts) == 0 { return keys; }
+  bb = bounds(pts, 0.0);
+  x0 = floor(tile_xf(bb.min_lon, zoom)) as integer;
+  x1 = floor(tile_xf(bb.max_lon, zoom)) as integer;
+  y0 = floor(tile_yf(bb.max_lat, zoom)) as integer;   // max lat = northernmost = smallest row
+  y1 = floor(tile_yf(bb.min_lat, zoom)) as integer;
+  for ty in y0..=y1 {
+    for tx in x0..=x1 { keys += ["{zoom}/{tx}/{ty}"]; }
+  }
+  keys
+}
+
+// The zoom for a route: the highest zoom ≤ max_z whose bbox needs at most max_tiles tiles
+// (bounds the download for a sprawling sketch).
+pub fn elev_zoom(pts: vector<GeoPoint>, max_z: integer, max_tiles: integer) -> integer {
+  z = max_z;
+  while z > 1 {
+    if len(elev_tiles_for(pts, z)) <= max_tiles { return z; }
+    z -= 1;
+  }
+  z
+}
+
+// Total ascent/descent (m) over successive sampled heights, with a dead-band of `hysteresis_m`:
+// a move only counts once it exceeds the band from the last committed height, so per-tile noise
+// doesn't accumulate into fake climb.
+pub fn updown(heights: vector<float>, hysteresis_m: float) -> (float, float) {
+  up = 0.0;
+  down = 0.0;
+  if len(heights) == 0 { return (up, down); }
+  anchor = heights[0] ?? 0.0;
+  for i in 1..len(heights) {
+    hcur = heights[i] ?? anchor;
+    delta = hcur - anchor;
+    if delta >= hysteresis_m { up += delta; anchor = hcur; }
+    else if 0.0 - delta >= hysteresis_m { down += 0.0 - delta; anchor = hcur; }
+  }
+  (up, down)
+}
+
+// Height at pixel (px, py) of tile (tx, ty), or null when that tile wasn't provided.
+fn tile_height(tiles: vector<TileHeights>, tx: integer, ty: integer, px: integer, py: integer) -> float? {
+  for t in tiles {
+    if t.tx == tx && t.ty == ty { return t.heights[py * ELEV_TILE_PX + px]; }
+  }
+  null
+}
+
+// Height at a coordinate from the provided tiles, or null when its tile is missing.
+fn height_at(tiles: vector<TileHeights>, lat: float, lon: float, zoom: integer) -> float? {
+  xf = tile_xf(lon, zoom);
+  yf = tile_yf(lat, zoom);
+  px = floor((xf - floor(xf)) * (ELEV_TILE_PX as float)) as integer;
+  py = floor((yf - floor(yf)) * (ELEV_TILE_PX as float)) as integer;
+  if px >= ELEV_TILE_PX { px = ELEV_TILE_PX - 1; }
+  if py >= ELEV_TILE_PX { py = ELEV_TILE_PX - 1; }
+  tile_height(tiles, floor(xf) as integer, floor(yf) as integer, px, py)
+}
+
+// The elevation profile of a detailed route, sampled every `step_m` metres plus both ends, from
+// pre-decoded tiles at `zoom`. A sample whose tile is missing is skipped (the profile keeps its
+// distance axis, so gaps just thin the curve); totals use the dead-band rule (see updown).
+pub fn elev_profile(pts: vector<GeoPoint>, tiles: vector<TileHeights>, zoom: integer,
+                    step_m: float, hysteresis_m: float) -> ElevProfile {
+  samples: vector<ElevSample> = [];
+  hs: vector<float> = [];
+  total = path_length_m(pts);
+  if len(pts) < 2 || total <= 0.0 || step_m <= 0.0 {
+    return ElevProfile { up: 0.0, down: 0.0, samples: samples };
+  }
+  seg = 1;             // pts[seg-1]..pts[seg] is the segment being sampled
+  seg_start_d = 0.0;   // route distance at pts[seg-1]
+  seg_len = haversine_m(pts[0], pts[1]);
+  dt = 0.0;
+  while dt <= total {
+    while seg_start_d + seg_len < dt && seg < len(pts) - 1 {
+      seg_start_d += seg_len;
+      seg += 1;
+      seg_len = haversine_m(pts[seg - 1], pts[seg]);
+    }
+    f = 0.0;
+    if seg_len > 0.0 { f = (dt - seg_start_d) / seg_len; }
+    if f > 1.0 { f = 1.0; }
+    a = pts[seg - 1];
+    b = pts[seg];
+    h = height_at(tiles, a.lat + (b.lat - a.lat) * f, a.lon + (b.lon - a.lon) * f, zoom);
+    if h != null {
+      hv = h ?? 0.0;
+      samples += [ElevSample { d: dt, e: hv }];
+      hs += [hv];
+    }
+    if dt >= total { break; }
+    dt += step_m;
+    if dt > total { dt = total; }   // the final point is always sampled
+  }
+  (u, d) = updown(hs, hysteresis_m);
+  ElevProfile { up: u, down: d, samples: samples }
+}

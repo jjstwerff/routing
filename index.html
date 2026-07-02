@@ -49,6 +49,17 @@
     </label>
   </div>
 
+  <!-- Elevation dock (PLAN step 15): dismissable profile of the matched route, closed by default.
+       Lag-tolerant — it trails the drawing and never blocks interaction (see elevation.js). -->
+  <button id="elev-toggle" class="hud-elev-toggle" type="button" aria-label="Toggle elevation profile">⛰</button>
+  <div id="elev-dock" class="elev-dock hidden" role="region" aria-label="Elevation profile">
+    <div class="elev-head">
+      <span id="elev-totals">elevation —</span>
+      <button id="elev-close" type="button" aria-label="Close elevation profile">✕</button>
+    </div>
+    <canvas id="elev-canvas"></canvas>
+  </div>
+
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="geo.js"></script>
   <script src="rough.js"></script>
@@ -57,5 +68,6 @@
   <script src="controls.js"></script>
   <script src="gpx.js"></script>
   <script src="undo.js"></script>
+  <script src="elevation.js"></script>
 </body>
 </html>

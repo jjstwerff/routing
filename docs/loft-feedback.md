@@ -196,3 +196,75 @@ wrinkle: judgment-stability across drivers is a property that needs a guard, not
 program, accept/reject must agree across `--interpret` / `--dump` / `--native` / `--native-wasm`,
 alongside the existing runtime value/null/halt/stdout/leak agreement. A future divergence of this
 kind then fails a test instead of surfacing in a consumer session.
+
+---
+
+## 2026-07-02 — native: `float?` return corrupted by a CONSTRUCTED text argument (silent 0)
+
+Found building the step-15 elevation kernel (dev build HEAD `8aa25f9c`). Under `--native`, a fn
+returning `float?` that is CALLED with a **constructed** text argument (interpolated `"{n}"`)
+returns **0** to the caller instead of the real value. A **literal** text argument is fine;
+`--interpret` is fine in all variants. Binding the interpolated text to a local first does NOT
+avoid it — the trigger is the constructed text VALUE in the argument list, not the syntax.
+
+20-line repro:
+
+```loft
+fn get(v: vector<float>, key: text) -> float? {
+  if key == "5" { return v[0]; }
+  null
+}
+
+fn mid(v: vector<float>) -> float? {
+  n = 5;
+  get(v, "{n}")
+}
+
+fn main() {
+  v: vector<float> = [];
+  v += [42.5];
+  h = mid(v);
+  if h != null { println("h={h ?? -1.0} (expect 42.5)"); }   // native prints h=0
+  else { println("h=NULL"); }
+}
+```
+
+| variant | arg | `--interpret` | `--native` |
+|---|---|---|---|
+| literal | `get(v, "5")` | 42.5 | 42.5 |
+| interpolated | `get(v, "{n}")` | 42.5 | **0** |
+| interpolated + cast | `get(v, "{floor(x) as integer}")` | 42.5 | **0** |
+| via local | `k = "{n}"; get(v, k)` | 42.5 | **0** |
+
+**Why this one bites the null model:** the corruption is a NON-null `0` — the caller's
+`h != null` takes the not-null branch and `?? 0.0` yields 0, so there is nothing to defend
+against; every downstream float silently flattens. In routing this made every elevation sample
+read 0 m while the 22-sample structure looked perfectly healthy.
+
+**Second manifestation (not minimized):** the same call shape inside a `use`d library also
+returned zeros under a plain `--interpret` run while passing under `--tests` — worth re-checking
+once the native fix lands; if it doesn't explain it, we'll minimize that one separately.
+
+**Workaround (clean, applied):** keep constructed text out of nullable-returning call argument
+lists. `routing_kernel`'s tile lookup now keys tiles by INTEGER coords
+(`t.tx == tx && t.ty == ty` — no per-sample text at all), green on both backends; the "z/x/y"
+text keys survive only in the server-facing fetch API (`tile_key`, `elev_tiles_for`).
+
+---
+
+## 2026-07-02 — native: `text as integer` from a discharged text LOCAL emits invalid Rust (E0605)
+
+Same session, server side. With `parts = key.split('/'); txs = parts[1] ?? "";` the parse
+`tx = txs as integer ?? -1;` makes `--native` emit
+`let mut var___ncc_4: DbRef = (&var_txs).parse().unwrap_or(i64::MIN) as DbRef;` → rustc E0605/E0308
+("an `as` expression can only be used to convert between primitive types"), i.e. the parse target
+is typed `DbRef` instead of `i64`. Interpret runs it fine. Parsing the nullable index expression
+**inline** — `tx = parts[1] as integer ?? -1;` (the `parse_points` shape) — codegens correctly, so
+the trigger is specifically a *plain text local* (itself produced by a `??` discharge) as the
+`as integer` source.
+
+Also worth knowing: `--native-emit` succeeded on this program — the failure only surfaces at the
+rustc stage, so an emit-only check is NOT a native-build gate.
+
+**Workaround (applied):** parse vector elements inline (`v[i] as integer ?? d`) instead of via an
+intermediate discharged local (server/server.loft `add_tile`, with a pointer comment).

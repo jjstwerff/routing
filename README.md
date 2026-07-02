@@ -44,10 +44,11 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 | 9 | Round-trip inference (near start≈finish → the loop closes) |
 | 10 · 11 | GPX **export** · GPX **import** (Douglas–Peucker + collapse → sparse editable route) |
 | 12–14 | Multi-select + bulk delete · undo (Ctrl+Z / phone snackbar) · goal-length ±delta |
+| 15 | **Elevation dock** — profile + ↑/↓ totals from AWS terrarium tiles (server fetch + decode, pure-loft sampling); closed by default, lag-tolerant |
 
-**Deferred / next:** elevation chart (15), server route store + close-the-browser-safe persistence
-(16), auto-proposed names (17); full HMM matcher, tight-corridor download, offline Mode A. See
-**[PLAN.md](PLAN.md)** for the exact status of every step.
+**Deferred / next:** server route store + close-the-browser-safe persistence (16), auto-proposed
+names (17); full HMM matcher, tight-corridor download, offline Mode A. See **[PLAN.md](PLAN.md)**
+for the exact status of every step.
 
 ## Run it
 
@@ -69,21 +70,23 @@ runtime + the vendored `server`/`web` crates — give it a minute. Kill it by **
 loft --tests lib/routing_kernel/tests/<name>.loft --lib lib   # kernel unit tests (add --native for parity)
 ./tools/kernel_headless_test.sh                               # kernel geodesic on wasip2 via wasmtime
 ./tools/server_test.sh                                        # server: HTTP serve + WS round-trip
+./tools/elevation_test.sh                                     # elevation from a synthetic cached tile (offline)
+./tools/client_elev_test.sh                                   # elevation dock in headless Chromium (offline)
 ```
 
-Kernel tests cover the geodesic, corridor parse, matcher, profiles, round-trip, loop, GPX export, and
-import cleaning — all asserted **interpret == native**. Client behaviour (rough layer, undo, goal) is
-checked with throwaway headless-Chromium harnesses.
+Kernel tests cover the geodesic, corridor parse, matcher, profiles, round-trip, loop, GPX export,
+import cleaning, and the elevation profile — all asserted **interpret == native**. Client behaviour
+(rough layer, undo, goal, elevation dock) is checked with headless-Chromium harnesses.
 
 ## Layout
 
 ```
 index.html            static client shell
-app.js geo.js rough.js ws.js controls.js gpx.js undo.js   client modules (see docs/ARCHITECTURE.md)
+app.js geo.js rough.js ws.js controls.js gpx.js undo.js elevation.js   client modules (see docs/ARCHITECTURE.md)
 vendor/leaflet/       vendored Leaflet (no CDN)
-server/server.loft    the native loft server (HTTP + WebSocket)
-lib/routing_kernel/   pure-loft compute (geodesic, corridor, matcher, GPX, cleaning) + tests
-lib/server, lib/web   vendored loft registry libs (patched to compile — see docs/loft-feedback.md)
+server/server.loft    the native loft server (HTTP + WebSocket + terrain tiles)
+lib/routing_kernel/   pure-loft compute (geodesic, corridor, matcher, GPX, cleaning, elevation) + tests
+lib/server, lib/web, lib/imaging   vendored loft registry libs (patched/extended — see docs/loft-feedback.md)
 tools/                test harnesses
 ```
 

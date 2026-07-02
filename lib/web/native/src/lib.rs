@@ -93,6 +93,36 @@ pub extern "C" fn n_http_body() -> LoftStr {
     LAST_BODY.with(|b| loft_ffi::ret_ref(&b.borrow()))
 }
 
+/// Binary-safe GET: stream the response body to `path` verbatim (no UTF-8 conversion —
+/// `n_http_do`'s into_string() mangles binary bodies like PNG tiles). Returns the HTTP
+/// status; 0 = transport error, -1 = file create/write error.
+#[loft_native]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn n_http_get_file(
+    url_ptr: *const u8,
+    url_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> i32 {
+    let url = unsafe { loft_ffi::text(url_ptr, url_len) };
+    let path = unsafe { loft_ffi::text(path_ptr, path_len) };
+    match ureq::get(url).call() {
+        Ok(resp) => {
+            let status = resp.status() as i32;
+            let mut reader = resp.into_reader();
+            match std::fs::File::create(path) {
+                Ok(mut f) => match std::io::copy(&mut reader, &mut f) {
+                    Ok(_) => status,
+                    Err(_) => -1,
+                },
+                Err(_) => -1,
+            }
+        }
+        Err(ureq::Error::Status(code, _)) => code as i32,
+        Err(_) => 0,
+    }
+}
+
 use std::cell::RefCell;
 
 thread_local! {
