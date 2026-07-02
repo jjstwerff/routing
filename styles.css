@@ -190,6 +190,102 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* Named route store (PLAN step 16) — a Routes button under the GPX bar; the panel lists saved
+   routes with open/delete and a save row. Same dark HUD chrome. */
+.hud-routes-toggle {
+  position: fixed;
+  right: calc(8px + env(safe-area-inset-right));
+  top: calc(52px + env(safe-area-inset-top));
+  z-index: 1200;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  color: #fff;
+  background: rgba(31, 41, 51, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+.hud-routes-toggle.is-active { background: #2b6cff; }
+
+.routes-panel {
+  position: fixed;
+  right: calc(8px + env(safe-area-inset-right));
+  top: calc(92px + env(safe-area-inset-top));
+  z-index: 1200;
+  width: min(280px, calc(100vw - 24px));
+  border-radius: 12px;
+  background: rgba(31, 41, 51, 0.95);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  color: #cdd6df;
+  font-size: 14px;
+}
+.routes-save-row {
+  display: flex;
+  gap: 6px;
+}
+.routes-save-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid #4a5561;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.routes-save-row button {
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #2b6cff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+#routes-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+#routes-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#routes-list .route-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: #fff;
+  background: none;
+  border: none;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#routes-list .route-open:hover { background: rgba(255, 255, 255, 0.08); }
+#routes-list .route-del {
+  font: inherit;
+  color: #9aa5b1;
+  background: none;
+  border: none;
+  padding: 8px;
+  cursor: pointer;
+}
+#routes-list .routes-empty { color: #6b7683; padding: 8px 6px; }
+
 /* Elevation dock (PLAN step 15) — dismissable bottom strip above the activity controls; the
    lag-tolerant tier, closed by default. Same dark HUD chrome as the pills. */
 .hud-elev-toggle {

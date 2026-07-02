@@ -34,6 +34,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
 | `elevation.js` | bottom-dock elevation profile (canvas) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
+| `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 
 ### Server
@@ -46,6 +47,10 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 - Terrain tiles are fetched with `web::http_get_file` (binary-safe download-to-file; added to the
   vendored web lib — `http_get` mangles binary bodies through UTF-8), disk-cached under
   `scratch/tiles/`, PNG-decoded with `imaging`, and handed to the kernel as plain height grids.
+- **Named route store (step 16):** `routes/` holds one file per route (display name / profile /
+  points; filename = a safe slug). The **disk is the store** — list scans the dir, save writes,
+  delete unlinks — so persistence is write-through by construction and restarts are safe. The
+  working sketch autosaves under `_working` on every match request, before the corridor fetch.
 
 ### Kernel — `lib/routing_kernel/` (pure loft, target-agnostic)
 The compute surface. Public API:
@@ -72,6 +77,10 @@ import, elevation), all asserted **interpret == native**.
 | `6:<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as a GPX document (JS downloads it) |
 | `8:<lat,lon;…>` | `9:<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route |
 | `10:<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open |
+| `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |
+| `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
+| `16:<name>` | `17:<name>\|<profile>\|<pts>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch |
+| `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
@@ -111,6 +120,8 @@ loft --tests lib/routing_kernel/tests/<name>.loft --lib lib          # unit (add
 ./tools/server_test.sh                                               # HTTP serve + WS length round-trip
 ./tools/elevation_test.sh                                            # WS elevation from a SYNTHETIC cached tile (offline)
 ./tools/client_elev_test.sh                                          # elevation dock in headless Chromium (CDP, offline)
+./tools/routes_test.sh                                               # named store + _working autosave over WS (offline)
+./tools/client_routes_test.sh                                        # routes panel + reload-restore in headless Chromium (CDP)
 ```
 
 - Kernel logic is gated deterministically (interpret == native). The **live match/export/import**
@@ -141,8 +152,11 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
 - **Length** is spherical haversine; the WGS84-ellipsoidal upgrade is deferred.
 - **Elevation:** nearest-pixel sampling (no bilinear/tile-seam blend) at z ≤ 13 — fine for ↑/↓
   totals, a touch steppy on a zoomed-in profile. No tooltip/crosshair on the dock chart yet.
-- **Phase 3 remaining:** server route store + close-the-browser-safe persistence (16),
-  auto-proposed names (17 — Nominatim).
+- **Route store:** persistence granularity is the debounced match-commit (~0.7 s after
+  edit-release) — a tab killed inside that window loses the last gesture (per-edit streaming is
+  step 20). Deleting all points doesn't clear `_working` (a reload restores the last real sketch —
+  deliberate: never lose work). No multi-client sync yet (step 19).
+- **Phase 3 remaining:** auto-proposed names (17 — Nominatim).
 - **Offline "Mode A"** (loft in the browser via `--html`) is deferred — blocked on an upstream loft
   browser data-in primitive (docs/loft-feedback.md Part 1).
 - **Client:** box/lasso select (tap-first-last works instead); flagging *substantial* GPX retraces

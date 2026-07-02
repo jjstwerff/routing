@@ -45,10 +45,11 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 | 10 · 11 | GPX **export** · GPX **import** (Douglas–Peucker + collapse → sparse editable route) |
 | 12–14 | Multi-select + bulk delete · undo (Ctrl+Z / phone snackbar) · goal-length ±delta |
 | 15 | **Elevation dock** — profile + ↑/↓ totals from AWS terrarium tiles (server fetch + decode, pure-loft sampling); closed by default, lag-tolerant |
+| 16 | **Route store** — named save/open/delete (disk-is-the-store, write-through) + the working sketch autosaves and **survives closing the browser** |
 
-**Deferred / next:** server route store + close-the-browser-safe persistence (16), auto-proposed
-names (17); full HMM matcher, tight-corridor download, offline Mode A. See **[PLAN.md](PLAN.md)**
-for the exact status of every step.
+**Deferred / next:** auto-proposed names (17); multi-client sync (19), per-edit persistence (20);
+full HMM matcher, tight-corridor download, offline Mode A. See **[PLAN.md](PLAN.md)** for the
+exact status of every step.
 
 ## Run it
 
@@ -72,17 +73,19 @@ loft --tests lib/routing_kernel/tests/<name>.loft --lib lib   # kernel unit test
 ./tools/server_test.sh                                        # server: HTTP serve + WS round-trip
 ./tools/elevation_test.sh                                     # elevation from a synthetic cached tile (offline)
 ./tools/client_elev_test.sh                                   # elevation dock in headless Chromium (offline)
+./tools/routes_test.sh                                        # named route store + autosave over WS (offline)
+./tools/client_routes_test.sh                                 # routes panel + reload-restore in headless Chromium
 ```
 
 Kernel tests cover the geodesic, corridor parse, matcher, profiles, round-trip, loop, GPX export,
 import cleaning, and the elevation profile — all asserted **interpret == native**. Client behaviour
-(rough layer, undo, goal, elevation dock) is checked with headless-Chromium harnesses.
+(rough layer, undo, goal, elevation dock, routes panel) is checked with headless-Chromium harnesses.
 
 ## Layout
 
 ```
 index.html            static client shell
-app.js geo.js rough.js ws.js controls.js gpx.js undo.js elevation.js   client modules (see docs/ARCHITECTURE.md)
+app.js geo.js rough.js ws.js controls.js gpx.js undo.js elevation.js routes.js   client modules (see docs/ARCHITECTURE.md)
 vendor/leaflet/       vendored Leaflet (no CDN)
 server/server.loft    the native loft server (HTTP + WebSocket + terrain tiles)
 lib/routing_kernel/   pure-loft compute (geodesic, corridor, matcher, GPX, cleaning, elevation) + tests

@@ -49,6 +49,17 @@
     </label>
   </div>
 
+  <!-- Named route store (PLAN step 16): save/open/delete named routes on the server; the working
+       sketch autosaves and is restored on reload (see routes.js). Closed by default. -->
+  <button id="routes-toggle" class="hud-routes-toggle" type="button" aria-label="Toggle saved routes">Routes</button>
+  <div id="routes-panel" class="routes-panel hidden" role="region" aria-label="Saved routes">
+    <div class="routes-save-row">
+      <input id="route-name" type="text" placeholder="name this route" maxlength="60">
+      <button id="route-save" type="button">Save</button>
+    </div>
+    <ul id="routes-list"></ul>
+  </div>
+
   <!-- Elevation dock (PLAN step 15): dismissable profile of the matched route, closed by default.
        Lag-tolerant — it trails the drawing and never blocks interaction (see elevation.js). -->
   <button id="elev-toggle" class="hud-elev-toggle" type="button" aria-label="Toggle elevation profile">⛰</button>
@@ -69,5 +80,6 @@
   <script src="gpx.js"></script>
   <script src="undo.js"></script>
   <script src="elevation.js"></script>
+  <script src="routes.js"></script>
 </body>
 </html>

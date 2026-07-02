@@ -23,5 +23,6 @@ loft.lock
 
 # Local scratch / env
 scratch/
+routes/
 .env
 .env.local

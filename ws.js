@@ -64,7 +64,10 @@
 
   function connect() {
     try { ws = new WebSocket(WS_URL); } catch (e) { return; }
-    ws.addEventListener("open", flush);
+    ws.addEventListener("open", () => {
+      flush();
+      if (NS.routes) NS.routes.onConnect(); // step 16: restore _working + prefetch the list
+    });
     ws.addEventListener("message", (e) => {
       const raw = String(e.data);
       const id = raw.slice(0, raw.indexOf(":"));
@@ -72,6 +75,8 @@
       else if (id === "7") downloadGpx(raw.slice(2));
       else if (id === "9" && NS.rough && NS.rough.setPoints) NS.rough.setPoints(decode(raw.slice(2)));
       else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
+      else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
+      else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
@@ -102,8 +107,27 @@
     ws.send("10:" + encode(points));
   }
 
+  // Step 16: the named route store (replies "13:" list / "17:" route land in routes.js).
+  function saveRoute(name) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !latest || latest.length < 2) return;
+    ws.send("12:" + name.replace(/[|\n]/g, " ") + "|" + profileOf() + "|" + encode(latest));
+  }
+  function requestRoutesList() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send("14:");
+  }
+  function openRoute(name) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send("16:" + name);
+  }
+  function deleteRoute(name) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send("18:" + name);
+  }
+
   NS.ws = {
     sendPoints, requestExport, requestImport, requestElevation, connect,
+    saveRoute, requestRoutesList, openRoute, deleteRoute,
     get connected() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
   connect();

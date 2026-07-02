@@ -288,12 +288,32 @@ accurate length. Ship nothing fancy; prove the pipeline.
   (constructed-text arg zeroes a `float?` return — see docs/loft-feedback.md; kernel tiles are
   integer-keyed as the clean workaround).
 
-### ☐ 16. Mode A — local named library (§4, §9)
-- **Goal:** save, reopen, and re-edit routes with no server.
-- **Build:** persist the **rough route** (authoritative) to `localStorage`/IndexedDB as a named entry;
-  detailed match + elevation are derived/cached. List / open / delete.
-- **Check:** save a route, reload the page, reopen it — the rough points, activity, and sub-mode
-  return and it re-matches; a second saved route is independently listed.
+### ☑ 16. Server route store — named saves + close-the-browser-safe working route (§4, §9)
+- **Re-scoped by the server-first pivot** (was: "Mode A — local named library" via localStorage.
+  With loft server-side, a no-server library can't re-match anyway; the local variant folds into
+  the deferred offline Mode A). This step pulls the named store + write-through persistence
+  forward from steps 19/20 — the README already numbered it this way.
+- **Goal:** save, reopen, and re-edit routes; the browser is disposable.
+- **Build:** named route store on the server where the **disk is the store** (one file per route:
+  display name / profile / points; list = dir scan) — every save is write-through **by
+  construction** and a server restart loses nothing. WS `12:` save / `14:` list / `16:` open /
+  `18:` delete → replies `13:` (updated list) / `17:` (route). The **working sketch** autosaves
+  under the reserved name `_working` on every match request (before the corridor fetch, so a
+  failed match still persists) and is restored **silently** onto an empty page at first connect.
+- **Check:** save a route, reload, reopen it — points, activity, and sub-mode return and it
+  re-matches; a second route lists independently; close the tab mid-sketch, reopen → the sketch
+  is back.
+- **DONE (2026-07-02):** server: `route_slug` (filename-safe, display name kept inside the file),
+  `save_route`/`routes_list`/open/delete handlers + the `_working` autosave in `reply_match`.
+  Client: `routes.js` panel (closed by default; save row + open/✕ list), `controls.setProfile`
+  (restores activity × sub-mode without a double re-match), silent `_working` restore on first
+  connect (guarded: never clobbers a started sketch). Offline gates: `tools/routes_test.sh`
+  (node WS: save ×2 incl. UTF-8 name, list, exact open round-trip, unknown → empty, delete,
+  autosave-before-match; preserves the developer's `_working`) and `tools/client_routes_test.sh`
+  (headless-Chromium CDP: panel closed by default, save→listed, **page reload restores the
+  sketch + autosaved profile**, open applies the saved route's distinct profile, delete). What
+  remains for Phase 4: multi-client broadcast/replay (19) and per-edit streaming beyond the
+  debounced match-commit granularity (20).
 
 ### ☐ 17. Auto-proposed names (§9)
 - **Goal:** never force naming; offer a good default.
@@ -324,16 +344,19 @@ accurate length. Ship nothing fancy; prove the pipeline.
 
 ### ☐ 19. Shared route store + WebSocket sync (§4)
 - **Goal:** multiple people load and change the same named routes, live.
-- **Build:** shared named route store in a loft `world`; **single-port HTTP+WS**, client derives WS
-  URL from `location.host`. Broadcast accepted edits to open clients; replay current state to new
-  ones (audience-demo collaborative pattern).
+- **Build:** on the step-16 named store, add the live layer: broadcast accepted edits to open
+  clients; replay current state to new ones (audience-demo collaborative pattern). Single-port
+  HTTP+WS and `location.host`-derived WS URL are already in.
 - **Check:** two browsers open the same route; an edit in one appears in the other; a third client
   opening later sees the current state.
 
 ### ☐ 20. Write-through persistence — close-the-browser-safe (§4, the headline)
 - **Goal:** the browser is disposable; nothing is ever lost.
-- **Build:** each accepted edit streams out-of-band and is **write-through persisted to disk** on the
-  server (direct backup, mirroring `world.bin`). Detailed match stays derived/cached.
+- **Status:** the core landed in step 16 — named saves and the `_working` sketch are write-through
+  persisted (disk-is-the-store), and reopening on ANY device restores the working route. What
+  remains here: persist **every accepted edit** (today the granularity is the debounced
+  match-commit, ~0.7 s after edit-release — a tab killed inside that window loses the last
+  gesture), plus the multi-client consistency story with 19.
 - **Check:** edit a route, **close the tab / kill the connection**, reopen on another device → the
   working route is exactly where you left it, with no "unsaved changes" prompt.
 

@@ -22,6 +22,27 @@
 
   NS.getProfile = () => KEY[activity] + "_" + subId;
 
+  // Step 16: restore a stored "<activity>_<submode>" (opening a saved/working route). Updates the
+  // selectors + overlay but does NOT re-match — the caller applies the points, which re-matches.
+  NS.setProfile = (profile) => {
+    const us = profile.indexOf("_");
+    const actKey = profile.slice(0, us);
+    const sub = profile.slice(us + 1);
+    const name = Object.keys(KEY).find((k) => KEY[k] === actKey);
+    if (!name || !ACT[name].subs.some(([, id]) => id === sub)) return;
+    activity = name;
+    subId = sub;
+    const aSel = document.getElementById("activity");
+    const sSel = document.getElementById("submode");
+    if (aSel && sSel) {
+      aSel.value = name;
+      sSel.innerHTML = ACT[name].subs
+        .map(([label, id]) => `<option value="${id}"${id === sub ? " selected" : ""}>${label}</option>`)
+        .join("");
+    }
+    syncOverlay();
+  };
+
   // --- Waymarkedtrails overlay (MTB sub-mode → the mtb layer; else the activity's overlay) ---
   const layers = {};
   let currentOverlay = null;

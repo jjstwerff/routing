@@ -23,6 +23,9 @@ ROUND_TRIP_RATIO = 0.25;   // start≈finish within this fraction of total lengt
 IMPORT_EPSILON_M = 8.0;    // Douglas–Peucker tolerance for import cleaning (§8)
 IMPORT_MIN_SEP_M = 2.0;    // collapse consecutive GPX points closer than this
 
+ROUTES_DIR = "routes";     // the named-route store: one file per route; the DISK is the store,
+                           // so every save is write-through and a server restart loses nothing
+
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
 ELEV_MAX_ZOOM = 13;        // ~19 m/px — plenty for ascent/descent totals
@@ -118,7 +121,11 @@ fn match_for(payload: text) -> vector<GeoPoint> {
 }
 
 // WS msg 4 → "5:<length>|<polyline>": the matched route + its length (drawn under the sketch).
+// Step 16: the working sketch is write-through persisted under "_working" BEFORE matching, so a
+// closed tab / killed server loses nothing even when the match itself fails.
 fn reply_match(srv: server::Server, cid: integer, payload: text) {
+  wbar = payload.find("|");
+  if wbar >= 0 { save_route("_working", payload[..wbar], payload[wbar + 1..]); }
   matched = match_for(payload);
   _ = srv.send_to(cid, "5:{path_length_m(matched)}|{encode_points(matched)}");
 }
@@ -132,6 +139,77 @@ fn reply_export(srv: server::Server, cid: integer, payload: text) {
 fn reply_import(srv: server::Server, cid: integer, payload: text) {
   cleaned = clean_track(parse_points(payload), IMPORT_EPSILON_M, IMPORT_MIN_SEP_M);
   _ = srv.send_to(cid, "9:{encode_points(cleaned)}");
+}
+
+// --- Named route store (PLAN step 16) -----------------------------------------------------------
+// One file per route under ROUTES_DIR: line 1 = display name, line 2 = profile, line 3 = points.
+// The disk IS the store (list = dir scan, open = read, save = write, delete = unlink) — no
+// in-memory state, so persistence is write-through by construction and restarts are safe. The
+// working sketch autosaves under the reserved name "_working" on every match request (the
+// close-the-browser-safe headline); "_"-prefixed names are hidden from the list.
+
+// Filename-safe slug: alnum / '-' / '_' kept, every other character → '_' (display name keeps
+// its exact form INSIDE the file, so slug collisions only merge pathological names).
+fn route_slug(name: text) -> text {
+  s = "";
+  for c in name {
+    ci = c as integer;
+    keep = (ci >= 97 && ci <= 122) || (ci >= 65 && ci <= 90) || (ci >= 48 && ci <= 57)
+           || ci == 45 || ci == 95;
+    if keep { s += "{c}"; } else { s += "_"; }
+  }
+  if s == "" { s = "route"; }
+  s
+}
+
+fn save_route(name: text, profile: text, points: text) {
+  _ = mkdir_all(ROUTES_DIR);
+  f = file("{ROUTES_DIR}/{route_slug(name)}.route");
+  f.write("{name}\n{profile}\n{points}");
+}
+
+// The saved names, newline-separated (reserved "_"-names hidden).
+fn routes_list() -> text {
+  names = "";
+  d = file(ROUTES_DIR);
+  if !d.exists() { return names; }
+  for ef in d.files() {
+    entry_lines = ef.lines();
+    nm = entry_lines[0] ?? "";
+    if nm != "" && !nm.starts_with("_") {
+      if names.len() > 0 { names += "\n"; }
+      names += nm;
+    }
+  }
+  names
+}
+
+// WS msg 12 → "13:<names>": save/overwrite "<name>|<profile>|<points>", reply the updated list.
+fn reply_save(srv: server::Server, cid: integer, payload: text) {
+  bar = payload.find("|");
+  rest = payload[bar + 1..];
+  bar2 = rest.find("|");
+  if bar >= 0 && bar2 >= 0 {
+    save_route(payload[..bar], rest[..bar2], rest[bar2 + 1..]);
+  }
+  _ = srv.send_to(cid, "13:{routes_list()}");
+}
+
+// WS msg 16 → "17:<name>|<profile>|<points>" (or bare "17:" when the name is unknown).
+fn reply_open(srv: server::Server, cid: integer, payload: text) {
+  f = file("{ROUTES_DIR}/{route_slug(payload)}.route");
+  if !f.exists() { _ = srv.send_to(cid, "17:"); return; }
+  entry_lines = f.lines();
+  nm = entry_lines[0] ?? "";
+  pr = entry_lines[1] ?? "";
+  pts = entry_lines[2] ?? "";
+  _ = srv.send_to(cid, "17:{nm}|{pr}|{pts}");
+}
+
+// WS msg 18 → "13:<names>": delete by name, reply the updated list.
+fn reply_delete(srv: server::Server, cid: integer, payload: text) {
+  _ = delete("{ROUTES_DIR}/{route_slug(payload)}.route");
+  _ = srv.send_to(cid, "13:{routes_list()}");
 }
 
 // Fetch (disk-cached) + decode one terrain tile "z/x/y" and append its heights to `tiles`.
@@ -199,6 +277,10 @@ fn main() {
       else if ev.msg_id == 6 { reply_export(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 8 { reply_import(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 10 { reply_elevation(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 12 { reply_save(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 14 { _ = srv.send_to(ev.cid, "13:{routes_list()}"); }
+      else if ev.msg_id == 16 { reply_open(srv, ev.cid, ev.payload); }
+      else if ev.msg_id == 18 { reply_delete(srv, ev.cid, ev.payload); }
     }
   });
 }
