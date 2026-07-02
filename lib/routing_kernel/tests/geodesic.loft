@@ -1,0 +1,38 @@
+// Tests for the WGS84 geodesic (Vincenty inverse) — validated against INDEPENDENT truth: the
+// equatorial arc is analytically exact (a·Δλ, no geodesic algorithm involved), and the general
+// cases come from Karney's geographiclib (a different algorithm than Vincenty).
+//   loft --tests lib/routing_kernel/tests/geodesic.loft --lib lib
+use routing_kernel::(GeoPoint, geodesic_ll, geodesic_m, path_length_m);
+
+fn close(a: float, b: float, tol: float) -> boolean {
+  d = a - b;
+  if d < 0.0 { d = 0.0 - d; }
+  d <= tol
+}
+
+// Along the equator the geodesic is the equatorial circle: s = a·Δλ exactly.
+fn test_equator_exact() {
+  assert(close(geodesic_ll(0.0, 0.0, 0.0, 0.01), 1113.1949079327358, 0.001),
+         "equator 0.01° = {geodesic_ll(0.0, 0.0, 0.0, 0.01)} (a·Δλ = 1113.1949)");
+}
+
+// General cases against Karney/geographiclib (Vincenty agrees to ~0.5 mm).
+fn test_karney_cases() {
+  assert(close(geodesic_ll(52.0, 5.0, 52.009, 5.0), 1001.4069491283806, 0.001),
+         "meridian-ish 1 km at 52°N: {geodesic_ll(52.0, 5.0, 52.009, 5.0)}");
+  assert(close(geodesic_ll(52.0, 4.97, 52.0, 5.0), 2060.3404677642943, 0.001),
+         "parallel 2 km at 52°N: {geodesic_ll(52.0, 4.97, 52.0, 5.0)}");
+}
+
+// Degenerate + structural properties.
+fn test_degenerate_and_symmetric() {
+  assert(geodesic_ll(52.0, 5.0, 52.0, 5.0) == 0.0, "coincident → 0");
+  assert(close(geodesic_ll(52.0, 5.0, 52.009, 5.0), geodesic_ll(52.009, 5.0, 52.0, 5.0), 0.0000001),
+         "direction-symmetric");
+  two = [GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.009, lon: 5.0 },
+         GeoPoint { lat: 52.018, lon: 5.0 }];
+  assert(close(path_length_m(two),
+               geodesic_m(two[0] ?? two[0], two[1] ?? two[1]) + geodesic_m(two[1] ?? two[1], two[2] ?? two[2]),
+               0.0000001),
+         "path length = sum of segments");
+}

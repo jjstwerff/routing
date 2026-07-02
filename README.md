@@ -35,7 +35,7 @@ Working end to end: **draw or import → activity-aware match that faithfully fo
 
 | Steps | What works |
 |---|---|
-| 1–3 | Static Leaflet shell · rough-point layer (tap/drag/insert/delete, distinct start/finish) · instant haversine length |
+| 1–3 | Static Leaflet shell · rough-point layer (tap/drag/insert/delete, distinct start/finish) · instant geodesic length |
 | 4 | Native loft server, single-port HTTP + WebSocket; thin JS client |
 | 5 | Server fetches the Overpass corridor (native `web.http_get`) |
 | 6 + upgrade | Pure-loft **map-matcher** — deviation-dominated Dijkstra, routed **piecewise** through the trace so it covers loops/out-and-backs |

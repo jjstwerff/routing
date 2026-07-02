@@ -60,7 +60,7 @@ routing.detailed = {
   clear() { detailedLine.setLatLngs([]); },
 };
 
-// Step 3: instant rough length (DESIGN.md §1) — a haversine sum, recomputed on every edit and
+// Step 3: instant rough length (DESIGN.md §1) — a WGS84-geodesic sum, recomputed on every edit and
 // every drag frame and shown in the top readout. Never waits; loft's accurate geodesic length of
 // the *matched* route arrives later (step 7). Goal ±delta slots into this same readout in step 14.
 // Step 14: optional goal length — feedback ONLY. When set, the readout shows the live ±delta; the

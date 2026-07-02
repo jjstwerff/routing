@@ -24,23 +24,27 @@ echo "building client/kernel.loft --native-wasm (wasip2)..."
 LOFT_TIMEOUT=300 "$loft" --native-wasm "$wasm" --path "$loftroot/" --lib "$lib" "$client" >/dev/null 2>&1
 
 fail=0
+# Parity is numeric to 1e-6 m, not byte-equal: the Vincenty geodesic uses tan/atan2, whose libm
+# implementations differ by an ULP between the native and wasm targets (the old sin/cos haversine
+# happened to agree byte-for-byte; ~1e-10 m divergence is a target fact, not a kernel bug).
+PARITY_TOL=0.000001
 check() { # name  input  expected_metres
   local name="$1" input="$2" exp="$3" i w
   i="$("$loft" --interpret --path "$loftroot/" --lib "$lib" "$client" "$input" 2>/dev/null)"
   w="$(wasmtime run "$wasm" "$input" 2>/dev/null)"
-  if [ "$i" != "$w" ]; then
-    echo "FAIL $name: interpret($i) != wasm($w)"; fail=1; return
+  if ! awk -v a="$i" -v b="$w" -v t="$PARITY_TOL" 'BEGIN{d=a-b; if(d<0)d=-d; exit !(d<=t)}'; then
+    echo "FAIL $name: interpret($i) != wasm($w) beyond ${PARITY_TOL} m"; fail=1; return
   fi
   if awk -v g="$w" -v e="$exp" -v t="$TOL" 'BEGIN{d=g-e; if(d<0)d=-d; exit !(d<=t)}'; then
-    echo "PASS $name: $w m  (interpret==wasm, exp ~$exp)"
+    echo "PASS $name: $w m  (interpret≈wasm ≤${PARITY_TOL} m, exp ~$exp)"
   else
     echo "FAIL $name: got $w, expected ~$exp (±$TOL)"; fail=1
   fi
 }
 
-check "single-1km"    "52.0,5.0;52.009,5.0"              1000.756
-check "two-segments"  "52.0,5.0;52.009,5.0;52.018,5.0"   2001.511
-check "equator-0.01"  "0,0;0,0.01"                        1112.0
+check "single-1km"    "52.0,5.0;52.009,5.0"              1001.407
+check "two-segments"  "52.0,5.0;52.009,5.0;52.018,5.0"   2002.815
+check "equator-0.01"  "0,0;0,0.01"                        1113.195
 check "one-point"     "52.0,5.0"                          0.0
 
 if [ "$fail" -eq 0 ]; then

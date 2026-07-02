@@ -23,7 +23,7 @@ ws.addEventListener("message", (e) => {
     && samples.length >= 20
     && Math.abs(first[1] - 100) < 0.5
     && Math.abs(last[1] - 200) < 0.5
-    && Math.abs(last[0] - 2053.76) < 1.0;
+    && Math.abs(last[0] - 2060.34) < 1.0;
   console.log(`RECV 11: up=${up} down=${down} n=${samples.length} first=${samples[0]} last=${samples[samples.length - 1]} -> ${ok ? "PASS" : "FAIL"}`);
   ws.close();
   process.exit(ok ? 0 : 1);

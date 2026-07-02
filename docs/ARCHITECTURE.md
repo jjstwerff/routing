@@ -26,7 +26,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | File | Role |
 |---|---|
 | `index.html` | shell: map div, HUD readouts, controls, script tags |
-| `geo.js` | `haversineMeters`, `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
+| `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors); `setPoints`; emits `onChange(points, committed)` |
 | `app.js` | creates the map + the read-only "detailed" pane; wires `rough.onChange` → instant length (+ goal ±delta) → `ws.sendPoints` → `undo.record` |
 | `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
@@ -60,7 +60,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 ### Kernel — `lib/routing_kernel/` (pure loft, target-agnostic)
 The compute surface. Public API:
 - **Types:** `GeoPoint{lat,lon}`, `BBox`, `Way{highway,surface,tracktype,coords}`, `Graph`.
-- **Geodesic:** `haversine_ll`, `haversine_m`, `path_length_m` (spherical haversine; ellipsoidal is deferred).
+- **Geodesic:** `geodesic_ll`, `geodesic_m`, `path_length_m` — WGS84 Vincenty inverse (~0.5 mm; geo.js mirrors it f64-identically).
 - **Corridor:** `bounds(pts, margin_m)`, `overpass_query(bbox)`, `parse_ways(json)`.
 - **Match:** `build_graph(ways)`, `match_route(g, trace, profile)`, `match_route_closed(g, trace, profile, ratio)`, `is_round_trip(start, finish, total_m, ratio)`, `way_penalty(profile, hw, surface, tracktype)`.
 - **GPX / import:** `gpx_export(points, name)`, `douglas_peucker(points, eps_m)`, `clean_track(points, eps_m, min_sep_m)`.
@@ -89,7 +89,7 @@ import, elevation), all asserted **interpret == native**.
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
 | `24:<profile>\|<pts>\|<history>` | `25:` | **instant persist** — sent on every COMMITTED edit (and on reconnect), un-debounced: saves `_working` (its SINGLE writer; history = the undo stack, "#"-separated snapshots ≤30, stored as line 4) + the subscribed route (history-free), no match, no fan-out |
-| `1:<lat,lon;…>` | `2:<length_m>` | rough haversine length — a server-side diagnostic; the live client doesn't send it |
+| `1:<lat,lon;…>` | `2:<length_m>` | rough geodesic length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
 
 `<profile>` = `<activity>_<submode>`, e.g. `running_trail`, `cycling_road`.
@@ -167,7 +167,7 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   trigger corridor widening — only a fully-empty match does. Candidate anchors are graph NODES;
   a tap far from any vertex of the right way can still anchor elsewhere (edge-projection anchors
   are the next refinement).
-- **Length** is spherical haversine; the WGS84-ellipsoidal upgrade is deferred.
+- **Length** is the WGS84 geodesic (Vincenty inverse, ~0.5 mm) — validated against the analytic equatorial arc and Karney/geographiclib; kernel and geo.js produce bit-identical f64s.
 - **Elevation:** nearest-pixel sampling (no bilinear/tile-seam blend) at z ≤ 13 — fine for ↑/↓
   totals, a touch steppy on a zoomed-in profile. No tooltip/crosshair on the dock chart yet.
 - **Route store:** every committed edit persists instantly (msg 24 — step 20), so nothing is lost

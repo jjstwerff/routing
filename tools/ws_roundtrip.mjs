@@ -2,7 +2,7 @@
 // Connect, send points (msg 1), expect the length (msg 2) within a few mm of the known haversine.
 // Usage: node tools/ws_roundtrip.mjs [ws://host:port/ws]
 const url = process.argv[2] || "ws://127.0.0.1:18080/ws";
-const EXPECT = 1000.7557221018342; // 0.009deg-lat segment — matches geo.js + routing_kernel
+const EXPECT = 1001.4069491273882; // 0.009°-lat segment, WGS84 geodesic — matches geo.js + routing_kernel
 const ws = new WebSocket(url);
 let got = false;
 const timer = setTimeout(() => { if (!got) { console.log("TIMEOUT (no reply in 10s)"); process.exit(3); } }, 10000);

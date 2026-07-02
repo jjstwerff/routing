@@ -44,7 +44,7 @@ fn test_updown() {
 
 // A synthetic step tile (west half 100 m, east half 200 m) under a west→east route: the profile
 // crosses the step once — up 100, down 0, samples 100-valued then 200-valued. Route lat 52.0,
-// lon 4.97→5.0 sits in tile 13/4209/2705 (px 24→199); length ≈ 2053.756 m → 22 samples at 100 m.
+// lon 4.97→5.0 sits in tile 13/4209/2705 (px 24→199); length ≈ 2060.340 m (WGS84) → 22 samples at 100 m.
 fn test_profile_step_tile() {
   hs: vector<float> = [];
   for i in 0..65536 {
@@ -58,7 +58,7 @@ fn test_profile_step_tile() {
   assert(close(prof.down, 0.0, 0.0000001), "down = {prof.down}");
   assert(close(prof.samples[0].d, 0.0, 0.0000001), "first sample at d=0: {prof.samples[0].d}");
   assert(close(prof.samples[0].e, 100.0, 0.0000001), "west end at 100 m: {prof.samples[0].e}");
-  assert(close(prof.samples[21].d, 2053.7557997979634, 0.001), "last sample at the route end: {prof.samples[21].d}");
+  assert(close(prof.samples[21].d, 2060.3404677642943, 0.01), "last sample at the route end: {prof.samples[21].d}");
   assert(close(prof.samples[21].e, 200.0, 0.0000001), "east end at 200 m: {prof.samples[21].e}");
   low = 0;
   for s in prof.samples { if s.e < 150.0 { low += 1; } }

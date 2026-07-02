@@ -9,33 +9,68 @@ pub struct GeoPoint {
   lon: float,
 }
 
-// Mean Earth radius (m), IUGG — the spherical haversine constant, matching the client's geo.js
-// so the instant JS length and the loft length agree. The ellipsoidal (WGS84) upgrade is step 7.
-EARTH_R = 6371008.8;
+// WGS84 ellipsoid — the ellipsoidal length upgrade (DESIGN §5, deferred from step 7; replaces the
+// spherical haversine, which ran ~0.65 m short per km at 52°N). The client's geo.js implements
+// the SAME Vincenty inverse, so the instant JS length and the loft length still agree.
+WGS84_A = 6378137.0;               // semi-major axis (m)
+WGS84_F = 0.0033528106647474805;   // flattening, 1/298.257223563
+WGS84_B = 6356752.314245179;       // semi-minor axis, a·(1−f)
 
-// Great-circle distance between two lat/lon pairs, in metres.
-pub fn haversine_ll(lat1: float, lon1: float, lat2: float, lon2: float) -> float {
+// Geodesic distance between two lat/lon pairs, in metres (Vincenty inverse, ~0.5 mm accuracy;
+// converges in a few iterations for route-scale separations — the antipodal case doesn't occur).
+pub fn geodesic_ll(lat1: float, lon1: float, lat2: float, lon2: float) -> float {
+  if lat1 == lat2 && lon1 == lon2 { return 0.0; }
   d2r = PI / 180.0;
-  dlat = (lat2 - lat1) * d2r;
-  dlon = (lon2 - lon1) * d2r;
-  s1 = sin(dlat / 2.0);
-  s2 = sin(dlon / 2.0);
-  h = s1 * s1 + cos(lat1 * d2r) * cos(lat2 * d2r) * s2 * s2;
-  sq = sqrt(h);
-  if sq > 1.0 { sq = 1.0; }
-  2.0 * EARTH_R * asin(sq)
+  ll = (lon2 - lon1) * d2r;
+  u1 = atan((1.0 - WGS84_F) * tan(lat1 * d2r));
+  u2 = atan((1.0 - WGS84_F) * tan(lat2 * d2r));
+  su1 = sin(u1);
+  cu1 = cos(u1);
+  su2 = sin(u2);
+  cu2 = cos(u2);
+  lam = ll;
+  sins = 0.0;
+  coss = 1.0;
+  sigma = 0.0;
+  cos2a = 0.0;
+  cos2sm = 0.0;
+  for _it in 0..20 {
+    sl = sin(lam);
+    cl = cos(lam);
+    sins = sqrt((cu2 * sl) * (cu2 * sl) + (cu1 * su2 - su1 * cu2 * cl) * (cu1 * su2 - su1 * cu2 * cl));
+    if sins == 0.0 { return 0.0; }   // coincident on the auxiliary sphere
+    coss = su1 * su2 + cu1 * cu2 * cl;
+    sigma = atan2(sins, coss);
+    sina = cu1 * cu2 * sl / sins;
+    cos2a = 1.0 - sina * sina;
+    cos2sm = 0.0;
+    if cos2a != 0.0 { cos2sm = coss - 2.0 * su1 * su2 / cos2a; }   // 0 along the equator
+    cc = WGS84_F / 16.0 * cos2a * (4.0 + WGS84_F * (4.0 - 3.0 * cos2a));
+    prev = lam;
+    lam = ll + (1.0 - cc) * WGS84_F * sina
+             * (sigma + cc * sins * (cos2sm + cc * coss * (-1.0 + 2.0 * cos2sm * cos2sm)));
+    step = lam - prev;
+    if step < 0.0 { step = 0.0 - step; }
+    if step < 0.000000000001 { break; }
+  }
+  usq = cos2a * (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_B * WGS84_B);
+  aa = 1.0 + usq / 16384.0 * (4096.0 + usq * (-768.0 + usq * (320.0 - 175.0 * usq)));
+  bb = usq / 1024.0 * (256.0 + usq * (-128.0 + usq * (74.0 - 47.0 * usq)));
+  dsig = bb * sins * (cos2sm + bb / 4.0 * (coss * (-1.0 + 2.0 * cos2sm * cos2sm)
+       - bb / 6.0 * cos2sm * (-3.0 + 4.0 * sins * sins) * (-3.0 + 4.0 * cos2sm * cos2sm)));
+  WGS84_B * aa * (sigma - dsig)
 }
 
-// Great-circle distance between two points, in metres.
-pub fn haversine_m(a: GeoPoint, b: GeoPoint) -> float {
-  haversine_ll(a.lat, a.lon, b.lat, b.lon)
+// Geodesic distance between two points, in metres.
+pub fn geodesic_m(a: GeoPoint, b: GeoPoint) -> float {
+  geodesic_ll(a.lat, a.lon, b.lat, b.lon)
 }
 
 // Summed length over consecutive points, in metres (0.0 for fewer than two points).
 pub fn path_length_m(pts: vector<GeoPoint>) -> float {
   total = 0.0;
   for i in 1..len(pts) {
-    total += haversine_m(pts[i - 1], pts[i]);
+    total += geodesic_m(pts[i - 1], pts[i]);
   }
   total
 }
@@ -190,7 +225,7 @@ pub fn build_graph(ways: vector<Way>) -> Graph {
       p = w.coords[ci];
       ni = node_idx(g, p.lat, p.lon);
       if prev >= 0 && prev != ni {
-        d = haversine_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
+        d = geodesic_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
         add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype);
       }
       prev = ni;
@@ -223,7 +258,7 @@ fn point_seg_m(plat: float, plon: float, alat: float, alon: float, blat: float, 
 // Min distance (m) from a point to the rough trace polyline.
 fn point_trace_m(plat: float, plon: float, trace: vector<GeoPoint>) -> float {
   if len(trace) == 1 {
-    return haversine_ll(plat, plon, trace[0].lat, trace[0].lon);
+    return geodesic_ll(plat, plon, trace[0].lat, trace[0].lon);
   }
   best = BIG;
   for si in 1..len(trace) {
@@ -246,7 +281,7 @@ fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
     bestd = BIG;
     for i in 0..len(g.nodes) {
       if !(taken[i] ?? true) {
-        d = haversine_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
+        d = geodesic_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
         if d < bestd { bestd = d; best = i; }
       }
     }
@@ -427,7 +462,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
   paths: vector<NodePath> = [];
   for c0 in 0..len(cands) {
     a0 = cands[c0] ?? 0;
-    costs += [EMIT_K * haversine_ll(trace[0].lat, trace[0].lon, g.nodes[a0].lat, g.nodes[a0].lon)];
+    costs += [EMIT_K * geodesic_ll(trace[0].lat, trace[0].lon, g.nodes[a0].lat, g.nodes[a0].lon)];
     paths += [NodePath { nodes: [a0] }];
   }
 
@@ -450,7 +485,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
         td = tree.dist[ax] ?? BIG;
         if td >= BIG { continue; }
         total = (costs[c] ?? BIG) + td
-              + EMIT_K * haversine_ll(trace[i].lat, trace[i].lon, g.nodes[ax].lat, g.nodes[ax].lon);
+              + EMIT_K * geodesic_ll(trace[i].lat, trace[i].lon, g.nodes[ax].lat, g.nodes[ax].lon);
         if total < (ncosts[x] ?? BIG) {
           ncosts[x] = total;
           nfrom[x] = c;
@@ -471,7 +506,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
       paths = [];
       for x2 in 0..len(nxt) {
         a2 = nxt[x2] ?? 0;
-        costs += [EMIT_K * haversine_ll(trace[i].lat, trace[i].lon, g.nodes[a2].lat, g.nodes[a2].lon)];
+        costs += [EMIT_K * geodesic_ll(trace[i].lat, trace[i].lon, g.nodes[a2].lat, g.nodes[a2].lon)];
         pn: vector<integer> = [];
         for q0 in 0..len(frozen.nodes) { pn += [frozen.nodes[q0] ?? -1]; }
         pn += [a2];
@@ -524,7 +559,7 @@ pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<G
 
 // True iff start/finish are within `ratio` of the total length of each other (a small ratio = a loop).
 pub fn is_round_trip(start: GeoPoint, finish: GeoPoint, total_m: float, ratio: float) -> boolean {
-  total_m > 0.0 && haversine_m(start, finish) / total_m < ratio
+  total_m > 0.0 && geodesic_m(start, finish) / total_m < ratio
 }
 
 // The matched route, closed into a circuit when it reads as a round trip. v1 closes with a straight
@@ -604,7 +639,7 @@ pub fn clean_track(points: vector<GeoPoint>, epsilon_m: float, min_sep_m: float)
       collapsed += [points[i]];
     } else {
       last = collapsed[len(collapsed) - 1];
-      if haversine_m(last, points[i]) >= min_sep_m { collapsed += [points[i]]; }
+      if geodesic_m(last, points[i]) >= min_sep_m { collapsed += [points[i]]; }
     }
   }
   douglas_peucker(collapsed, epsilon_m)
@@ -733,13 +768,13 @@ pub fn elev_profile(pts: vector<GeoPoint>, tiles: vector<TileHeights>, zoom: int
   }
   seg = 1;             // pts[seg-1]..pts[seg] is the segment being sampled
   seg_start_d = 0.0;   // route distance at pts[seg-1]
-  seg_len = haversine_m(pts[0], pts[1]);
+  seg_len = geodesic_m(pts[0], pts[1]);
   dt = 0.0;
   while dt <= total {
     while seg_start_d + seg_len < dt && seg < len(pts) - 1 {
       seg_start_d += seg_len;
       seg += 1;
-      seg_len = haversine_m(pts[seg - 1], pts[seg]);
+      seg_len = geodesic_m(pts[seg - 1], pts[seg]);
     }
     f = 0.0;
     if seg_len > 0.0 { f = (dt - seg_start_d) / seg_len; }
