@@ -5,8 +5,8 @@
 
 // A rough or matched point. lat/lon in degrees (WGS84).
 pub struct GeoPoint {
-  lat: float not null,
-  lon: float not null,
+  lat: float,
+  lon: float,
 }
 
 // Mean Earth radius (m), IUGG — the spherical haversine constant, matching the client's geo.js
@@ -46,10 +46,10 @@ pub fn path_length_m(pts: vector<GeoPoint>) -> float {
 // it stays target-agnostic.
 
 pub struct BBox {
-  min_lat: float not null,
-  min_lon: float not null,
-  max_lat: float not null,
-  max_lon: float not null,
+  min_lat: float,
+  min_lon: float,
+  max_lat: float,
+  max_lon: float,
 }
 
 // One OSM way from the corridor: its activity-relevant tags + its geometry.
@@ -131,10 +131,10 @@ pub fn parse_ways(response: text) -> vector<Way> {
 BIG = 1000000000.0;   // stand-in for infinity in Dijkstra (real path costs stay far below this)
 DEV_K = 3.0;          // deviation weight: cost = length * (1 + DEV_K * deviation_m); >> 1 hugs the line
 
-struct CoordIdx { coord: text not null, idx: integer not null }
-struct GNode { lat: float not null, lon: float not null }
+struct CoordIdx { coord: text, idx: integer }
+struct GNode { lat: float, lon: float }
 struct GEdge {
-  a: integer not null, b: integer not null, length: float not null,
+  a: integer, b: integer, length: float,
   hw: text, surface: text, tracktype: text,
 }
 pub struct Graph {
