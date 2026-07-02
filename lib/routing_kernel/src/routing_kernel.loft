@@ -358,7 +358,7 @@ fn dijkstra_path(g: Graph, src: integer, dst: integer, trace: vector<GeoPoint>, 
   for _k in 0..n {
     rev += [cur];
     if cur == src { break; }
-    cur = prevn[cur];
+    cur = prevn[cur] ?? -1;
     if cur < 0 { break; }
   }
   for r in 0..len(rev) { out += [rev[len(rev) - 1 - r]]; }   // src → dst order

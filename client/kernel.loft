@@ -19,7 +19,7 @@ fn main() {
   for pair in spec.split(';') {
     xy = pair.split(',');
     if len(xy) == 2 {
-      pts += [GeoPoint { lat: xy[0] as float, lon: xy[1] as float }];
+      pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }];
     }
   }
   println("{path_length_m(pts)}");
