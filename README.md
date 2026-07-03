@@ -61,27 +61,25 @@ Needs the [loft](https://github.com/loft-lang/loft) toolchain at `../loft` (a si
 `rustc`. From the repo root:
 
 ```bash
-loft --native server/server.loft --lib lib      # build + run the native loft server
-# → open http://localhost:18080 and start tapping points
+make run    # prereq-checked build + start → open http://localhost:18080 and tap points
+make stop   # stop it (by port — `loft --native` detaches the compiled binary)
 ```
 
-The server serves the static client and the WebSocket on one port. (First build compiles the loft
-runtime + the vendored `server`/`web` crates — give it a minute. Kill it by **port** —
-`fuser -k 18080/tcp` — not the wrapper, since `loft --native` detaches the compiled binary.)
+`make help` lists everything; the underlying command is `loft --native server/server.loft --lib
+lib`. The server serves the static client and the WebSocket on one port; the first build compiles
+the loft runtime + the vendored crates — give it a minute.
 
 ## Test
 
 ```bash
-loft --tests lib/routing_kernel/tests/<name>.loft --lib lib   # kernel unit tests (add --native for parity)
-./tools/kernel_headless_test.sh                               # kernel geodesic on wasip2 via wasmtime
-./tools/server_test.sh                                        # server: HTTP serve + WS round-trip
-./tools/elevation_test.sh                                     # elevation from a synthetic cached tile (offline)
-./tools/client_elev_test.sh                                   # elevation dock in headless Chromium (offline)
-./tools/routes_test.sh                                        # named route store + autosave over WS (offline)
-./tools/client_routes_test.sh                                 # routes panel + reload-restore in headless Chromium
-./tools/sync_test.sh                                          # live sync, 3 WS clients (offline)
-./tools/client_sync_test.sh                                   # live sync across two headless-Chromium tabs
+make test          # everything offline: kernel suites (interpret) + the four server harnesses
+make test-native   # the kernel suites on the native backend (the slow, thorough gate)
+make test-wasm     # kernel geodesic parity on wasip2 via wasmtime
+make test-client   # the headless-Chromium harnesses (routes / elevation / two-tab sync)
 ```
+
+(The individual suites live in `tools/*.sh` and
+`loft --tests lib/routing_kernel/tests/<name>.loft --lib lib` — see docs/ARCHITECTURE.md.)
 
 Kernel tests cover the geodesic, corridor parse, matcher, profiles, round-trip, loop, GPX export,
 import cleaning, and the elevation profile — all asserted **interpret == native**. Client behaviour

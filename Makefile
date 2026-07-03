@@ -1,4 +1,5 @@
-# Makefile — build + install a fully optimized, stable local copy of the routing app.
+# Makefile — build + install a fully optimized, stable local copy of the routing app,
+# and run every offline test gate.
 #
 # WHY A PREBUILT BINARY IS "STABLE":
 #   `loft --native-release` compiles server/server.loft (plus the vendored loft
@@ -21,6 +22,15 @@
 #   routing          start (if needed) and open the browser
 #   routing-stop     stop the server
 #   make run / make stop   same, but straight from this repo (dev, no install)
+#
+# TEST GATES:
+#   make test         everything OFFLINE: interpreter kernel suites + server harnesses
+#   make test-native  the kernel suites again on the --native backend (slow, thorough)
+#   make test-wasm    kernel geodesic parity on wasip2 via wasmtime
+#   make test-client  the headless-Chromium harnesses (routes / elevation / two-tab sync)
+#
+# The loft toolchain is expected as a SIBLING checkout (../loft, built);
+# override with LOFT=/path/to/loft (or LOFT_BIN=..., honored for parity with tools/).
 
 LOFT   ?= $(or $(LOFT_BIN),$(CURDIR)/../loft/target/release/loft)
 PORT   ?= 18080
@@ -29,7 +39,10 @@ APPDIR := $(PREFIX)/lib/routing
 BINDIR := $(PREFIX)/bin
 URL    := http://127.0.0.1:$(PORT)/
 
-.PHONY: help build check-rustc install uninstall run stop clean
+KERNEL_TESTS = geodesic corridor gpx import loop matcher profiles roundtrip elevation
+
+.PHONY: help build check check-rustc install uninstall run stop clean \
+        test test-native test-wasm test-client
 
 help:
 	@echo "routing — targets:"
@@ -40,6 +53,12 @@ help:
 	@echo "  make run        build + start from this repo and open the browser (dev)"
 	@echo "  make stop       stop a repo-local server"
 	@echo "  make clean      remove dist/ and the native build cache"
+	@echo ""
+	@echo "test gates:"
+	@echo "  make test        offline: interpreter kernel suites + server harnesses"
+	@echo "  make test-native the kernel suites on the --native backend (slow, thorough)"
+	@echo "  make test-wasm   kernel geodesic parity on wasip2 via wasmtime"
+	@echo "  make test-client headless-Chromium harnesses (routes / elevation / sync)"
 	@echo ""
 	@echo "after 'make install' (ensure $(BINDIR) is on PATH):"
 	@echo "  routing         start (if not already up) + open primary browser"
@@ -76,6 +95,11 @@ check-rustc:
 	   echo "  --- native probe output ---"; sed 's/^/  /' "$$probe/log"; \
 	   rm -rf "$$probe"; exit 1; \
 	 fi
+
+# Lightweight presence check for the test gates that don't need the native probe.
+check:
+	@[ -x "$(LOFT)" ] || { echo "ERROR: loft not found at $(LOFT) (set LOFT=/path/to/loft or LOFT_BIN=...)"; exit 1; }
+	@command -v rustc >/dev/null 2>&1 || { echo "ERROR: rustc not found — install via https://rustup.rs"; exit 1; }
 
 # --- build the optimized binary -------------------------------------------------
 # `--native-release --check` compiles (optimized) and exits WITHOUT running the
@@ -152,3 +176,30 @@ stop:
 clean:
 	@rm -rf dist server/.loft/cache
 	@echo "cleaned dist/ and native build cache"
+
+# --- test gates -----------------------------------------------------------------
+# The shell harnesses honor LOFT_BIN; pass ours through so an overridden LOFT wins.
+test: check
+	@for t in $(KERNEL_TESTS); do \
+	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib || exit 1; \
+	done
+	@LOFT_BIN="$(LOFT)" ./tools/server_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/elevation_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/routes_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
+	@echo "  ALL OFFLINE GATES PASS"
+
+test-native: check-rustc
+	@for t in $(KERNEL_TESTS); do \
+	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib --native || exit 1; \
+	done
+	@echo "  NATIVE KERNEL SUITE PASSES"
+
+test-wasm: check
+	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
+
+test-client: check
+	@LOFT_BIN="$(LOFT)" ./tools/client_routes_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/client_elev_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/client_sync_test.sh
+	@echo "  ALL CLIENT (CHROMIUM) GATES PASS"
