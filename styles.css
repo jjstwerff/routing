@@ -154,7 +154,8 @@ html, body {
   display: flex;
   gap: 6px;
 }
-.hud-controls select {
+.hud-controls select,
+.hud-controls button {
   font: inherit;
   font-size: 14px;
   padding: 6px 8px;
@@ -164,6 +165,8 @@ html, body {
   background: rgba(31, 41, 51, 0.92);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
+.hud-controls button { cursor: pointer; }
+.hud-controls button.is-off { color: #6b7683; text-decoration: line-through; }
 
 /* --- HUD buttons ----------------------------------------------------------- */
 .hud-btn {

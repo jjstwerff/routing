@@ -30,7 +30,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
 | `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; goal length remembered PER ACTIVITY; shared toast |
 | `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
-| `controls.js` | activity + sub-mode selectors → the match profile (last USER selection remembered per-browser; a restored sketch's profile overrides at runtime without rewriting the preference); Waymarkedtrails overlay switch |
+| `controls.js` | activity + sub-mode selectors → the match profile (last USER selection remembered per-browser; a restored sketch's profile overrides at runtime without rewriting the preference); Waymarkedtrails overlay switch + a "Paths" hide-toggle (DESIGN §7), remembered too |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
 | `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, open state remembered per-browser; requests `10:` on open / re-match — the **lag-tolerant** tier |

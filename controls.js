@@ -62,9 +62,16 @@
   };
 
   // --- Waymarkedtrails overlay (MTB sub-mode → the mtb layer; else the activity's overlay) ---
+  // The overlay can be hidden entirely (DESIGN §7 — a cleaner read on scale); the choice is
+  // remembered per-browser like the other preferences.
+  const OVERLAY_KEY = "routing.overlay";
+  let overlayOn = true;
+  try { overlayOn = localStorage.getItem(OVERLAY_KEY) !== "0"; } catch (_) {}
+
   const layers = {};
   let currentOverlay = null;
   function wantedOverlay() {
+    if (!overlayOn) return null;
     if (activity === "Cycling" && subId === "mtb") return "mtb";
     return ACT[activity].overlay;
   }
@@ -126,6 +133,19 @@
       remember();
       rematch();
     });
+
+    const oBtn = document.getElementById("overlay-toggle");
+    if (oBtn) {
+      const paint = () => oBtn.classList.toggle("is-off", !overlayOn);
+      paint();
+      oBtn.addEventListener("click", () => {
+        overlayOn = !overlayOn;
+        try { localStorage.setItem(OVERLAY_KEY, overlayOn ? "1" : "0"); } catch (_) {}
+        syncOverlay();
+        paint();
+      });
+    }
+
     syncOverlay();
     if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // startup: the default activity's goal
   }

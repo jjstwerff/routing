@@ -35,10 +35,12 @@
   <button id="rough-delete" class="hud-btn hud-btn--danger hidden" type="button"
           aria-label="Delete selected point">Delete point</button>
 
-  <!-- Activity × sub-mode (PLAN step 8): the match profile + Waymarkedtrails overlay (see controls.js). -->
+  <!-- Activity × sub-mode (PLAN step 8): the match profile + Waymarkedtrails overlay (see
+       controls.js). "Paths" hides/shows the overlay (DESIGN §7 — a cleaner read on scale). -->
   <div id="controls" class="hud-controls">
     <select id="activity" aria-label="Activity"></select>
     <select id="submode" aria-label="Sub-mode"></select>
+    <button id="overlay-toggle" type="button" aria-label="Toggle the known-paths overlay">Paths</button>
   </div>
 
   <!-- GPX export/import (PLAN steps 10/11, see gpx.js). -->

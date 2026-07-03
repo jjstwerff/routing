@@ -260,6 +260,9 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** the DESIGN §7 overlay hide-toggle is in — a "Paths" button hides
+  the Waymarkedtrails layer for a cleaner read on scale; the choice is remembered per-browser
+  (CDP gate: on by default, click hides + stores, reload keeps it hidden).
 - **Amended (2026-07-03):** the last USER-selected activity × sub-mode is remembered
   per-browser and is the startup default (a restored sketch's profile still overrides at runtime
   without rewriting the preference; programmatic setProfile never remembers — CDP-gated).

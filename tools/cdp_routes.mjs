@@ -157,6 +157,12 @@ const s2 = await evaluate(`(async () => {
   aSel.value = "Cycling";
   aSel.dispatchEvent(new Event("change", { bubbles: true }));
   out.prefRemembered = localStorage.getItem("routing.profile") === "cycling_road";
+  // Overlay toggle: on by default; clicking hides the Waymarkedtrails layer and remembers "0".
+  const wmt = () => Object.values(routing.map._layers).some((l) => l._url && l._url.includes("waymarkedtrails"));
+  out.overlayOnByDefault = wmt();
+  document.getElementById("overlay-toggle").click();
+  await sleep(200);
+  out.overlayHidden = !wmt() && localStorage.getItem("routing.overlay") === "0";
   return JSON.stringify(out);
 })()`);
 
@@ -170,6 +176,8 @@ const s3 = await evaluate(`(async () => {
   return JSON.stringify({
     profile: routing.getProfile(),
     goalAfterReload: document.getElementById("goal-km").value,
+    overlayStillHidden: !Object.values(routing.map._layers).some((l) => l._url && l._url.includes("waymarkedtrails"))
+      && document.getElementById("overlay-toggle").classList.contains("is-off"),
   });
 })()`);
 
@@ -190,7 +198,9 @@ const ok = s1.panelClosedByDefault && s1.savedListed
   && s2.panelClosedAfterOpen && s2.deleted
   && s2.goalClearedOnSwitch && s2.goalCyclingRecalled && s2.goalRunningRecalled
   && s2.prefUnsetByProgrammatic && s2.prefRemembered
-  && s3.profile === "running_trail" && s3.goalAfterReload === "10";   // the sketch's profile still
+  && s2.overlayOnByDefault && s2.overlayHidden
+  && s3.profile === "running_trail" && s3.goalAfterReload === "10"    // the sketch's profile still
                                                                       // beats the remembered pref
+  && s3.overlayStillHidden;
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);
