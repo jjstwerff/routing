@@ -260,6 +260,9 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** the goal is remembered **per activity** (browser-local): switching
+  activity recalls that activity's goal (10 km running / 60 km cycling coexist); the restored
+  profile after a reload brings its goal back. CDP-gated in `client_routes_test`.
 - **DONE (2026-07-02):** a `goal … km` input; `renderLength` appends `(±delta)` to the instant
   readout when `routing.goalMeters > 0`, recomputed every frame (feedback-only — the goal input
   handler re-renders but never touches the points). Headless-Chromium test (5/5): goal 10 km →

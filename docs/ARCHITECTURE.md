@@ -28,7 +28,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `index.html` | shell: map div, HUD readouts, controls, script tags |
 | `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
-| `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; shared toast |
+| `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; goal length remembered PER ACTIVITY; shared toast |
 | `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
 | `controls.js` | activity + sub-mode selectors → the match profile; Waymarkedtrails overlay switch |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |

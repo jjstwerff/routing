@@ -137,12 +137,39 @@ const s2 = await evaluate(`(async () => {
     gone = ![...document.querySelectorAll("#routes-list .route-open")].some((b) => b.textContent === "CDP Test Route");
   }
   out.deleted = gone;
+  // Per-activity goals: a cycling goal and a running goal coexist; switching activity recalls each.
+  const goal = document.getElementById("goal-km");
+  routing.setProfile("cycling_gravel");
+  goal.value = "60";
+  goal.dispatchEvent(new Event("input", { bubbles: true }));
+  routing.setProfile("running_trail");
+  out.goalClearedOnSwitch = goal.value === "";
+  goal.value = "10";
+  goal.dispatchEvent(new Event("input", { bubbles: true }));
+  routing.setProfile("cycling_gravel");
+  out.goalCyclingRecalled = goal.value === "60";
+  routing.setProfile("running_trail");
+  out.goalRunningRecalled = goal.value === "10";
   return JSON.stringify(out);
+})()`);
+
+// Phase 3: another reload — the restored profile (running, from _working) brings ITS goal back.
+await call("Page.reload");
+await waitEvent("Page.loadEventFired");
+const s3 = await evaluate(`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 100 && !(routing.roughPoints && routing.roughPoints.length >= 2); i++) await sleep(100);
+  await sleep(300);
+  return JSON.stringify({
+    profile: routing.getProfile(),
+    goalAfterReload: document.getElementById("goal-km").value,
+  });
 })()`);
 
 ws.close();
 console.log("PHASE1", JSON.stringify(s1));
 console.log("PHASE2", JSON.stringify(s2));
+console.log("PHASE3", JSON.stringify(s3));
 // The 3-point edit was committed only 400 ms before the reload (inside the match debounce), so a
 // 3-point restore proves the instant persist. The saved route is updated too (the saver is
 // subscribed — step 19), so open returns the same 3-point state.
@@ -153,6 +180,8 @@ const ok = s1.panelClosedByDefault && s1.savedListed
   && s2.restoredPoints === 3 && s2.restoredProfile === "running_trail"
   && s2.canUndo && s2.undonePoints === 2
   && s2.openedPoints === 3 && s2.openedProfile === "running_trail"
-  && s2.panelClosedAfterOpen && s2.deleted;
+  && s2.panelClosedAfterOpen && s2.deleted
+  && s2.goalClearedOnSwitch && s2.goalCyclingRecalled && s2.goalRunningRecalled
+  && s3.profile === "running_trail" && s3.goalAfterReload === "10";
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

@@ -120,11 +120,29 @@ function renderLength(points) {
   }
   lengthReadout.textContent = text;
 }
+// The goal is remembered PER ACTIVITY (browser-local, like the map view): a 10 km running goal
+// and a 60 km cycling goal coexist, and switching activity recalls yours. controls.js calls
+// applyGoalForActivity on every activity change (and at startup / profile restore).
+const GOALS_KEY = "routing.goals";
+let goals = {};
+try { goals = JSON.parse(localStorage.getItem(GOALS_KEY) || "{}") || {}; } catch (_) {}
+const activityOf = () => (routing.getProfile ? routing.getProfile().split("_")[0] : "walking");
+
 const goalInput = document.getElementById("goal-km");
+routing.applyGoalForActivity = () => {
+  const km = goals[activityOf()];
+  routing.goalMeters = Number.isFinite(km) && km > 0 ? km * 1000 : 0;
+  if (goalInput) goalInput.value = routing.goalMeters ? String(km) : "";
+  renderLength(routing.roughPoints || []);
+};
+
 if (goalInput) {
   goalInput.addEventListener("input", () => {
     const km = parseFloat(goalInput.value);
     routing.goalMeters = Number.isFinite(km) && km > 0 ? km * 1000 : 0;
+    const act = activityOf();
+    if (routing.goalMeters) goals[act] = km; else delete goals[act];
+    try { localStorage.setItem(GOALS_KEY, JSON.stringify(goals)); } catch (_) {}
     renderLength(routing.roughPoints || []); // re-render feedback only; the route is untouched
   });
 }

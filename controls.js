@@ -41,6 +41,7 @@
         .join("");
     }
     syncOverlay();
+    if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // the restored activity brings its goal
   };
 
   // --- Waymarkedtrails overlay (MTB sub-mode → the mtb layer; else the activity's overlay) ---
@@ -98,6 +99,7 @@
       subId = ACT[activity].subs[0][1]; // reset sub-mode to the first for the new activity
       fillSubs();
       syncOverlay();
+      if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // recall this activity's goal
       rematch();
     });
     sSel.addEventListener("change", () => {
@@ -106,6 +108,7 @@
       rematch();
     });
     syncOverlay();
+    if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // startup: the default activity's goal
   }
 
   if (document.readyState !== "loading") build();
