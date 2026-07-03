@@ -545,3 +545,24 @@ literal) × (small/large program context) would likely net the whole class.
 The `&`-out-param workaround in `match_for` stays until f7378b54 reaches the `../loft`
 checkout we build from; `area_name`'s bind-then-return stays load-bearing (tail-call E0308
 open in both trees).
+
+**Still-open problems on the routing side (same day, explicit list — the table above buries them):**
+
+1. **Heap-param tail-call E0308 is STILL BITING** — not historical: the minimal repro
+   (`pick`/`jtext`, this doc 2026-07-02) fails `--native` on BOTH `0e18de1d` and `f7378b54`
+   today. `area_name`'s bind-then-return workaround remains load-bearing in production.
+2. **loft#488's workaround is still in our tree** — the fix exists only on `tuxedo-work`;
+   until it reaches the checkout we build from, `match_for` keeps the `&`-out-param shape.
+   Please ping (or merge) when it lands so the natural `return r.pts` can come back.
+3. **Open question we can't answer alone:** does `engine_host::http_fetch`'s event-delivery
+   compose with the `server` lib's `srv.run` loop? Our server is srv.run-shaped; if http
+   completions only arrive under `engine_host::run`, the non-blocking HTTP path stays unusable
+   here and the `web::http_begin`/`http_poll` pair (marked "open design") becomes necessary
+   after all.
+4. **Every native build of our server prints two warts** (fresh 12:48 build, `srv_live15.log`):
+   - `loft: warning — …/target/release/libloft.rlib is STALE (older than deps/libloft.rlib …)`
+     on every run — if deps-first is always right, the bare-path rlib check reads like noise
+     consumers can't act on (we must not `cargo build` in ../loft).
+   - generated code carries a no-op `DbRef::NULL;` statement (`loft_native_*.rs:3837`,
+     rustc `path_statements` warning) — harmless, but it means `-D warnings` consumers of
+     generated output would break, and it hints at a dead value in the emit path.
