@@ -408,3 +408,31 @@ this consumer's side went up.
   geodesic) — a target fact, handled by a numeric parity gate; documented here so nobody chases
   it as a kernel bug.
 - A touch lasso for multi-select is deferred product work, not a loft gap.
+
+---
+
+## 2026-07-03 — verified against HEAD `f845424d` (D-own-1 ownership DEFAULT-ON)
+
+Routing re-verified in full against this morning's build — i.e. WITH the @PLN85 deps-driven
+ownership fixes default-on: **26 kernel tests on interpret AND native, wasm parity, and all six
+integration harnesses green, zero source changes needed.** A real multi-lib consumer (kernel +
+server + web + imaging, Viterbi matcher, store, sync) passing under the flip is hopefully useful
+evidence for D-own-1.
+
+Bug scoreboard from the 2026-07-02 reports, re-run from the minimal repros:
+
+| Report | Status at `f845424d` |
+|---|---|
+| constructed-text arg zeroes a `float?` return (native) | **FIXED** — min repro prints 42.5 |
+| `text as integer` from a discharged local → E0605 (native) | **FIXED** — parses 4209 |
+| parser ICE: float format precision 0 (`"{m:1.0}"`) | **still open** — same `collections.rs` unwrap panic |
+| text tail-call with a heap-param callee → `Str::new(&Str)` E0308 (native) | **still open** |
+
+Routing's workarounds for the two open ones stay load-bearing (`nice_length` rounds through an
+integer; `area_name` binds-then-returns); the two fixed ones' workarounds are now optional (the
+integer tile keys and inline parses stay — they're the better designs anyway).
+
+Also: the 2026-07-02 21:51 build panicked at startup under a filesystem-restricted sandbox
+(`store.rs:381 Opening file` on hello-world — it opened something the sandbox hid); today's build
+doesn't. If that open is still unconditional-but-fallible somewhere, a graceful fallback would
+make loft friendlier to sandboxed CI runners.
