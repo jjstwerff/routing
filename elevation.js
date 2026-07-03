@@ -24,7 +24,9 @@
 
   function request() {
     if (!open || matched.length < 2) return;
-    const spec = encode(matched);
+    // Dedupe on route AND map zoom — reopening the dock after zooming re-samples at the new
+    // terrain resolution (ws.js sends the zoom along).
+    const spec = (NS.map ? Math.round(NS.map.getZoom()) : 13) + "|" + encode(matched);
     if (spec === requested) return;
     requested = spec;
     if (NS.ws && NS.ws.requestElevation) NS.ws.requestElevation(matched);

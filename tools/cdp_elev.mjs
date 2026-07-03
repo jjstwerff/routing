@@ -29,6 +29,8 @@ const driver = `(async () => {
   out.closedByDefault = document.getElementById("elev-dock").classList.contains("hidden");
   for (let i = 0; i < 100 && !(routing.ws && routing.ws.connected); i++) await sleep(100);
   out.wsConnected = routing.ws.connected;
+  routing.map.setView([52.0, 4.985], 13);   // the terrain zoom follows the map zoom; fixture is z13
+  await sleep(300);
   const route = [];
   for (let i = 0; i <= 30; i++) route.push({ lat: 52.0, lon: 4.97 + (0.03 * i) / 30 });
   document.getElementById("elev-toggle").click();

@@ -42,7 +42,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
   HTTP+WS event loop (`server::listen` + `srv.poll_event`/`run`), serves the static files with
   `#cwd`, dispatches WS messages. Constants: `PORT=18080`, `CORRIDOR_MARGIN_M=30`,
   `ROUND_TRIP_RATIO=0.25`, `IMPORT_EPSILON_M=8`, `IMPORT_MIN_SEP_M=2`, `OVERPASS` endpoint;
-  elevation: `TERRAIN_URL` (AWS terrarium), `TILE_CACHE_DIR=scratch/tiles`, `ELEV_MAX_ZOOM=13`,
+  elevation: `TERRAIN_URL` (AWS terrarium), `TILE_CACHE_DIR=scratch/tiles`, `ELEV_MAX_ZOOM=13` (default when the client sends no zoom; clamp `ELEV_ZOOM_MIN=9`/`ELEV_ZOOM_MAX=15`),
   `ELEV_MAX_TILES=12`, `ELEV_MAX_SAMPLES=400`, `ELEV_STEP_MIN_M=25`, `ELEV_HYST_M=3`.
 - Terrain tiles are fetched with `web::http_get_file` (binary-safe download-to-file; added to the
   vendored web lib — `http_get` mangles binary bodies through UTF-8), disk-cached under
@@ -81,7 +81,7 @@ import, elevation), all asserted **interpret == native**.
 | `4:<profile>\|<lat,lon;…>` | `5:<length_m>\|<lat,lon;…>` | **match** — the matched route + length (drawn under the sketch); sent debounced on edit-release |
 | `6:<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as a GPX document (JS downloads it) |
 | `8:<lat,lon;…>` | `9:<retrace_m>\|<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route; a substantial retrace (`retrace_m`) is flagged with a toast, never silently edited |
-| `10:<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open |
+| `10:<mapzoom>\|<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open. The MAP zoom (clamped 9–15) is the terrain-tile zoom ceiling — resolution follows what you're looking at (bare `<points>` form = the z13 default) |
 | `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |
 | `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
 | `16:<name>` | `17:<name>\|<profile>\|<pts>\|<history>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch WITH its undo stack (history is empty for named routes) |

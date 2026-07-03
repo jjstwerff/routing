@@ -31,7 +31,9 @@ NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";    // timezone-
 
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
-ELEV_MAX_ZOOM = 13;        // ~19 m/px — plenty for ascent/descent totals
+ELEV_MAX_ZOOM = 13;        // default terrain zoom when the client sends none (~19 m/px)
+ELEV_ZOOM_MIN = 9;         // clamp for the client's map zoom (terrarium serves z0–15)
+ELEV_ZOOM_MAX = 15;
 ELEV_MAX_TILES = 12;       // bbox cap: a sprawling sketch steps the zoom down instead
 ELEV_MAX_SAMPLES = 400.0;  // profile resolution: step = max(total/400, 25 m)
 ELEV_STEP_MIN_M = 25.0;
@@ -512,10 +514,25 @@ fn add_tile(tiles: &vector<TileHeights>, key: text) {
 // WS msg 10 → "11:<up>|<down>|<d,e;…>": the elevation profile of the DETAILED route the client
 // already holds (it sends the matched polyline back, so no re-match/Overpass here). Blocking
 // like the other handlers — fine single-user; the client treats the reply as trailing data.
+// Payload "<mapzoom>|<points>" (or bare "<points>"): the client's MAP zoom, clamped, is the
+// terrain-tile zoom ceiling — zoomed in on a short route samples fine z15 tiles, a zoomed-out
+// tour uses coarse ones; the tile cap still steps sprawling bboxes down.
 fn reply_elevation(srv: server::Server, cid: integer, payload: text) {
-  pts = parse_points(payload);
+  maxz = ELEV_MAX_ZOOM;
+  spec = payload;
+  zbar = payload.find("|");
+  if zbar >= 0 {
+    mz = payload[..zbar] as integer ?? -1;
+    if mz >= 0 {
+      spec = payload[zbar + 1..];
+      if mz < ELEV_ZOOM_MIN { maxz = ELEV_ZOOM_MIN; }
+      else if mz > ELEV_ZOOM_MAX { maxz = ELEV_ZOOM_MAX; }
+      else { maxz = mz; }
+    }
+  }
+  pts = parse_points(spec);
   if len(pts) < 2 { _ = srv.send_to(cid, "11:0|0|"); return; }
-  z = elev_zoom(pts, ELEV_MAX_ZOOM, ELEV_MAX_TILES);
+  z = elev_zoom(pts, maxz, ELEV_MAX_TILES);
   tiles: vector<TileHeights> = [];
   for key in elev_tiles_for(pts, z) { add_tile(tiles, key); }
   step = path_length_m(pts) / ELEV_MAX_SAMPLES;

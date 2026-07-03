@@ -434,6 +434,12 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **☑ Box select (2026-07-03):** SHIFT+drag a marquee → selects the contiguous range spanning
   the boxed points (the §1 range model; tap-first-last remains the touch path; Leaflet boxZoom
   off). CDP gate: marquee over both points → "2 selected".
+- **☑ Elevation zoom follows the map (2026-07-03):** the elevation request carries the map's
+  current zoom (`10:<mapzoom>|<points>`, clamped 9–15; the 12-tile cap still steps sprawling
+  bboxes down) — zoomed in on a short route the profile samples fine z15 terrain (~5 m/px),
+  zoomed out it stays coarse; reopening the dock after zooming re-samples. Gates: zoom-prefixed
+  + legacy forms profile the z13 fixture; a z15 request provably doesn't reuse it (offline:
+  empty; online: real flat-polder terrain, both ≠ the synthetic step signature).
 - **☑ Initial map view (2026-07-03):** the map opens, in order of what's known: the working
   sketch (restore, fitBounds) → the REMEMBERED view (saved to localStorage on every moveend —
   zero UI, the map simply opens where you last had it) → the TIMEZONE city ("Europe/Amsterdam"

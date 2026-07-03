@@ -159,10 +159,12 @@
   }
 
   // Step 15: the elevation profile of the DETAILED route (the client sends the matched polyline
-  // back, so the server needs no re-match). Reply "11:" lands in elevation.js.
+  // back, so the server needs no re-match). The current MAP zoom rides along as the terrain-tile
+  // zoom ceiling — profile resolution follows what you're looking at. Reply "11:" → elevation.js.
   function requestElevation(points) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !points || points.length < 2) return;
-    ws.send("10:" + encode(points));
+    const zoom = NS.map ? Math.round(NS.map.getZoom()) : 13;
+    ws.send("10:" + zoom + "|" + encode(points));
   }
 
   // Step 16: the named route store (replies "13:" list / "17:" route land in routes.js).
