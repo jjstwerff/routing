@@ -157,12 +157,18 @@ const s2 = await evaluate(`(async () => {
   aSel.value = "Cycling";
   aSel.dispatchEvent(new Event("change", { bubbles: true }));
   out.prefRemembered = localStorage.getItem("routing.profile") === "cycling_road";
-  // Overlay toggle: on by default; clicking hides the Waymarkedtrails layer and remembers "0".
-  const wmt = () => Object.values(routing.map._layers).some((l) => l._url && l._url.includes("waymarkedtrails"));
-  out.overlayOnByDefault = wmt();
+  // Overlay follows the activity: the WMT layer is /cycling/ now (the selector change above) and
+  // was /hiking/ under running. Toggle: on by default; clicking hides it and remembers "0".
+  const wmtUrl = () =>
+    (Object.values(routing.map._layers).find((l) => l._url && l._url.includes("waymarkedtrails")) || {})._url || "";
+  out.overlayCycling = wmtUrl().includes("/cycling/");
+  routing.setProfile("running_trail");
+  await sleep(100);
+  out.overlayHiking = wmtUrl().includes("/hiking/");
+  out.overlayOnByDefault = wmtUrl() !== "";
   document.getElementById("overlay-toggle").click();
   await sleep(200);
-  out.overlayHidden = !wmt() && localStorage.getItem("routing.overlay") === "0";
+  out.overlayHidden = wmtUrl() === "" && localStorage.getItem("routing.overlay") === "0";
   return JSON.stringify(out);
 })()`);
 
@@ -198,7 +204,7 @@ const ok = s1.panelClosedByDefault && s1.savedListed
   && s2.panelClosedAfterOpen && s2.deleted
   && s2.goalClearedOnSwitch && s2.goalCyclingRecalled && s2.goalRunningRecalled
   && s2.prefUnsetByProgrammatic && s2.prefRemembered
-  && s2.overlayOnByDefault && s2.overlayHidden
+  && s2.overlayCycling && s2.overlayHiking && s2.overlayOnByDefault && s2.overlayHidden
   && s3.profile === "running_trail" && s3.goalAfterReload === "10"    // the sketch's profile still
                                                                       // beats the remembered pref
   && s3.overlayStillHidden;
