@@ -29,7 +29,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
 | `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; goal length remembered PER ACTIVITY; shared toast |
-| `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
+| `ws.js` | WebSocket client: match (debounced on edit-release), export (phone: native share sheet → Garmin Connect; else download), import; draws the matched route |
 | `controls.js` | activity + sub-mode selectors → the match profile (last USER selection remembered per-browser; a restored sketch's profile overrides at runtime without rewriting the preference); Waymarkedtrails overlay switch + a "Paths" hide-toggle (DESIGN §7), remembered too; the MTB sub-mode swaps the BASE map to CyclOSM (mtb:scale grading, unsigned singletrack), also gated by the toggle |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
@@ -177,6 +177,9 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   real sketch — deliberate: never lose work).
 - **Name proposal:** the Nominatim lookup runs on the single-threaded event loop, so a slow
   reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
+- **GPX share sheet:** `navigator.share` (the phone→Garmin handoff) needs a SECURE context —
+  HTTPS or localhost; a plain-http LAN address falls back to a normal download (then: download
+  notification → open with Garmin Connect). Serving TLS would unlock the one-tap path on LAN.
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
 - **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot), plus the

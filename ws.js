@@ -82,11 +82,32 @@
   }
 
   let lastExportName = "";
-  function downloadGpx(gpx) {
+  const gpxFilename = () =>
+    (lastExportName || "route").replace(/[^\w\u00C0-\uFFFF -]+/g, "").trim() + ".gpx";
+
+  // Deliver the exported GPX. On phones the native SHARE SHEET is the best Garmin handoff —
+  // Garmin Connect registers as a .gpx handler, so picking it imports the course and offers the
+  // push-to-watch. navigator.share needs a secure context (HTTPS or localhost; a plain-http LAN
+  // address falls back) and a fresh user gesture (a slow match can outlive the activation window
+  // — also falls back). A cancelled share sheet delivers nothing, deliberately.
+  async function deliverGpx(gpx) {
+    const fname = gpxFilename();
+    if (navigator.canShare && window.File) {
+      try {
+        const file = new File([gpx], fname, { type: "application/gpx+xml" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: fname });
+          return;
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;   // the user closed the sheet
+        // NotAllowedError (activation expired) etc. — fall through to the download
+      }
+    }
     const blob = new Blob([gpx], { type: "application/gpx+xml" });
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.download = (lastExportName || "route").replace(/[^\w\u00C0-\uFFFF -]+/g, "").trim() + ".gpx";
+    a.download = fname;
     a.href = href;
     document.body.appendChild(a);
     a.click();
@@ -116,7 +137,7 @@
       const raw = String(e.data);
       const id = raw.slice(0, raw.indexOf(":"));
       if (id === "5") applyMatched(raw);
-      else if (id === "7") downloadGpx(raw.slice(2));
+      else if (id === "7") deliverGpx(raw.slice(2));
       else if (id === "9" && NS.rough && NS.rough.setPoints) applyImported(raw);
       else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
       else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
