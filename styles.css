@@ -413,3 +413,38 @@ html, body {
   padding: 4px 10px;
   cursor: pointer;
 }
+
+/* --- Desktop sizing ---------------------------------------------------------
+   The HUD chrome is sized for thumbs on a phone; on a desktop-class viewport the same targets
+   read small. Pure CSS detection — anything ≥900px wide gets bigger controls (and the corner
+   stacks shift so the grown buttons don't collide). Phones keep the compact layout. */
+@media (min-width: 900px) {
+  .hud-gpx button,
+  .hud-gpx .gpx-import {
+    font-size: 16px;
+    padding: 9px 14px;
+  }
+  .hud-controls select,
+  .hud-controls button {
+    font-size: 16px;
+    padding: 9px 12px;
+  }
+  .hud-routes-toggle {
+    font-size: 16px;
+    padding: 9px 14px;
+    top: calc(62px + env(safe-area-inset-top));
+  }
+  .routes-panel {
+    top: calc(112px + env(safe-area-inset-top));
+    width: min(320px, calc(100vw - 24px));
+    font-size: 15px;
+  }
+  .hud-elev-toggle,
+  .hud-gps-toggle {
+    font-size: 17px;
+    padding: 9px 15px;
+  }
+  .hud-gps-toggle { bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .hud-goal { font-size: 14px; }
+  .hud-btn { font-size: 16px; }
+}
