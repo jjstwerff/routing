@@ -33,7 +33,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `controls.js` | activity + sub-mode selectors → the match profile; Waymarkedtrails overlay switch |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
-| `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
+| `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, open state remembered per-browser; requests `10:` on open / re-match — the **lag-tolerant** tier |
 | `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect + the proposed-name prefill (typed text wins) |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 

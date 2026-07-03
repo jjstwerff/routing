@@ -62,13 +62,26 @@ const driver = `(async () => {
 })()`;
 
 const r = await call("Runtime.evaluate", { expression: driver, awaitPromise: true, returnByValue: true });
-ws.close();
 const v = r.result && r.result.result && r.result.result.value;
 if (!v) { console.log("FAIL: evaluate error", JSON.stringify(r.result, null, 2).slice(0, 600)); process.exit(1); }
 const o = JSON.parse(v);
 console.log("RESULT", v);
+
+// The dock was opened above — its state is remembered per-browser, so a reload keeps it open.
+await call("Page.reload");
+await new Promise((res) => setTimeout(res, 4000));
+const r2 = await call("Runtime.evaluate", { expression: `(async () => {
+  const sleep = (ms) => new Promise((r3) => setTimeout(r3, ms));
+  for (let i = 0; i < 100 && typeof window.routing === "undefined"; i++) await sleep(100);
+  return JSON.stringify({ openAfterReload: !document.getElementById("elev-dock").classList.contains("hidden") });
+})()`, awaitPromise: true, returnByValue: true });
+ws.close();
+const o2 = JSON.parse(r2.result.result.value);
+console.log("RELOAD", JSON.stringify(o2));
+
 const ok = o.closedByDefault && o.wsConnected && o.dockOpen
   && /↑ 100 m/.test(o.totals) && /↓ 0 m/.test(o.totals) && o.filledPx > 1000
-  && o.crosshairPx > 50;
+  && o.crosshairPx > 50
+  && o2.openAfterReload;
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

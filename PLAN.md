@@ -439,7 +439,9 @@ accurate length. Ship nothing fancy; prove the pipeline.
   bboxes down) — zoomed in on a short route the profile samples fine z15 terrain (~5 m/px),
   zoomed out it stays coarse; reopening the dock after zooming re-samples. Gates: zoom-prefixed
   + legacy forms profile the z13 fixture; a z15 request provably doesn't reuse it (offline:
-  empty; online: real flat-polder terrain, both ≠ the synthetic step signature).
+  empty; online: real flat-polder terrain, both ≠ the synthetic step signature). The dock's
+  OPEN state is remembered per-browser too (closed stays the default; CDP gate: reload keeps it
+  open).
 - **☑ Initial map view (2026-07-03):** the map opens, in order of what's known: the working
   sketch (restore, fitBounds) → the REMEMBERED view (saved to localStorage on every moveend —
   zero UI, the map simply opens where you last had it) → the TIMEZONE city ("Europe/Amsterdam"

@@ -137,12 +137,21 @@
     if (best !== hover) { hover = best; render(); }
   }
 
+  // The open state is remembered per-browser (like the map view) — someone who always wants the
+  // profile keeps it without re-opening every visit; closed stays the default for everyone else.
+  const OPEN_KEY = "routing.elevDock";
+
   function setOpen(want) {
     open = want;
     dock.classList.toggle("hidden", !open);
     toggle.classList.toggle("is-active", open);
+    try { localStorage.setItem(OPEN_KEY, open ? "1" : ""); } catch (_) {}
     if (open) { render(); request(); }
   }
+
+  try {
+    if (localStorage.getItem(OPEN_KEY) === "1") setOpen(true);
+  } catch (_) {}
 
   toggle.addEventListener("click", () => setOpen(!open));
   close.addEventListener("click", () => setOpen(false));
