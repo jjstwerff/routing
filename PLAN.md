@@ -516,6 +516,16 @@ accurate length. Ship nothing fancy; prove the pipeline.
     route): the same helper powers progress display (done / remaining km), an off-route notice,
     and sketch-from-my-track — build it once, client-side.
   - If built: rotation only ever engages in follow mode, and off by default.
+- **Future — deviation guidance (obstacles / changed plans):** a deviation is INPUT, not an
+  error. When the device stays off-route (past the freeze threshold for real distance/time),
+  never point the user BACK to the abandoned point — they may have good reasons (a blocked path,
+  a spontaneous detour). Gently guide toward the route AHEAD, and above all the END point:
+  PROPOSE — never auto-apply (§1: the user is the only actuator) — a re-match from the CURRENT
+  position to the remaining route, weighted to rejoin naturally further along rather than to
+  return to the departure point. UI sketch: the frozen "off route" readout grows a one-tap
+  "re-route from here" affordance; accepting replaces the sketch's remainder (undo-able), the
+  walked part stays committed. The progress-anchored projection already supplies the trigger and
+  every anchor it needs (deviation point, un-walked remainder, end point).
 
 ---
 
