@@ -260,6 +260,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** the MTB sub-mode swaps the BASE map to CyclOSM (free OSM-France
+  tiles rendering mtb:scale difficulty, surface, and unsigned singletrack — WMT's mtb overlay
+  shows only signed routes); one chokepoint (`wantedBase` inside `syncOverlay`), gated by the
+  same "Paths" toggle (off = plain OSM everywhere). WMT overlays sit at a higher zIndex so base
+  swaps never cover them. CDP-gated: MTB+off→OSM, MTB+on→CyclOSM+/mtb/, running→OSM+/hiking/.
 - **Amended (2026-07-03):** the DESIGN §7 overlay hide-toggle is in — a "Paths" button hides
   the Waymarkedtrails layer for a cleaner read on scale; the choice is remembered per-browser
   (CDP gate: on by default, click hides + stores, reload keeps it hidden).

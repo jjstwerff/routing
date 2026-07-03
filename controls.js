@@ -80,14 +80,25 @@
     if (!layers[name]) {
       layers[name] = L.tileLayer(`https://tile.waymarkedtrails.org/${name}/{z}/{x}/{y}.png`, {
         maxZoom: 19, opacity: 0.7,
+        zIndex: 5,   // above whichever BASE layer is active (base swaps re-add at default z)
         attribution: '&copy; <a href="https://waymarkedtrails.org">Waymarkedtrails</a>',
       });
     }
     return layers[name];
   }
+
+  // The MTB sub-mode swaps the BASE map to CyclOSM (mtb:scale grading, surface, unsigned
+  // singletrack — the plain OSM base shows none of that). "Paths" off = the plain map, base
+  // included: one mental model — the toggle shows/hides ALL activity path info.
+  function wantedBase() {
+    if (!overlayOn) return "osm";
+    return activity === "Cycling" && subId === "mtb" ? "cyclosm" : "osm";
+  }
+
   function syncOverlay() {
     const map = NS.map;
     if (!map) return;
+    if (NS.setBase) NS.setBase(wantedBase());
     const want = wantedOverlay();
     if (currentOverlay && currentOverlay !== want) {
       const l = layer(currentOverlay);

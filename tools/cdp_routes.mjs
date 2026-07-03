@@ -169,6 +169,20 @@ const s2 = await evaluate(`(async () => {
   document.getElementById("overlay-toggle").click();
   await sleep(200);
   out.overlayHidden = wmtUrl() === "" && localStorage.getItem("routing.overlay") === "0";
+  // CyclOSM base for the MTB sub-mode — gated by "Paths" like the overlay (off = plain map).
+  const baseUrl = () =>
+    (Object.values(routing.map._layers).find((l) => l._url && (l._url.includes("tile.openstreetmap.org") || l._url.includes("cyclosm"))) || {})._url || "";
+  routing.setProfile("cycling_mtb");
+  await sleep(100);
+  out.mtbBasePlainWhilePathsOff = baseUrl().includes("tile.openstreetmap.org");
+  document.getElementById("overlay-toggle").click();   // Paths back ON
+  await sleep(200);
+  out.mtbBaseCyclosm = baseUrl().includes("cyclosm") && wmtUrl().includes("/mtb/");
+  routing.setProfile("running_trail");
+  await sleep(100);
+  out.baseBackOsm = baseUrl().includes("tile.openstreetmap.org") && wmtUrl().includes("/hiking/");
+  document.getElementById("overlay-toggle").click();   // Paths OFF again (phase 3 asserts hidden)
+  await sleep(100);
   return JSON.stringify(out);
 })()`);
 
@@ -205,6 +219,7 @@ const ok = s1.panelClosedByDefault && s1.savedListed
   && s2.goalClearedOnSwitch && s2.goalCyclingRecalled && s2.goalRunningRecalled
   && s2.prefUnsetByProgrammatic && s2.prefRemembered
   && s2.overlayCycling && s2.overlayHiking && s2.overlayOnByDefault && s2.overlayHidden
+  && s2.mtbBasePlainWhilePathsOff && s2.mtbBaseCyclosm && s2.baseBackOsm
   && s3.profile === "running_trail" && s3.goalAfterReload === "10"    // the sketch's profile still
                                                                       // beats the remembered pref
   && s3.overlayStillHidden;

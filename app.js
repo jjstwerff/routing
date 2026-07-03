@@ -36,17 +36,37 @@ const map = L.map("map", {
   boxZoom: false,
 });
 
-// OSM raster base (DESIGN.md §7). {s} spreads tile requests across the subdomains OSM allows.
-// maxZoom 19 is the deepest OSM serves. detectRetina gives phones crisp tiles on hi-dpi screens.
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  detectRetina: true,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-}).addTo(map);
+// Base maps (DESIGN.md §7). OSM raster is the default; the MTB sub-mode swaps to CyclOSM, which
+// renders mtb:scale difficulty, surface, and unsigned singletrack the plain base doesn't show
+// (controls.js decides via wantedBase; the "Paths" toggle returns to plain OSM). {s} spreads tile
+// requests across the allowed subdomains; detectRetina gives phones crisp tiles.
+const bases = {
+  osm: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    detectRetina: true,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }),
+  cyclosm: L.tileLayer("https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    detectRetina: true,
+    attribution: '<a href="https://www.cyclosm.org">CyclOSM</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }),
+};
+let currentBase = "osm";
+bases.osm.addTo(map);
 
 // Shared namespace (rough.js also contributes to it). Keep a map handle for the console.
 const routing = (window.routing = window.routing || {});
 routing.map = map;
+
+// Swap the base layer (idempotent). The Waymarkedtrails overlay sits at a higher zIndex
+// (controls.js), so a base swap never covers it.
+routing.setBase = (name) => {
+  if (!bases[name] || name === currentBase) return;
+  map.removeLayer(bases[currentBase]);
+  bases[name].addTo(map);
+  currentBase = name;
+};
 
 // Remember the view (see VIEW_KEY above). moveend also fires after programmatic moves — restore,
 // locate, fitBounds — which is right: "where you last had it" includes where the app took you.
