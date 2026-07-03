@@ -478,7 +478,20 @@ accurate length. Ship nothing fancy; prove the pipeline.
   view). The hooks exist: `routing.gps.start/stop`, the continuous `watchPosition` stream, and
   the move-vs-jitter threshold. Design cues: lock = a second tap on ◎ (off → show → follow →
   off); any manual pan BREAKS the lock back to plain show mode (never fight the user — §1);
-  heading-up rotation and sketch-from-my-track can layer on the same stream later.
+  sketch-from-my-track can layer on the same stream later.
+- **Future — heading-up rotation (OPTIONAL, and the uncertain half of follow-me):**
+  - *Heading source is speed-dependent.* `coords.heading` is DOPPLER-derived on modern chips —
+    good to a few degrees at cycling/driving speed (≥ ~2.5–3 m/s) but null/garbage below that:
+    at walking pace the per-fix displacement (~1 m/s) drowns in the 5–15 m accuracy radius, so
+    course-up is viable for cycling/driving and genuinely NOT for walking.
+  - *Walking would need the compass* (`DeviceOrientationEvent`) — speed-independent but a SECOND
+    iOS permission prompt (against the no-prompt-spam rule), calibration/interference flakiness,
+    and fragmented platform APIs. Walking staying north-up is a defensible answer, not a gap.
+  - *The bigger blocker: core Leaflet cannot rotate the map at all* — this needs the community
+    `leaflet-rotate` plugin (touch + our panes/overlays would need vetting) or a renderer move
+    (MapLibre GL). That cost, not the heading source, decides whether rotation happens.
+  - If built: rotation only ever engages in follow mode, only above the speed threshold, and
+    off by default.
 
 ---
 
