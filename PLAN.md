@@ -473,6 +473,12 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Still deferred:** offline Mode A (blocked upstream — loft browser data-in primitive), taking
   Nominatim/Overpass calls off the single-threaded event loop (needs loft-level async HTTP —
   also upstream), a touch lasso.
+- **Future — follow-me lock (on the geolocate.js foundation):** a second GPS mode that KEEPS the
+  map centred on the device while moving (today's opt-in only pans when the device leaves the
+  view). The hooks exist: `routing.gps.start/stop`, the continuous `watchPosition` stream, and
+  the move-vs-jitter threshold. Design cues: lock = a second tap on ◎ (off → show → follow →
+  off); any manual pan BREAKS the lock back to plain show mode (never fight the user — §1);
+  heading-up rotation and sketch-from-my-track can layer on the same stream later.
 
 ---
 
