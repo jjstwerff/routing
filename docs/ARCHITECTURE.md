@@ -182,6 +182,9 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   notification → open with Garmin Connect). Serving TLS would unlock the one-tap path on LAN.
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
+- **Corridor cache:** Overpass responses are disk-cached forever by query hash
+  (`scratch/corridor/`) — editing the same sketch re-fetches nothing, and a 429 gets one polite
+  retry. Stale roads only refresh after wiping the cache dir (fine for a personal tool).
 - **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot), plus the
   post-v1 sweeps: full candidate-set matcher, tight corridor + widening, draft saves with undo
   history, WGS84 geodesic length, elevation crosshair, GPX retrace flagging, box select. Still

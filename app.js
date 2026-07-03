@@ -120,6 +120,11 @@ routing.detailed = {
     if (el) el.textContent = points.length > 0 ? "matched " + routing.geo.formatDistance(lengthM) : "matched —";
   },
   clear() { detailedLine.setLatLngs([]); bridgeLine.setLatLngs([]); },
+  // A match is in flight (ws.js) — silence would read as "broken" when Overpass is slow.
+  pending() {
+    const el = document.getElementById("server-length");
+    if (el) el.textContent = "matching…";
+  },
 };
 
 // Step 3: instant rough length (DESIGN.md §1) — a WGS84-geodesic sum, recomputed on every edit and

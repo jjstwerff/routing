@@ -123,6 +123,7 @@
       if (NS.elevation) NS.elevation.onMatched([]);
       return;
     }
+    if (NS.detailed && NS.detailed.pending) NS.detailed.pending();
     ws.send("4:" + profileOf() + "|" + encode(latest));
   }
 

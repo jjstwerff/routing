@@ -29,6 +29,10 @@ ROUTES_DIR = "routes";     // the named-route store: one file per route; the DIS
 NOMINATIM = "https://nominatim.openstreetmap.org/reverse";          // area part of a proposed name
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";    // timezone-city locate (msg 26)
 
+CORRIDOR_CACHE_DIR = "scratch/corridor";   // Overpass responses keyed by query hash — repeat
+                                           // matches of the same sketch (every edit-debounce!)
+                                           // must not re-fetch; also what got us rate-limited
+
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
 ELEV_MAX_ZOOM = 13;        // default terrain zoom when the client sends none (~19 m/px)
@@ -38,6 +42,33 @@ ELEV_MAX_TILES = 12;       // bbox cap: a sprawling sketch steps the zoom down i
 ELEV_MAX_SAMPLES = 400.0;  // profile resolution: step = max(total/400, 25 m)
 ELEV_STEP_MIN_M = 25.0;
 ELEV_HYST_M = 3.0;         // dead-band (m) for the ascent/descent totals (tile noise)
+
+// FNV-1a (32-bit, masked so the multiply can't overflow i64) — the corridor-cache filename key.
+fn qhash(t: text) -> integer {
+  h = 2166136261;
+  for c in t {
+    h = ((h ^ (c as integer)) * 16777619) & 0xFFFFFFFF;
+  }
+  h
+}
+
+// The Overpass corridor for a query — disk-cached by query hash, so editing the same sketch
+// re-fetches nothing. "" = failure. A 429 (rate limit) gets ONE polite retry after a pause,
+// never a hammer; other non-200s just fail this attempt (match_for tries again wider).
+fn fetch_corridor(q: text) -> text {
+  _ = mkdir_all(CORRIDOR_CACHE_DIR);
+  path = "{CORRIDOR_CACHE_DIR}/c{qhash(q)}.json";
+  f = file(path);
+  if f.exists() { return f.content(); }
+  resp = web::http_post(OVERPASS, q);
+  if resp.status == 429 {
+    web::sleep_ms(3000);
+    resp = web::http_post(OVERPASS, q);
+  }
+  if resp.status != 200 { return ""; }
+  f.write(resp.body);
+  resp.body
+}
 
 // Parse "lat,lon;lat,lon;..." into points.
 fn parse_points(payload: text) -> vector<GeoPoint> {
@@ -88,13 +119,12 @@ fn reply_length(srv: server::Server, cid: integer, payload: text) {
 fn reply_corridor(srv: server::Server, cid: integer, payload: text) {
   pts = parse_points(payload);
   if len(pts) < 1 { _ = srv.send_to(cid, "3:0"); return; }
-  q = overpass_corridor_query(pts, corridor_margin(pts));
-  resp = web::http_post(OVERPASS, q);
-  if resp.status != 200 {
-    _ = srv.send_to(cid, "3:err {resp.status}");
+  body = fetch_corridor(overpass_corridor_query(pts, corridor_margin(pts)));
+  if body == "" {
+    _ = srv.send_to(cid, "3:err");
     return;
   }
-  _ = srv.send_to(cid, "3:{len(parse_ways(resp.body))}");
+  _ = srv.send_to(cid, "3:{len(parse_ways(body))}");
 }
 
 // Encode a route as "lat,lon;lat,lon;..." (the inverse of parse_points).
@@ -167,11 +197,11 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
   bestbr = 1000000;
   cm = margin;
   for _try in 0..3 {
-    resp = web::http_post(OVERPASS, overpass_corridor_query(pts, margin));
-    if resp.status == 200 {
+    body = fetch_corridor(overpass_corridor_query(pts, margin));
+    if body != "" {
       merged: vector<Way> = [];
       for w in base { merged += [w]; }
-      newways = parse_ways(resp.body);
+      newways = parse_ways(body);
       for w in newways { merged += [w]; }
       g = build_graph(merged);
       ms = match_incremental(match_state_new(), g, pts, profile);   // fresh graph → full build
@@ -184,7 +214,7 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
       if margin >= 350.0 { break; }   // widening past here is too heavy a download to be worth it
       margin = margin * 1.8;          // bridges (or empty) → widen and re-match
     }
-    // non-200 (Overpass 504/rate limit) — transient; just try again
+    // fetch failed (already retried a 429 once inside) — try the next attempt
   }
   // Remember this fetch's footprint for the coverage test (drop the oldest if we hit the cap).
   if bestbr < 1000000 {
