@@ -490,8 +490,23 @@ accurate length. Ship nothing fancy; prove the pipeline.
   - *The bigger blocker: core Leaflet cannot rotate the map at all* — this needs the community
     `leaflet-rotate` plugin (touch + our panes/overlays would need vetting) or a renderer move
     (MapLibre GL). That cost, not the heading source, decides whether rotation happens.
-  - If built: rotation only ever engages in follow mode, only above the speed threshold, and
-    off by default.
+  - *ROUTE-LINKED heading — the answer to the wildness.* When following a PLANNED route (the
+    normal case here: you sketched it before heading out), the route's own geometry is the
+    heading source: project the GPS fix onto the matched polyline, take the route's bearing at
+    that point. GPS then supplies only POSITION (reliable within its accuracy circle) — no
+    Doppler, no compass, works at walking pace, and it can't "behave wildly" because the bearing
+    only changes as you progress along a smooth known line. The parts that need care:
+    - *Travel direction:* the projection says where you are, not which WAY you're going — an
+      out-and-back passes the same point twice. Disambiguate by progress trend (successive
+      projections increasing = forward), with the existing ≥25 m move threshold as the step.
+    - *Deviation fallback:* fix further than ~40 m off the route → freeze the rotation (hold the
+      last bearing, or ease to north-up); resume when back on. Never rotate from noise.
+    - *Blend, don't switch:* at cycling+ speed, Doppler course and route bearing agree when
+      on-route; route bearing wins while on-route, Doppler covers off-route riding.
+  - *The projection is a shared primitive* (fix → nearest point + offset along the matched
+    route): the same helper powers progress display (done / remaining km), an off-route notice,
+    and sketch-from-my-track — build it once, client-side.
+  - If built: rotation only ever engages in follow mode, and off by default.
 
 ---
 
