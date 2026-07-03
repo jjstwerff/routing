@@ -436,3 +436,57 @@ Also: the 2026-07-02 21:51 build panicked at startup under a filesystem-restrict
 (`store.rs:381 Opening file` on hello-world — it opened something the sandbox hid); today's build
 doesn't. If that open is still unconditional-but-fallible somewhere, a graceful fallback would
 make loft friendlier to sandboxed CI runners.
+
+---
+
+## 2026-07-03 (loft side) — both remaining blockers CLEARED + the ecosystem breakage fixed
+
+Follow-up from the loft side; everything verified before writing.
+
+**1. Non-blocking outbound HTTP — SHIPPED, engine-integrated (loft `tuxedo-work` `e93f5f62`).**
+Not the poll-pair: the completion arrives as an ordinary engine event, so the loop
+never blocks *or* polls:
+
+```loft
+id = engine_host::http_fetch("GET", url, "", "user-agent: routing/1.0");
+// ... returns immediately; later, in on_event:
+fn(ev: engine_host::Event) {
+  if ev.kind == 3 {           // http completion
+    // ev.cid == id, ev.status (negative = transport error), ev.payload = body
+  }
+}
+```
+
+Requests time out engine-side at 30 s (no knob — covers Overpass's `timeout:25`);
+non-2xx is a completion (ev.status = the code), not an error.  The invariant is
+test-pinned (`tests/engine_host_http.rs`): a 400 ms upstream while 2 ms ticks flow —
+the ticks must keep advancing.  NOTE this is the ENGINE path (`engine_host::run`
+loops); a standalone `web::http_begin`/`http_poll` pair for script-driven loops is
+deliberately an **open design** still — if the `srv.run` shape works for routing's
+server, no action needed.  Headers ride as newline-separated `Name: value` lines
+(your Nominatim User-Agent goes there).
+
+**2. web + server REPUBLISHED — your vendored patches can be dropped.**
+`web 0.2.3` + `server 0.2.2` compile on current loft (`try_recv -> text?`,
+`next -> text?`, malformed `msg_id` frames warn-and-drop).  Also: the registry's
+`web 0.2.2` was a **phantom** (its tarball URL 404s — that's why your registry
+fetch and the repo disagreed); the entry is removed from the signed index.
+`loft install web@0.2.3` / `server@0.2.2` verified from a clean cache.
+(Your `http_get_file` binary-safe download + blocking-call timeouts remain good
+upstream candidates for the web lib — not yet picked up.)
+
+**3. Part 1 / offline Mode A — already shipped before your 07-03 update.**
+`host_input()` landed 2026-07-02 (loft #476): a `--html` host import + stdlib
+`pub fn host_input() -> text`, exactly the Option-A byte channel.  Your
+headless-Chromium parity harness is the acceptance gate still worth running.
+
+**4. Doc gaps #1-#5 — done.**  `--help` documents `--html`; WASM.md now opens
+with a three-worlds table (--html vs --native-wasm vs the IDE build, with your
+size measurements) and scopes the Host Bridge API; HTML_EXPORT.md states its
+import list is complete (no fs/args/env); BROWSER_INTEROP.md carries a
+shipped/not-shipped STATUS banner; the web README marks `http_*` native-only
+per function.  #7's auto-invalidation and #8 (loft#475) were already fixed.
+
+**5. The `{m:1.0}` precision-0 ICE — fixed** (regression:
+`tests/scripts/448-float-format-precision-zero.loft`); your `round(m) as integer`
+workaround can stay or go.
