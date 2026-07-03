@@ -496,9 +496,16 @@ accurate length. Ship nothing fancy; prove the pipeline.
     that point. GPS then supplies only POSITION (reliable within its accuracy circle) — no
     Doppler, no compass, works at walking pace, and it can't "behave wildly" because the bearing
     only changes as you progress along a smooth known line. The parts that need care:
-    - *Travel direction:* the projection says where you are, not which WAY you're going — an
-      out-and-back passes the same point twice. Disambiguate by progress trend (successive
-      projections increasing = forward), with the existing ≥25 m move threshold as the step.
+    - *The WALKED route outranks the planned one.* Progress along the route is COMMITTED state,
+      not a hint: the user knows what they've already covered, and the algorithm must too. Each
+      new fix projects into a bounded window around the expected progress (last progress + the
+      distance actually moved, plus slack for a short backtrack) — NEVER a global nearest-point
+      search over the whole planned line. That is what kills the wildness where a route passes
+      near itself: at a loop crossing or between out-and-back legs, the walked-consistent leg
+      wins even when the other leg is geometrically nearer; already-covered segments are simply
+      not candidates. Travel direction falls out of the same anchor (progress advances =
+      forward), and a deviation → rejoin re-acquires against the UN-walked remainder, not the
+      whole route.
     - *Deviation fallback:* fix further than ~40 m off the route → freeze the rotation (hold the
       last bearing, or ease to north-up); resume when back on. Never rotate from noise.
     - *Blend, don't switch:* at cycling+ speed, Doppler course and route bearing agree when
