@@ -1,6 +1,8 @@
 # loft feedback from the `routing` consumer
 
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
+**Last updated:** 2026-07-03 — see the dated sections at the bottom; the CURRENT upstream asks are
+consolidated in *"2026-07-03 — remaining upstream blockers"*.
 
 `routing` (a phone-first route planner) consumes loft as a **native server** (v1) and, later, as a
 **WASM compute kernel in the browser** (`--html`, for an offline/no-server mode). While scoping that
@@ -354,3 +356,55 @@ correctly.
 Probe-hygiene note for future matrices: `??` binds LOOSEST, so
 `assert(v[0] ?? -1 == 34)` parses as `v[0] ?? (-1 == 34)` and is vacuously true under
 interp truthiness — parenthesise the discharge: `(v[0] ?? -1) == 34`.
+
+---
+
+## 2026-07-03 — remaining upstream blockers (routing is otherwise feature-complete)
+
+All 20 plan steps plus the post-v1 sweeps (full candidate-set matcher, tight corridor, draft-save
+undo, WGS84 geodesic, crosshair/retrace/box-select) are done. Exactly TWO consumer features remain
+blocked, both on loft-level primitives — everything below was hit and measured this session, not
+scoped from docs.
+
+### 1. Non-blocking outbound HTTP for servers (NEW ask — the practical one)
+
+`srv.run(on_event)` is a single-threaded event loop, and every `web::http_*` call BLOCKS it, so
+one slow outbound request freezes every connected client:
+
+- A **Nominatim** reverse-geocode (the name-proposal feature) held ALL WebSocket replies — in the
+  two-tab test an open-route reply queued >10 s behind one lookup.
+- A **match request** whose corridor comes back empty walks routing's widen-and-retry loop: up to
+  3 Overpass fetches, each with Overpass's own `timeout:25` — worst case ~75 s of frozen loop,
+  observed as alternating harness failures until the polls were budgeted for it.
+- The `web` client (ureq) has **no request timeout by default** — a stalled socket parks the loop
+  indefinitely. (Independent small ask: a timeout parameter or sane default on the blocking calls.)
+
+**What to implement — the lib already contains the right shape.** The WebSocket client is
+poll-based (`ws_handler` + `try_recv`); HTTP wants the same pair:
+
+```loft
+h = web::http_begin("GET", url, "", headers);   // returns immediately (worker thread native-side)
+resp = web::http_poll(h);                        // null until done; then the HttpResponse
+```
+
+A server loop then interleaves `poll_event` with `http_poll` and nothing freezes. Coroutine-aware
+HTTP would also work, but the poll-pair is the smallest step and matches the lib's existing design
+language. (Blocking `http_get` etc. stay — they're right for scripts.)
+
+**Meanwhile, routing's vendored `web` carries upstream candidates:** `http_get_file(url, path)`
+(binary-safe download-to-file — `http_get`'s `into_string()` mangles PNG bodies; used for terrain
+tiles) and the Part 2 #6 `text?` compile fix.
+
+### 2. Offline Mode A — still Part 1, unchanged
+
+The generic JS→loft input channel for `--html` (Part 1, Option A — the push/poll byte channel
+BROWSER_INTEROP.md designs) remains the only thing between routing and an offline/no-server build.
+Nothing new to add; it is now the LAST feature-shaped item on routing's list, so its priority from
+this consumer's side went up.
+
+### Not blockers (for completeness)
+
+- ULP-level `tan`/`atan2` libm divergence between native and wasm targets (~1e-10 m on a
+  geodesic) — a target fact, handled by a numeric parity gate; documented here so nobody chases
+  it as a kernel bug.
+- A touch lasso for multi-select is deferred product work, not a loft gap.
