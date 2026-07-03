@@ -494,6 +494,20 @@ workaround can stay or go.
 
 ---
 
+## 2026-07-03 (loft side) — loft#488 ROOT-CAUSED + FIXED (pending merge)
+
+The "context-dependence" was an illusion: `parse_return`'s buffer-delivery gate only fired when
+the returned value's deps included an ARGUMENT — `return b.v` (field of param) delivered,
+`return r.pts` (field of a LOCAL) never did, in any program. Native returned the empty DbRef
+honestly; interpret only APPEARED correct (top-of-stack read off a freed record + a store leak).
+Your passing reductions all returned field-of-argument or whole locals — that's why bottom-up
+reduction couldn't corner it. Fixed on `tuxedo-work` `f7378b54` (gate now also fires for a dep on
+a non-vector local; regression `450-struct-field-vector-return.loft`); verified against THIS
+repo's real repro: `match_for` with the pre-workaround `return r.pts` delivers 20/20 points on
+both backends and the live WS round-trip returns `5:387.7…|…` again. **After the next loft merge
+the `&`-out-param workaround in `match_for` can be retired.** The return-shape differential
+corpus suggestion is noted on the issue for @PLN85's return-machinery pass.
+
 ## 2026-07-03 — native: `return struct.field` (heap vector) DELIVERS EMPTY, context-dependent — FILED as loft#488
 
 Fifth of the week, same return-position family, found live (the app drew no matched routes). In
@@ -516,3 +530,18 @@ around heap/wrapped values (float?-with-constructed-arg, E0605 parse temp, Str::
 and now a struct-field vector delivering empty). A poison-style differential corpus over "return
 X" shapes (X = field/param/local/call, value = text/vector/struct/optional, arg mix constructed/
 literal) × (small/large program context) would likely net the whole class.
+
+**Consumer verification (routing side, 2026-07-03 13:0x).** Re-ran everything against
+`../loft` `0e18de1d` (release build 12:48, @PLN85 ownership flip default-ON) and
+`../loft2` `f7378b54`:
+
+| Check | ../loft `0e18de1d` | ../loft2 `f7378b54` |
+|---|---|---|
+| loft#488 real repro (`match_for` with `return r.pts`, DIRECT probe) | len=0 (fix not merged — expected control) | **len=20 — FIXED** |
+| precision-0 format `{m:1.0}` | prints `4` — **fixed** | prints `4` — **fixed** |
+| text tail-call, heap-param callee (`Str::new(&Str)`) | E0308 — still open | E0308 — still open |
+| full kernel suite (9 files, 31 tests, interpret + native) | **all green** | — |
+
+The `&`-out-param workaround in `match_for` stays until f7378b54 reaches the `../loft`
+checkout we build from; `area_name`'s bind-then-return stays load-bearing (tail-call E0308
+open in both trees).
