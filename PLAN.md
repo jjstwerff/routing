@@ -434,6 +434,13 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **☑ Box select (2026-07-03):** SHIFT+drag a marquee → selects the contiguous range spanning
   the boxed points (the §1 range model; tap-first-last remains the touch path; Leaflet boxZoom
   off). CDP gate: marquee over both points → "2 selected".
+- **☑ Initial map view (2026-07-03):** the map opens, in order of what's known: the working
+  sketch (restore, fitBounds) → the REMEMBERED view (saved to localStorage on every moveend —
+  zero UI, the map simply opens where you last had it) → the TIMEZONE city ("Europe/Amsterdam"
+  carries "Amsterdam"; WS `26:` → `27:` Nominatim forward-geocode — permission-free, requested
+  at most once per browser, applied only to an untouched default view) → the Vondelpark default.
+  Gates: locate reply format in `routes_test`; remembered-view reload in `client_routes_test`;
+  live CDP run confirmed locate→save→reload-from-saved end to end.
 - **Still deferred:** offline Mode A (blocked upstream — loft browser data-in primitive), taking
   Nominatim/Overpass calls off the single-threaded event loop (needs loft-level async HTTP —
   also upstream), a touch lasso.

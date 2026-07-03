@@ -28,7 +28,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `index.html` | shell: map div, HUD readouts, controls, script tags |
 | `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
-| `app.js` | creates the map + the read-only "detailed" pane; wires `rough.onChange` → instant length (+ goal ±delta) → `ws.sendPoints` → `undo.record` |
+| `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; shared toast |
 | `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
 | `controls.js` | activity + sub-mode selectors → the match profile; Waymarkedtrails overlay switch |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
@@ -88,6 +88,7 @@ import, elevation), all asserted **interpret == native**.
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
+| `26:<city>` | `27:<lat>\|<lon>` | **locate** — forward-geocode the IANA timezone's city ("Europe/Amsterdam" → "Amsterdam"; Nominatim); requested only for a truly fresh map (no remembered view, no sketch), applied only while the view is untouched |
 | `24:<profile>\|<pts>\|<history>` | `25:` | **instant persist** — sent on every COMMITTED edit (and on reconnect), un-debounced: saves `_working` (its SINGLE writer; history = the undo stack, "#"-separated snapshots ≤30, stored as line 4) + the subscribed route (history-free), no match, no fan-out |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough geodesic length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |

@@ -26,7 +26,8 @@ RETRACE_EPS_M = 15.0;      // a segment this close to earlier ground, headed bac
 
 ROUTES_DIR = "routes";     // the named-route store: one file per route; the DISK is the store,
                            // so every save is write-through and a server restart loses nothing
-NOMINATIM = "https://nominatim.openstreetmap.org/reverse";   // area part of a proposed name
+NOMINATIM = "https://nominatim.openstreetmap.org/reverse";          // area part of a proposed name
+NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";    // timezone-city locate (msg 26)
 
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
@@ -289,6 +290,24 @@ fn area_name(lat: float, lon: float) -> text {
   nm
 }
 
+// WS msg 26 → "27:<lat>|<lon>" (bare "27:" when the lookup fails): forward-geocode a coarse
+// place name. The client derives it from the IANA timezone ("Europe/Amsterdam" → "Amsterdam") —
+// a permission-free way to open a fresh map near the user (never applied over a sketch or a
+// moved view; see app.js). The payload arrives URL-encoded.
+fn reply_locate(srv: server::Server, cid: integer, payload: text) {
+  if payload == "" { _ = srv.send_to(cid, "27:"); return; }
+  resp = web::http_get_h("{NOMINATIM_SEARCH}?q={payload}&format=jsonv2&limit=1",
+                         ["User-Agent: routing-dev/0.1 (personal dev tool)"]);
+  if resp.status != 200 { _ = srv.send_to(cid, "27:"); return; }
+  root = json_parse(resp.body);
+  if len(root) == 0 { _ = srv.send_to(cid, "27:"); return; }
+  hit = root.item(0);
+  la = jtext(hit, "lat");
+  lo = jtext(hit, "lon");
+  if la == "" || lo == "" { _ = srv.send_to(cid, "27:"); return; }
+  _ = srv.send_to(cid, "27:{la}|{lo}");
+}
+
 // WS msg 20 → "21:<proposed name>" for "<profile>|<points>" (bare "21:" for a degenerate sketch).
 fn reply_name(srv: server::Server, cid: integer, payload: text) {
   nbar = payload.find("|");
@@ -534,6 +553,7 @@ fn main() {
       else if ev.msg_id == 18 { reply_delete(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 20 { reply_name(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 24 { reply_persist(srv, state, ev.cid, ev.payload); }
+      else if ev.msg_id == 26 { reply_locate(srv, ev.cid, ev.payload); }
     }
   });
 }

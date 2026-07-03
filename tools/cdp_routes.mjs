@@ -98,6 +98,9 @@ await waitEvent("Page.loadEventFired");
 const s2 = await evaluate(`(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const out = {};
+  // The remembered view: phase 1's setView(52.0, …) landed in localStorage, so the reloaded map
+  // must OPEN near lat 52.0 (the hardcoded default is 52.36 — clearly distinct).
+  out.rememberedView = Math.abs(routing.map.getCenter().lat - 52.0) < 0.2;
   for (let i = 0; i < 100 && !(routing.roughPoints && routing.roughPoints.length >= 2); i++) await sleep(100);
   out.restoredPoints = (routing.roughPoints || []).length;
   out.restoredProfile = routing.getProfile();
@@ -146,6 +149,7 @@ console.log("PHASE2", JSON.stringify(s2));
 const ok = s1.panelClosedByDefault && s1.savedListed
   && s1.boxSelected === 2
   && s1.proposedName.endsWith("2.1 km · Gravel ride")
+  && s2.rememberedView
   && s2.restoredPoints === 3 && s2.restoredProfile === "running_trail"
   && s2.canUndo && s2.undonePoints === 2
   && s2.openedPoints === 3 && s2.openedProfile === "running_trail"

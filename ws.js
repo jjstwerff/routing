@@ -119,6 +119,7 @@
       else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));
       else if (id === "21" && NS.routes) NS.routes.applyName(raw.slice(raw.indexOf(":") + 1));
       else if (id === "23") applyRemoteSync(raw);
+      else if (id === "27") applyLocate(raw);
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
@@ -188,9 +189,34 @@
     ws.send("20:" + profileOf() + "|" + encode(latest));
   }
 
+  // Coarse locate for a FRESH map (no working sketch to restore): the IANA timezone carries a
+  // city name ("Europe/Amsterdam" → "Amsterdam") — permission-free, geocoded server-side
+  // (26: → 27: → app.js centerIfUntouched). Zones without a city part ("UTC") just skip.
+  function requestLocate() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (NS.needsLocate && !NS.needsLocate()) return;   // a remembered/moved view is better info
+    let tz = "";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) { return; }
+    if (tz.indexOf("/") < 0) return;
+    const city = tz.slice(tz.lastIndexOf("/") + 1).replace(/_/g, " ");
+    if (city) ws.send("26:" + encodeURIComponent(city));
+  }
+
+  // "27:<lat>|<lon>" — apply only while the view is untouched (app.js guards).
+  function applyLocate(raw) {
+    const body = raw.slice(raw.indexOf(":") + 1);
+    const bar = body.indexOf("|");
+    if (bar < 0) return;
+    const lat = parseFloat(body.slice(0, bar));
+    const lon = parseFloat(body.slice(bar + 1));
+    if (Number.isFinite(lat) && Number.isFinite(lon) && NS.centerIfUntouched) {
+      NS.centerIfUntouched(lat, lon);
+    }
+  }
+
   NS.ws = {
     sendPoints, requestExport, requestImport, requestElevation, connect,
-    saveRoute, requestRoutesList, openRoute, deleteRoute, requestName,
+    saveRoute, requestRoutesList, openRoute, deleteRoute, requestName, requestLocate,
     get connected() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
   connect();

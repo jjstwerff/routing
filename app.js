@@ -8,13 +8,23 @@
 "use strict";
 
 // Default view. Vondelpark, Amsterdam — the running example throughout DESIGN.md — is a friendly
-// place to land before geolocation exists. Later steps can center on the user or a loaded route.
+// place to land before anything better is known. Better, in order: the view you last left the
+// map at (remembered in THIS browser below — zero UI), else the timezone-city locate (ws.js).
 const DEFAULT_CENTER = [52.3579, 4.8686];
 const DEFAULT_ZOOM = 14;
 
+// The remembered view: saved on every moveend, applied at startup. Unobtrusive by construction —
+// there is nothing to configure; the map simply opens where you last had it.
+const VIEW_KEY = "routing.view";
+let savedView = null;
+try {
+  const v = JSON.parse(localStorage.getItem(VIEW_KEY) || "null");
+  if (v && Number.isFinite(v.lat) && Number.isFinite(v.lng) && Number.isFinite(v.zoom)) savedView = v;
+} catch (_) { /* private mode etc. — fall through to the default */ }
+
 const map = L.map("map", {
-  center: DEFAULT_CENTER,
-  zoom: DEFAULT_ZOOM,
+  center: savedView ? [savedView.lat, savedView.lng] : DEFAULT_CENTER,
+  zoom: savedView ? savedView.zoom : DEFAULT_ZOOM,
   zoomControl: true,
   // Phone-first: keep momentum panning, but tap-tolerance a touch higher so a fingertip that
   // drifts a few pixels still reads as a tap when placing points (step 2).
@@ -37,6 +47,15 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 // Shared namespace (rough.js also contributes to it). Keep a map handle for the console.
 const routing = (window.routing = window.routing || {});
 routing.map = map;
+
+// Remember the view (see VIEW_KEY above). moveend also fires after programmatic moves — restore,
+// locate, fitBounds — which is right: "where you last had it" includes where the app took you.
+map.on("moveend", () => {
+  const c = map.getCenter();
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ lat: c.lat, lng: c.lng, zoom: map.getZoom() }));
+  } catch (_) {}
+});
 
 // Step 7: the detailed (matched) layer — the server's map-matched route, drawn UNDER the rough
 // sketch and READ-ONLY (DESIGN.md §1: correct a wrong match by moving the rough points, never the
@@ -121,6 +140,21 @@ routing.rough = new routing.RoughLayer(map, {
   },
 });
 renderLength([]); // initial "0 m"
+
+// The timezone-city locate applies only to a map with NO better information: no remembered view
+// (that's the user's own preference), nothing sketched, and the view still on the untouched
+// hardcoded default. ws.js consults needsLocate before even sending the request, so the geocode
+// runs at most once per browser — the located view is then remembered like any other.
+routing.needsLocate = () => {
+  if (savedView) return false;
+  if (routing.roughPoints && routing.roughPoints.length > 0) return false;
+  if (map.getZoom() !== DEFAULT_ZOOM) return false;
+  const c = map.getCenter();
+  return Math.abs(c.lat - DEFAULT_CENTER[0]) < 1e-9 && Math.abs(c.lng - DEFAULT_CENTER[1]) < 1e-9;
+};
+routing.centerIfUntouched = (lat, lon) => {
+  if (routing.needsLocate()) map.setView([lat, lon], 12);
+};
 
 // A small shared toast (auto-hiding, same chrome as the undo snackbar) — e.g. the GPX-import
 // retrace notice. One at a time; a new message replaces the current one.

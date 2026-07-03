@@ -92,7 +92,11 @@
   // "17:" payload — "<name>|<profile>|<points>|<history>" ("" when unknown; history only for
   // `_working` — the persisted undo stack, "#"-separated snapshots) (from ws.js).
   function applyRoute(payload) {
-    if (!payload) return;
+    if (!payload) {
+      // Nothing to restore — a genuinely fresh map: locate it coarsely by the timezone's city.
+      if (NS.ws && NS.ws.requestLocate) NS.ws.requestLocate();
+      return;
+    }
     const bar = payload.indexOf("|");
     const bar2 = payload.indexOf("|", bar + 1);
     if (bar < 0 || bar2 < 0) return;
