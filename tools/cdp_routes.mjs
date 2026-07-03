@@ -232,9 +232,43 @@ const s5 = await evaluate(`(async () => {
     panned = Math.abs(routing.map.getCenter().lat - 52.30) < 0.05;
   }
   out.pannedToMovedDevice = panned;
+  // FOLLOW (second click): with a matched route under the device, the progress readout runs.
+  routing.matchedPoints = [
+    { lat: 52.30, lon: 4.90 }, { lat: 52.30, lon: 4.92 }, { lat: 52.30, lon: 4.94 },
+  ];
   document.getElementById("gps-toggle").click();
+  await sleep(300);
+  const ro = document.getElementById("follow-readout");
+  out.followReadout = !ro.classList.contains("hidden") && ro.textContent.includes("done");
+  return JSON.stringify(out);
+})()`);
+// The device advances along the route: the map follows and the progress advances.
+await call("Emulation.setGeolocationOverride", { latitude: 52.30, longitude: 4.92, accuracy: 15 });
+const s6 = await evaluate(`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  const ro = document.getElementById("follow-readout");
+  let ok = false;
+  for (let i = 0; i < 60 && !ok; i++) {
+    await sleep(250);
+    ok = Math.abs(routing.map.getCenter().lng - 4.92) < 0.005 && /1\\.3\\d km done/.test(ro.textContent);
+  }
+  out.followedAndProgressed = ok;
+  out.readout = ro.textContent;
+  return JSON.stringify(out);
+})()`);
+// A fix far off the route freezes progress instead of guessing.
+await call("Emulation.setGeolocationOverride", { latitude: 52.315, longitude: 4.92, accuracy: 15 });
+const s7 = await evaluate(`(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const out = {};
+  const ro = document.getElementById("follow-readout");
+  let off = false;
+  for (let i = 0; i < 60 && !off; i++) { await sleep(250); off = ro.textContent.includes("off route"); }
+  out.offRoute = off;
+  document.getElementById("gps-toggle").click();   // follow → off
   await sleep(200);
-  out.dotGoneAfterOff = !document.querySelector(".gps-dot");
+  out.dotGoneAfterOff = !document.querySelector(".gps-dot") && ro.classList.contains("hidden");
   return JSON.stringify(out);
 })()`);
 
@@ -243,6 +277,7 @@ console.log("PHASE1", JSON.stringify(s1));
 console.log("PHASE2", JSON.stringify(s2));
 console.log("PHASE3", JSON.stringify(s3));
 console.log("PHASE4", JSON.stringify(s4), JSON.stringify(s5));
+console.log("PHASE5", JSON.stringify(s6), JSON.stringify(s7));
 // The 3-point edit was committed only 400 ms before the reload (inside the match debounce), so a
 // 3-point restore proves the instant persist. The saved route is updated too (the saver is
 // subscribed — step 19), so open returns the same 3-point state.
@@ -262,6 +297,8 @@ const ok = s1.panelClosedByDefault && s1.savedListed
                                                                       // beats the remembered pref
   && s3.overlayStillHidden
   && s4.noDotBeforeOptIn && s4.dotShown && s4.noRecentreInsideView
-  && s5.pannedToMovedDevice && s5.dotGoneAfterOff;
+  && s5.pannedToMovedDevice && s5.followReadout
+  && s6.followedAndProgressed
+  && s7.offRoute && s7.dotGoneAfterOff;
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

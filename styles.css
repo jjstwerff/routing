@@ -338,6 +338,10 @@ html, body {
   touch-action: manipulation;
 }
 .hud-gps-toggle.is-active { background: #1a73e8; }
+.hud-gps-toggle.is-follow { background: #17b26a; }
+
+/* Follow-me progress pill — below the goal bar, top-centre stack. */
+.hud-follow { top: calc(104px + env(safe-area-inset-top)); }
 
 /* The location dot (accuracy circle is a Leaflet vector layer). */
 .gps-wrap { display: flex; align-items: center; justify-content: center; }

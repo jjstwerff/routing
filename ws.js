@@ -40,6 +40,7 @@
     const lengthM = parseFloat(parts[0]) || 0;
     const pts = decode(parts[1] || "");
     const bridges = decode(parts[2] || "");
+    NS.matchedPoints = pts;   // the follow-me projection reads this (geolocate.js)
     if (NS.detailed) NS.detailed.set(pts, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(pts);
   }
@@ -63,6 +64,7 @@
     } finally {
       remoteApply = false;
     }
+    NS.matchedPoints = matched;
     if (NS.detailed) NS.detailed.set(matched, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(matched);
   }
@@ -94,6 +96,7 @@
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
     if (latest.length < 2) {
+      NS.matchedPoints = [];
       if (NS.detailed) NS.detailed.set([], 0);
       if (NS.elevation) NS.elevation.onMatched([]);
       return;

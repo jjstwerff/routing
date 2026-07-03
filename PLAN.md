@@ -473,12 +473,14 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **Still deferred:** offline Mode A (blocked upstream — loft browser data-in primitive), taking
   Nominatim/Overpass calls off the single-threaded event loop (needs loft-level async HTTP —
   also upstream), a touch lasso.
-- **Future — follow-me lock (on the geolocate.js foundation):** a second GPS mode that KEEPS the
-  map centred on the device while moving (today's opt-in only pans when the device leaves the
-  view). The hooks exist: `routing.gps.start/stop`, the continuous `watchPosition` stream, and
-  the move-vs-jitter threshold. Design cues: lock = a second tap on ◎ (off → show → follow →
-  off); any manual pan BREAKS the lock back to plain show mode (never fight the user — §1);
-  sketch-from-my-track can layer on the same stream later.
+- **☑ Follow-me lock, current (non-rotating) form (2026-07-03):** ◎ now cycles OFF → SHOW →
+  FOLLOW → OFF. FOLLOW keeps the map centred on the device (moved fixes only — jitter doesn't
+  wiggle the view); a manual drag drops back to SHOW (never fight the user — §1). With a matched
+  route present, the PROGRESS-ANCHORED projection (window around expected progress; the walked
+  part outranks the planned line; >40 m off-route freezes to "off route") drives a
+  "▶ done · left" readout. CDP-gated with mocked GPS: follow-centres along a synthetic route,
+  progress reads 1.36 km at its midpoint, off-route freezes, off clears everything.
+  Sketch-from-my-track can layer on the same stream later.
 - **Future — heading-up rotation (OPTIONAL, and the uncertain half of follow-me):**
   - *Heading source is speed-dependent.* `coords.heading` is DOPPLER-derived on modern chips —
     good to a few degrees at cycling/driving speed (≥ ~2.5–3 m/s) but null/garbage below that:

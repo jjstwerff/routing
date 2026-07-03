@@ -35,7 +35,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
 | `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, open state remembered per-browser; requests `10:` on open / re-match — the **lag-tolerant** tier |
 | `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect + the proposed-name prefill (typed text wins) |
-| `geolocate.js` | OPT-IN device location: dot + accuracy circle; pans only when the DEVICE moves out of view; the permission prompt fires only on the button, and a remembered opt-in resumes only when already granted |
+| `geolocate.js` | OPT-IN device location, ◎ cycles off→show→follow: SHOW pans only when the device moves out of view; FOLLOW centres the map (drag drops the lock) and runs the progress-anchored route projection ("done · left", walked-part priority, off-route freeze); prompt only on the button, remembered opt-in resumes as SHOW when already granted |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 
 ### Server

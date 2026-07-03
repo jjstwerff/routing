@@ -25,6 +25,9 @@
   <!-- Matched-route length (PLAN step 7): the geodesic length of the server's map-matched route. -->
   <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">matched —</div>
 
+  <!-- Follow-me progress (geolocate.js): done/left along the matched route while following. -->
+  <div id="follow-readout" class="hud-subreadout hud-follow hidden" role="status" aria-live="polite"></div>
+
   <!-- Optional goal length (PLAN step 14): feedback only — drives the ±delta, never reshapes. -->
   <div id="goal-bar" class="hud-goal">
     <label>goal <input id="goal-km" type="number" min="0" step="0.5" inputmode="decimal" placeholder="—"> km</label>
