@@ -490,3 +490,29 @@ per function.  #7's auto-invalidation and #8 (loft#475) were already fixed.
 **5. The `{m:1.0}` precision-0 ICE — fixed** (regression:
 `tests/scripts/448-float-format-precision-zero.loft`); your `round(m) as integer`
 workaround can stay or go.
+
+
+---
+
+## 2026-07-03 — native: `return struct.field` (heap vector) DELIVERS EMPTY, context-dependent — FILED as loft#488
+
+Fifth of the week, same return-position family, found live (the app drew no matched routes). In
+the routing server, `match_for` ended with `return r.pts;` where `r` is a `MatchResult { pts:
+vector<GeoPoint>, gaps: integer }` local — and the caller received an EMPTY vector. Proof it's
+the return, not the compute: a `println` immediately before the return printed `pts=20 gaps=0`
+while the wire reply carried the empty encoding. Interpret is fine.
+
+**Context-dependent:** three standalone reductions (same corridor file, same trace, sliced-text
+args, both backends) all pass — the corruption only manifests inside the full server program,
+like the constructed-text/`float?` bug before its fix. So no minimal repro yet; the in-context
+evidence is: loft HEAD `f845424d`+, `--native`, `server/server.loft` @ `match_for`, reply `5:0|`
+with the debug print showing 20 points at the return site.
+
+**Workaround (applied):** the `&`-out-param pattern — the caller owns the vector, the fn appends
+element-by-element (`out += [r.pts[i] ?? …]`). That shape has been reliable all week.
+
+**Meta-observation for @PLN85:** all five native bugs this week sit in RETURN-position machinery
+around heap/wrapped values (float?-with-constructed-arg, E0605 parse temp, Str::new double-wrap,
+and now a struct-field vector delivering empty). A poison-style differential corpus over "return
+X" shapes (X = field/param/local/call, value = text/vector/struct/optional, arg mix constructed/
+literal) × (small/large program context) would likely net the whole class.
