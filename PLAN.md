@@ -260,6 +260,13 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** OPT-IN device location (`geolocate.js`): a "◎" button starts a
+  geolocation watch — dot + accuracy circle on the map; the map pans ONLY when the DEVICE moves
+  (>25 m) out of the current view, never over a user browsing elsewhere. The browser permission
+  prompt fires only on the click; the remembered opt-in resumes on later visits only when the
+  Permissions API already reports "granted" (no prompt spam); a denial flips the toggle off.
+  CDP-gated with mocked geolocation: no dot before opt-in, in-view fix draws without recentring,
+  an out-of-view move pans to the device, toggle-off removes the dot.
 - **Amended (2026-07-03):** the MTB sub-mode swaps the BASE map to CyclOSM (free OSM-France
   tiles rendering mtb:scale difficulty, surface, and unsigned singletrack — WMT's mtb overlay
   shows only signed routes); one chokepoint (`wantedBase` inside `syncOverlay`), gated by the

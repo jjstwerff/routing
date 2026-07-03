@@ -62,6 +62,10 @@
     <ul id="routes-list"></ul>
   </div>
 
+  <!-- Device location (opt-in): the browser's permission prompt fires only on this button —
+       never at load (see geolocate.js). -->
+  <button id="gps-toggle" class="hud-gps-toggle" type="button" aria-label="Show my location">◎</button>
+
   <!-- Elevation dock (PLAN step 15): dismissable profile of the matched route, closed by default.
        Lag-tolerant — it trails the drawing and never blocks interaction (see elevation.js). -->
   <button id="elev-toggle" class="hud-elev-toggle" type="button" aria-label="Toggle elevation profile">⛰</button>
@@ -83,5 +87,6 @@
   <script src="undo.js"></script>
   <script src="elevation.js"></script>
   <script src="routes.js"></script>
+  <script src="geolocate.js"></script>
 </body>
 </html>

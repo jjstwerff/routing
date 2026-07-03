@@ -319,6 +319,37 @@ html, body {
 }
 .hud-elev-toggle.is-active { background: #2b6cff; }
 
+/* Device-location button (opt-in, see geolocate.js) — stacked above the elevation toggle. */
+.hud-gps-toggle {
+  position: fixed;
+  right: calc(8px + env(safe-area-inset-right));
+  bottom: calc(56px + env(safe-area-inset-bottom));
+  z-index: 1200;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(31, 41, 51, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+.hud-gps-toggle.is-active { background: #1a73e8; }
+
+/* The location dot (accuracy circle is a Leaflet vector layer). */
+.gps-wrap { display: flex; align-items: center; justify-content: center; }
+.gps-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #1a73e8;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
 .elev-dock {
   position: fixed;
   left: calc(8px + env(safe-area-inset-left));
