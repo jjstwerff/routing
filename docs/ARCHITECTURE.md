@@ -80,7 +80,7 @@ import, elevation), all asserted **interpret == native**.
 | Send (client→server) | Reply (server→client) | Purpose |
 |---|---|---|
 | `4:<profile>\|<lat,lon;…>` | `5:<length_m>\|<lat,lon;…>` | **match** — the matched route + length (drawn under the sketch); sent debounced on edit-release |
-| `6:<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as a GPX document (JS downloads it) |
+| `6:<name>\|<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as GPX 1.1 with the route's real name (XML-escaped) and per-point `<ele>` from the terrain tiles (Garmin ClimbPro needs them; offline degrades to a bare track) |
 | `8:<lat,lon;…>` | `9:<retrace_m>\|<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route; a substantial retrace (`retrace_m`) is flagged with a toast, never silently edited |
 | `10:<mapzoom>\|<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open. The MAP zoom (clamped 9–15) is the terrain-tile zoom ceiling — resolution follows what you're looking at (bare `<points>` form = the z13 default) |
 | `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |

@@ -134,5 +134,9 @@
   });
   toggle.addEventListener("click", () => setOpen(!open));
 
-  NS.routes = { applyList, applyRoute, applyName, onConnect };
+  // The current route's name (the opened/saved name or the accepted proposal) — the GPX export
+  // stamps it into the file.
+  const currentName = () => (nameInput.value || "").trim();
+
+  NS.routes = { applyList, applyRoute, applyName, onConnect, currentName };
 })();

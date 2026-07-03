@@ -13,7 +13,7 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, clean_track, retrace_m,
+use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
@@ -217,8 +217,25 @@ fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: tex
 }
 
 // WS msg 6 → "7:<gpx>": the matched route as a GPX document (JS triggers the download).
+// Payload "<name>|<profile>|<points>": the route's real name goes into the file (Garmin shows it
+// in the course list), and the matched points get <ele> tags sampled from the terrain tiles —
+// ClimbPro et al. need them. Offline the tile fetch degrades to a bare track, never an error.
 fn reply_export(srv: server::Server, state: SyncState, cid: integer, payload: text) {
-  _ = srv.send_to(cid, "7:{gpx_export(match_for(state, payload).pts, "routing route")}");
+  nbar = payload.find("|");
+  name = "";
+  rest = payload;
+  if nbar >= 0 {
+    name = payload[..nbar];
+    rest = payload[nbar + 1..];
+  }
+  if name == "" { name = "routing route"; }
+  matched = match_for(state, rest).pts;
+  ez = elev_zoom(matched, ELEV_MAX_ZOOM, ELEV_MAX_TILES);
+  tiles: vector<TileHeights> = [];
+  if len(matched) >= 2 {
+    for key in elev_tiles_for(matched, ez) { add_tile(tiles, key); }
+  }
+  _ = srv.send_to(cid, "7:{gpx_export(matched, elev_at_points(matched, tiles, ez), name)}");
 }
 
 // WS msg 8 → "9:<retrace_m>|<cleaned points>": clean a raw GPX track into a sparse editable

@@ -81,12 +81,13 @@
     }
   }
 
+  let lastExportName = "";
   function downloadGpx(gpx) {
     const blob = new Blob([gpx], { type: "application/gpx+xml" });
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    a.download = (lastExportName || "route").replace(/[^\w\u00C0-\uFFFF -]+/g, "").trim() + ".gpx";
     a.href = href;
-    a.download = "route.gpx";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -150,9 +151,12 @@
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }
 
+  // The route's name travels with the export — Garmin shows it in the course list — and names
+  // the downloaded file too.
   function requestExport(points) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !points || points.length < 2) return;
-    ws.send("6:" + profileOf() + "|" + encode(points));
+    lastExportName = NS.routes && NS.routes.currentName ? NS.routes.currentName() : "";
+    ws.send("6:" + lastExportName.replace(/[|\n]/g, " ") + "|" + profileOf() + "|" + encode(points));
   }
 
   // Step 11: hand a raw GPX track to the server for cleaning → it replies "9:<cleaned points>".

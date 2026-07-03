@@ -195,6 +195,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
   all 4 corners — and closes) pass **interpret == native**.
 
 ### ☑ 10. GPX export (§8)
+- **Amended (2026-07-03, Garmin integration):** the export now carries the route's REAL name
+  (from the routes panel — XML-escaped; it names the download file too) and per-point `<ele>`
+  tags sampled from the terrain tiles (`elev_at_points`; Garmin's ClimbPro/course-time need
+  them; offline the tile fetch degrades to a bare track). Live-verified: a Vondelpark export
+  returned 20 trkpts, all with plausible 1–4 m elevations and the escaped name.
 - **Goal:** get an accurate route out.
 - **Build:** loft emits a `<trk>` of the detailed route; JS triggers the download.
 - **Check:** export a route; the `.gpx` opens in another tool showing the same track.

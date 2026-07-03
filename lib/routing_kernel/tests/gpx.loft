@@ -1,9 +1,11 @@
 // Tests for GPX export (PLAN step 10, DESIGN §8). Deterministic.
 //   loft --tests lib/routing_kernel/tests/gpx.loft --lib lib
-use routing_kernel::(GeoPoint, gpx_export);
+use routing_kernel::(GeoPoint, TileHeights, gpx_export, elev_at_points);
+
+NO_ELE: vector<float> = [];
 
 fn test_gpx_export() {
-  gpx = gpx_export([GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.1, lon: 5.1 }], "test route");
+  gpx = gpx_export([GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.1, lon: 5.1 }], NO_ELE, "test route");
   assert(gpx.contains("<gpx"), "has a gpx root");
   assert(gpx.contains("</gpx>"), "closes the gpx element");
   assert(gpx.contains("<trk>"), "has a track");
@@ -11,10 +13,43 @@ fn test_gpx_export() {
   assert(gpx.contains("lat=\"52\""), "first trkpt lat");
   assert(gpx.contains("lat=\"52.1\""), "second trkpt lat");
   assert(gpx.contains("lon=\"5.1\""), "second trkpt lon");
+  assert(!gpx.contains("<ele>"), "no elevations → a bare track");
 }
 
 fn test_gpx_empty() {
   empty: vector<GeoPoint> = [];
-  gpx = gpx_export(empty, "e");
+  gpx = gpx_export(empty, NO_ELE, "e");
   assert(gpx.contains("<trkseg>") && gpx.contains("</trkseg>"), "empty route is still valid GPX");
+}
+
+// <ele> tags: a known height goes in (1 decimal), the ELEV_NONE sentinel is skipped per-point.
+fn test_gpx_elevations() {
+  pts = [GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.1, lon: 5.1 }];
+  gpx = gpx_export(pts, [12.34, -100000.0], "hilly");
+  assert(gpx.contains("<ele>12.3</ele>"), "known height → ele tag: {gpx}");
+  assert(gpx.contains("lon=\"5.1\"></trkpt>"), "unknown height → bare trkpt");
+}
+
+// The name is user input inside XML — the structural characters must be escaped.
+fn test_gpx_name_escaped() {
+  gpx = gpx_export([GeoPoint { lat: 52.0, lon: 5.0 }], NO_ELE, "A & B <x>");
+  assert(gpx.contains("<name>A &amp; B &lt;x&gt;</name>"), "escaped name: {gpx}");
+}
+
+// elev_at_points samples per point (same synthetic step tile as the elevation tests: west half
+// 100 m, east half 200 m, tile 13/4209/2705); a point outside the tiles reads ELEV_NONE.
+fn test_elev_at_points() {
+  hs: vector<float> = [];
+  for i in 0..65536 {
+    if i % 256 < 128 { hs += [100.0]; } else { hs += [200.0]; }
+  }
+  tiles = [TileHeights { tx: 4209, ty: 2705, heights: hs }];
+  pts = [GeoPoint { lat: 52.0, lon: 4.97 },    // px 24 → west half
+         GeoPoint { lat: 52.0, lon: 5.0 },     // px 199 → east half
+         GeoPoint { lat: 10.0, lon: 10.0 }];   // far outside the provided tiles
+  es = elev_at_points(pts, tiles, 13);
+  assert(len(es) == 3, "one height per point");
+  assert((es[0] ?? 0.0) == 100.0, "west point at 100 m: {es[0] ?? 0.0}");
+  assert((es[1] ?? 0.0) == 200.0, "east point at 200 m: {es[1] ?? 0.0}");
+  assert((es[2] ?? 0.0) < -32768.0, "missing tile → the sentinel: {es[2] ?? 0.0}");
 }
