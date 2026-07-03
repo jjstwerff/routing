@@ -354,3 +354,81 @@ ephemeral. (In **server mode** the route's working state is already continuously
 - **Deferred — offline browser kernel (Mode A):** `loft --html client/kernel.loft --lib lib` → cdylib
   on `wasm32-unknown-unknown`, `wasm-opt`-shrunk (~330 KB gz), committed so running needs no toolchain.
   Blocked on the `--html` data-in primitive (§3).
+
+---
+
+## 12. Maritime routes — evaluated, NOT planned (2026-07-03)
+
+Sailing (with keel draft) and paddling (kayak/canoe) were evaluated as future activities. The verdict:
+**feasible, but held off deliberately.** We will not touch this until the existing tool is thoroughly
+tested — it would rewrite a core component (the matcher), and that is exactly what should not move
+until what sits on top of it is proven. This section records the evaluation so the decision does not
+have to be re-derived.
+
+**The one distinction that governs everything:** the *map* (the picture on screen) is the cheap part;
+the *routing data + the routing engine behind it* is the real cost. A nautical basemap is one Leaflet
+tile layer — we already swap CyclOSM in for the MTB sub-mode (§7), so an OpenSeaMap seamark overlay
+drops in the same way. But a nautical **picture** is not nautical **routing**: the chart tiles are
+pixels; the depth field, the hazards, and the tides behind them are what actually route a boat.
+
+Everything the matcher does today hangs off one assumption (§5): **a route is a match onto the OSM
+`["highway"]` way network.** The corridor query, `parse_ways`, `build_graph`, and the `way_penalty`
+profiles are all keyed to that network. The two maritime cases sit on opposite sides of whether that
+assumption holds.
+
+### Case A — kayak / canoe: fits the existing model
+Inland paddling is *also a network of ways.* OSM maps rivers and canals as `waterway=river|canal|stream`
+— the same shape the matcher already consumes. This is additive, not a rewrite:
+- Corridor query `["highway"]` → `["waterway"]` (plus `natural=water` for open bodies).
+- `parse_ways` reads `waterway`/`boat`/`canoe` tags instead of `surface`; a new `paddling` profile in
+  `way_penalty` (prefer river/canal, avoid `rapids`).
+- **Portage:** dams, weirs, locks, and waterfalls are *barriers* — break the edge or add a cost node.
+- Geodesic, GPX, elevation, route store, and sync are reused unchanged.
+
+Depth barely matters on a mapped canoe route — the topology is the thing. This is the low-risk half and
+the closest to "add another activity."
+
+### Case B — sailing with keel draft: a second routing engine, not a profile
+Open water breaks the core assumption: there are **no ways to match onto.** A keelboat takes any line
+across a bay that has enough water under it. That flips routing from *graph-match* to *continuous-field
+least-cost*:
+- **Rasterize navigable water into a grid**, cost each cell by depth, run a grid A*/Dijkstra. A new
+  kernel path (`match_water`) *beside* `match_route`, not inside it. The "faithful, not scenic"
+  matcher philosophy (§5) does not even apply — there is no drawn way to hug.
+- **Draft is a hard passability constraint** with a per-boat parameter (the keel depth). That is a new
+  numeric input the UI must carry, and it is in real tension with the north-star's tiny primitive set —
+  it is one more knob. A kayak's draft is ~0, so the same engine covers both at different thresholds.
+
+It also needs **three data sources the pipeline does not have:**
+- **Bathymetry (depth).** OSM/Overpass has *no* soundings. Depth comes from GEBCO (coarse global),
+  EMODnet (Europe), or NOAA ENC (US charts). The elevation subsystem is a ready-made template — it
+  already fetches raster tiles, PNG-decodes them, and samples a scalar field (`terrarium_h`,
+  `elev_profile`; see ARCHITECTURE.md). Bathymetry is "negative elevation": the *mechanism* exists;
+  only the tile source and the hard-constraint *use* are new.
+- **Hazards & seamarks** — rocks, wrecks, restricted zones, buoys. OpenSeaMap carries some as
+  `seamark:*` OSM tags (Overpass-queryable), but coverage is patchy and **not authoritative.**
+- **Tides & currents (a time axis).** Passability is time-varying — a channel that floats you at high
+  tide is dry at low. The whole tool is time-invariant today. Sailing also cannot go straight upwind
+  (tacking), a routing cost no land mode has. This is the genuinely new dimension, and it is what
+  separates a fun sketch tool from something to trust off the dock.
+
+### Reused vs new
+| Reused as-is | New for sailing |
+|---|---|
+| UI primitives (tap points, zoom-as-precision, live geodesic length) | Grid least-cost engine (`match_water`) |
+| GPX export, route store, live sync | Bathymetry raster source + a draft input |
+| Base/overlay tile swapping (§7) | Hazard/seamark layer; tide/current/wind (time axis) |
+| Elevation raster pipeline → bathymetry template | — |
+
+### Why not now, and the staged path if taken
+The clean read: **paddling is an activity; sailing is a second product** that shares the UI shell,
+geodesic, GPX, and raster-tile plumbing but needs its own matcher and its own data. Neither should
+land while the land matcher and its dependants are still being hardened. If revisited, in order:
+1. **Kayak/canoe on mapped waterways** — the graph-matcher we have, a new profile, a `["waterway"]`
+   layer, portage barriers. Fits the architecture and the north-star.
+2. **OpenSeaMap nautical overlay** — ship anytime, but labelled display-only, *not* routing.
+3. **Open-water sailing with draft** — its own phase: grid engine + bathymetry raster + draft input +
+   hazards, and not trustworthy without tides/currents.
+
+**Safety caveat:** none of this is a substitute for official charts. A crowd-sourced sketch must never
+be presented as safe to navigate a keelboat by.

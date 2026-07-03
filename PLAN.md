@@ -424,6 +424,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
 ---
 
 ## Deferred (post-v1) — from DESIGN.md §10
+- **Maritime routes — evaluated, not planned (2026-07-03):** kayak/canoe fits the graph-matcher (a
+  `["waterway"]` layer + a `paddling` profile + portage barriers); sailing-with-keel-draft needs a
+  second routing engine (grid least-cost over a bathymetry raster) + hazards + a tide/current time
+  axis. Held off deliberately until the land matcher and its dependants are thoroughly tested — see
+  **DESIGN.md §12** for the full evaluation.
 - **☑ "Not-done" / draft save (2026-07-02):** the instant persist (msg 24) now carries the recent
   undo stack ("#"-separated snapshots, last 30) as `_working`'s 4th line; restoring the working
   sketch imports it, so an unfinished route resumes **with undo intact** (CDP gate: reload →
