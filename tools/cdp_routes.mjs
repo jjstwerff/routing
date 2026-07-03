@@ -150,6 +150,13 @@ const s2 = await evaluate(`(async () => {
   out.goalCyclingRecalled = goal.value === "60";
   routing.setProfile("running_trail");
   out.goalRunningRecalled = goal.value === "10";
+  // The remembered profile: programmatic setProfile must NOT set the preference; a USER selector
+  // change must (activity change resets the sub-mode to its first → cycling_road).
+  out.prefUnsetByProgrammatic = localStorage.getItem("routing.profile") === null;
+  const aSel = document.getElementById("activity");
+  aSel.value = "Cycling";
+  aSel.dispatchEvent(new Event("change", { bubbles: true }));
+  out.prefRemembered = localStorage.getItem("routing.profile") === "cycling_road";
   return JSON.stringify(out);
 })()`);
 
@@ -182,6 +189,8 @@ const ok = s1.panelClosedByDefault && s1.savedListed
   && s2.openedPoints === 3 && s2.openedProfile === "running_trail"
   && s2.panelClosedAfterOpen && s2.deleted
   && s2.goalClearedOnSwitch && s2.goalCyclingRecalled && s2.goalRunningRecalled
-  && s3.profile === "running_trail" && s3.goalAfterReload === "10";
+  && s2.prefUnsetByProgrammatic && s2.prefRemembered
+  && s3.profile === "running_trail" && s3.goalAfterReload === "10";   // the sketch's profile still
+                                                                      // beats the remembered pref
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

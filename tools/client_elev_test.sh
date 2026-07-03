@@ -25,6 +25,7 @@ echo "generating fixture tile 13/4209/2705…"
 
 fuser -k "$port"/tcp 2>/dev/null || true
 sleep 1
+rm -rf "$here/scratch/chromium-9222"   # hermetic: localStorage (dock/profile/goals) must not leak between runs
 echo "building + starting server (loft --native)…"
 ( cd "$here" && LOFT_TIMEOUT=0 "$loft" --native server/server.loft --lib "$here/lib" >"$here/scratch/srv_celev.log" 2>&1 ) &
 srv=$!

@@ -20,6 +20,23 @@
   let activity = "Walking";
   let subId = "paved";
 
+  // The last USER-selected activity × sub-mode is remembered per-browser (a restored sketch's
+  // profile still overrides at runtime via setProfile, but doesn't rewrite the preference).
+  const PROFILE_KEY = "routing.profile";
+  try {
+    const p = localStorage.getItem(PROFILE_KEY) || "";
+    const us = p.indexOf("_");
+    const name = Object.keys(KEY).find((k) => KEY[k] === p.slice(0, us));
+    const sub = p.slice(us + 1);
+    if (name && ACT[name].subs.some(([, id]) => id === sub)) {
+      activity = name;
+      subId = sub;
+    }
+  } catch (_) {}
+  const remember = () => {
+    try { localStorage.setItem(PROFILE_KEY, KEY[activity] + "_" + subId); } catch (_) {}
+  };
+
   NS.getProfile = () => KEY[activity] + "_" + subId;
 
   // Step 16: restore a stored "<activity>_<submode>" (opening a saved/working route). Updates the
@@ -99,12 +116,14 @@
       subId = ACT[activity].subs[0][1]; // reset sub-mode to the first for the new activity
       fillSubs();
       syncOverlay();
+      remember();
       if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // recall this activity's goal
       rematch();
     });
     sSel.addEventListener("change", () => {
       subId = sSel.value;
       syncOverlay();
+      remember();
       rematch();
     });
     syncOverlay();

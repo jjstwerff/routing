@@ -260,6 +260,9 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** the last USER-selected activity × sub-mode is remembered
+  per-browser and is the startup default (a restored sketch's profile still overrides at runtime
+  without rewriting the preference; programmatic setProfile never remembers — CDP-gated).
 - **Amended (2026-07-03):** the goal is remembered **per activity** (browser-local): switching
   activity recalls that activity's goal (10 km running / 60 km cycling coexist); the restored
   profile after a reload brings its goal back. CDP-gated in `client_routes_test`.
