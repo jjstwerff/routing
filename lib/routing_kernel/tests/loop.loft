@@ -11,7 +11,7 @@ fn has_pt(route: vector<GeoPoint>, lat: float, lon: float) -> boolean {
 
 fn test_loop_is_traced() {
   // A square loop as a closed way (first coord == last → one merged node → a 4-node cycle).
-  square = Way { highway: "path", surface: "ground", tracktype: "",
+  square = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.002 },
               GeoPoint { lat: 52.002, lon: 5.002 }, GeoPoint { lat: 52.002, lon: 5.000 },
               GeoPoint { lat: 52.000, lon: 5.000 } ] };
@@ -30,7 +30,7 @@ fn test_loop_is_traced() {
   assert(has_pt(route, 52.002, 5.000), "visits corner c3");
 
   // Round-trip: start == finish → the detailed route is a closed circuit (first == last).
-  closed = match_route_closed(g, trace, "walking_trail", 0.25);
+  closed = match_route_closed(g, trace, "walking_trail");
   last = len(closed) - 1;
   assert(closed[0].lat == closed[last].lat && closed[0].lon == closed[last].lon, "loop closes");
 }

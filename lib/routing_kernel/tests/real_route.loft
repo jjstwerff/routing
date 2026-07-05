@@ -1,0 +1,47 @@
+// Regression test on a REAL open stretch of the user's 41 km route (points 6..17), against a trimmed
+// Overpass corridor fixture (fixtures/real_stretch.json, 80 m tube). Guards the properties that
+// regressed while building the forward matcher: the route must be non-empty, must not be wildly
+// inflated, and — the important one — must NEVER backtrack along the drawn line (advance only).
+//   loft --tests lib/routing_kernel/tests/real_route.loft --lib lib
+use routing_kernel::(GeoPoint, parse_ways, build_graph, match_route, line_progress, path_length_m);
+
+fn test_real_stretch_forward_no_backtrack() {
+  ways = parse_ways(file("fixtures/real_stretch.json").content());
+  g = build_graph(ways);
+  trace = [
+    GeoPoint { lat: 52.24122987096219,  lon: 6.88344955444336 },
+    GeoPoint { lat: 52.246196269035615, lon: 6.885638236999513 },
+    GeoPoint { lat: 52.25008491227731,  lon: 6.8931055068969735 },
+    GeoPoint { lat: 52.2475363129658,   lon: 6.902117729187013 },
+    GeoPoint { lat: 52.24971708224195,  lon: 6.9126319885253915 },
+    GeoPoint { lat: 52.25505031926059,  lon: 6.916065216064454 },
+    GeoPoint { lat: 52.26342982483724,  lon: 6.919584274291993 },
+    GeoPoint { lat: 52.26947049234737,  lon: 6.91640853881836 },
+    GeoPoint { lat: 52.28401724342717,  lon: 6.922588348388673 },
+    GeoPoint { lat: 52.29115758313226,  lon: 6.9181251525878915 },
+    GeoPoint { lat: 52.30207587681469,  lon: 6.915206909179688 },
+    GeoPoint { lat: 52.31162717589892,  lon: 6.908855438232423 },
+  ];
+  route = match_route(g, trace, "cycling_road");
+
+  assert(len(route) >= 2, "matched route is non-empty ({len(route)} pts)");
+
+  drawn = path_length_m(trace);
+  matched = path_length_m(route);
+  assert(matched < drawn * 2.0, "matched length is not wildly inflated ({matched:1.0} m vs drawn {drawn:1.0} m)");
+
+  // Forward progress: the projection onto the drawn line must never fall back by more than a small
+  // tolerance (projection noise + rare gap-bridges). A real reach-a-point-and-return backtrack drops
+  // s by hundreds of metres — this catches it.
+  prevs = -1.0;
+  worst = 0.0;
+  for i in 0..len(route) {
+    s = line_progress(route[i], trace);
+    if prevs >= 0.0 {
+      drop = prevs - s;
+      if drop > worst { worst = drop; }
+    }
+    prevs = s;
+  }
+  assert(worst < 300.0, "route advances along the line, never backtracks (worst reversal {worst:1.0} m)");
+}

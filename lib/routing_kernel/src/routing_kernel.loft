@@ -92,6 +92,14 @@ pub struct Way {
   highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
   surface:   text,   // `surface=` or "" when absent
   tracktype: text,   // `tracktype=` or ""
+  bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
+  access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
+  oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
+  onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
+  svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
+  cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
+  cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
+  name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
   coords:    vector<GeoPoint>,
 }
 
@@ -137,6 +145,30 @@ pub fn overpass_corridor_query(pts: vector<GeoPoint>, margin_m: float) -> text {
   "[out:json][timeout:25];way[\"highway\"](around:{margin_m},{coords});out geom;"
 }
 
+// The corridor half-width scales with the drawn line, NOT a fixed distance: a long route is sketched
+// coarsely (sparse taps, straight chords cutting real bends), so its tube must be proportionally
+// wider or the true ways fall outside it; a short, careful sketch keeps a tight tube. Margin ≈ a
+// fraction of total length, floored (never tighter than a careful sketch needs) and capped (bound the
+// Overpass download; the deviation term still keeps the match on the line inside a wide tube).
+// The tube must be wide enough that the REAL road between two consecutive taps stays inside it, or
+// the graph disconnects there and the match jumps straight. What governs that is the SPACING between
+// taps (how coarsely you drew), NOT the total length: 1 km-apart taps let a road bow far off the
+// straight chord, so they need a wide tube; densely-tapped points need only a sliver. So the margin
+// scales with the average tap spacing — a route drawn with more points automatically tightens (and
+// downloads less). Floored, and capped only to bound the (blocking) Overpass fetch.
+CORRIDOR_SEG_FRAC = 0.25; // tube half-width ≈ 25% of the average gap between taps
+CORRIDOR_MIN_M = 30.0;
+CORRIDOR_MAX_M = 200.0;   // cap: bounds the fetch; a very coarse long route is the case that still
+                          // pays a big download (denser taps or async fetch are the ways past it).
+pub fn corridor_margin(pts: vector<GeoPoint>) -> float {
+  nseg = len(pts) - 1;
+  if nseg < 1 { return CORRIDOR_MIN_M; }
+  m = (path_length_m(pts) / (nseg as float)) * CORRIDOR_SEG_FRAC;
+  if m < CORRIDOR_MIN_M { m = CORRIDOR_MIN_M; }
+  if m > CORRIDOR_MAX_M { m = CORRIDOR_MAX_M; }
+  m
+}
+
 // A string tag value, or "" when the tag is absent (`field` on a missing key returns JNull, whose
 // as_text() is the literal "null" — so gate on the JString kind).
 fn tag(obj: JsonValue, name: text) -> text {
@@ -163,6 +195,14 @@ pub fn parse_ways(response: text) -> vector<Way> {
         highway:   tag(tags, "highway"),
         surface:   tag(tags, "surface"),
         tracktype: tag(tags, "tracktype"),
+        bicycle:   tag(tags, "bicycle"),
+        access:    tag(tags, "access"),
+        oneway:    tag(tags, "oneway"),
+        onewaybike:tag(tags, "oneway:bicycle"),
+        svc:       tag(tags, "service"),
+        cycleway:  tag(tags, "cycleway"),
+        cyclestreet:tag(tags, "cyclestreet"),
+        name:      tag(tags, "name"),
         coords:    coords,
       }];
     }
@@ -179,30 +219,59 @@ pub fn parse_ways(response: text) -> vector<Way> {
 
 BIG = 1000000000.0;   // stand-in for infinity in Dijkstra (real path costs stay far below this)
 DEV_K = 3.0;          // deviation weight: cost = length * (1 + DEV_K * deviation_m); >> 1 hugs the line
-VITERBI_K = 4;        // max candidate anchors per tap (§10.2 full matcher)
-ANCHOR_BAND_M = 25.0; // tap accuracy: only nodes within nearest+band are candidate anchors —
-                      // within the band the Viterbi decides, beyond it geometry already has
-EMIT_K = 1.0;         // per-metre anchor-distance cost (orders equal-deviation candidates)
+SEARCH_CAP = 6000;    // max nodes a single per-segment local search settles before giving up (→ bridge).
+                      // Consecutive taps are close, so a real connection is found well within this;
+                      // the cap only fires on a genuine gap, stopping a whole-corridor scan (the cost
+                      // that made re-matching slow). Raise if legit long segments start bridging.
+LOOSE_FRAC = 0.15;    // deviation is free within 15% of a stretch's length, then ramps — the one
+                      // "looseness" ratio (relative, not absolute metres); higher = looser hugging.
+CYCLE_INFRA_BONUS = 0.5;  // flat per-metre discount for cycle infrastructure (cycling): makes it
+                      // PREFERRED even at equal deviation, on top of the deviation-tolerance below.
+CYCLE_INFRA_DEV_FACTOR = 0.4; // cyclists go out of their way for a cycle route: cycle infrastructure
+                      // (cycleway, on-road cycle lane/track, fietsstraat) counts its distance-from-
+                      // line at 40%, so a nearby cycle route can win over a marginally-closer plain
+                      // street — matching how people actually commute (DESIGN §5 relaxed for cycling).
+// Two tiers of last-resort surcharge (both per-metre, both FINITE << BIG so the line never gaps —
+// DESIGN §5 "degrade, don't fail"). DISMOUNT: legal but you must get off and walk (footways, plazas,
+// foot/horse paths, steps, bicycle=dismount). High enough that a real bike path is normally preferred
+// — people value staying on the saddle — but low enough to cross a short walkway rather than detour
+// far. ILLEGAL: genuinely off-limits (busway, motorway, bicycle=no, closed/private, service alley) —
+// used only when it is the ONLY connection.
+DISMOUNT_PER_M = 1500.0;
+ILLEGAL_PER_M  = 20000.0;
+VITERBI_K = 4;        // candidate nodes per rough point the joint negotiation chooses among
+ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate joints. Generous
+                      // because taps are IMPRECISE (fat-fingered) — the band must reach the ways
+                      // actually on the drawn line, not just the ones nearest a mis-tap.
 
 struct CoordIdx { coord: text, idx: integer }
 struct GNode { lat: float, lon: float }
 struct GEdge {
   a: integer, b: integer, length: float,
   hw: text, surface: text, tracktype: text,
+  bicycle: text, access: text,
+  oneway: text, onewaybike: text,   // direction restriction (a→b is the way's digitised sense)
+  svc: text,                        // service= subtag (driveway/alley/parking_aisle)
+  cycleway: text, cyclestreet: text, // on-road cycle infrastructure (lane/track) / fietsstraat
+  name: text,                        // road identity (for same-road out-and-back detection)
 }
 pub struct Graph {
   index: hash<CoordIdx[coord]>,   // "lat,lon" → node idx (dedup)
   nodes: vector<GNode>,
-  edges: vector<GEdge>,           // undirected; Dijkstra scans them per settled node (O(V*E),
-                                  // trivial at corridor size). NB: a nested-vector `adj` mutated
-                                  // via a `&` reference is O(n^2) in the loft interpreter — see
-                                  // docs/loft-feedback.md — so a flat edge list is deliberate.
+  edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
+  // CSR adjacency (FLAT vectors — not nested, so no O(n^2) interpreter trap): the arcs leaving node
+  // u are adj_to[adj_head[u] .. adj_head[u+1]]. Each undirected edge contributes two arcs (a→b, b→a);
+  // adj_edge[k] is the GEdge index for arc k (for its tags/cost + digitised direction). Built once in
+  // build_graph so the local matcher walks a node's real neighbours in O(degree), not all edges.
+  adj_head: vector<integer>,      // size n+1 (prefix offsets)
+  adj_to:   vector<integer>,      // size 2*len(edges) (neighbour node per arc)
+  adj_edge: vector<integer>,      // size 2*len(edges) (GEdge index per arc)
 }
 
 // Deduped node index for (lat,lon); appends a fresh node (+ empty adjacency) when unseen.
 // `&Graph`: a live reference so the growing graph is mutated in place, NOT copied per call
 // (by-value passing of the hash+vectors is O(size) each call → O(n^2) build).
-fn node_idx(g: &Graph, lat: float, lon: float) -> integer {
+fn node_idx(g: Graph, lat: float, lon: float) -> integer {
   k = "{lat},{lon}";
   hit = g.index[k];
   if hit != null { return hit.idx; }
@@ -212,13 +281,13 @@ fn node_idx(g: &Graph, lat: float, lon: float) -> integer {
   idx
 }
 
-fn add_edge(g: &Graph, a: integer, b: integer, length: float, hw: text, surface: text, tracktype: text) {
-  g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype }];
+fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: text, tracktype: text, bicycle: text, access: text, oneway: text, onewaybike: text, svc: text, cycleway: text, cyclestreet: text, name: text) {
+  g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype, bicycle: bicycle, access: access, oneway: oneway, onewaybike: onewaybike, svc: svc, cycleway: cycleway, cyclestreet: cyclestreet, name: name }];
 }
 
-// Build the corridor graph from the parsed ways.
+// Build the corridor graph from the parsed ways, then its CSR adjacency (a counting-sort pass).
 pub fn build_graph(ways: vector<Way>) -> Graph {
-  g = Graph { index: [], nodes: [], edges: [] };
+  g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
   for w in ways {
     prev = -1;
     for ci in 0..len(w.coords) {
@@ -226,17 +295,49 @@ pub fn build_graph(ways: vector<Way>) -> Graph {
       ni = node_idx(g, p.lat, p.lon);
       if prev >= 0 && prev != ni {
         d = geodesic_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
-        add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype);
+        add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype, w.bicycle, w.access, w.oneway, w.onewaybike, w.svc, w.cycleway, w.cyclestreet, w.name);
       }
       prev = ni;
     }
   }
+  build_adj(g);
   g
 }
 
-// Distance (m) from point p to segment a-b, via a local equirectangular projection around p
-// (accurate at corridor scale). p sits at the origin after projecting.
-fn point_seg_m(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float) -> float {
+// CSR adjacency: degree count → prefix-sum offsets → scatter arcs. O(n + edges).
+fn build_adj(g: Graph) {
+  n = len(g.nodes);
+  m = len(g.edges);
+  deg: vector<integer> = [];
+  for _i in 0..n { deg += [0]; }
+  for ei in 0..m {
+    e = g.edges[ei];
+    deg[e.a] = (deg[e.a] ?? 0) + 1;
+    deg[e.b] = (deg[e.b] ?? 0) + 1;
+  }
+  head: vector<integer> = [];
+  acc = 0;
+  for i in 0..n { head += [acc]; acc = acc + (deg[i] ?? 0); }
+  head += [acc];                       // sentinel: head[n] = 2*m
+  to: vector<integer> = [];
+  eid: vector<integer> = [];
+  for _k in 0..acc { to += [-1]; eid += [-1]; }
+  cur: vector<integer> = [];
+  for i in 0..n { cur += [head[i] ?? 0]; }
+  for ei in 0..m {
+    e = g.edges[ei];
+    pa = cur[e.a] ?? 0; to[pa] = e.b; eid[pa] = ei; cur[e.a] = pa + 1;
+    pb = cur[e.b] ?? 0; to[pb] = e.a; eid[pb] = ei; cur[e.b] = pb + 1;
+  }
+  g.adj_head = head;
+  g.adj_to = to;
+  g.adj_edge = eid;
+}
+
+// Distance (m) from p to segment a-b AND the clamped projection parameter t∈[0,1], via a local
+// equirectangular projection around p (accurate at corridor scale). p sits at the origin.
+struct SegDT { d: float, t: float }
+fn point_seg_dt(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float) -> SegDT {
   kx = 111320.0 * cos(plat * PI / 180.0);   // metres per degree longitude at this latitude
   ky = 111320.0;                             // metres per degree latitude
   ax = (alon - plon) * kx;
@@ -246,12 +347,32 @@ fn point_seg_m(plat: float, plon: float, alat: float, alon: float, blat: float, 
   dx = bx - ax;
   dy = by - ay;
   l2 = dx * dx + dy * dy;
-  if l2 == 0.0 { return sqrt(ax * ax + ay * ay); }
+  if l2 == 0.0 { return SegDT { d: sqrt(ax * ax + ay * ay), t: 0.0 }; }
   t = -(ax * dx + ay * dy) / l2;
   if t < 0.0 { t = 0.0; }
   if t > 1.0 { t = 1.0; }
   cx = ax + t * dx;
   cy = ay + t * dy;
+  SegDT { d: sqrt(cx * cx + cy * cy), t: t }
+}
+
+fn point_seg_m(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float) -> float {
+  point_seg_dt(plat, plon, alat, alon, blat, blon).d
+}
+
+// Distance (m) from p to segment a-b using a PRECOMPUTED longitude scale `kx` — skips the per-call
+// cos. The hot per-edge deviation in dijkstra_seg computes kx ONCE per segment and reuses it; over a
+// local segment the latitude barely varies, so one kx is accurate to a fraction of a percent.
+fn seg_dev_kx(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float, kx: float) -> float {
+  ky = 111320.0;
+  ax = (alon - plon) * kx; ay = (alat - plat) * ky;
+  bx = (blon - plon) * kx; by = (blat - plat) * ky;
+  dx = bx - ax; dy = by - ay; l2 = dx * dx + dy * dy;
+  if l2 == 0.0 { return sqrt(ax * ax + ay * ay); }
+  t = -(ax * dx + ay * dy) / l2;
+  if t < 0.0 { t = 0.0; }
+  if t > 1.0 { t = 1.0; }
+  cx = ax + t * dx; cy = ay + t * dy;
   sqrt(cx * cx + cy * cy)
 }
 
@@ -268,6 +389,41 @@ fn point_trace_m(plat: float, plon: float, trace: vector<GeoPoint>) -> float {
   best
 }
 
+// A node's projection onto the drawn line: d = deviation (m off the line), s = arc-length ALONG the
+// line (0 at start … total at finish, using cumulative lengths `cum`), seg_m = length of the line
+// segment it projected onto (its local resolution, for the relative looseness band). This is what
+// lets the matcher enforce forward progress (s must not decrease) instead of anchoring at points.
+struct Proj { d: float, s: float, seg_m: float }
+fn project(plat: float, plon: float, line: vector<GeoPoint>, cum: vector<float>) -> Proj {
+  bd = BIG; bs = 0.0; bseg = 0.0;
+  for i in 1..len(line) {
+    sp = point_seg_dt(plat, plon, line[i - 1].lat, line[i - 1].lon, line[i].lat, line[i].lon);
+    if sp.d < bd {
+      bd = sp.d;
+      seglen = geodesic_m(line[i - 1], line[i]);
+      bs = (cum[i - 1] ?? 0.0) + sp.t * seglen;
+      bseg = seglen;
+    }
+  }
+  Proj { d: bd, s: bs, seg_m: bseg }
+}
+
+// Distance (m) from a point to a polyline — public wrapper so the server can test whether a freshly
+// edited point still lies inside a previously-fetched corridor (and thus skip re-downloading it).
+pub fn point_polyline_m(p: GeoPoint, line: vector<GeoPoint>) -> float {
+  if len(line) == 0 { return BIG; }
+  point_trace_m(p.lat, p.lon, line)
+}
+
+// Arc-length position (m) of p's projection ALONG `line` (0 at start … total at finish). Public so a
+// test can verify the matched route only ever advances — never backtracks — along the drawn line.
+pub fn line_progress(p: GeoPoint, line: vector<GeoPoint>) -> float {
+  if len(line) < 2 { return 0.0; }
+  cum: vector<float> = [0.0];
+  for i in 1..len(line) { cum += [(cum[i - 1] ?? 0.0) + geodesic_m(line[i - 1], line[i])]; }
+  project(p.lat, p.lon, line, cum).s
+}
+
 // Candidate anchors for a tap: the nodes within ANCHOR_BAND_M of the nearest one (max VITERBI_K),
 // nearest first. Linear selection scan — corridor graphs are small. A lone candidate degenerates
 // the Viterbi to the old nearest-node matcher by construction.
@@ -275,19 +431,25 @@ fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
   out: vector<integer> = [];
   taken: vector<boolean> = [];
   for i in 0..len(g.nodes) { taken += [false]; }
+  // Ranking metric: planar distance with kx computed ONCE for this query (not Vincenty per node).
+  // Nearest-node selection only needs a monotone distance; a local flat-earth metric is exact enough
+  // over a corridor and turns ~17M Vincenty calls into cheap multiplies.
+  kx = 111320.0 * cos(lat * PI / 180.0);
+  ky = 111320.0;
   first_d = -1.0;
   for _k in 0..VITERBI_K {
     best = -1;
     bestd = BIG;
     for i in 0..len(g.nodes) {
       if !(taken[i] ?? true) {
-        d = geodesic_ll(lat, lon, g.nodes[i].lat, g.nodes[i].lon);
+        dx = (g.nodes[i].lon - lon) * kx; dy = (g.nodes[i].lat - lat) * ky;
+        d = dx * dx + dy * dy;   // squared metres — monotone, sqrt-free
         if d < bestd { bestd = d; best = i; }
       }
     }
     if best < 0 { break; }
-    if first_d < 0.0 { first_d = bestd; }
-    if bestd > first_d + ANCHOR_BAND_M { break; }
+    if first_d < 0.0 { first_d = sqrt(bestd); }
+    if sqrt(bestd) > first_d + ANCHOR_BAND_M { break; }
     out += [best];
     taken[best] = true;
   }
@@ -338,14 +500,15 @@ pub fn way_penalty(profile: text, hw: text, surface: text, tracktype: text) -> f
     if hw == "steps" { p = p + 1.0; }
   } else if profile == "cycling_road" {
     if hw == "cycleway" { p = -0.7; }
-    else if (hw == "residential" || hw == "tertiary" || hw == "secondary") && is_paved(hw, surface) { p = -0.4; }
+    else if (hw == "residential" || hw == "living_street" || hw == "tertiary") && is_paved(hw, surface) { p = -0.4; }
+    if is_bigroad(hw) { p = p + 0.8; }   // prefer quiet streets/cycleways over big through-roads
     if is_unpaved(surface) { p = p + 1.0; }
     if is_foot_only(hw) || hw == "path" { p = p + 1.0; }
   } else if profile == "cycling_gravel" {
     if (hw == "track" || hw == "path" || hw == "cycleway") &&
        (surface == "gravel" || surface == "fine_gravel" || surface == "compacted" || surface == "unpaved") { p = -0.7; }
     if surface == "sand" || surface == "mud" { p = p + 1.0; }
-    if hw == "motorway" || hw == "trunk" { p = p + 1.5; }
+    if is_bigroad(hw) { p = p + 0.8; }   // busy tarmac isn't the point of a gravel ride
   } else if profile == "cycling_mtb" {
     if hw == "path" || hw == "track" || hw == "bridleway" { p = -0.6; }
     if is_bigroad(hw) && is_paved(hw, surface) { p = p + 1.0; }
@@ -368,216 +531,638 @@ pub fn way_penalty(profile: text, hw: text, surface: text, tracktype: text) -> f
     if is_unpaved(surface) { p = p + 1.0; }
     if is_pathish(hw) { p = p + 2.0; }
   }
+  // A plain service road (no driveway/alley/parking_aisle subtag) is a legit but minor link — a mild
+  // nudge to prefer real streets. The behind-the-houses subtypes are handled as a legality last-resort
+  // in bike_forbidden (a bounded nudge can't overcome deviation when the alley IS the straightest way).
+  if profile.starts_with("cycling") && hw == "service" { p = p + 0.6; }
   if p < -0.7 { p = -0.7; }
   if p > 2.0 { p = 2.0; }
   p
 }
 
-// Deviation-dominated cost of traversing edge ei, plus a bounded activity tie-breaker (§6).
-fn edge_cost(g: Graph, ei: integer, trace: vector<GeoPoint>, profile: text) -> float {
-  e = g.edges[ei];
-  mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
-  mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
-  dev = point_trace_m(mlat, mlon, trace);
-  e.length * (1.0 + DEV_K * dev + way_penalty(profile, e.hw, e.surface, e.tracktype))
+// `bicycle=` value that AFFIRMATIVELY permits riding — overrides the highway/access defaults below
+// (a footway signed `bicycle=yes` is legal; a road with `access=no` but `bicycle=yes` is legal).
+fn bike_permitted(bicycle: text) -> boolean {
+  bicycle == "yes" || bicycle == "designated" || bicycle == "permissive"
 }
 
-// A single-source least-cost tree (deviation-to-`trace` + activity), over the whole graph — one
-// run serves every candidate target of the next Viterbi stage.
-struct DijTree { dist: vector<float>, prevn: vector<integer> }
+// True when a way is ILLEGAL to RIDE under a cycling profile (bus lane, foot-only passage, motorway,
+// bicycle=no) — edge_cost then applies a huge last-resort surcharge so the route steers off it
+// whenever a legal way connects the line, unlike way_penalty's bounded activity nudges. An explicit
+// `bicycle=` permission wins; otherwise the highway/access class decides. (Non-cycling profiles
+// don't call this — walking/running may use foot-only ways.)
+// Genuinely off-limits to a bike — you cannot ride NOR sensibly wheel it through (ILLEGAL tier):
+// a dedicated busway, a motorway, a way signed closed to bikes, a way closed to all traffic, a
+// behind-the-houses service way, or STAIRS (you can't haul a heavy e-bike up a flight of steps).
+fn bike_never(hw: text, bicycle: text, access: text, svc: text) -> boolean {
+  if bicycle == "no" || bicycle == "private" || bicycle == "use_sidepath" { return true; }
+  if hw == "motorway" || hw == "motorway_link" { return true; }
+  if hw == "busway" { return true; }                                    // dedicated bus guideway
+  if hw == "steps" { return true; }                                     // can't get an (e-)bike up stairs
+  if svc == "driveway" || svc == "alley" || svc == "parking_aisle" { return true; }  // not through-routes
+  if access == "no" || access == "private" { return true; }             // closed to general traffic
+  false
+}
 
-// One assignment's accumulated node path (a vector field needs a struct wrapper to live in a vector).
-struct NodePath { nodes: vector<integer> }
+// Legal to WALK the bike but not to RIDE (DISMOUNT tier — high cost, still preferable to a stairway
+// or a big detour): footways, foot/horse paths, and pedestrian plazas (a station concourse — wheel
+// your bike). A positive `bicycle=` sign rescues a footway/path into a rideable shared way; a
+// pedestrian plaza stays walk-your-bike unless it's a *designated* cycle route. `bicycle=dismount`
+// is exactly this tier. Assumes bike_never already returned false.
+fn bike_dismount(hw: text, bicycle: text) -> boolean {
+  if hw == "pedestrian" { return bicycle != "designated"; }
+  if bike_permitted(bicycle) { return false; }                          // signed rideable → legal, no surcharge
+  if bicycle == "dismount" { return true; }
+  if hw == "footway" || hw == "path" || hw == "bridleway" { return true; }
+  false
+}
 
-fn dijkstra_tree(g: Graph, src: integer, trace: vector<GeoPoint>, profile: text) -> DijTree {
-  n = len(g.nodes);
-  dist: vector<float> = [];
-  prevn: vector<integer> = [];
-  seen: vector<boolean> = [];
-  for i in 0..n {
-    dist += [BIG];
-    prevn += [-1];
-    seen += [false];
+// Off-limits on foot (ILLEGAL tier): a dedicated busway, a motorway, or a way closed to all traffic.
+// Foot modes may otherwise use footways, paths, pedestrian areas and steps — a much shorter list.
+fn foot_never(hw: text, access: text) -> boolean {
+  if hw == "busway" { return true; }                                    // guided busway — no pedestrians
+  if hw == "motorway" || hw == "motorway_link" { return true; }         // no pedestrians on the motorway
+  if access == "no" || access == "private" { return true; }             // closed to all traffic
+  false
+}
+
+// Directional legality of a way for the mode. `forward` = travelling along the way's digitised
+// sense (edge a→b). Foot modes ignore oneway entirely; cycling honours it unless a bike-specific
+// override (`oneway:bicycle`) says otherwise — the common NL case of a one-way street with a
+// signed bicycle contraflow (`oneway:bicycle=no`). Prevents riding a one-way cycle path backwards.
+fn dir_allowed(profile: text, oneway: text, onewaybike: text, forward: boolean) -> boolean {
+  if !profile.starts_with("cycling") && !profile.starts_with("driving") { return true; }
+  ow = oneway;
+  if profile.starts_with("cycling") {
+    if onewaybike == "no" { return true; }        // signed contraflow — both directions legal
+    if onewaybike == "yes" { ow = "yes"; }        // bike-specific one-way
+    if onewaybike == "-1" { ow = "-1"; }
   }
-  if n == 0 { return DijTree { dist: dist, prevn: prevn }; }
-  dist[src] = 0.0;
-  for _it in 0..n {
-    u = -1;
-    ud = BIG;
-    for j in 0..n {
-      if !seen[j] && dist[j] < ud { ud = dist[j]; u = j; }
+  if ow == "yes" || ow == "true" || ow == "1" { return forward; }   // travel a→b only
+  if ow == "-1" || ow == "reverse" { return !forward; }             // digitised backwards: b→a only
+  true                                                              // no / absent → both ways
+}
+
+// The per-metre cost FACTOR (1 + DEV_K·excess-deviation + tag penalty, floored positive) is computed
+// inline in the search hot loop (dijkstra_win) from the precomputed per-edge pieces — see EdgeCosts.
+
+// True when an edge is real cycle infrastructure: a dedicated cycleway, an on-road cycle lane/track,
+// or a fietsstraat (cyclestreet). `cycleway=shared_lane` (a sharrow) is deliberately NOT counted —
+// it's paint, not infrastructure.
+fn is_cycle_infra(hw: text, cycleway: text, cyclestreet: text) -> boolean {
+  hw == "cycleway" || cyclestreet == "yes" || cyclestreet == "designated" ||
+  cycleway == "lane" || cycleway == "track" || cycleway == "opposite_lane" || cycleway == "opposite_track"
+}
+
+// Deviation weight for an edge: normally DEV_K, but reduced on cycle infrastructure for a cycling
+// profile so the route is willing to leave the drawn line to pick up a cycle route (see the constant).
+fn dev_weight(profile: text, e: GEdge) -> float {
+  if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) {
+    return DEV_K * CYCLE_INFRA_DEV_FACTOR;
+  }
+  DEV_K
+}
+
+// Mode-aware last-resort surcharge (per metre) for this edge: 0 legal · DISMOUNT walk-the-bike ·
+// ILLEGAL off-limits. Both non-zero tiers are finite, so a stretch with no better option still
+// bridges rather than gapping; their sizes make a bike path normally win over walking, and walking
+// normally win over a genuinely-illegal way.
+fn edge_surcharge(profile: text, e: GEdge) -> float {
+  if profile.starts_with("cycling") {
+    if bike_never(e.hw, e.bicycle, e.access, e.svc) { return ILLEGAL_PER_M; }
+    if bike_dismount(e.hw, e.bicycle) { return DISMOUNT_PER_M; }
+  } else if profile.starts_with("walking") || profile.starts_with("running") {
+    if foot_never(e.hw, e.access) { return ILLEGAL_PER_M; }
+  }
+  0.0
+}
+
+// A binary min-heap over (cost, node), array-backed with an explicit live size (loft vectors don't
+// shrink, so we grow the backing store and track the prefix). Used for lazy-deletion Dijkstra: a
+// node may be pushed several times; stale pops are skipped by the `done` flag in the caller.
+struct Heap { cost: vector<float>, node: vector<integer>, size: integer }
+
+fn heap_push(h: Heap, c: float, nd: integer) {
+  i = h.size;
+  if i < len(h.cost) { h.cost[i] = c; h.node[i] = nd; } else { h.cost += [c]; h.node += [nd]; }
+  h.size = i + 1;
+  while i > 0 {
+    p = (i - 1) / 2;
+    if (h.cost[p] ?? 0.0) <= (h.cost[i] ?? 0.0) { break; }
+    tc = h.cost[i] ?? 0.0; h.cost[i] = h.cost[p] ?? 0.0; h.cost[p] = tc;
+    tn = h.node[i] ?? 0;   h.node[i] = h.node[p] ?? 0;   h.node[p] = tn;
+    i = p;
+  }
+}
+
+struct Popped { cost: float, node: integer, ok: boolean }
+fn heap_pop(h: Heap) -> Popped {
+  if h.size == 0 { return Popped { cost: 0.0, node: -1, ok: false }; }
+  rc = h.cost[0] ?? 0.0;
+  rn = h.node[0] ?? 0;
+  last = h.size - 1;
+  h.cost[0] = h.cost[last] ?? 0.0;
+  h.node[0] = h.node[last] ?? 0;
+  h.size = last;
+  i = 0;
+  while true {
+    l = 2 * i + 1;
+    r = 2 * i + 2;
+    sm = i;
+    if l < h.size && (h.cost[l] ?? 0.0) < (h.cost[sm] ?? 0.0) { sm = l; }
+    if r < h.size && (h.cost[r] ?? 0.0) < (h.cost[sm] ?? 0.0) { sm = r; }
+    if sm == i { break; }
+    tc = h.cost[i] ?? 0.0; h.cost[i] = h.cost[sm] ?? 0.0; h.cost[sm] = tc;
+    tn = h.node[i] ?? 0;   h.node[i] = h.node[sm] ?? 0;   h.node[sm] = tn;
+    i = sm;
+  }
+  Popped { cost: rc, node: rn, ok: true }
+}
+
+// Node index at an exact coordinate (via the dedup hash), or -1.
+fn node_at(g: Graph, lat: float, lon: float) -> integer {
+  hit = g.index["{lat},{lon}"];
+  if hit != null { return hit.idx; }
+  -1
+}
+// Road name of the edge between adjacent nodes u,v (or "" — bridges / no such edge / unnamed).
+fn edge_name_between(g: Graph, u: integer, v: integer) -> text {
+  if u < 0 || v < 0 { return ""; }
+  s0 = g.adj_head[u] ?? 0;
+  s1 = g.adj_head[u + 1] ?? 0;
+  for k in s0..s1 { if (g.adj_to[k] ?? -1) == v { return g.edges[g.adj_edge[k] ?? 0].name; } }
+  ""
+}
+// Two points closer than `eps` metres?
+fn near_m(a: GeoPoint, b: GeoPoint, eps: float) -> boolean { geodesic_m(a, b) < eps }
+
+// Remove BACKTRACK / SAME-ROAD RETRACE spurs. A dead-end U-turn (same nodes) OR an out-and-back BESIDE
+// the same road (the two cycle sides — different nodes, ~10 m apart) both show as the route folding
+// back on itself. We detect a return that comes CLOSE to an earlier point and, if the excursion is a
+// mirror (there-and-back), fold it out — UNLESS the two sides are DIFFERENT NAMED roads, which is a
+// legit parallel (e.g. the two banks of a canal) and must be kept. `names[i]` is the road of the edge
+// arriving at pts[i]. Window-bounded lookback; live-size truncation (loft vectors don't shrink).
+fn remove_spurs(pts: vector<GeoPoint>, names: vector<text>) -> vector<GeoPoint> {
+  out: vector<GeoPoint> = [];
+  onm: vector<text> = [];
+  sz = 0;
+  for pi in 0..len(pts) {
+    p = pts[pi];
+    pn = names[pi] ?? "";
+    hit = -1;
+    lo = sz - 80;
+    if lo < 0 { lo = 0; }
+    for q in lo..sz {
+      o = out[q];
+      exact = o.lat == p.lat && o.lon == p.lon;
+      onq = onm[q] ?? "";
+      diffnamed = pn != "" && onq != "" && pn != onq;   // two distinct named roads → NOT a retrace
+      if (exact || near_m(o, p, 25.0)) && !diffnamed { hit = q; }
     }
-    if u < 0 { break; }
-    seen[u] = true;
-    for ei in 0..len(g.edges) {
-      e = g.edges[ei];
-      v = -1;
-      if e.a == u { v = e.b; }
-      if e.b == u { v = e.a; }
-      if v >= 0 && !seen[v] {
-        cand = dist[u] + edge_cost(g, ei, trace, profile);
-        if cand < dist[v] {
-          dist[v] = cand;
-          prevn[v] = u;
-        }
+    pal = false;
+    if hit >= 0 {
+      // Is the excursion a there-and-back mirror (same/near nodes out and in), not a genuine loop?
+      pal = true;
+      half = (sz - hit) / 2;
+      for k in 1..(half + 1) {
+        l = out[hit + k];
+        r = out[sz - k];
+        ln = onm[hit + k] ?? "";
+        rn = onm[sz - k] ?? "";
+        dn = ln != "" && rn != "" && ln != rn;
+        if dn || !near_m(l, r, 30.0) { pal = false; }
       }
     }
+    if pal {
+      sz = hit + 1;                       // fold back — drop the dead-end / same-road retrace
+    } else {
+      if sz < len(out) { out[sz] = p; onm[sz] = pn; } else { out += [p]; onm += [pn]; }
+      sz = sz + 1;
+    }
   }
-  DijTree { dist: dist, prevn: prevn }
+  result: vector<GeoPoint> = [];
+  for i in 0..sz { result += [out[i]]; }
+  result
 }
 
-// The src→dst node path recorded in a tree; [] when dst is unreachable.
-fn tree_path(t: DijTree, src: integer, dst: integer) -> vector<integer> {
-  out: vector<integer> = [];
-  n = len(t.prevn);
-  if dst < 0 || dst >= n { return out; }
-  if dst != src && (t.prevn[dst] ?? -1) < 0 { return out; }
-  rev: vector<integer> = [];
-  cur = dst;
-  for _k in 0..n {
-    rev += [cur];
-    if cur == src { break; }
-    cur = t.prevn[cur] ?? -1;
-    if cur < 0 { break; }
+// Append a point to a route, skipping an exact-duplicate of the current last point.
+fn push_pt(out: &vector<GeoPoint>, p: GeoPoint) {
+  if out.len() > 0 {
+    last = out[out.len() - 1];
+    if last.lat == p.lat && last.lon == p.lon { return; }
   }
-  for r in 0..len(rev) { out += [rev[len(rev) - 1 - r]]; }   // src → dst order
+  out += [p];
+}
+
+// A matched route plus how many stretches had to be BRIDGED straight (no path within the corridor).
+// bridges > 0 means the corridor was too tight somewhere; the server widens and re-matches to reach 0.
+// pts = the matched polyline. bridges = how many gaps were bridged. bseg = a FLAT list of the bridge
+// segments' endpoints (a0,b0,a1,b1,…): each consecutive pair is a straight gap crossing (drawn along
+// the sketch, not a real way), which the client renders as a DOTTED line so it never looks like a road.
+pub struct MatchResult { pts: vector<GeoPoint>, bridges: integer, bseg: vector<GeoPoint> }
+
+// ===================================================================================================
+// THE map-matcher (DESIGN §5) — a two-pass scheme that treats the drawn points as NOISY SAMPLES of a
+// line rather than waypoints to hit. It needs no per-point lookahead, because it never tries to reach
+// a drawn point exactly (the sole cause of reach-a-point-and-return backtrack spurs).
+//
+//   Pass 1 (de-noise): for each interior point B with neighbours A,C, search the least-cost route
+//     A→C WITHOUT routing through B, deviation measured against the drawn A–B–C line (so a real
+//     excursion is kept — cutting the corner would deviate hugely). B' = the route node closest to B.
+//     Fat-finger noise in B is discarded: we snap B onto the natural line instead of straining to it.
+//   Pass 2 (assemble): route the actual path between consecutive cleaned anchors A'→B'→C'…, each
+//     stretch a plain single-segment local search. The anchors are already on sensible through-routes,
+//     so no stretch has to backtrack — except when an anchor sits just off the eventual quickest
+//     through-route, which leaves a small dead-end U-turn; a final spur-removal pass folds those (and
+//     same-road out-and-backs) out. Known trade-off: with points on a curve the free deviation band
+//     lets the route cut slightly INSIDE the arc (a shorter path) — acceptable, and easy for users to
+//     learn (space points a touch wider on a bend you want followed exactly).
+// ===================================================================================================
+
+// Per-edge cost pieces, precomputed ONCE per match (segment-independent — depend only on tags+profile):
+// base tag penalty, deviation weight, legality surcharge, forward/backward direction legality. This is
+// what makes the hot search loop cheap (array reads, not ~40 string compares per edge relaxation).
+struct EdgeCosts { pen: vector<float>, dw: vector<float>, sur: vector<float>, afwd: vector<boolean>, abwd: vector<boolean> }
+
+fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
+  ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
+  cyc = profile.starts_with("cycling");
+  for ei in 0..len(g.edges) {
+    e = g.edges[ei];
+    p = way_penalty(profile, e.hw, e.surface, e.tracktype);
+    if cyc && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
+    ec.pen += [p];
+    ec.dw += [dev_weight(profile, e)];
+    ec.sur += [edge_surcharge(profile, e)];
+    ec.afwd += [dir_allowed(profile, e.oneway, e.onewaybike, true)];
+    ec.abwd += [dir_allowed(profile, e.oneway, e.onewaybike, false)];
+  }
+  ec
+}
+
+// Least-cost path (node list src..target) to the CHEAPEST of `tgts`, deviation measured against the
+// polyline `win` (min distance to any of its segments) with a free band scaled to the window length.
+// [] if no target is reached within SEARCH_CAP. Allocates its own scratch (prototype clarity; the
+// production path uses generation-stamped shared arrays).
+// Generation-stamped search scratch, allocated ONCE per build/update and sized to the graph. A node's
+// dist/prev is valid only if seen[v]==gen, settled if done[v]==gen, a target if tgen[v]==gen. Bumping
+// `gen` before each search is an O(1) reset — so dijkstra_win costs O(nodes it settles), not O(graph).
+struct Scratch { dist: vector<float>, prev: vector<integer>, seen: vector<integer>, done: vector<integer>, tgen: vector<integer> }
+fn new_scratch(n: integer) -> Scratch {
+  d: vector<float> = []; p: vector<integer> = []; se: vector<integer> = []; dn: vector<integer> = []; tg: vector<integer> = [];
+  for _i in 0..n { d += [BIG]; p += [-1]; se += [0]; dn += [0]; tg += [0]; }   // 0 = "never touched" sentinel (gen starts at 1)
+  Scratch { dist: d, prev: p, seen: se, done: dn, tgen: tg }
+}
+
+fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPoint>, ec: EdgeCosts, sc: Scratch, gen: integer) -> vector<integer> {
+  n = len(g.nodes);
+  if src < 0 || src >= n || len(win) < 2 { return []; }
+  ntg = 0;
+  for k in 0..len(tgts) { t = tgts[k] ?? -1; if t >= 0 && t < n && (sc.tgen[t] ?? -1) != gen { sc.tgen[t] = gen; ntg = ntg + 1; } }
+  if ntg == 0 { return []; }
+  ws = len(win) - 1;
+  segkx: vector<float> = [];
+  for k in 0..ws { segkx += [111320.0 * cos(((win[k].lat + win[k + 1].lat) / 2.0) * PI / 180.0)]; }
+  free = LOOSE_FRAC * path_length_m(win);
+  h = Heap { cost: [], node: [], size: 0 };
+  sc.seen[src] = gen; sc.dist[src] = 0.0; sc.prev[src] = -1; heap_push(h, 0.0, src);
+  found = -1;
+  settled = 0;
+  while h.size > 0 {
+    pop = heap_pop(h);
+    u = pop.node;
+    if u < 0 || (sc.done[u] ?? -1) == gen { continue; }
+    sc.done[u] = gen;
+    settled = settled + 1;
+    if (sc.tgen[u] ?? -1) == gen { found = u; break; }   // first target popped = cheapest (Dijkstra)
+    if settled > SEARCH_CAP { break; }
+    du = sc.dist[u] ?? BIG;
+    s0 = g.adj_head[u] ?? 0;
+    s1 = g.adj_head[u + 1] ?? 0;
+    for k in s0..s1 {
+      v = g.adj_to[k] ?? -1;
+      ei = g.adj_edge[k] ?? -1;
+      if v < 0 || ei < 0 || (sc.done[v] ?? -1) == gen { continue; }
+      e = g.edges[ei];
+      fwd = e.a == u;
+      if fwd { if !(ec.afwd[ei] ?? true) { continue; } } else { if !(ec.abwd[ei] ?? true) { continue; } }
+      mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
+      mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
+      dev = BIG;
+      for w in 0..ws {
+        d = seg_dev_kx(mlat, mlon, win[w].lat, win[w].lon, win[w + 1].lat, win[w + 1].lon, segkx[w] ?? 111320.0);
+        if d < dev { dev = d; }
+      }
+      edev = dev - free;
+      if edev < 0.0 { edev = 0.0; }
+      f = 1.0 + (ec.dw[ei] ?? DEV_K) * edev + (ec.pen[ei] ?? 0.0);
+      if f < 0.1 { f = 0.1; }
+      nd = du + e.length * f + e.length * (ec.sur[ei] ?? 0.0);
+      dv = BIG;
+      if (sc.seen[v] ?? -1) == gen { dv = sc.dist[v] ?? BIG; }
+      if nd < dv { sc.seen[v] = gen; sc.dist[v] = nd; sc.prev[v] = u; heap_push(h, nd, v); }
+    }
+  }
+  if found < 0 { return []; }
+  rev: vector<integer> = [];
+  cur = found;
+  for _k in 0..n { rev += [cur]; if (sc.seen[cur] ?? -1) != gen { break; } pv = sc.prev[cur] ?? -1; if pv < 0 { break; } cur = pv; }
+  out: vector<integer> = [];
+  for r in 0..len(rev) { out += [rev[len(rev) - 1 - r]]; }
   out
 }
 
-// The matched detailed route — the §10.2 FULL matcher. Per tap, a CANDIDATE anchor set
-// (nearest_nodes — everything within tap accuracy); over the trace, a Viterbi: the route is the
-// globally least-cost combination of anchors (deviation-to-each-piece + activity + anchor
-// distance), so no tap is ever committed to an anchor except as part of the winning assignment —
-// a tap drawn exactly between two parallel ways resolves by ACTIVITY, not by float luck. One
-// candidate per tap degenerates to the old nearest-node piecewise matcher by construction. An
-// unreachable stage freezes the best prefix and restarts there (the piece gap survives, as before).
-pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
+// The node on `path` geometrically closest to `p` — the projection of a drawn point onto a route.
+fn closest_node_on_path(g: Graph, path: vector<integer>, p: GeoPoint) -> integer {
+  best = -1; bd = BIG;
+  for q in 0..len(path) {
+    nj = path[q] ?? -1;
+    if nj >= 0 {
+      d = geodesic_ll(p.lat, p.lon, g.nodes[nj].lat, g.nodes[nj].lon);
+      if d < bd { bd = d; best = nj; }
+    }
+  }
+  best
+}
+
+// Nearest single graph node to a point ([] → -1).
+fn nearest_node1(g: Graph, p: GeoPoint) -> integer {
+  c = nearest_nodes(g, p.lat, p.lon);
+  if len(c) == 0 { return -1; }
+  c[0] ?? -1
+}
+
+// --- Incremental de-noise: cache the decomposition so a single edit recomputes only its window ------
+// The matcher decomposes cleanly: a Pass-1 anchor depends only on its point's two neighbours, and a
+// Pass-2 sub-path only on its two anchors. So a MatchState caches the per-point anchors and per-stretch
+// sub-paths; on a re-match we diff the trace, recompute ONLY the changed span (± one neighbour on each
+// side), and reuse the rest verbatim. The stitched result is IDENTICAL to a full rematch — incremental
+// is a pure speed-up, not an approximation (proven by test_incremental_matches_full).
+struct SubPath { pts: vector<GeoPoint>, bridged: boolean }
+pub struct MatchState {
+  trace: vector<GeoPoint>,    // raw drawn trace this state was built for (for diffing the next edit)
+  ctrace: vector<GeoPoint>,   // the trace actually matched (a loop has the start appended)
+  profile: text,
+  looped: boolean,
+  anchors: vector<integer>,   // one node index per ctrace point (Pass 1)
+  subs: vector<SubPath>,      // one matched sub-path per stretch (Pass 2); len = len(ctrace) - 1
+  ec: EdgeCosts,              // per-edge cost pieces — valid while the graph + profile are unchanged
+  built: boolean,
+}
+
+// Pass-1 anchor for ctrace index i: an endpoint snaps to its nearest node; an interior point snaps onto
+// the route PAST it (A→C, with A/C its neighbours) at the node closest to the drawn point.
+fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer) -> integer {
+  m = len(ct);
+  if i <= 0 || i >= m - 1 { return nearest_node1(g, ct[i]); }
+  a = nearest_node1(g, ct[i - 1]);
+  ctgt = nearest_nodes(g, ct[i + 1].lat, ct[i + 1].lon);
+  win: vector<GeoPoint> = [ct[i - 1], ct[i], ct[i + 1]];
+  path = dijkstra_win(g, a, ctgt, win, ec, sc, gen);
+  bp = closest_node_on_path(g, path, ct[i]);
+  if bp < 0 { bp = nearest_node1(g, ct[i]); }
+  bp
+}
+
+// Pass-2 sub-path for stretch i (anchors[i] → anchors[i+1]), deviation to the CLEANED anchor line (the
+// anchors already sit on the natural line, so hugging the raw drawn point would only drag off and back).
+// When it can't connect within the corridor, a straight bridge over the DRAWN points (rendered dotted).
+fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer) -> SubPath {
+  ai = anchors[i] ?? -1;
+  aj = anchors[i + 1] ?? -1;
+  pts: vector<GeoPoint> = [];
+  if ai < 0 || aj < 0 || ai == aj {
+    if ai >= 0 { pts += [GeoPoint { lat: g.nodes[ai].lat, lon: g.nodes[ai].lon }]; }
+    return SubPath { pts: pts, bridged: false };
+  }
+  win: vector<GeoPoint> = [GeoPoint { lat: g.nodes[ai].lat, lon: g.nodes[ai].lon }, GeoPoint { lat: g.nodes[aj].lat, lon: g.nodes[aj].lon }];
+  path = dijkstra_win(g, ai, [aj], win, ec, sc, gen);
+  if len(path) >= 2 {
+    for q in 0..len(path) { nj = path[q] ?? -1; if nj >= 0 { pts += [GeoPoint { lat: g.nodes[nj].lat, lon: g.nodes[nj].lon }]; } }
+    return SubPath { pts: pts, bridged: false };
+  }
+  SubPath { pts: [ct[i], ct[i + 1]], bridged: true }
+}
+
+// Stitch the cached sub-paths into the final route: concatenate (deduping shared joints), collect the
+// bridge segments, then fold dead-end U-turns and same-road out-and-backs (a de-noised anchor can sit
+// just off the eventual quickest through-route, leaving a small U-turn that de-noising alone can't).
+fn stitch(g: Graph, st: MatchState) -> MatchResult {
   detailed: vector<GeoPoint> = [];
-  if len(g.nodes) == 0 { return detailed; }
-  if len(trace) < 2 { return detailed; }
-
-  cands = nearest_nodes(g, trace[0].lat, trace[0].lon);
-  if len(cands) == 0 { return detailed; }
-  costs: vector<float> = [];
-  paths: vector<NodePath> = [];
-  for c0 in 0..len(cands) {
-    a0 = cands[c0] ?? 0;
-    costs += [EMIT_K * geodesic_ll(trace[0].lat, trace[0].lon, g.nodes[a0].lat, g.nodes[a0].lon)];
-    paths += [NodePath { nodes: [a0] }];
+  bseg: vector<GeoPoint> = [];
+  bridges = 0;
+  for i in 0..len(st.subs) {
+    sub = st.subs[i];
+    for q in 0..len(sub.pts) { push_pt(detailed, sub.pts[q]); }
+    if sub.bridged && len(sub.pts) >= 2 { bridges = bridges + 1; bseg += [sub.pts[0]]; bseg += [sub.pts[len(sub.pts) - 1]]; }
   }
-
-  for i in 1..len(trace) {
-    seg: vector<GeoPoint> = [trace[i - 1], trace[i]];
-    nxt = nearest_nodes(g, trace[i].lat, trace[i].lon);
-    if len(nxt) == 0 { continue; }
-    ncosts: vector<float> = [];
-    nfrom: vector<integer> = [];
-    npiece: vector<NodePath> = [];
-    for x0 in 0..len(nxt) {
-      ncosts += [BIG];
-      nfrom += [-1];
-      npiece += [NodePath { nodes: [] }];
-    }
-    for c in 0..len(cands) {
-      tree = dijkstra_tree(g, cands[c] ?? 0, seg, profile);
-      for x in 0..len(nxt) {
-        ax = nxt[x] ?? 0;
-        td = tree.dist[ax] ?? BIG;
-        if td >= BIG { continue; }
-        total = (costs[c] ?? BIG) + td
-              + EMIT_K * geodesic_ll(trace[i].lat, trace[i].lon, g.nodes[ax].lat, g.nodes[ax].lon);
-        if total < (ncosts[x] ?? BIG) {
-          ncosts[x] = total;
-          nfrom[x] = c;
-          npiece[x] = NodePath { nodes: tree_path(tree, cands[c] ?? 0, ax) };
-        }
-      }
-    }
-
-    reachable = false;
-    for x1 in 0..len(nxt) { if (ncosts[x1] ?? BIG) < BIG { reachable = true; } }
-    if !reachable {
-      // Gap: no candidate pair connects. Freeze the best prefix and restart the chain at this
-      // tap — matching v1's per-piece gap semantics (the route resumes at the next anchor).
-      bi = 0;
-      for b in 0..len(costs) { if (costs[b] ?? BIG) < (costs[bi] ?? BIG) { bi = b; } }
-      frozen = paths[bi];
-      costs = [];
-      paths = [];
-      for x2 in 0..len(nxt) {
-        a2 = nxt[x2] ?? 0;
-        costs += [EMIT_K * geodesic_ll(trace[i].lat, trace[i].lon, g.nodes[a2].lat, g.nodes[a2].lon)];
-        pn: vector<integer> = [];
-        for q0 in 0..len(frozen.nodes) { pn += [frozen.nodes[q0] ?? -1]; }
-        pn += [a2];
-        paths += [NodePath { nodes: pn }];
-      }
-      cands = nxt;
-      continue;
-    }
-
-    // Extend: new path = winning predecessor's path + the piece (minus its duplicated src node).
-    npaths: vector<NodePath> = [];
-    for x3 in 0..len(nxt) {
-      f = nfrom[x3] ?? -1;
-      pn2: vector<integer> = [];
-      if f >= 0 {
-        base = paths[f];
-        for q1 in 0..len(base.nodes) { pn2 += [base.nodes[q1] ?? -1]; }
-        piece = npiece[x3];
-        for q2 in 1..len(piece.nodes) { pn2 += [piece.nodes[q2] ?? -1]; }
-      }
-      npaths += [NodePath { nodes: pn2 }];
-    }
-    cands = nxt;
-    costs = ncosts;
-    paths = npaths;
+  dname: vector<text> = [];
+  pnode = -1;
+  for i in 0..len(detailed) {
+    nd = node_at(g, detailed[i].lat, detailed[i].lon);
+    dname += [edge_name_between(g, pnode, nd)];
+    pnode = nd;
   }
-
-  // The winning assignment → GeoPoints (skipping consecutive coordinate duplicates, as before).
-  wi = 0;
-  for w in 0..len(costs) { if (costs[w] ?? BIG) < (costs[wi] ?? BIG) { wi = w; } }
-  win = paths[wi];
-  if len(win.nodes) < 2 { return detailed; }   // nothing routable — [] like the old matcher
-  for j in 0..len(win.nodes) {
-    nj = win.nodes[j] ?? -1;
-    if nj < 0 { continue; }
-    p = GeoPoint { lat: g.nodes[nj].lat, lon: g.nodes[nj].lon };
-    if len(detailed) > 0 {
-      last = detailed[len(detailed) - 1];
-      if last.lat == p.lat && last.lon == p.lon { continue; }
-    }
-    detailed += [p];
-  }
-  detailed
+  detailed = remove_spurs(detailed, dname);
+  if len(detailed) < 2 { return MatchResult { pts: detailed, bridges: 1, bseg: bseg }; }
+  MatchResult { pts: detailed, bridges: bridges, bseg: bseg }
 }
 
-// --- Round-trip inference (PLAN step 9, DESIGN §1/§5) ------------------------------------------
-// When start and finish sit near each other *relative to the total length*, the DETAILED route is a
-// round trip — close it into a circuit. Purely geometric (no button): drag the finish away and the
-// ratio grows and it un-closes; bring it back and it closes again. The ROUGH sketch is never closed.
-
-// True iff start/finish are within `ratio` of the total length of each other (a small ratio = a loop).
-pub fn is_round_trip(start: GeoPoint, finish: GeoPoint, total_m: float, ratio: float) -> boolean {
-  total_m > 0.0 && geodesic_m(start, finish) / total_m < ratio
+// Build a fresh MatchState (a full match). `close` closes a loop (is_loop → append the start).
+fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean) -> MatchState {
+  looped = close && is_loop(trace);
+  ct: vector<GeoPoint> = [];
+  for k in 0..len(trace) { ct += [trace[k]]; }
+  if looped { ct += [trace[0]]; }
+  ec = precompute_edges(g, profile);
+  sc = new_scratch(len(g.nodes));
+  gen = 0;
+  m = len(ct);
+  anchors: vector<integer> = [];
+  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; }
+  subs: vector<SubPath> = [];
+  if m >= 2 { for i in 0..(m - 1) { gen = gen + 1; subs += [assemble_stretch(g, ct, anchors, i, ec, sc, gen)]; } }
+  tr: vector<GeoPoint> = [];
+  for k in 0..len(trace) { tr += [trace[k]]; }
+  MatchState { trace: tr, ctrace: ct, profile: profile, looped: looped, anchors: anchors, subs: subs, ec: ec, built: true }
 }
 
-// The matched route, closed into a circuit when it reads as a round trip. v1 closes with a straight
-// segment back to the matched start (the gap is small by definition of the ratio test).
-// LIMITATION: the v1 src→dst matcher shortcuts loops (Dijkstra takes the short start→finish path,
-// not the way around), so a *visually faithful* loop needs the deferred via-point/HMM matcher
-// (§10.2). The inference + closure below are correct and testable regardless.
-pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text, ratio: float) -> vector<GeoPoint> {
-  detailed = match_route(g, trace, profile);
-  if len(detailed) >= 2 {
-    if is_round_trip(trace[0], trace[len(trace) - 1], path_length_m(detailed), ratio) {
-      last = detailed[len(detailed) - 1];
-      if last.lat != detailed[0].lat || last.lon != detailed[0].lon {
-        detailed += [detailed[0]];   // close the circuit (unless it already returns to start)
-      }
+fn point_eq(a: GeoPoint, b: GeoPoint) -> boolean { a.lat == b.lat && a.lon == b.lon }
+
+// Count of identical leading points shared by two traces.
+fn common_prefix(a: vector<GeoPoint>, b: vector<GeoPoint>) -> integer {
+  n = len(a); if len(b) < n { n = len(b); }
+  i = 0;
+  while i < n && point_eq(a[i], b[i]) { i = i + 1; }
+  i
+}
+// Count of identical trailing points shared by two traces, not overlapping the prefix `p`.
+fn common_suffix(a: vector<GeoPoint>, b: vector<GeoPoint>, p: integer) -> integer {
+  la = len(a); lb = len(b);
+  maxs = la - p; if lb - p < maxs { maxs = lb - p; }
+  i = 0;
+  while i < maxs && point_eq(a[la - 1 - i], b[lb - 1 - i]) { i = i + 1; }
+  i
+}
+
+// Incrementally update a MatchState to a new trace on the SAME graph: recompute only the changed span
+// (± one neighbour) and reuse the rest. Falls back to a full build when reuse is unsafe (loop-ness
+// toggled). The result equals build_state on the new trace exactly — purely a speed-up.
+fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: boolean) -> MatchState {
+  looped = close && is_loop(trace);
+  if !prev.built || looped != prev.looped { return build_state(g, trace, prev.profile, close); }
+  ct: vector<GeoPoint> = [];
+  for k in 0..len(trace) { ct += [trace[k]]; }
+  if looped { ct += [trace[0]]; }
+  clenNew = len(ct);
+  clenOld = len(prev.ctrace);
+  if clenNew < 2 { return build_state(g, trace, prev.profile, close); }
+  p = common_prefix(prev.ctrace, ct);
+  s = common_suffix(prev.ctrace, ct, p);
+  delta = clenOld - clenNew;    // old index = new index + delta, within the shared suffix
+  // Anchors to recompute: the changed points plus one neighbour each side (an anchor sees its neighbours).
+  lo = p - 1; if lo < 0 { lo = 0; }
+  hi = clenNew - s; if hi > clenNew - 1 { hi = clenNew - 1; }
+  sc = new_scratch(len(g.nodes));
+  gen = 0;
+  anchors: vector<integer> = [];
+  for i in 0..clenNew {
+    if i >= lo && i <= hi {
+      gen = gen + 1;
+      anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen)];
+    } else {
+      oldIdx = i;
+      if i >= clenNew - s { oldIdx = i + delta; }
+      anchors += [prev.anchors[oldIdx] ?? -1];
     }
   }
-  detailed
+  // Stretches to recompute: any touching a recomputed anchor (stretch j uses anchors j and j+1).
+  slo = lo - 1; if slo < 0 { slo = 0; }
+  shi = hi; if shi > clenNew - 2 { shi = clenNew - 2; }
+  subs: vector<SubPath> = [];
+  for j in 0..(clenNew - 1) {
+    if j >= slo && j <= shi {
+      gen = gen + 1;
+      subs += [assemble_stretch(g, ct, anchors, j, prev.ec, sc, gen)];
+    } else {
+      oldJ = j;
+      if j >= clenNew - s { oldJ = j + delta; }
+      subs += [prev.subs[oldJ] ?? SubPath { pts: [], bridged: false }];
+    }
+  }
+  tr: vector<GeoPoint> = [];
+  for k in 0..len(trace) { tr += [trace[k]]; }
+  MatchState { trace: tr, ctrace: ct, profile: prev.profile, looped: looped, anchors: anchors, subs: subs, ec: prev.ec, built: true }
+}
+
+// --- Public incremental API (used by the server to make edits cheap) ---------------------------------
+// An empty state to seed the server cache; build_state/update_state fill it in.
+pub fn match_state_new() -> MatchState {
+  MatchState { trace: [], ctrace: [], profile: "", looped: false, anchors: [], subs: [],
+               ec: EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] }, built: false }
+}
+// Match `trace` (closed if it reads as a loop), reusing `prev`'s cached decomposition when the graph
+// and profile are unchanged — recomputing only the edited window. Pass a fresh state (match_state_new,
+// or one built on a DIFFERENT graph) to force a full build.
+pub fn match_incremental(prev: MatchState, g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchState {
+  if len(g.nodes) == 0 || len(trace) < 2 { return match_state_new(); }
+  if !prev.built || prev.profile != profile { return build_state(g, trace, profile, true); }
+  update_state(prev, g, trace, true)
+}
+// The matched route for a state (stitch the cached sub-paths).
+pub fn match_state_result(g: Graph, st: MatchState) -> MatchResult {
+  if !st.built || len(st.subs) == 0 { return MatchResult { pts: [], bridges: 0, bseg: [] }; }
+  stitch(g, st)
+}
+
+// The core matcher (open — no loop closing), used by match_route.
+fn match_core(g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchResult {
+  if len(g.nodes) == 0 || len(trace) < 2 { return MatchResult { pts: [], bridges: 0, bseg: [] }; }
+  stitch(g, build_state(g, trace, profile, false))
+}
+
+pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
+  match_core(g, trace, profile).pts
+}
+
+// --- Loop inference (PLAN step 9, DESIGN §1/§5) ------------------------------------------------
+// A drawn line is a LOOP when its start and finish are closer together than the AVERAGE gap between
+// consecutive drawn points — the endpoints are "within one step" of each other, so the sketch closes
+// on itself rather than ending somewhere else. Self-scaling: no ratio to tune, no absolute-metre
+// threshold, and it tracks how coarsely the user drew. Purely geometric (no button): drag the finish
+// a step or more away and it un-closes; bring it back and it closes again. The ROUGH sketch is never
+// closed — only the matched route.
+pub fn is_loop(trace: vector<GeoPoint>) -> boolean {
+  n = len(trace);
+  if n < 3 { return false; }
+  avg = path_length_m(trace) / ((n - 1) as float);
+  avg > 0.0 && geodesic_m(trace[0], trace[n - 1]) < avg
+}
+
+// The matched route (+ bridge count), closed when the sketch reads as a loop. A loop appends the START
+// to the trace BEFORE matching, so the closing stretch (finish→start) is map-matched like any other —
+// negotiated onto real roads, and the finish becomes an ordinary interior joint (no straining to the
+// exact finish marker, no straight jump back to the start).
+pub fn match_closed_ex(g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchResult {
+  if len(g.nodes) == 0 || len(trace) < 2 { return MatchResult { pts: [], bridges: 0, bseg: [] }; }
+  stitch(g, build_state(g, trace, profile, true))   // build_state handles the loop close internally
+}
+
+pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
+  match_closed_ex(g, trace, profile).pts
+}
+
+// --- Diagnostics: the per-edge cost curve of a matched route (validate the cost model) ----------
+// Re-walks the matched polyline and, per edge, prints its tags and the model's per-metre cost:
+//   1 + DEV_K·deviation-from-the-line + way_penalty  (+ ILLEGAL_PER_M when legality-excluded).
+// Reveals at a glance any edge that SHOULD be expensive (bus lane, station passage, alley) but is
+// cheap — i.e. a missing cost class. Not used by the server; a tool for validating the matcher.
+fn dbg_node_at(g: Graph, lat: float, lon: float) -> integer {
+  hit = g.index["{lat},{lon}"];
+  if hit != null { return hit.idx; }
+  -1
+}
+fn dbg_find_edge(g: Graph, a: integer, b: integer) -> integer {
+  for ei in 0..len(g.edges) {
+    e = g.edges[ei];
+    if (e.a == a && e.b == b) || (e.a == b && e.b == a) { return ei; }
+  }
+  -1
+}
+fn dash(s: text) -> text { if s == "" { "-" } else { s } }
+pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> text {
+  route = match_route(g, trace, profile);
+  out = "  d0_m   len   dev_m   pen    tier    cost/m   highway / service / access / oneway / bicycle\n";
+  d0 = 0.0;
+  total = 0.0;
+  for i in 1..len(route) {
+    a = dbg_node_at(g, route[i - 1].lat, route[i - 1].lon);
+    b = dbg_node_at(g, route[i].lat, route[i].lon);
+    seglen = geodesic_m(route[i - 1], route[i]);
+    ei = -1;
+    if a >= 0 && b >= 0 { ei = dbg_find_edge(g, a, b); }
+    if ei >= 0 {
+      e = g.edges[ei];
+      mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
+      mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
+      dev = point_trace_m(mlat, mlon, trace);
+      pen = way_penalty(profile, e.hw, e.surface, e.tracktype);
+      if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
+      sur = edge_surcharge(profile, e);
+      cpm = 1.0 + dev_weight(profile, e) * dev + pen;
+      if cpm < 0.1 { cpm = 0.1; }
+      cpm = cpm + sur;
+      total = total + cpm * e.length;
+      tier = "-   ";
+      if sur >= ILLEGAL_PER_M { tier = "ILL "; } else if sur > 0.0 { tier = "walk"; }
+      out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {e.hw} / {dash(e.svc)} / {dash(e.access)} / {dash(e.oneway)} / {dash(e.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
+    } else {
+      out = out + "{d0:6.0}  {seglen:4.0}       -      -    -          -   (jump — no direct edge)\n";
+    }
+    d0 = d0 + seglen;
+  }
+  out = out + "TOTAL model-cost {total:1.0} over {d0:1.0} m matched\n";
+  out
 }
 
 // --- GPX export (PLAN step 10, DESIGN §8) ------------------------------------------------------

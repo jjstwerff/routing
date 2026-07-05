@@ -227,7 +227,11 @@
     }
 
     _onLineClick(e) {
-      // Tap a segment → insert a point there, between that segment's endpoints.
+      // Tap a segment → insert a point there, between that segment's endpoints. The click also bubbles
+      // up to the map handler, so suppress that trailing map click — otherwise the same tap would ALSO
+      // append/extend the route. (Leaflet fires the layer click before the map click.)
+      this._suppressClick = true;
+      if (L.DomEvent && L.DomEvent.stopPropagation) L.DomEvent.stopPropagation(e);
       const seg = this._nearestSegment(e.latlng);
       this._insertAt(seg + 1, e.latlng);
     }
