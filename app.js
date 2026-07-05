@@ -52,14 +52,35 @@ const detailedLine = L.polyline([], {
   lineCap: "round",
   lineJoin: "round",
 }).addTo(map);
+// Bridge overlay: the straight gap-crossings (where the corridor couldn't connect — usually a
+// mis-placed point) drawn as a DOTTED line ON TOP of the solid route, so they read as "gap / fix your
+// point" rather than a real road. Added after detailedLine so it paints above it.
+const bridgeLine = L.polyline([], {
+  pane: "detailed",
+  interactive: false,
+  color: "#e0562d",
+  weight: 4,
+  opacity: 0.95,
+  dashArray: "1 8",   // round dots
+  lineCap: "round",
+  lineJoin: "round",
+}).addTo(map);
 routing.detailed = {
-  // points: [{lat,lon}], lengthM: matched geodesic length. Draws the line + shows the length.
-  set(points, lengthM) {
+  // points: [{lat,lon}], lengthM: matched geodesic length, bridges: flat [a0,b0,a1,b1,…] gap-segment
+  // endpoints. Draws the solid route, overlays the bridges dotted, and shows the length.
+  set(points, lengthM, bridges) {
     detailedLine.setLatLngs(points.map((p) => [p.lat, p.lon]));
+    const segs = [];
+    if (bridges) {
+      for (let i = 0; i + 1 < bridges.length; i += 2) {
+        segs.push([[bridges[i].lat, bridges[i].lon], [bridges[i + 1].lat, bridges[i + 1].lon]]);
+      }
+    }
+    bridgeLine.setLatLngs(segs);
     const el = document.getElementById("server-length");
     if (el) el.textContent = points.length > 0 ? "matched " + routing.geo.formatDistance(lengthM) : "matched —";
   },
-  clear() { detailedLine.setLatLngs([]); },
+  clear() { detailedLine.setLatLngs([]); bridgeLine.setLatLngs([]); },
 };
 
 // Step 3: instant rough length (DESIGN.md §1) — a WGS84-geodesic sum, recomputed on every edit and

@@ -105,7 +105,7 @@ install: build
 	@sed -e 's#@APPDIR@#$(APPDIR)#g' -e 's#@PORT@#$(PORT)#g' tools/routing-stop.in > "$(BINDIR)/routing-stop"
 	@chmod 755 "$(BINDIR)/routing" "$(BINDIR)/routing-stop"
 	@echo "==> smoke test (installed binary serves installed client)…"
-	@pids="$$(lsof -ti tcp:$(PORT) 2>/dev/null)"; [ -n "$$pids" ] && kill $$pids 2>/dev/null || true; \
+	@pids="$$(lsof -ti tcp:$(PORT) -sTCP:LISTEN 2>/dev/null)"; [ -n "$$pids" ] && kill $$pids 2>/dev/null || true; \
 	 cd "$(APPDIR)" && ( nohup ./routing-server-bin >routing.log 2>&1 & echo $$! >routing.pid ); \
 	 ok=0; for _ in $$(seq 1 40); do \
 	   curl -fsS -m3 "$(URL)" 2>/dev/null | grep -q "<!DOCTYPE html>" && { ok=1; break; }; sleep 0.5; done; \
@@ -145,7 +145,7 @@ stop:
 	@pid="$$(cat scratch/routing.pid 2>/dev/null || true)"; \
 	 if [ -n "$$pid" ] && kill "$$pid" 2>/dev/null; then echo "routing: stopped (pid $$pid)"; fi; \
 	 rm -f scratch/routing.pid; \
-	 pids="$$(lsof -ti tcp:$(PORT) 2>/dev/null)"; \
+	 pids="$$(lsof -ti tcp:$(PORT) -sTCP:LISTEN 2>/dev/null)"; \
 	 if [ -n "$$pids" ] && kill $$pids 2>/dev/null; then echo "routing: freed port $(PORT)"; fi; \
 	 true
 

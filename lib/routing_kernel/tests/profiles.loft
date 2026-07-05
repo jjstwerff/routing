@@ -12,11 +12,11 @@ fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
 // between them (equal deviation to each). The activity profile — nothing else — decides which is
 // taken. Road dips south (lat 52.0); footpath runs north (lat 52.0002); both meet at 52.0001.
 fn test_profile_picks_footpath_vs_road() {
-  road = Way { highway: "residential", surface: "asphalt", tracktype: "",
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 },
               GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.003 },
               GeoPoint { lat: 52.0001, lon: 5.004 } ] };
-  foot = Way { highway: "path", surface: "ground", tracktype: "",
+  foot = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.001 },
               GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0002, lon: 5.003 },
               GeoPoint { lat: 52.0001, lon: 5.004 } ] };
@@ -34,6 +34,138 @@ fn test_profile_picks_footpath_vs_road() {
   assert(!has_lat(onroad, 52.0002), "Cycling·Road avoids the footpath");
 }
 
+// Legality last-resort: a bike may not ride a footway/bus lane even when it's the direct, on-trace
+// way — its huge cost surcharge steers the route off it whenever a legal way exists. A flat footway
+// (lat 52.0) and a road that bulges north (lat 52.001) share endpoints; the trace runs straight
+// along the footway. Walking hugs the footway; Cycling·Road is pushed onto the legal road bulge.
+fn test_cycling_excludes_footway() {
+  footway = Way { highway: "footway", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 },
+              GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 },
+              GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([footway, road]);
+  trace = [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ];
+
+  walk = match_route(g, trace, "walking_paved");
+  assert(!has_lat(walk, 52.001), "Walk hugs the flat footway, not the road bulge");
+
+  ride = match_route(g, trace, "cycling_road");
+  assert(has_lat(ride, 52.001), "Cycling is forced onto the road — the footway is excluded");
+}
+
+// The override: an explicit `bicycle=designated` re-permits an otherwise foot-only way, so the same
+// footway is now legal and (being straight on the trace) is taken back over the road bulge.
+fn test_bicycle_tag_re_permits() {
+  footway = Way { highway: "footway", surface: "asphalt", tracktype: "", bicycle: "designated", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 },
+              GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 },
+              GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([footway, road]);
+  trace = [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ];
+
+  ride = match_route(g, trace, "cycling_road");
+  assert(!has_lat(ride, 52.001), "bicycle=designated re-permits the footway; the road bulge is avoided");
+}
+
+// One-way enforcement: a one-way cycleway may be ridden only in its digitised sense. A forward
+// trace rides it; a reverse trace must divert to the parallel two-way road (no wrong-way riding).
+fn test_oneway_blocks_reverse() {
+  cycleway = Way { highway: "cycleway", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "yes", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([cycleway, road]);
+
+  fwd = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "cycling_road");
+  assert(!has_lat(fwd, 52.001), "Forward: rides the one-way cycleway, not the road bulge");
+
+  rev = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0035 }, GeoPoint { lat: 52.0, lon: 5.0005 } ], "cycling_road");
+  assert(has_lat(rev, 52.001), "Reverse: diverts to the two-way road — no wrong-way riding");
+}
+
+// A bare (unsigned) `highway=path` is not legal to ride in NL — cycling avoids it when a road exists.
+fn test_cycling_avoids_bare_path() {
+  path = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([path, road]);
+  ride = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "cycling_road");
+  assert(has_lat(ride, 52.001), "Cycling avoids a bare unsigned path, taking the road");
+}
+
+// A service alley behind houses is not a through-route — cycling avoids it even when it's the
+// straight, shortest way (it's a legality last-resort, not a bounded nudge). Here the alley is dead
+// on the trace and the only legal alternative (the street) bulges well off it, yet the street wins.
+fn test_cycling_avoids_service_alley() {
+  alley = Way { highway: "service", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "alley", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([alley, road]);
+  ride = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "cycling_road");
+  assert(has_lat(ride, 52.001), "Cycling takes the street, not the marginally-shorter service alley");
+  assert(way_penalty("cycling_road", "service", "asphalt", "") > 0.0, "service is penalized for cycling");
+}
+
+// Tier ordering: an (e-)bike can't go up steps (ILLEGAL) but CAN be wheeled along a footway
+// (DISMOUNT) — so given only those two between the endpoints, cycling takes the footway, not the
+// stairs, even though the steps are dead on the trace and the footway bulges off it.
+fn test_cycling_prefers_footway_over_steps() {
+  steps = Way { highway: "steps", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  footway = Way { highway: "footway", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([steps, footway]);
+  ride = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "cycling_road");
+  assert(has_lat(ride, 52.001), "Wheels along the footway (dismount), not up the steps (illegal)");
+}
+
+// Walking excludes a busway (no pedestrians on a guided busway) — it diverts to the legal road.
+fn test_walking_avoids_busway() {
+  busway = Way { highway: "busway", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([busway, road]);
+  walk = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "walking_paved");
+  assert(has_lat(walk, 52.001), "Walk diverts to the road — no walking on the busway");
+}
+
+// Cycle-infrastructure attraction: a cyclist will go out of the way for a cycle route. A plain
+// street bulges a little off the line; a street WITH a cycle lane bulges even further — yet cycling
+// takes the cycle-laned one, because cycle infrastructure counts its deviation at a discount.
+fn test_cycling_prefers_cycle_lane_off_line() {
+  plain = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  laned = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "lane", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0003, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([plain, laned]);
+  ride = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "cycling_road");
+  assert(has_lat(ride, 52.0003), "Takes the cycle-laned street even though it's further from the line");
+  assert(!has_lat(ride, 52.0002), "Not the closer plain street");
+}
+
+// No backtracking to reach a point: a point is drawn up a dead-end spur off a straight through-road.
+// The forward-progress matcher must NOT detour up the spur and back — it stays on the through-road
+// (going backward along the line is penalised), filling the cheapest route near the line instead.
+fn test_no_backtrack_to_offline_point() {
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  spur = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0008, lon: 5.002 } ] };
+  g = build_graph([road, spur]);
+  // The middle point juts up to the dead-end spur tip; start/finish are on the road.
+  trace = [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0008, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.0035 } ];
+  route = match_route(g, trace, "cycling_road");
+  assert(!has_lat(route, 52.0008), "does not detour up the dead-end spur to the drawn point and back");
+  assert(has_lat(route, 52.0), "stays on the through-road");
+}
+
 // Sanity on the penalty ordering (prefers < 0 < penalizes), and the clamp.
 fn test_penalty_signs() {
   assert(way_penalty("running_trail", "path", "ground", "") < 0.0, "trail prefers unpaved path");
@@ -41,4 +173,7 @@ fn test_penalty_signs() {
   assert(way_penalty("cycling_road", "cycleway", "asphalt", "") < 0.0, "road prefers a cycleway");
   assert(way_penalty("cycling_road", "path", "ground", "") > 0.0, "road penalizes an unpaved path");
   assert(way_penalty("running_trail", "primary", "asphalt", "") <= 2.0, "penalty is clamped");
+  // Quiet-roads preference: a big through-road costs more than a quiet street for cycling.
+  assert(way_penalty("cycling_road", "secondary", "asphalt", "") > 0.0, "road ride penalizes a big secondary road");
+  assert(way_penalty("cycling_road", "residential", "asphalt", "") < way_penalty("cycling_road", "secondary", "asphalt", ""), "prefers a residential street over a secondary road");
 }

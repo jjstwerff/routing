@@ -1,39 +1,89 @@
 // Tests for round-trip inference (PLAN step 9, DESIGN §1/§5). Synthetic, deterministic.
 //   loft --tests lib/routing_kernel/tests/roundtrip.loft --lib lib
-use routing_kernel::(GeoPoint, Way, build_graph, match_route_closed, is_round_trip);
+use routing_kernel::(GeoPoint, Way, build_graph, match_route_closed, is_loop, geodesic_m);
 
-// The geometric decision: start/finish near each other *relative to total length* ⇒ round trip.
-fn test_is_round_trip() {
-  a = GeoPoint { lat: 52.0, lon: 5.0 };
-  near = GeoPoint { lat: 52.0, lon: 5.0001 };  // ~7 m
-  far = GeoPoint { lat: 52.0, lon: 5.01 };      // ~680 m
-  assert(is_round_trip(a, near, 1000.0, 0.25), "near endpoints over a long route → round trip");
-  assert(!is_round_trip(a, far, 1000.0, 0.25), "far finish → not a round trip");
-  assert(!is_round_trip(a, near, 0.0, 0.25), "zero-length route → not a round trip");
+// The geometric decision: start/finish closer than the AVERAGE gap between drawn points ⇒ a loop.
+// Self-scaling — no ratio, no absolute-metre threshold; it tracks how coarsely the user drew.
+fn test_is_loop() {
+  // A straight open line: endpoints are 3 average steps apart → NOT a loop.
+  straight = [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 },
+               GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.003 } ];
+  assert(!is_loop(straight), "straight open line is not a loop");
+  // A square drawn back to near the start: the closing gap (~33 m) is well under the average side
+  // (~170 m), so it reads as a loop.
+  square = [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.002 },
+             GeoPoint { lat: 52.002, lon: 5.002 }, GeoPoint { lat: 52.002, lon: 5.000 },
+             GeoPoint { lat: 52.0003, lon: 5.0000 } ];
+  assert(is_loop(square), "square returning within one step of the start is a loop");
+  // Fewer than 3 points can't be a loop.
+  assert(!is_loop([ GeoPoint { lat: 52.0, lon: 5.0 }, GeoPoint { lat: 52.0, lon: 5.0001 } ]), "two points is not a loop");
 }
 
-// The closure toggles on the ratio: the SAME route is left open below threshold and closed above it
-// (detailed[0] appended so the polyline returns to the matched start).
+// Closure toggles on WHERE THE FINISH LANDS (not a tunable ratio). On a LOOP graph (two parallel
+// streets sharing endpoints), leaving the finish out at the far corner reads as open; bringing it back
+// near the start reads as a loop and returns via the DIFFERENT (bottom) street — a real loop, not a
+// same-road retrace (which would fold as a spur). Same first points; only the finish moves.
 fn test_closure_toggles() {
-  street = Way { highway: "residential", surface: "asphalt", tracktype: "",
-    coords: [
-      GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 },
-      GeoPoint { lat: 52.0, lon: 5.003 }, GeoPoint { lat: 52.0, lon: 5.004 },
-    ] };
-  g = build_graph([street]);
-  off = 0.000135;
-  trace = [
-    GeoPoint { lat: 52.0 + off, lon: 5.0001 },
-    GeoPoint { lat: 52.0 + off, lon: 5.0020 },
-    GeoPoint { lat: 52.0 + off, lon: 5.0039 },
+  top = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.001, lon: 5.000 }, GeoPoint { lat: 52.001, lon: 5.002 }, GeoPoint { lat: 52.001, lon: 5.004 } ] };
+  bot = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.002 }, GeoPoint { lat: 52.000, lon: 5.004 } ] };
+  ends = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.001, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.004 }, GeoPoint { lat: 52.001, lon: 5.004 } ] };
+  g = build_graph([top, bot, ends]);
+
+  // Finish left out at the far corner (bottom-right): endpoints are more than one average step apart →
+  // read as OPEN, does not fold back to the start.
+  open_trace = [
+    GeoPoint { lat: 52.001, lon: 5.0005 }, GeoPoint { lat: 52.001, lon: 5.0035 },
+    GeoPoint { lat: 52.000, lon: 5.0035 },
   ];
+  open = match_route_closed(g, open_trace, "walking_paved");
+  olast = len(open) - 1;
+  assert(len(open) >= 2, "open route non-empty ({len(open)} pts)");
+  assert(open[0].lat != open[olast].lat || open[0].lon != open[olast].lon, "open route does not return to start");
 
-  // This open route has gap/total ~0.95: below 0.05 it stays open, above 2.0 it closes.
-  open = match_route_closed(g, trace, "walking_paved", 0.05);
-  assert(len(open) == 5, "not a round trip: {len(open)} pts");
-  assert(open[0].lon != open[4].lon, "open route does not return to start");
+  // Finish brought back near the start (within one average step): reads as a LOOP; returns near the
+  // start along the different (bottom) street.
+  closed_trace = [
+    GeoPoint { lat: 52.001, lon: 5.0005 }, GeoPoint { lat: 52.001, lon: 5.0035 },
+    GeoPoint { lat: 52.000, lon: 5.0035 }, GeoPoint { lat: 52.000, lon: 5.0005 },
+  ];
+  closed = match_route_closed(g, closed_trace, "walking_paved");
+  clast = len(closed) - 1;
+  ret = geodesic_m(closed[clast], closed[0]);
+  assert(ret < 60.0, "closed loop returns near the start ({ret:1.0} m)");
+  assert(has_lat(closed, 52.000) && has_lat(closed, 52.001), "loop uses both the top and bottom streets");
+}
 
-  closed = match_route_closed(g, trace, "walking_paved", 2.0);
-  assert(len(closed) == 6, "closed route appends the start: {len(closed)} pts");
-  assert(closed[0].lat == closed[5].lat && closed[0].lon == closed[5].lon, "closed route returns to start");
+// The real-world loop: a user makes a circuit by placing the begin and end points close together, but
+// never exactly (imprecise taps). Detection must tolerate that (the gap is far under the average step),
+// AND closure must ABSORB the imprecision — both endpoints snap to the same node and the route closes
+// cleanly, with no stub or detour toward the offset taps.
+fn test_imprecise_loop_closure() {
+  ring = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.000, lon: 5.000 }, GeoPoint { lat: 52.000, lon: 5.003 },
+              GeoPoint { lat: 52.003, lon: 5.003 }, GeoPoint { lat: 52.003, lon: 5.000 },
+              GeoPoint { lat: 52.000, lon: 5.000 } ] };
+  g = build_graph([ring]);
+  // Start ~14 m NE of the corner, finish ~25 m NE of it — ~13 m apart, both imprecise (fat-finger).
+  trace = [
+    GeoPoint { lat: 52.0001, lon: 5.0001 },
+    GeoPoint { lat: 52.000,  lon: 5.003 },
+    GeoPoint { lat: 52.003,  lon: 5.003 },
+    GeoPoint { lat: 52.003,  lon: 5.000 },
+    GeoPoint { lat: 52.0002, lon: 5.0002 },
+  ];
+  assert(is_loop(trace), "imprecise near-closure reads as a loop");
+  r = match_route_closed(g, trace, "cycling_road");
+  last = len(r) - 1;
+  assert(geodesic_m(r[0], r[last]) < 5.0, "route closes cleanly at the start ({geodesic_m(r[0], r[last]):1.0} m)");
+  c0 = GeoPoint { lat: 52.000, lon: 5.000 };
+  assert(geodesic_m(r[0], c0) < 5.0 && geodesic_m(r[last], c0) < 5.0, "both endpoints snap to the corner, absorbing the tap imprecision");
+}
+
+fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
+  found = false;
+  for i in 0..len(route) { if route[i].lat == lat { found = true; } }
+  found
 }

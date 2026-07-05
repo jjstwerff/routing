@@ -1,0 +1,83 @@
+// Regression test on the user's FULL 41 km LOOP (all 40 points), against a trimmed corridor fixture
+// (fixtures/real_loop.json, 80 m tube). Guards the "loop drops its first half" regression: a loop is
+// matched by splitting at the farthest point, and if the first half came back empty the whole opening
+// stretch (points 0..~22) vanished. This asserts the match covers the WHOLE loop — it starts at the
+// drawn start and returns near it — so the first half can never be silently dropped again.
+//   loft --tests lib/routing_kernel/tests/real_loop.loft --lib lib
+use routing_kernel::(GeoPoint, parse_ways, build_graph, match_route_closed, geodesic_m, path_length_m);
+
+fn test_real_loop_covers_first_half() {
+  ways = parse_ways(file("fixtures/real_loop.json").content());
+  g = build_graph(ways);
+  trace = [
+    GeoPoint { lat: 52.21611346034077, lon: 6.904907226562501 },  // point 0 (start)
+    GeoPoint { lat: 52.21899251399506, lon: 6.891818046569825 },
+    GeoPoint { lat: 52.22363278754922, lon: 6.888492107391357 },
+    GeoPoint { lat: 52.22630105389008, lon: 6.881260871887208 },
+    GeoPoint { lat: 52.23259647539684, lon: 6.883728504180909 },
+    GeoPoint { lat: 52.237524418301504, lon: 6.8842434883117685 },
+    GeoPoint { lat: 52.24122987096219, lon: 6.88344955444336 },
+    GeoPoint { lat: 52.246196269035615, lon: 6.885638236999513 },
+    GeoPoint { lat: 52.25008491227731, lon: 6.8931055068969735 },
+    GeoPoint { lat: 52.2475363129658, lon: 6.902117729187013 },
+    GeoPoint { lat: 52.24971708224195, lon: 6.9126319885253915 },
+    GeoPoint { lat: 52.25505031926059, lon: 6.916065216064454 },
+    GeoPoint { lat: 52.26342982483724, lon: 6.919584274291993 },
+    GeoPoint { lat: 52.26947049234737, lon: 6.91640853881836 },
+    GeoPoint { lat: 52.28401724342717, lon: 6.922588348388673 },
+    GeoPoint { lat: 52.29115758313226, lon: 6.9181251525878915 },
+    GeoPoint { lat: 52.30207587681469, lon: 6.915206909179688 },
+    GeoPoint { lat: 52.31162717589892, lon: 6.908855438232423 },
+    GeoPoint { lat: 52.320546857796, lon: 6.904048919677735 },
+    GeoPoint { lat: 52.323065030772916, lon: 6.927223205566407 },
+    GeoPoint { lat: 52.32080917416763, lon: 6.946535110473634 },
+    GeoPoint { lat: 52.328205855629875, lon: 6.967735290527345 },
+    GeoPoint { lat: 52.32621254546842, lon: 6.979923248291016 },
+    GeoPoint { lat: 52.31981236368271, lon: 6.988506317138673 },
+    GeoPoint { lat: 52.316139710243, lon: 6.990737915039063 },
+    GeoPoint { lat: 52.3035454415661, lon: 6.992797851562501 },
+    GeoPoint { lat: 52.2978768516271, lon: 6.968765258789063 },
+    GeoPoint { lat: 52.283072112228815, lon: 6.976318359375001 },
+    GeoPoint { lat: 52.27750593068741, lon: 6.989192962646484 },
+    GeoPoint { lat: 52.26689674334066, lon: 6.99108123779297 },
+    GeoPoint { lat: 52.2623791899525, lon: 7.001724243164063 },
+    GeoPoint { lat: 52.25145111142177, lon: 7.003955841064454 },
+    GeoPoint { lat: 52.23736673260212, lon: 6.996917724609376 },
+    GeoPoint { lat: 52.2296920181494, lon: 6.990051269531251 },
+    GeoPoint { lat: 52.2249603686772, lon: 6.976318359375001 },
+    GeoPoint { lat: 52.226038177627125, lon: 6.955718994140626 },
+    GeoPoint { lat: 52.231163984032676, lon: 6.937866210937501 },
+    GeoPoint { lat: 52.23757698007677, lon: 6.921215057373048 },
+    GeoPoint { lat: 52.226327341430775, lon: 6.909198760986329 },
+    GeoPoint { lat: 52.21602143271681, lon: 6.9083404541015625 },  // point 39 (finish, ~loop start)
+  ];
+  route = match_route_closed(g, trace, "cycling_road");
+  assert(len(route) >= 2, "loop match is non-empty ({len(route)} pts)");
+
+  // The match must BEGIN at the drawn start — not skip the first ~23 points and begin at the split.
+  start_gap = geodesic_m(route[0], trace[0]);
+  assert(start_gap < 150.0, "match starts at the drawn start, not the loop split ({start_gap:1.0} m from point 0)");
+
+  // And it must return near the start (a closed loop), covering the whole thing.
+  end_gap = geodesic_m(route[len(route) - 1], trace[0]);
+  assert(end_gap < 300.0, "closed loop returns near the start ({end_gap:1.0} m)");
+
+  // Sanity: a 41 km loop matches to a comparable length, not a fragment.
+  matched = path_length_m(route);
+  assert(matched > 30000.0, "whole loop is matched, not just a fragment ({matched:1.0} m)");
+
+  // DIVERGENCE: how far does the matched route stray from each drawn point? A good match passes near
+  // every point (it should hug the line, not skip whole sections via long bridges). Measure the max
+  // and average nearest-route distance over all drawn points — the direct measure of "far off".
+  maxdiv = 0.0;
+  sumdiv = 0.0;
+  worstp = 0;
+  for i in 0..len(trace) {
+    best = 1000000000.0;
+    for j in 0..len(route) { d = geodesic_m(trace[i], route[j]); if d < best { best = d; } }
+    if best > maxdiv { maxdiv = best; worstp = i; }
+    sumdiv = sumdiv + best;
+  }
+  avgdiv = sumdiv / (len(trace) as float);
+  assert(maxdiv < 400.0, "route stays near every drawn point (max divergence {maxdiv:1.0} m at point {worstp}, avg {avgdiv:1.0} m)");
+}

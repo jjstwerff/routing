@@ -1,0 +1,36 @@
+// costcurve — dump the per-edge cost curve of a matched route, to validate the matcher's choices.
+//
+//   loft tools/costcurve.loft --lib lib <corridor.json> "<lat,lon;...>" <profile>
+//
+// <corridor.json> : an Overpass `out geom;` response for the route's corridor (fetch with curl).
+// <lat,lon;...>   : the rough trace (the route's line-2 profile / line-3 points from a .route file).
+// <profile>       : cycling_road | walking_paved | ... (default cycling_road).
+//
+// Prints, per matched edge: distance-along, length, deviation-from-line, way_penalty, whether it's
+// legality-excluded, the per-metre cost, and the edge's tags. A bus lane / station passage / alley
+// that shows a LOW cost is a missing cost class — exactly what we're hunting.
+
+use routing_kernel::(GeoPoint, parse_ways, build_graph, match_cost_report);
+
+fn main() {
+  jsonpath = "";
+  spec = "";
+  profile = "cycling_road";
+  for arg in arguments() {
+    if arg.find(".json") >= 0 { jsonpath = arg; }
+    else if arg.find(";") >= 0 { spec = arg; }
+    else if arg.find(",") >= 0 { spec = arg; }
+    else if arg != "" { profile = arg; }
+  }
+  if jsonpath == "" { println("usage: costcurve <corridor.json> \"<lat,lon;...>\" <profile>"); return; }
+
+  pts: vector<GeoPoint> = [];
+  for pair in spec.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 { pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }]; }
+  }
+  ways = parse_ways(file(jsonpath).content());
+  g = build_graph(ways);
+  println("ways={len(ways)}  nodes={len(g.nodes)}  edges={len(g.edges)}  profile={profile}  trace_pts={len(pts)}");
+  println(match_cost_report(g, pts, profile));
+}

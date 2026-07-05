@@ -5,9 +5,9 @@ use routing_kernel::(GeoPoint, Way, build_graph, match_route);
 // Two ways crossing at a shared coordinate must merge into one node (the connectivity invariant,
 // validated on real Overpass data: shared OSM nodes have identical coords).
 fn test_build_graph_dedup() {
-  h = Way { highway: "residential", surface: "", tracktype: "",
+  h = Way { highway: "residential", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 }] };
-  v = Way { highway: "footway", surface: "", tracktype: "",
+  v = Way { highway: "footway", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [GeoPoint { lat: 51.999, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.001, lon: 5.001 }] };
   g = build_graph([h, v]);
   // 6 vertices, but the shared (52.0, 5.001) merges → 5 unique nodes, 4 edges.
@@ -17,7 +17,7 @@ fn test_build_graph_dedup() {
 
 // A trace drawn ~15 m off a straight street matches ONTO the street, and the match is deterministic.
 fn test_match_15m_off() {
-  street = Way { highway: "residential", surface: "asphalt", tracktype: "",
+  street = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [
       GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 }, GeoPoint { lat: 52.0, lon: 5.002 },
       GeoPoint { lat: 52.0, lon: 5.003 }, GeoPoint { lat: 52.0, lon: 5.004 },
@@ -47,11 +47,11 @@ fn test_match_15m_off() {
 // The old nearest-node matcher committed the tap to the road by geometry; the Viterbi's candidate
 // set lets the ACTIVITY decide the whole assignment — running_trail must stay on the path.
 fn test_candidate_tap_resolves_by_activity() {
-  road = Way { highway: "residential", surface: "asphalt", tracktype: "",
+  road = Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0, lon: 5.001 },
               GeoPoint { lat: 52.0, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.003 },
               GeoPoint { lat: 52.0001, lon: 5.004 } ] };
-  foot = Way { highway: "path", surface: "ground", tracktype: "",
+  foot = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0001, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.001 },
               GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0002, lon: 5.003 },
               GeoPoint { lat: 52.0001, lon: 5.004 } ] };

@@ -1,0 +1,93 @@
+// Incremental re-matching (the edit fast-path). A MatchState caches the de-noise decomposition; an
+// edit recomputes only the changed window and reuses the rest. The contract that makes this safe:
+// the incrementally-updated result must be IDENTICAL to a full rematch of the new trace. These tests
+// pin that equivalence across move / add / remove edits, chained through one carried-forward state.
+//   loft --tests lib/routing_kernel/tests/incremental.loft --lib lib
+use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, build_graph,
+                     match_state_new, match_incremental, match_state_result, match_closed_ex);
+
+fn road(coords: vector<GeoPoint>) -> Way {
+  Way { highway: "residential", surface: "asphalt", tracktype: "", bicycle: "", access: "",
+        oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: coords }
+}
+
+// A 4×4 lattice of streets (rows + columns share intersection nodes → a connected grid).
+fn grid() -> vector<Way> {
+  ways: vector<Way> = [];
+  for r in 0..4 {
+    lat = 52.000 + 0.001 * (r as float);
+    row: vector<GeoPoint> = [];
+    for c in 0..4 { row += [GeoPoint { lat: lat, lon: 5.000 + 0.001 * (c as float) }]; }
+    ways += [road(row)];
+  }
+  for c in 0..4 {
+    lon = 5.000 + 0.001 * (c as float);
+    col: vector<GeoPoint> = [];
+    for r in 0..4 { col += [GeoPoint { lat: 52.000 + 0.001 * (r as float), lon: lon }]; }
+    ways += [road(col)];
+  }
+  ways
+}
+
+fn same(a: MatchResult, b: MatchResult) -> boolean {
+  if len(a.pts) != len(b.pts) { return false; }
+  for i in 0..len(a.pts) { if a.pts[i].lat != b.pts[i].lat || a.pts[i].lon != b.pts[i].lon { return false; } }
+  if a.bridges != b.bridges { return false; }
+  if len(a.bseg) != len(b.bseg) { return false; }
+  for i in 0..len(a.bseg) { if a.bseg[i].lat != b.bseg[i].lat || a.bseg[i].lon != b.bseg[i].lon { return false; } }
+  true
+}
+
+// Apply one edit incrementally, and assert the carried-forward state's result equals a full rematch.
+fn step(prev: MatchState, g: Graph, trace: vector<GeoPoint>, label: text) -> MatchState {
+  st = match_incremental(prev, g, trace, "cycling_road");
+  inc = match_state_result(g, st);
+  full = match_closed_ex(g, trace, "cycling_road");
+  assert(same(inc, full), "{label}: incremental == full rematch (inc {len(inc.pts)} pts / {inc.bridges} br, full {len(full.pts)} / {full.bridges})");
+  st
+}
+
+fn test_incremental_matches_full() {
+  g = build_graph(grid());
+
+  // A meander through the grid with editable interior points (not a loop).
+  base = [
+    GeoPoint { lat: 52.0000, lon: 5.0001 }, GeoPoint { lat: 52.0006, lon: 5.0010 },
+    GeoPoint { lat: 52.0011, lon: 5.0020 }, GeoPoint { lat: 52.0021, lon: 5.0021 },
+    GeoPoint { lat: 52.0030, lon: 5.0011 }, GeoPoint { lat: 52.0030, lon: 5.0001 },
+  ];
+  st = step(match_state_new(), g, base, "build");
+
+  // MOVE an interior point.
+  moved = [
+    GeoPoint { lat: 52.0000, lon: 5.0001 }, GeoPoint { lat: 52.0006, lon: 5.0010 },
+    GeoPoint { lat: 52.0015, lon: 5.0015 }, GeoPoint { lat: 52.0021, lon: 5.0021 },
+    GeoPoint { lat: 52.0030, lon: 5.0011 }, GeoPoint { lat: 52.0030, lon: 5.0001 },
+  ];
+  st = step(st, g, moved, "move interior point");
+
+  // ADD an interior point (between index 3 and 4).
+  added = [
+    GeoPoint { lat: 52.0000, lon: 5.0001 }, GeoPoint { lat: 52.0006, lon: 5.0010 },
+    GeoPoint { lat: 52.0015, lon: 5.0015 }, GeoPoint { lat: 52.0021, lon: 5.0021 },
+    GeoPoint { lat: 52.0028, lon: 5.0018 }, GeoPoint { lat: 52.0030, lon: 5.0011 },
+    GeoPoint { lat: 52.0030, lon: 5.0001 },
+  ];
+  st = step(st, g, added, "add interior point");
+
+  // REMOVE an interior point (drop what was index 2).
+  removed = [
+    GeoPoint { lat: 52.0000, lon: 5.0001 }, GeoPoint { lat: 52.0006, lon: 5.0010 },
+    GeoPoint { lat: 52.0021, lon: 5.0021 }, GeoPoint { lat: 52.0028, lon: 5.0018 },
+    GeoPoint { lat: 52.0030, lon: 5.0011 }, GeoPoint { lat: 52.0030, lon: 5.0001 },
+  ];
+  st = step(st, g, removed, "remove interior point");
+
+  // MOVE an ENDPOINT (extend the finish) — the diff touches the tail.
+  ext = [
+    GeoPoint { lat: 52.0000, lon: 5.0001 }, GeoPoint { lat: 52.0006, lon: 5.0010 },
+    GeoPoint { lat: 52.0021, lon: 5.0021 }, GeoPoint { lat: 52.0028, lon: 5.0018 },
+    GeoPoint { lat: 52.0030, lon: 5.0011 }, GeoPoint { lat: 52.0011, lon: 5.0001 },
+  ];
+  st = step(st, g, ext, "move finish endpoint");
+}

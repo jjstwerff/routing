@@ -32,12 +32,15 @@
         }).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
       : [];
 
-  // "5:<length_m>|<matched points>" → the detailed layer (+ the elevation dock, lag-tolerant).
+  // "5:<length_m>|<matched points>|<bridge segments>" → the detailed layer (+ elevation, lag-tolerant).
+  // bridge segments are endpoint pairs of straight gap-crossings, drawn dotted so they don't look like
+  // a road (see detailed.set).
   function applyMatched(raw) {
-    const bar = raw.indexOf("|");
-    const lengthM = parseFloat(raw.slice(raw.indexOf(":") + 1, bar)) || 0;
-    const pts = decode(raw.slice(bar + 1));
-    if (NS.detailed) NS.detailed.set(pts, lengthM);
+    const parts = raw.slice(raw.indexOf(":") + 1).split("|");
+    const lengthM = parseFloat(parts[0]) || 0;
+    const pts = decode(parts[1] || "");
+    const bridges = decode(parts[2] || "");
+    if (NS.detailed) NS.detailed.set(pts, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(pts);
   }
 
@@ -51,6 +54,7 @@
     const rough = decode(p[2]);
     const lengthM = parseFloat(p[3]) || 0;
     const matched = decode(p[4]);
+    const bridges = decode(p[5] || "");
     if (rough.length < 2) return;
     remoteApply = true;
     try {
@@ -59,7 +63,7 @@
     } finally {
       remoteApply = false;
     }
-    if (NS.detailed) NS.detailed.set(matched, lengthM);
+    if (NS.detailed) NS.detailed.set(matched, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(matched);
   }
 
