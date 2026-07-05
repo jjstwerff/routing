@@ -29,10 +29,11 @@ APPDIR := $(PREFIX)/lib/routing
 BINDIR := $(PREFIX)/bin
 URL    := http://127.0.0.1:$(PORT)/
 
-.PHONY: help build install uninstall run stop clean
+.PHONY: help build check-rustc install uninstall run stop clean
 
 help:
 	@echo "routing — targets:"
+	@echo "  make check-rustc verify your rustc corresponds to loft (else hint to refresh loft)"
 	@echo "  make build      compile the optimized native server -> dist/routing-server-bin"
 	@echo "  make install    build + install a stable copy to $(PREFIX) (no sudo)"
 	@echo "  make uninstall  remove the installed copy (keeps saved routes)"
@@ -46,12 +47,41 @@ help:
 	@echo ""
 	@echo "vars: LOFT=$(LOFT)  PORT=$(PORT)  PREFIX=$(PREFIX)"
 
+# --- rustc <-> loft correspondence check ----------------------------------------
+# We deliberately DON'T pin rustc: loft floats to latest stable (see ../loft's
+# rust-toolchain.toml). But loft compiles the generated Rust with the AMBIENT
+# rustc and links it against loft's prebuilt rlibs, whose metadata is locked to
+# the rustc that built loft. If the two drift apart (e.g. `rustup update` moved
+# rustc past the loft build), native compilation fails. This probe catches that
+# up front and points at the real fix — rebuild/redownload loft, NOT downgrade
+# rustc. A trivial native compile is the authoritative test (it links the rlibs).
+check-rustc:
+	@[ -x "$(LOFT)" ] || { echo "ERROR: loft not found at $(LOFT) (set LOFT=/path/to/loft)"; exit 1; }
+	@probe="$$(mktemp -d)"; printf 'fn main() { println("ok") }\n' > "$$probe/p.loft"; \
+	 if $(LOFT) --native --check "$$probe/p.loft" >"$$probe/log" 2>&1; then \
+	   rm -rf "$$probe"; \
+	 else \
+	   have="$$(rustc --version 2>/dev/null)"; \
+	   want="$$(strings -a "$(LOFT)" 2>/dev/null | grep -oE 'rustc 1\.[0-9]+\.[0-9]+ \([0-9a-f]+ [0-9-]+\)' | sort -u | head -1)"; \
+	   echo "ERROR: loft ($(LOFT)) cannot build native code with your rustc."; \
+	   echo "  your rustc : $${have:-unknown}"; \
+	   [ -n "$$want" ] && echo "  loft built : $$want"; \
+	   echo ""; \
+	   echo "  loft links generated code against rlibs built by its own rustc, so the two"; \
+	   echo "  must match. rustc floats to latest stable; the fix is to refresh loft, not"; \
+	   echo "  to change rustc:"; \
+	   echo "    rebuild : (cd $(CURDIR)/../loft && SDKROOT=\$$(xcrun --show-sdk-path) make install)"; \
+	   echo "    or fetch a loft prebuilt matching $${have:-your rustc}"; \
+	   echo ""; \
+	   echo "  --- native probe output ---"; sed 's/^/  /' "$$probe/log"; \
+	   rm -rf "$$probe"; exit 1; \
+	 fi
+
 # --- build the optimized binary -------------------------------------------------
 # `--native-release --check` compiles (optimized) and exits WITHOUT running the
 # server, so nothing binds the port. loft content-addresses the artifact in
 # server/.loft/cache/; we lift the freshest one out into dist/.
-build:
-	@[ -x "$(LOFT)" ] || { echo "ERROR: loft not found at $(LOFT) (set LOFT=/path/to/loft)"; exit 1; }
+build: check-rustc
 	@mkdir -p dist
 	@echo "==> compiling optimized native server (loft --native-release)…"
 	@$(LOFT) --native-release --check server/server.loft --lib lib
