@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# routing — start the routing server if it isn't already up, then open it in the
+# primary browser. Installed by `make install`; @APPDIR@ / @PORT@ are filled in then.
+#
+# The server is a self-contained, prebuilt native binary (no loft, no rustc at
+# runtime). It reads its static client + writes its route/tile state relative to
+# the working dir, so we always launch it from the install dir.
+set -euo pipefail
+
+APPDIR="@APPDIR@"
+PORT="@PORT@"
+URL="http://127.0.0.1:${PORT}/"
+PIDFILE="${APPDIR}/routing.pid"
+LOG="${APPDIR}/routing.log"
+
+up() { curl -fsS -o /dev/null -m1 "$URL" 2>/dev/null; }
+
+if up; then
+  echo "routing: already running at ${URL}"
+else
+  echo "routing: starting server…"
+  ( cd "$APPDIR" && nohup ./routing-server-bin >"$LOG" 2>&1 & echo $! >"$PIDFILE" )
+  for _ in $(seq 1 60); do up && break; sleep 0.5; done
+  if ! up; then
+    echo "routing: server failed to start — last log lines:" >&2
+    tail -20 "$LOG" >&2 || true
+    exit 1
+  fi
+  echo "routing: up at ${URL}"
+fi
+
+# Open the OS default ("primary") browser.
+if command -v open >/dev/null 2>&1; then
+  open "$URL"
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "$URL" >/dev/null 2>&1 &
+else
+  echo "routing: open this in your browser: ${URL}"
+fi

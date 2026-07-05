@@ -1,0 +1,124 @@
+# Makefile — build + install a fully optimized, stable local copy of the routing app.
+#
+# WHY A PREBUILT BINARY IS "STABLE":
+#   `loft --native-release` compiles server/server.loft (plus the vendored loft
+#   libraries under lib/) through rustc into ONE optimized native executable.
+#   Once built, that binary runs machine code directly — it does NOT invoke rustc
+#   and does NOT re-resolve any loft library at runtime. So a future rustc release
+#   or upstream loft/library churn cannot break an already-installed copy; they can
+#   only ever affect the next `make build`. That is exactly the insulation we want.
+#
+# LAYOUT (self-contained, because the server reads its client + writes its route/
+# tile state relative to the launch dir):
+#   $(APPDIR)/routing-server-bin   the optimized native server
+#   $(APPDIR)/*.{html,css,js}, vendor/   the static client
+#   $(APPDIR)/routes, scratch/tiles      writable state (survive uninstall)
+#   $(BINDIR)/routing        start-if-needed + open primary browser
+#   $(BINDIR)/routing-stop   stop the server
+#
+# COMMON USE:
+#   make install     build optimized + install to ~/.local (no sudo)
+#   routing          start (if needed) and open the browser
+#   routing-stop     stop the server
+#   make run / make stop   same, but straight from this repo (dev, no install)
+
+LOFT   ?= $(or $(LOFT_BIN),$(CURDIR)/../loft/target/release/loft)
+PORT   ?= 18080
+PREFIX ?= $(HOME)/.local
+APPDIR := $(PREFIX)/lib/routing
+BINDIR := $(PREFIX)/bin
+URL    := http://127.0.0.1:$(PORT)/
+
+.PHONY: help build install uninstall run stop clean
+
+help:
+	@echo "routing — targets:"
+	@echo "  make build      compile the optimized native server -> dist/routing-server-bin"
+	@echo "  make install    build + install a stable copy to $(PREFIX) (no sudo)"
+	@echo "  make uninstall  remove the installed copy (keeps saved routes)"
+	@echo "  make run        build + start from this repo and open the browser (dev)"
+	@echo "  make stop       stop a repo-local server"
+	@echo "  make clean      remove dist/ and the native build cache"
+	@echo ""
+	@echo "after 'make install' (ensure $(BINDIR) is on PATH):"
+	@echo "  routing         start (if not already up) + open primary browser"
+	@echo "  routing-stop    stop the server"
+	@echo ""
+	@echo "vars: LOFT=$(LOFT)  PORT=$(PORT)  PREFIX=$(PREFIX)"
+
+# --- build the optimized binary -------------------------------------------------
+# `--native-release --check` compiles (optimized) and exits WITHOUT running the
+# server, so nothing binds the port. loft content-addresses the artifact in
+# server/.loft/cache/; we lift the freshest one out into dist/.
+build:
+	@[ -x "$(LOFT)" ] || { echo "ERROR: loft not found at $(LOFT) (set LOFT=/path/to/loft)"; exit 1; }
+	@mkdir -p dist
+	@echo "==> compiling optimized native server (loft --native-release)…"
+	@$(LOFT) --native-release --check server/server.loft --lib lib
+	@bin="$$(ls -t server/.loft/cache/server-* 2>/dev/null | head -1)"; \
+	 [ -x "$$bin" ] || { echo "ERROR: no compiled binary in server/.loft/cache"; exit 1; }; \
+	 install -m 755 "$$bin" dist/routing-server-bin; \
+	 { echo "built  : $$(date '+%Y-%m-%d %H:%M:%S')"; \
+	   echo "loft   : $$($(LOFT) --version)"; \
+	   echo "rustc  : $$(rustc --version)"; } > dist/VERSION
+	@echo "==> dist/routing-server-bin ready"; sed 's/^/    /' dist/VERSION
+
+# --- install a stable local copy ------------------------------------------------
+install: build
+	@echo "==> installing to $(APPDIR)"
+	@mkdir -p "$(APPDIR)/vendor" "$(APPDIR)/routes" "$(APPDIR)/scratch/tiles" "$(BINDIR)"
+	@install -m 755 dist/routing-server-bin "$(APPDIR)/routing-server-bin"
+	@install -m 644 dist/VERSION "$(APPDIR)/VERSION"
+	@install -m 644 index.html styles.css *.js "$(APPDIR)/"
+	@cp -R vendor/. "$(APPDIR)/vendor/"
+	@sed -e 's#@APPDIR@#$(APPDIR)#g' -e 's#@PORT@#$(PORT)#g' tools/routing.in      > "$(BINDIR)/routing"
+	@sed -e 's#@APPDIR@#$(APPDIR)#g' -e 's#@PORT@#$(PORT)#g' tools/routing-stop.in > "$(BINDIR)/routing-stop"
+	@chmod 755 "$(BINDIR)/routing" "$(BINDIR)/routing-stop"
+	@echo "==> smoke test (installed binary serves installed client)…"
+	@pids="$$(lsof -ti tcp:$(PORT) 2>/dev/null)"; [ -n "$$pids" ] && kill $$pids 2>/dev/null || true; \
+	 cd "$(APPDIR)" && ( nohup ./routing-server-bin >routing.log 2>&1 & echo $$! >routing.pid ); \
+	 ok=0; for _ in $$(seq 1 40); do \
+	   curl -fsS -m3 "$(URL)" 2>/dev/null | grep -q "<!DOCTYPE html>" && { ok=1; break; }; sleep 0.5; done; \
+	 pid="$$(cat "$(APPDIR)/routing.pid" 2>/dev/null)"; [ -n "$$pid" ] && kill "$$pid" 2>/dev/null || true; \
+	 rm -f "$(APPDIR)/routing.pid"; \
+	 [ "$$ok" = 1 ] || { echo "   SMOKE FAILED — see $(APPDIR)/routing.log"; exit 1; }
+	@echo "   smoke OK"
+	@echo ""
+	@echo "installed. ensure $(BINDIR) is on your PATH, then:"
+	@echo "  routing        start + open browser"
+	@echo "  routing-stop   stop"
+
+uninstall:
+	@"$(BINDIR)/routing-stop" 2>/dev/null || true
+	@rm -f "$(BINDIR)/routing" "$(BINDIR)/routing-stop"
+	@rm -f "$(APPDIR)"/*.html "$(APPDIR)"/*.css "$(APPDIR)"/*.js \
+	       "$(APPDIR)/routing-server-bin" "$(APPDIR)/VERSION" "$(APPDIR)/routing.log"
+	@rm -rf "$(APPDIR)/vendor" "$(APPDIR)/scratch"
+	@echo "note: saved routes kept at $(APPDIR)/routes"
+	@rmdir "$(APPDIR)" 2>/dev/null || true
+	@echo "uninstalled from $(PREFIX)"
+
+# --- repo-local start/stop (dev; no install) ------------------------------------
+run: build
+	@if curl -fsS -o /dev/null -m1 "$(URL)" 2>/dev/null; then \
+	   echo "routing: already running at $(URL)"; \
+	 else \
+	   echo "routing: starting from repo…"; mkdir -p scratch; \
+	   ( nohup dist/routing-server-bin >scratch/routing.log 2>&1 & echo $$! >scratch/routing.pid ); \
+	   for _ in $$(seq 1 60); do curl -fsS -o /dev/null -m1 "$(URL)" 2>/dev/null && break; sleep 0.5; done; \
+	   curl -fsS -o /dev/null -m1 "$(URL)" 2>/dev/null || { echo "failed; see scratch/routing.log"; tail -20 scratch/routing.log; exit 1; }; \
+	   echo "routing: up at $(URL)"; \
+	 fi; \
+	 open "$(URL)" 2>/dev/null || xdg-open "$(URL)" >/dev/null 2>&1 || echo "open $(URL)"
+
+stop:
+	@pid="$$(cat scratch/routing.pid 2>/dev/null || true)"; \
+	 if [ -n "$$pid" ] && kill "$$pid" 2>/dev/null; then echo "routing: stopped (pid $$pid)"; fi; \
+	 rm -f scratch/routing.pid; \
+	 pids="$$(lsof -ti tcp:$(PORT) 2>/dev/null)"; \
+	 if [ -n "$$pids" ] && kill $$pids 2>/dev/null; then echo "routing: freed port $(PORT)"; fi; \
+	 true
+
+clean:
+	@rm -rf dist server/.loft/cache
+	@echo "cleaned dist/ and native build cache"

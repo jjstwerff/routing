@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# routing-stop — stop the running routing server. Installed by `make install`;
+# @APPDIR@ / @PORT@ are filled in then.
+set -uo pipefail
+
+APPDIR="@APPDIR@"
+PORT="@PORT@"
+PIDFILE="${APPDIR}/routing.pid"
+stopped=0
+
+# 1) Preferred: the pid we recorded at start.
+if [ -f "$PIDFILE" ]; then
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null && stopped=1
+  fi
+  rm -f "$PIDFILE"
+fi
+
+# 2) Fallback: anything still holding the port (e.g. started by hand).
+if command -v lsof >/dev/null 2>&1; then
+  for p in $(lsof -ti "tcp:${PORT}" 2>/dev/null); do
+    kill "$p" 2>/dev/null && stopped=1
+  done
+fi
+
+if [ "$stopped" -eq 1 ]; then echo "routing: stopped"; else echo "routing: not running"; fi

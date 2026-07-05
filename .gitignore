@@ -5,6 +5,9 @@ Thumbs.db
 *.swp
 .fuse_hidden*
 
+# Build output of `make build` (the optimized native binary + version stamp)
+dist/
+
 # Node tooling (if introduced later)
 node_modules/
 npm-debug.log*
