@@ -20,12 +20,15 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
   never enters the merge (see PLAN-BROWSER Phase 8).
 - **`RoadType` → cost is a table** (data, not code); the mapping from OSM tags → `RoadType` lives in the
   generator only.
-- **Multiple files + a top-level index (the 4 GB cap).** A loft store addresses within u32 offsets, so
-  one file is capped at **4 GB**. The dataset is therefore **N data files** (each a loft store ≤4 GB of
-  self-contained tiles) plus a small **top-level index** store mapping spatial key → `(fileId, offset,
-  length)`. Cross-tile stitching is unaffected — border-node identity is a *global* integer, so
-  neighbours in *different files* still merge on load. (NL+100 km likely fits one data file; the top
-  index is there so scaling to Western Europe just adds files.)
+- **Multiple files + a top-level index, ~0.5 GB soft cap.** A loft store addresses within u32 offsets, so
+  a file is hard-capped at **4 GB** — but we deliberately keep each data file to a **~0.5 GB soft cap**
+  (≈8× headroom) so files can be *gradually filled and regenerated without ever approaching* the real
+  limit. The packer **rolls to a new file at ~0.5 GB along the Hilbert/z-order**, so each shard stays
+  spatially contiguous; big countries span several shards, small ones fit one. A small **top-level
+  index** (spatial key → `(fileId, offset, length)`) hides the sharding. Cross-tile stitching is
+  unaffected — border-node identity is a *global* integer, so neighbours in *different files* still merge
+  on load. (Extrapolated: Western Europe with heights ≈ 6–10 GB → **~12–20 files**; NL/BE/CH/AT/IE/DK
+  each one file, FR and DE ~3–4 each, UK ~2.)
 - **Block reads are a loft `web` library extension, not bespoke app JS — and the store model is never
   reimplemented in JS.** Partial-file read over HTTP Range (`web::read_range`, + caching) lives in loft's
   `web` library and carries its own browser shim; the app is loft calling it. All knowledge of the store
@@ -97,14 +100,14 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
   mapped classes.
 
 ### B.4 — Generate the data files + top-level index
-- **Goal:** produce the `data-*.tiles` files (≤4 GB each) and the `index.tiles` top-level index.
+- **Goal:** produce the `data-*.tiles` files (**~0.5 GB soft cap each**) and the `index.tiles` top-level index.
 - **Build (bake everything in one pass):** read NDJSON → classify `tp` → set `flags` from OSM **route
   relations** (`cycle_infra`; recreational-network membership) → sample the **DEM/terrarium** for each
   node's `h` → **split** at intersections, at tile borders (grid-snapped boundary nodes), and at 255
   points → assign to tiles → decompose pedestrian squares into synthetic `square` roads → build each tile
   as a **self-contained durable-store region**; pack tiles (Hilbert/z-ordered)
-  into data files, starting a new file before 4 GB; emit the **top-level index** store mapping spatial
-  key → `(fileId, offset, length)`.
+  into data files, **rolling to a new file at a ~0.5 GB soft cap** (never near the 4 GB store limit);
+  emit the **top-level index** store mapping spatial key → `(fileId, offset, length)`.
 - **Store isolation (validated recipe):** `store_persist_bind` serializes the *entire* store the bound
   hash lives in — so if the OSM parse and the tile hash share the default store, the file balloons (an
   8 km Enschede build persisted **264 MB**, almost all parse scratch). The fix, confirmed: **build the
@@ -116,8 +119,8 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
 - **Check (acceptance for the data):** pick a handful of real NL routes; **matching each from the
   generated files equals matching it from a live Overpass fetch** of the same points (same polyline
   within tolerance). Border-crossing routes connect — including a pair whose tiles land in **different
-  data files**; a route across a square and one along a cycleway look right; per-file sizes (each ≤4 GB)
-  + tile count recorded.
+  data files**; a route across a square and one along a cycleway look right; per-file sizes (each within
+  the ~0.5 GB soft cap) + tile count recorded.
 - **First build — validated (Enschede + 8 km):** 39,603 ways → **109 tiles / 230,601 steps**, persisted
   to a **3.5 MB** durable store (~1.2× the raw data) via the function-return recipe; a fresh process
   reloads it by mmap with **no parse**, exact counts, and fixed-point reconstructs to the correct lon/lat
@@ -195,6 +198,73 @@ the schema so `build_graph`+`match_closed_ex` produce a route **identical to the
 (wasm) is the follow-on in PLAN-BROWSER; the same block-reader + loft flow serves native tests and the
 browser unchanged.
 
+## First full regional file — southern Overijssel, south of Ommen (with heights)
+The first real regional dataset, extending the validated Enschede build with **baked elevation**.
+Bbox **lat 52.05–52.53, lon 6.00–7.10** (Ommen ≈ 52.52 on the north edge; covers Deventer, Almelo,
+Hengelo, Enschede, Oldenzaal). Rectangle for v1; a province-boundary clip is a later refinement.
+
+### S1 — OSM road data (too big for one Overpass query)
+- **Build:** prefer `osmium extract --bbox 6.00,52.05,7.10,52.53 netherlands-latest.osm.pbf` →
+  `osmium tags-filter w/highway` → `osmium export` NDJSON (needs `osmium-tool`/`pyosmium`; loft can't read
+  `.pbf`). Fallback: tiled Overpass over ~0.1° cells, dedupe ways by OSM id across cell borders.
+- **Check:** way count plausible; spot nodes in Deventer + Enschede + Oldenzaal present.
+
+### S2 — Heights (terrarium DEM)
+- **Build:** fetch+cache the terrarium tiles (z12–13) covering the bbox into `scratch/tiles`; decode via
+  the kernel's `terrarium_h`/`elev_*`. (AHN 0.5 m LiDAR is the hi-fi option, deferred.)
+- **Check:** sampled `h` matches the real relief — **Holterberg / Sallandse Heuvelrug ~75 m** (Holten,
+  west), **Tankenberg ~85 m** + **Lonnekerberg ~50–65 m** (Oldenzaal, east) — vs **IJssel valley at
+  Deventer ~5–10 m**; no holes over the bbox.
+
+### S3 — Generate (validated recipe + real `h`)
+- **Build:** reuse the store-isolation recipe (`fn build() -> Final`). Per node: classify → `tp`/`flags`,
+  fixed-point `x`/`y`, and **sample the DEM → `h`** (fixed-point, mm). 0.02° grid tiles, assign by first
+  node (`i32` deltas, pre-split). Region ≪ 4 GB → **single file** (multi-file/top-index deferred).
+- **Check:** builds; persists compact (~1.2× logical); long-way truncation count noted.
+
+### S4 — Verify
+- **Check:** fresh-process mmap reload → exact counts; fixed-point reconstructs correct lon/lat; **`h`
+  reconstructs the gradient** at the west ridge (Holterberg) and east ridge (Tankenberg) vs the valleys;
+  a test route matched from the tiles equals an Overpass match of the same points; file size recorded.
+- **Result — VALIDATED (2026-07-06):** 229,117 ways → **1,215 tiles / 1,570,032 nodes → 26 MB** store
+  (~1.3× logical, well under the 0.5 GB cap → one file). Reloads by mmap with no parse, exact counts;
+  `h` range −3.6…98.6 m and the gradient reads true: IJssel valley (Deventer) **14.7 m**, Enschede town
+  **44.5 m**, Holterberg flank **42.7 m**, Tankenberg ridge **67.8 m** (summits read below their peaks
+  only because roads don't reach the hilltops). Data source via `osmium extract` + `tags-filter w/highway`
+  + `osmium export geojsonseq` → Overpass-shape JSON; heights via 130 terrarium z12 tiles.
+- **Deferred (known):** terrarium disk-cache path (re-runs re-fetch), tile-border splitting (`i32`→`u32`),
+  reading tiles into the *matcher* (vs raw ways), AHN hi-fi DEM.
+
+## Prototype & rough-spot loop (before scaling to Western Europe)
+Drive the current app over the Overijssel set to surface UX rough spots *before* the full build. Fixed:
+- **Smooth-sweep insert** — press on the route line and drag to drop **and** position a new point in one
+  gesture (was: tap to insert, then a separate drag). A plain tap still inserts. (`rough.js` `_onLineDown`;
+  verify Leaflet path `mousedown` fires on touch on-device.)
+
+## Western Europe — full build routine
+Batch, on your machine → the sharded dataset (`~0.5 GB` files + `index.tiles`). Generalises S1–S4.
+
+0. **Prereqs:** `osmium-tool`; disk for the source extract + terrain cache; the compiled generator.
+1. **Source:** download Geofabrik extracts covering WE (per-country, or `europe-latest.osm.pbf`).
+2. **Coverage list:** region bboxes tiling WE — one per small country; big countries (FR, DE, UK)
+   pre-split into a few boxes so no single osmium pass is unwieldy. For each region:
+   - `osmium extract --bbox <box> <src>.osm.pbf -o region.osm.pbf`
+   - `osmium tags-filter region.osm.pbf w/highway -o region-roads.osm.pbf`
+   - `osmium export region-roads.osm.pbf -f geojsonseq --geometry-types=linestring -o region.geojsonseq`
+   - convert → Overpass-shape JSON (keep only the matcher's tags; bbox-guard) — or teach the generator to
+     read geojsonseq directly (removes this step).
+3. **Elevation:** per region bbox, fetch+cache terrarium z12 tiles (fix the cache path so re-runs reuse).
+4. **Generate:** run the generator (`fn build() -> Final` store isolation) → classify `tp`/`flags`,
+   fixed-point `x`/`y`, sample DEM → `h`, grid into 0.02° tiles; **split ways at tile borders** so deltas
+   stay `u32` and cross-tile/cross-file neighbours merge on grid-snapped border nodes.
+5. **Pack + shard:** append tiles Hilbert-ordered into `data-NNNN.tiles`, **rolling a new file at ~0.5 GB**;
+   record each tile's `(fileId, offset, length)` into the top-level `index.tiles`.
+6. **Host:** upload `index.tiles` + `data-*.tiles` to R2/B2 (GitHub Release interim), Range-served.
+7. **Refresh:** re-run 1–6 on a cadence (geometry snapshot, not live).
+
+**Verify (per region + globally):** reload by mmap → counts; `h` gradient on known relief; a sample
+route from the tiles == an Overpass match; total ≈ the extrapolation (**~6–10 GB, ~12–20 files**).
+
 ## Follow-on optimisation — persist the *built* graph (skip `build_graph`)
 Because the store *is* the file, a tile can hold not just geometry but the **built graph** the matcher
 runs on (`GNode`s + CSR adjacency). The client then mmaps a ready-to-search graph and skips
@@ -260,11 +330,11 @@ never in the geographic tiles.
   file through **jsDelivr** (CDN, sends `206` + CORS — verified for small files, has its own size cap);
   or split into **many small per-tile files** fetched whole (no Range, but many requests + GitHub file
   counts); or move to **Cloudflare R2 / B2** sooner (the real target — GitHub is the stopgap).
-- **File size / the 4 GB cap.** Per-file 4 GB is now structural — the generator rolls to a new
-  `data-*.tiles` before the cap, and the top index spans them (so Western Europe is just more files).
-  NL+100 km compact should be tens–low-hundreds of MB (likely one file); if it strains the *host*, the
-  multi-file split also lets each file stay under a host's per-asset limit. Shrink the bbox first
-  (NL + 25 km) to prove the pipeline, then widen.
+- **File size — ~0.5 GB soft cap, 4 GB hard.** The generator rolls to a new `data-*.tiles` at ~0.5 GB
+  (8× under the 4 GB store limit) so files gradually fill and never approach the real cap; the top index
+  spans them. Measured density (south Overijssel, with heights): ~6.6 KB/km² at NL's dense rate → NL ≈
+  270 MB (one file); Western Europe ≈ 6–10 GB → ~12–20 files (FR/DE split ~3–4 each). Also keeps each
+  file well under any host's per-asset limit.
 - **Layout portability.** We rely on loft's schema-derived store layout being identical native↔wasm
   (checked via `type_layout_fingerprint` in B.2). Endianness isn't explicitly normalized in the store,
   so this holds for little-endian targets (all dev machines + wasm); a big-endian writer would need an
