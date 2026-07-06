@@ -21,6 +21,8 @@
   let latest = null;   // most recent points; sent once connected / after debounce
   let debounce = null;
   let remoteApply = false;   // step 19: applying a peer's edit — don't echo it back
+  let pendingEdit = false;   // a local edit is scheduled but not yet flushed (msg 4). A peer's
+                             // broadcast arriving in that window must not overwrite it — see applyRemoteSync.
 
   const profileOf = () => (NS.getProfile ? NS.getProfile() : "walking_paved");
   const encode = (points) => points.map((p) => p.lat + "," + p.lon).join(";");
@@ -49,6 +51,12 @@
   // on. Apply it directly — the broadcast carries the server's match, so nothing is re-requested
   // and nothing echoes (rough.setPoints fires onChange → sendPoints, gated by remoteApply).
   function applyRemoteSync(raw) {
+    // A local edit is mid-flight (its debounced match hasn't been sent yet). Applying a peer's
+    // state now would overwrite that un-sent edit — both the rough layer and `latest` — and it
+    // would be lost when the flush fires. The local edit wins and flushes; we pick the peer's
+    // state up on its next broadcast. (Also swallows a peer's OPEN echo of the same route, which
+    // would otherwise clobber a sketch the local user is in the middle of editing.)
+    if (pendingEdit) return;
     const p = raw.slice(raw.indexOf(":") + 1).split("|");
     if (p.length < 5) return;
     const profile = p[1];
@@ -117,6 +125,7 @@
 
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
+    pendingEdit = false;   // flushing now — the edit is on the wire, peer broadcasts may apply again
     if (latest.length < 2) {
       NS.matchedPoints = [];
       if (NS.detailed) NS.detailed.set([], 0);
@@ -169,6 +178,7 @@
     latest = points;
     if (remoteApply) return;
     if (committed) persistNow();
+    pendingEdit = true;   // un-flushed local edit — protect it from a peer's broadcast until it's sent
     clearTimeout(debounce);
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }
