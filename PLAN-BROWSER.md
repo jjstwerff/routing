@@ -103,6 +103,10 @@ match, same tiny primitive set. Serverless is a *deployment*, not a feature the 
   for free (community rate limits) and is the wrong dependency for "widely available." The **target**
   data source is the self-hosted, range-sliced loft-store dataset in **Phase 8**; Overpass then becomes
   an optional fallback for uncovered areas / freshness.
+- **Browser HTTP is a loft `web` library extension, not bespoke `engine.js`.** Both the interim Overpass
+  fetch and the Phase-8 partial reads should be a fetch bridge inside loft's `web` module
+  (`web::read_range` / a browser `http` backend), so loft code is uniform native↔browser and the app
+  ships no hand-written transport JS. (See PLAN-TILES Phase D; async bridging ties to Step 0.2.)
 
 ### Step 2.2 — End-to-end draw, serverless
 - **Goal:** the existing UI works against the local engine.

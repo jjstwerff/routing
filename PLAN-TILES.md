@@ -20,8 +20,19 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
   never enters the merge (see PLAN-BROWSER Phase 8).
 - **`RoadType` → cost is a table** (data, not code); the mapping from OSM tags → `RoadType` lives in the
   generator only.
-- **Single file + HTTP Range** ("reads parts of it"). Fallback noted in Risks: many small per-tile files
-  if GitHub's Range/size/CORS proves awkward.
+- **Multiple files + a top-level index (the 4 GB cap).** A loft store addresses within u32 offsets, so
+  one file is capped at **4 GB**. The dataset is therefore **N data files** (each a loft store ≤4 GB of
+  self-contained tiles) plus a small **top-level index** store mapping spatial key → `(fileId, offset,
+  length)`. Cross-tile stitching is unaffected — border-node identity is a *global* integer, so
+  neighbours in *different files* still merge on load. (NL+100 km likely fits one data file; the top
+  index is there so scaling to Western Europe just adds files.)
+- **Block reads are a loft `web` library extension, not bespoke app JS — and the store model is never
+  reimplemented in JS.** Partial-file read over HTTP Range (`web::read_range`, + caching) lives in loft's
+  `web` library and carries its own browser shim; the app is loft calling it. All knowledge of the store
+  layout, the index, tiles, and coordinates stays in **loft (wasm)**: loft *plans* which blocks it needs
+  (walking the top index + per-file layout), `web::read_range` fetches exactly those, and loft reads them
+  via the schema and matches. Two-phase so sync wasm never awaits an async fetch —
+  **loft plans → read → loft matches** (complete-before-access, no page-fault); see Phase D.
 
 ---
 
@@ -75,76 +86,88 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
   bicycle_lane, footway, stairs, square…); the existing profile/cost tests still pass on the mapped
   classes.
 
-### B.4 — Generate the tile file
-- **Goal:** produce `nl.tiles` from the intermediate.
+### B.4 — Generate the data files + top-level index
+- **Goal:** produce the `data-*.tiles` files (≤4 GB each) and the `index.tiles` top-level index.
 - **Build:** read NDJSON → classify → **split** at intersections, at tile borders (grid-snapped boundary
   nodes), and at 255 points → assign to tiles → decompose pedestrian squares into synthetic `square`
-  roads → build each tile as a **self-contained durable-store region** + the spatial hash index →
-  concatenate the tile regions + index into the single file (Hilbert/z-ordered), so one tile is one Range.
+  roads → build each tile as a **self-contained durable-store region**; pack tiles (Hilbert/z-ordered)
+  into data files, starting a new file before 4 GB; emit the **top-level index** store mapping spatial
+  key → `(fileId, offset, length)`.
 - **Check (acceptance for the data):** pick a handful of real NL routes; **matching each from the
-  generated tiles equals matching it from a live Overpass fetch** of the same points (same polyline
-  within tolerance). Border-crossing routes connect (boundary nodes merged); a route across a square and
-  one along a cycleway look right; file size + tile count recorded.
+  generated files equals matching it from a live Overpass fetch** of the same points (same polyline
+  within tolerance). Border-crossing routes connect — including a pair whose tiles land in **different
+  data files**; a route across a square and one along a cycleway look right; per-file sizes (each ≤4 GB)
+  + tile count recorded.
 
 ---
 
 ## Phase C — Host on GitHub (for now)
 
-### C.1 — Publish with Range + CORS
-- **Goal:** the file reachable by a browser with partial reads.
-- **Build:** upload `nl.tiles` as a **GitHub Release asset** (Pages/raw have tight size limits; releases
-  allow large files). Note the URL.
-- **Check:** `curl -r 0-31 -D - <url>` returns **`206`** with correct `content-range`; and the response
-  carries **`access-control-allow-origin`** (browser fetch needs it). If either fails at our file size,
-  take the Risks fallback (jsDelivr proxy, or many small files, or move to R2 early).
+### C.1 — Publish the files with Range + CORS
+- **Goal:** the data files + index reachable by a browser with partial reads.
+- **Build:** upload `index.tiles` and each `data-*.tiles` as **GitHub Release assets** (Pages/raw have
+  tight size limits; releases allow large files). Note their URLs (a stable `fileId → URL` map).
+- **Check:** `curl -r 0-31 -D - <data-url>` returns **`206`** with correct `content-range` and carries
+  **`access-control-allow-origin`** (browser fetch needs it). If either fails at our file size, take the
+  Risks fallback (jsDelivr proxy, many small files, or move to R2 early).
 
-### C.2 — Bootstrap the index
-- **Goal:** the client can find the directory/hash from the file head.
-- **Build:** fixed header at offset 0 → pointer to the index region.
-- **Check:** a script Range-fetches header→index and lists tile ids + byte ranges without downloading
-  any slice.
+### C.2 — Bootstrap the top index
+- **Goal:** the client can pull the top index, then let loft resolve blocks.
+- **Build:** `index.tiles` at a known URL, small enough to fetch whole (or ranged); it maps spatial key
+  → `(fileId, offset, length)`.
+- **Check:** a script fetches `index.tiles`, and for a corridor **loft** returns the exact
+  `(fileId, offset, length)` block list — with no data block downloaded yet.
 
 ---
 
-## Phase D — Client tile source (caching hidden behind an abstraction)
+## Phase D — Block reads via a loft `web` extension; loft drives
 
-### D.1 — The abstraction (the whole point)
-- **Goal:** one interface the engine uses; transport + cache invisible.
-- **Build:** `TileSource` with a single async method, e.g. `waysForCorridor(points, margin) → Way[]`
-  (internally: walk the index for the covering tiles, fetch, read via the schema, return). Nothing above it knows
-  about HTTP, Range, or the cache.
-- **Check:** a contract test runs against a **fake in-memory** `TileSource` (backed by the local
-  `nl.tiles`) and the real one, asserting identical `Way[]` for the same corridor.
+The client reimplements **none** of the store model, and the block reader isn't bespoke app JS — it's a
+**loft `web` library extension** for partial-file reads that carries its own browser shim. The app is
+loft calling it; the only JavaScript in existence is that library's fetch bridge.
 
-### D.2 — Range loader behind it
-- **Goal:** fetch only the needed slices.
-- **Build:** load the index once; for a corridor compute covering tiles from the in-store hash; coalesce
-  and Range-fetch just those slices; read the fetched bytes via the loft store schema (no parse).
-- **Check:** for a known corridor it fetches only the expected byte ranges (log them); the returned ways
-  match the offline generator’s tiles for that area.
+### D.1 — `web` partial-read extension (this *is* the JS abstraction)
+- **Goal:** a uniform loft primitive `web::read_range(url, offset, length) → bytes`, backed by
+  `fetch()`+Range in the wasm build and by an HTTP range GET / file-at-offset natively — so the *same*
+  loft code reads blocks in the browser and in native tests.
+- **Design note:** a partial read is async in the browser, but loft calls look synchronous. Bridge it
+  through loft's **event-loop/callback** model (the same one the server's `srv.run` uses) *between* the
+  plan and match phases, so loft never blocks mid-match (ties to PLAN-BROWSER Step 0.2). Sync-bridge
+  (worker + `SharedArrayBuffer`/`Atomics.wait`) is the fallback if a synchronous-looking call is needed.
+- **Check:** from loft (native *and* wasm), `web::read_range` on a hosted `data-*.tiles` returns the
+  exact bytes a local read returns.
 
-### D.3 — Caching layer (hidden)
-- **Goal:** revisits and offline need no network — without the engine knowing.
-- **Build:** an IndexedDB (browser) / on-disk (native test) cache *inside* `TileSource`: index cached on
-  first load; each slice cached on first fetch.
-- **Check:** first `waysForCorridor` fetches (network observed); an overlapping second call makes **zero**
-  network calls; results identical. The engine code is unchanged between the two.
+### D.2 — loft plans → `web::read_range` → loft matches (two-phase)
+- **Goal:** the flow that keeps synchronous wasm from ever awaiting a fetch.
+- **Build:** all in loft: (1) `web::read_range` pulls `index.tiles`; (2) given the index + the corridor,
+  loft returns the exact `(fileId, offset, length)` block list; (3) `web::read_range` fetches those
+  blocks; (4) loft reads them via the schema and matches. All spatial/index logic stays in loft.
+- **Check:** for a known corridor loft requests only the expected blocks; the match equals the offline
+  generator’s route.
 
-### D.4 — Wire to the matcher, serverless
+### D.3 — Caching (inside the extension)
+- **Goal:** revisits and offline need no network — invisibly to the app.
+- **Build:** an IndexedDB (browser) / on-disk (native) cache *inside* the `web` extension: the index and
+  each fetched block cached on first use.
+- **Check:** first request fetches (network observed); an overlapping second makes **zero** network
+  calls; results identical, with no change to the loft app.
+
+### D.4 — Serverless match, end-to-end
 - **Goal:** match an NL route with no server.
-- **Build:** feed `TileSource.waysForCorridor(...)` into `build_graph` + `match_closed_ex`. (Verify
-  natively first — no wasm dependency; browser wiring follows PLAN-BROWSER Phases 1–2/4.)
+- **Build:** wire the two-phase flow to `build_graph` + `match_closed_ex`. (Verify natively first — no
+  wasm dependency; browser wiring follows PLAN-BROWSER Phases 1–2/4.)
 - **Check:** for drawn NL points the matched route equals the Overpass-backed server’s; only static Range
   requests occur; a repeat is fully cache-served.
 
 ---
 
 ## Done (milestone acceptance)
-A `TileSource` that, given NL points, returns ways read from `nl.tiles` on GitHub via Range — caching
-transparently — such that `build_graph`+`match_closed_ex` produce a route **identical to the
-Overpass-backed server** for the same points, with **no server and no full-dataset download**. Browser
-execution (wasm) is the follow-on in PLAN-BROWSER; the abstraction is written so the same `TileSource`
-serves native tests and the browser unchanged.
+Given NL points: loft plans the blocks, a dumb HTTP block reader Range-fetches them from the
+`data-*.tiles` on GitHub (resolved through `index.tiles`, transparently cached), and loft reads them via
+the schema so `build_graph`+`match_closed_ex` produce a route **identical to the Overpass-backed server**
+— with **no server, no full-dataset download, and no store logic in the client.** Browser execution
+(wasm) is the follow-on in PLAN-BROWSER; the same block-reader + loft flow serves native tests and the
+browser unchanged.
 
 ## Follow-on optimisation — persist the *built* graph (skip `build_graph`)
 Because the store *is* the file, a tile can hold not just geometry but the **built graph** the matcher
@@ -163,10 +186,13 @@ tiles — splicing adjacency where an edge crosses a tile border. Do this **only
   file through **jsDelivr** (CDN, sends `206` + CORS — verified for small files, has its own size cap);
   or split into **many small per-tile files** fetched whole (no Range, but many requests + GitHub file
   counts); or move to **Cloudflare R2 / B2** sooner (the real target — GitHub is the stopgap).
-- **File size.** NL+100 km compact should be tens–low-hundreds of MB; if it strains the host, shrink the
-  bbox first (NL + 25 km) to prove the pipeline, then widen.
+- **File size / the 4 GB cap.** Per-file 4 GB is now structural — the generator rolls to a new
+  `data-*.tiles` before the cap, and the top index spans them (so Western Europe is just more files).
+  NL+100 km compact should be tens–low-hundreds of MB (likely one file); if it strains the *host*, the
+  multi-file split also lets each file stay under a host's per-asset limit. Shrink the bbox first
+  (NL + 25 km) to prove the pipeline, then widen.
 - **Layout portability.** We rely on loft's schema-derived store layout being identical native↔wasm
   (checked via `type_layout_fingerprint` in B.2). Endianness isn't explicitly normalized in the store,
   so this holds for little-endian targets (all dev machines + wasm); a big-endian writer would need an
   explicit codec. B.2 is the gate — if it fails, drop to a hand codec.
-- **Freshness.** `nl.tiles` is a snapshot; regeneration is a manual re-run of A→B for now.
+- **Freshness.** The `data-*.tiles` are a snapshot; regeneration is a manual re-run of A→B for now.
