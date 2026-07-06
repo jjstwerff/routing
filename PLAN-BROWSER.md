@@ -238,6 +238,90 @@ merges the shared boundary nodes by coordinate with no cross-slice bookkeeping. 
 space-filling curve (Hilbert / z-order) so a corridor's slices fall in a few *contiguous* Range requests
 rather than scattered ones. The index maps spatial key → those slices' byte ranges within the same file.
 
+**Concrete slice layout (a tile = one self-contained loft store):**
+
+```
+struct Step { x: u32, y: u32, h: u32 }     // fixed-point deltas from the tile origin (same unit)
+struct Road { tp: RoadType, steps: u8 }    // steps = count of points taken from the pool, in order
+struct Tile {
+  x: u64, y: u64, h: u64,                   // origin in GLOBAL fixed-point units
+  roads: vector<Road>,
+  steps: vector<Step>,                      // shared point pool; roads slice it sequentially
+}
+```
+
+- **Fixed-point, not float — for exact identity.** A point's global coordinate is `origin + delta` in
+  pure integer arithmetic (origin and delta share one unit, e.g. 1e-7° ≈ 1 cm horizontal, 1 mm
+  vertical). A shared node is therefore bit-identical in any tile that contains it, so `build_graph`'s
+  index dedups by exact integer key and tile boundaries connect with no rounding drift or snapping
+  tolerance. u32 deltas cover a large tile at that unit; the u64 origin keeps global precision.
+- **Direction is implicit in step order.** A `*_oneway` class is "traversable only in the stored
+  order"; the generator reverses `oneway=-1` ways so stored order is always the legal direction — no
+  direction field.
+- **Elevation rides along** in per-point `h`, so matched-route profiles need no separate terrain fetch.
+
+**`RoadType`** — a `u8` enum, the cost/legality lookup key. Extend by *appending*: a reader that
+predates a value only needs its cost-table row, never a format change.
+
+```
+highway_oneway, motorway, road80, road60, road50, road50_oneway,
+road30, road30_oneway, bicycle, bicycle_oneway, bicycle_lane, path,
+footway, pedestrian, stairs, square
+   … (extended when needed)
+```
+
+- **`bicycle`** = a segregated cycle track (one directional side). **`bicycle_lane`** = an
+  **on-carriageway lane**: a single *bidirectional* polyline that carries the cycle-infra cost bonus and
+  is **crossable / reversible at any point** — free, because it is one line (no connector edges, no
+  node-only side-switch). Modeling a crossable bike road as one `bicycle_lane` line also avoids the
+  "follow one side out, the other side back" retrace artifact.
+- **`footway` / `pedestrian`** = *dismount*: a bike is allowed but must be **walked**, so a high (but
+  finite) cost — a real bike route normally wins, yet it stays passable when it's the only option.
+- **`stairs`** = *impassable*: an e-bike can't be carried up, so it's excluded outright (not just
+  expensive).
+- **`square`** = an open area you cross freely (market square, cycle-allowed plaza) — rideable,
+  bidirectional, low cost. It has no linear geometry, so the *generator* renders it as **synthetic roads
+  between the square's entrance nodes**, plus a few interior junction points where those crossings meet
+  (a small visibility/star graph). The deviation cost then picks the crossing nearest the drawn line.
+  Entrance nodes must share exact fixed-point coordinates with the roads that meet the square so
+  `build_graph` stitches them.
+- **Open water (nautical)** — the same open-area pattern, with a crucial simplification: sailors don't
+  free-optimise, they pick from a **small decision set** (pilotage) — *follow the coast*, *follow the
+  lane / channel*, *cross to a visible landmark* (steer for the church tower — a transit / leading
+  line). So the generator stores a **curated decision graph**, not a dense mesh: nodes are decision
+  points (headlands, harbour mouths, channel buoys) and **landmarks** (towers, lighthouses) you steer
+  for; `Road`s are the legs a navigator would actually take — class `coast` (hug the shore), `channel`
+  (a buoyed lane), `crossing` (a straight inter-visible leg to a landmark / decision point). Shore and
+  hazards are impassable classes; **`h` is reused as depth**; a *sailing* profile gates by draft (deep
+  classes passable, land impassable) exactly as activity profiles gate road classes. The de-noise
+  matcher then cleans a rough sketch ("along the coast, then cross to the tower") onto those legs just
+  as it does a road sketch. This keeps the water graph tiny and human-meaningful; wind/tacking stays out
+  of scope (timing is understood to be weather-dependent).
+- **Class → cost/legality is a table, not hardcoded branches**, so adding a class is a data change.
+
+**Generator / loader conventions this relies on:**
+- *Generator:* split ways at intersections (so a shared node appears in both roads) and at 255 points
+  (the `u8` cap); reverse `oneway=-1`; assign each way its `RoadType`; **split ways at tile borders**
+  (see connection below), so each segment lives in exactly one tile; decompose open areas
+  (squares / plazas / open water) into synthetic roads between entrances plus interior junctions.
+- *Loader:* `build_graph` merges nodes by exact integer coordinate — exact now, thanks to fixed-point;
+  co-loaded neighbouring tiles connect through their shared border nodes automatically.
+- *Trade-off accepted:* no per-road name/id, so the same-road-vs-canal retrace refinement is dropped
+  (exact-node U-turns still fold); the `bicycle_lane` single-line model relieves most of that need.
+
+**Cross-tile connection (boundary nodes).** Tiles are independent — no tile references another by id;
+connection is *emergent*. Rather than duplicating a whole way into every tile it touches, the generator
+**splits each road/leg at the tile borders**, inserting a boundary node exactly on the border and
+**snapped to the global fixed-point grid**. Because borders are grid-aligned and the node is snapped,
+both neighbouring tiles emit the **identical integer** for that shared node, so `build_graph` merges
+them by exact key whenever both tiles are loaded. The working set (the corridor + a one-tile ring)
+always loads both sides of any border the route crosses, so the needed links always materialise — with
+no portal table and no fuzzy matching. Two bonuses fall out: every `Step` stays inside its own tile, so
+deltas remain within `u32`; and long **open-water legs** aren't duplicated across every tile they span —
+each tile holds only its border-to-border piece. *(Optional later, purely as an optimisation: a per-tile
+list of its border nodes + coordinates, so a neighbour can be connected via its portal ring without
+loading the whole neighbour tile.)*
+
 ### Step 8.1 — Native store round-trip (no-parse path works)  ← **foundation; do first**
 - **Goal:** prove a loft store of ways can be persisted and re-loaded with no parse, and matches
   identically.
