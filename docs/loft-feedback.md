@@ -1,7 +1,7 @@
 # loft feedback from the `routing` consumer
 
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
-**Last updated:** 2026-07-03 — see the dated sections at the bottom; the CURRENT upstream asks are
+**Last updated:** 2026-07-06 — see the dated sections at the bottom; the CURRENT upstream asks are
 consolidated in *"2026-07-03 — remaining upstream blockers"*.
 
 `routing` (a phone-first route planner) consumes loft as a **native server** (v1) and, later, as a
@@ -554,6 +554,8 @@ open in both trees).
 2. **loft#488's workaround is still in our tree** — the fix exists only on `tuxedo-work`;
    until it reaches the checkout we build from, `match_for` keeps the `&`-out-param shape.
    Please ping (or merge) when it lands so the natural `return r.pts` can come back.
+   → **RESOLVED 2026-07-06** (see the section below): the fix reached the build we use and the
+   workaround is gone — `match_for` now returns a `MatchResult`, so there is nothing left to retire.
 3. **Open question we can't answer alone:** does `engine_host::http_fetch`'s event-delivery
    compose with the `server` lib's `srv.run` loop? Our server is srv.run-shaped; if http
    completions only arrive under `engine_host::run`, the non-blocking HTTP path stays unusable
@@ -566,3 +568,23 @@ open in both trees).
    - generated code carries a no-op `DbRef::NULL;` statement (`loft_native_*.rs:3837`,
      rustc `path_statements` warning) — harmless, but it means `-D warnings` consumers of
      generated output would break, and it hints at a dead value in the emit path.
+
+---
+
+## 2026-07-06 — loft#488 CLEARED on the routing side (fix reached our build; workaround gone)
+
+loft#488 (native `return struct.field` for a heap vector → empty result) is resolved for routing on
+two fronts, so still-open item 2 (2026-07-03 list) is closed:
+
+- **The fix is in the build we use.** On `../loft` `loft 2026.7.1` the field-of-local heap-vector
+  return delivers correctly on both backends. A direct probe — `return r.pts` where `r` is a local
+  `struct { pts: vector<integer>, gaps: integer }` — prints `len=5` under both `--interpret` and
+  `--native`; the same probe returned `len=0` on the unfixed `0e18de1d` build (see the table above).
+  The 9-file / 31-test kernel suite is green on both backends.
+- **The workaround is no longer in our tree.** `match_for`'s `&`-out-param shape is gone — routing's
+  map-matcher was rewritten and `match_for` now returns a `MatchResult`, with callers destructuring
+  `.pts` (`server/server.loft` `reply_match`, `reply_export`). Routing no longer emits the
+  `return struct.field` pattern at all, so #488 cannot bite here regardless of the toolchain.
+
+The remaining routing-side ask is the heap-param tail-call E0308 (still-open item 1) — a different
+bug, unaffected by this; `area_name`'s bind-then-return workaround stays load-bearing.
