@@ -7,7 +7,8 @@
 //
 // The tiny primitive set this exposes (kept deliberately small, DESIGN.md binding 1):
 //   • tap empty map            → append a point (extends the route; new point becomes the finish)
-//   • tap a segment            → insert a point there, between that segment's two endpoints
+//   • sweep from a segment     → press ON the line and drag: inserts a point there and positions it
+//                                in ONE gesture (a plain tap, no drag, just inserts at the press)
 //   • drag a point             → move it (line follows live)
 //   • double-click a point     → delete it (mouse)
 //   • tap-select + Delete btn  → delete it (touch); Delete/Backspace key also works; Esc deselects
@@ -62,7 +63,7 @@
         lineCap: "round", lineJoin: "round",
       }).addTo(map);
 
-      this._hitLine.on("click", (e) => this._onLineClick(e));
+      this._hitLine.on("mousedown", (e) => this._onLineDown(e));
       map.on("click", (e) => this._onMapClick(e));
       document.addEventListener("keydown", (e) => this._onKey(e));
 
@@ -119,6 +120,15 @@
       this._pts.splice(index, 0, this._makeMarker(latlng));
       this._refresh();
       this._emit();
+    }
+
+    // Insert a point but DON'T commit — the sweep commits once, on release, so insert+drag is a
+    // single undo step. Returns the new { id, marker }.
+    _insertNoEmit(index, latlng) {
+      const pt = this._makeMarker(latlng);
+      this._pts.splice(index, 0, pt);
+      this._refresh();
+      return pt;
     }
 
     // Replace the whole rough route (PLAN step 11 — a cleaned imported GPX track).
@@ -226,14 +236,32 @@
       this.append(e.latlng);
     }
 
-    _onLineClick(e) {
-      // Tap a segment → insert a point there, between that segment's endpoints. The click also bubbles
-      // up to the map handler, so suppress that trailing map click — otherwise the same tap would ALSO
-      // append/extend the route. (Leaflet fires the layer click before the map click.)
-      this._suppressClick = true;
-      if (L.DomEvent && L.DomEvent.stopPropagation) L.DomEvent.stopPropagation(e);
+    // Smooth sweep: press ON the route line → drop a point on that segment and drag it live in ONE
+    // gesture; release commits (one undo step). A plain tap (no drag) still just inserts at the press.
+    _onLineDown(e) {
+      const oe = e.originalEvent;
+      if (oe && oe.shiftKey) return;               // shift+drag is box-select — let it bubble to the map
+      if (oe) L.DomEvent.stop(oe);                 // no map pan, and no bubbling click → append
+      this._suppressClick = true;                  // guard the trailing map click as well
+      this.map.dragging.disable();
       const seg = this._nearestSegment(e.latlng);
-      this._insertAt(seg + 1, e.latlng);
+      const pt = this._insertNoEmit(seg + 1, e.latlng);
+      const move = (ev) => {
+        pt.marker.setLatLng(this.map.mouseEventToLatLng(ev));
+        this._redrawLines();
+        this._emit(false);                         // live length/match preview, not committed
+      };
+      const up = () => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
+        this.map.dragging.enable();
+        this._refresh();
+        this._emit(true);                          // commit once → a single undo step
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+      document.addEventListener("pointercancel", up);
     }
 
     _onKey(e) {
