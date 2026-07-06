@@ -72,32 +72,58 @@ abstraction**. Same verifiable **Goal / Build / Check** contract as `PLAN.md`.
 ### B.2 — Persist/read a tile via loft's durable store (+ native↔wasm portability)  ← **the gate**
 - **Goal:** prove `Tile`/`Road`/`Step` (with the in-store spatial hash) round-trips through loft's
   durable store with **no hand codec**, and reads identically under wasm.
-- **Build:** define the structs (fixed-point u64 origin, u32 `Step` deltas, `Road` = `RoadType`+count,
-  index); `store_persist_bind`/`durable_seal` a synthetic tile to a file; read it back via the schema.
+- **Build:** define the structs (`Tile` u64 origin, `Step{x,y,h:u32}`, `Road{tp,flags,steps:u8}`, index);
+  `store_persist_bind`/`durable_seal` a synthetic tile to a file; read it back via the schema.
 - **Check:** *(native)* persist → reopen → structurally identical, and `build_graph` + `match_closed_ex`
   on it matches the same ways built directly. *(portability)* the file written natively reads correctly
   under the wasm build, and `type_layout_fingerprint` for the `Tile` schema matches on both targets.
   **If the fingerprint differs, switch to an explicit codec before continuing.**
+- **Byte breakdown:** loft packs tightly (pads only when alignment forces it), so `Road{u8,u8,u8}` = 3 B
+  with no slack — `flags` is a real +1 byte, but the `Step` pool (12 B × ~7/road) dominates, so it's
+  ~1% of a tile. Report the split Road vs Step-pool vs index to confirm geometry is ~95%+.
 
 ### B.3 — OSM tags → `RoadType` + cost table
 - **Goal:** the classifier and its cost/legality table.
 - **Build:** a pure mapping `tags → RoadType`; the `RoadType → (cost, passable-by-profile)` table.
-- **Check:** table-driven test — sample tag sets map to the expected class (motorway, road50_oneway,
-  bicycle_lane, footway, stairs, square…); the existing profile/cost tests still pass on the mapped
-  classes.
+- **Grounded on real data:** classifying a central-Enschede sample (240 ways) mapped ~93% and left only
+  two unmapped values — `busway` (13) and `platform` (5). Both are **mode-aware blockers**: passable on
+  **foot** (a walker can cross when no bus is in sight) but **never routed for a bike** (you can't safely
+  stop-look-wait while mounted). So each becomes a class (`Busway`, `Platform`) whose cost-table row is
+  **impassable for cycling (`bike_never`) yet passable for walking/running** — the same mode-aware
+  legality the matcher already applies to bus lanes/motorways. Not dropped; foot routing uses them.
+- **Check:** table-driven test — sample tag sets map to the expected class (`Motorway`, `Road50Oneway`,
+  `BicycleLane`, `Footway`, `Stairs`, `Square`, `Busway`, `Platform`…) with the right per-profile
+  passability (`Busway`/`Platform`: foot yes, bike no); the existing profile/cost tests still pass on the
+  mapped classes.
 
 ### B.4 — Generate the data files + top-level index
 - **Goal:** produce the `data-*.tiles` files (≤4 GB each) and the `index.tiles` top-level index.
-- **Build:** read NDJSON → classify → **split** at intersections, at tile borders (grid-snapped boundary
-  nodes), and at 255 points → assign to tiles → decompose pedestrian squares into synthetic `square`
-  roads → build each tile as a **self-contained durable-store region**; pack tiles (Hilbert/z-ordered)
+- **Build (bake everything in one pass):** read NDJSON → classify `tp` → set `flags` from OSM **route
+  relations** (`cycle_infra`; recreational-network membership) → sample the **DEM/terrarium** for each
+  node's `h` → **split** at intersections, at tile borders (grid-snapped boundary nodes), and at 255
+  points → assign to tiles → decompose pedestrian squares into synthetic `square` roads → build each tile
+  as a **self-contained durable-store region**; pack tiles (Hilbert/z-ordered)
   into data files, starting a new file before 4 GB; emit the **top-level index** store mapping spatial
   key → `(fileId, offset, length)`.
+- **Store isolation (validated recipe):** `store_persist_bind` serializes the *entire* store the bound
+  hash lives in — so if the OSM parse and the tile hash share the default store, the file balloons (an
+  8 km Enschede build persisted **264 MB**, almost all parse scratch). The fix, confirmed: **build the
+  tiles inside a function that returns the final hash-struct** (`fn build(osm) -> Final { ways = parse…;
+  f = Final { idx: [] }; …populate f.idx…; f }`). `ways` is a local, dropped at the return boundary, so
+  the returned `Final` owns a store holding *only* the tiles; `store_persist_bind(f.idx, path)` then
+  writes just those. (This is why keyed collections have no standalone `::new()` — the *function return*
+  is the own-store boundary.) loft packs tightly (pads only for alignment).
 - **Check (acceptance for the data):** pick a handful of real NL routes; **matching each from the
   generated files equals matching it from a live Overpass fetch** of the same points (same polyline
   within tolerance). Border-crossing routes connect — including a pair whose tiles land in **different
   data files**; a route across a square and one along a cycleway look right; per-file sizes (each ≤4 GB)
   + tile count recorded.
+- **First build — validated (Enschede + 8 km):** 39,603 ways → **109 tiles / 230,601 steps**, persisted
+  to a **3.5 MB** durable store (~1.2× the raw data) via the function-return recipe; a fresh process
+  reloads it by mmap with **no parse**, exact counts, and fixed-point reconstructs to the correct lon/lat
+  (6.759–7.030). Deferred in this first cut: per-node `h` (DEM, currently 0), tile-border splitting
+  (deltas are `i32` pre-split → `u32` once split), multi-file/top-index, and reading tiles into the
+  *matcher* (vs raw ways).
 
 ---
 
@@ -179,6 +205,54 @@ tiles — splicing adjacency where an edge crosses a tile border. Do this **only
   the loader unions the loaded tiles and merges their exact-integer border nodes, splicing adjacency.
 - **Check:** a corridor spanning ≥2 tiles matches identically to the `build_graph`-on-load path, with no
   per-load graph construction — only the border splice.
+
+## Future — multi-modal day-plans (rough estimates, not a schedule)
+**Premise:** the app plans *what you want to do* and gives **rough estimates** to answer "does it fit in
+a day?" — it is **not** a scheduler. It never shows exact times (traffic, weather, delays change them);
+it extends the instant-rough-length idea to a rough *duration* across modes.
+
+**Prefer curated "nice" paths, don't chase "fastest".** The day-planning value is routing along
+hand-curated recreational networks — the ones the app **already displays** as the **Waymarkedtrails**
+overlay (`hiking`/`cycling`/`mtb`, switched per activity in `controls.js`). That overlay is *raster*
+(for looking at); routing needs the *vector membership* — which ways belong to those networks — read at
+ingest from the **same OSM route relations Waymarkedtrails is built on** (`network=rcn`/`rwn`/`lcn`,
+`route=hiking`/`bicycle`/`mtb`), so display and routing share a source. Captured as a per-way flag, the
+cost table turns it into a **bounded leisure bonus matched to the active activity's network** — the
+*same* prefer-when-near mechanism as the cycle-infra bonus, so it picks the nice way among candidates by
+your line but **never detours out of the corridor** (still faithful to the sketch — not komoot). Use-
+case-dependent: strong for day-planning, off for get-there-quick. **Fastest point-to-point is explicitly
+not a goal** — Google Maps' job; our edge is curated-nice routing + fits-in-a-day.
+
+A **trip = ordered legs**. Each leg carries a mode/profile; its two ends are one of:
+- a **drawn point**,
+- a **returned-to anchor** (the car/bike you left behind — a loop leg, closed by loop detection),
+- a **named place** (home),
+- a **resolved POI** (nearest station / parking, from the spatial index).
+
+Every private leg (drive / cycle / walk) reuses the existing per-profile matcher over the *one* tileset,
+and contributes a rough duration = distance ÷ typical mode speed (+ small dwell/transfer buffers). The
+day's feasibility is the sum, shown as a rough "~X h" — never a precise clock. Examples: drive → park →
+bike loop → drive home; cycle → lock & walk a town → cycle to the nearest station → train home (the OV-
+fiets pattern).
+
+**Transit stays light, by design:**
+- **Geometry** from OSM route relations (which line, its shape).
+- An **operating calendar** per line, stored in the **transit `RoadType`'s `flags`** (the same 8-bit
+  field as road attributes, reinterpreted per class → `weekday`, `weekend`, `evening`, `night`,
+  `seasonal`, `school`). Filled at generation from a tiny slice of GTFS (`calendar` / `calendar_dates`,
+  joined via `trips`; **not** `stop_times`). Those bits drive a per-line **availability indicator on the
+  map** ("Mon–Fri only", "evenings", "summer") — not a routing filter: the human sees the restriction and
+  plans around it (a set plan day can additionally dim days-off lines). Routing itself stays **untimed**
+  — a transit leg is a connection + a rough duration. Transit lines are `Road`s with a transit class
+  (`BusLine`/`TrainLine`/`TramLine`/`Ferry`), geometry from OSM route relations — same format, just a
+  separately-refreshed layer since calendars change seasonally.
+- **Full timetable routing (exact departures/transfers, RAPTOR/CSA, realtime) is a non-goal** — it would
+  show precise times the premise deliberately avoids.
+
+**Cheap hooks to keep open now** (no commitment): preserve stop/station `ref`/`gtfs:stop_id` when
+classifying `Platform`/stations, and keep `amenity=parking` as anchors — so nearest-POI and later
+calendar-linking just work. Calendar/geometry for transit lives in a separately-refreshed transit layer,
+never in the geographic tiles.
 
 ## Risks & fallbacks
 - **GitHub limits.** Raw/Pages cap file size (~100 MB) and CORS is inconsistent; Release assets are large

@@ -154,12 +154,13 @@ match, same tiny primitive set. Serverless is a *deployment*, not a feature the 
 
 ## Phase 5 — Elevation + GPX, client-side
 
-### Step 5.1 — Elevation from terrarium tiles
-- **Goal:** the elevation profile without the server.
-- **Build:** JS fetches the terrarium PNG tiles, decodes RGB→height on a `<canvas>`, passes the pixel
-  heights into the kernel's `elev_profile`.
-- **Check:** the profile (ascent/descent totals + curve) for a known route matches the server's within
-  tile-noise tolerance.
+### Step 5.1 — Elevation from the baked `h` (no runtime terrain fetch)
+- **Goal:** the elevation profile without the server *and* without fetching terrain — the matched route's
+  nodes already carry `h` (sampled from the DEM at generation, Phase 8 / PLAN-TILES B.4).
+- **Build:** read `h` straight off the matched polyline's nodes for the profile; no PNG fetch/decode.
+  (Fallback only for points off the tiled network — e.g. a bridged gap — fetch terrarium there.)
+- **Check:** the profile (ascent/descent totals + curve) for a known route matches the server's
+  terrarium-sourced profile within tile-noise tolerance, with **no terrain tiles fetched**.
 
 ### Step 5.2 — GPX export/import
 - **Goal:** GPX round-trip in the browser.
@@ -245,8 +246,12 @@ rather than scattered ones. The index maps spatial key → those slices' byte ra
 **Concrete slice layout (a tile = one self-contained loft store):**
 
 ```
-struct Step { x: u32, y: u32, h: u32 }     // fixed-point deltas from the tile origin (same unit)
-struct Road { tp: RoadType, steps: u8 }    // steps = count of points taken from the pool, in order
+struct Step { x: u32, y: u32, h: u32 }     // fixed-point deltas from the tile origin; h = elevation (baked)
+struct Road { tp: RoadType, flags: u8, steps: u8 }   // flags = 8-bit attrs, meaning keyed by tp:
+                                                     //   road    → cycle_infra, unpaved, bridge, on_{hiking,cycling,mtb}_net
+                                                     //   transit → service days: weekday, weekend, evening, night, seasonal, school
+                                                     //   water   → depth class (shallow/med/deep), hazard, bridge clearance / opening
+                                                     // steps = count of points taken from the pool, in order
 struct Tile {
   x: u64, y: u64, h: u64,                   // origin in GLOBAL fixed-point units
   roads: vector<Road>,
@@ -262,7 +267,11 @@ struct Tile {
 - **Direction is implicit in step order.** A `*_oneway` class is "traversable only in the stored
   order"; the generator reverses `oneway=-1` ways so stored order is always the legal direction — no
   direction field.
-- **Elevation rides along** in per-point `h`, so matched-route profiles need no separate terrain fetch.
+- **Everything is baked at generation, read free at runtime.** `tp` from OSM ways+tags; `flags` from OSM
+  route relations (`cycle_infra`; recreational-network membership — the same relations Waymarkedtrails
+  renders — as the curated "nice path" bonus); per-point `h` sampled from the DEM (terrarium). So the
+  client reads class, curated-network bonus, *and* elevation from one tile — **no runtime terrain fetch,
+  no separate overlay lookup, fully offline.**
 
 **`RoadType`** — a `u8` enum, the cost/legality lookup key. Extend by *appending*: a reader that
 predates a value only needs its cost-table row, never a format change.
@@ -296,11 +305,14 @@ footway, pedestrian, stairs, square
   points (headlands, harbour mouths, channel buoys) and **landmarks** (towers, lighthouses) you steer
   for; `Road`s are the legs a navigator would actually take — class `coast` (hug the shore), `channel`
   (a buoyed lane), `crossing` (a straight inter-visible leg to a landmark / decision point). Shore and
-  hazards are impassable classes; **`h` is reused as depth**; a *sailing* profile gates by draft (deep
-  classes passable, land impassable) exactly as activity profiles gate road classes. The de-noise
-  matcher then cleans a rough sketch ("along the coast, then cross to the tower") onto those legs just
-  as it does a road sketch. This keeps the water graph tiny and human-meaningful; wind/tacking stays out
-  of scope (timing is understood to be weather-dependent).
+  hazards are impassable classes. **Depth rides both ways** — precise per-node in `h`, and a coarse
+  **depth class in `flags`** (shallow/med/deep) for quick draft-gating + the on-map indicator; a
+  *sailing* profile gates by draft (deep passable, land impassable) exactly as activity profiles gate
+  road classes. **Bridges over water** use the `flags` bridge/clearance bit → a "restricted passage /
+  opening bridge" indicator (same rough-not-exact premise as transit availability: shows *that* it's
+  restricted, not the opening timetable). The de-noise matcher then cleans a rough sketch ("along the
+  coast, then cross to the tower") onto those legs just as it does a road sketch — tiny, human-meaningful
+  graph; wind/tacking stays out of scope (timing is weather-dependent).
 - **Class → cost/legality is a table, not hardcoded branches**, so adding a class is a data change.
 
 **Generator / loader conventions this relies on:**
