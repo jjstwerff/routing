@@ -13,11 +13,12 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
+use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, TTile, tiles_corridor_ways, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
 OVERPASS = "https://overpass-api.de/api/interpreter";
+TILE_FILE = "soverijssel.tiles";   // local tile data block (PLAN-TILES); when present, matching reads it instead of Overpass
 CORRIDOR_TTL_MS = 900000;  // keep fetched map data for 15 min after the last edit, then evict (free RAM)
 COVS_CAP = 64;             // max distinct fetched corridors remembered for the coverage test
 IMPORT_EPSILON_M = 8.0;    // Douglas–Peucker tolerance for import cleaning (§8)
@@ -170,6 +171,12 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
   pts = parse_points(spec);
   if len(pts) < 2 { return empty; }
   margin = corridor_margin(pts);   // scales with the drawn line (see kernel corridor_margin)
+
+  // NOTE: local tile-block matching is proven (see tiles_corridor_ways / native read6), but wiring it
+  // into the server is blocked by loft's store_persist_bind: it can't bind-once-reuse across the event
+  // loop (a struct-field hash bind crashes, a standalone hash can't be captured by the closure, re-bind
+  // returns empty, and repeated binds appear to mutate the file). Re-enable once the persist path is
+  // fixed. Until then the server matches from Overpass (below).
 
   // 15-min TTL: if it's been a while since the last edit, drop the accumulated map data (free the RAM)
   // and start fresh. now() is wall-clock epoch milliseconds.
@@ -600,7 +607,7 @@ fn main() {
     return;
   }
   println("routing server: http + ws on http://localhost:{PORT}");
-  state = SyncState { subs: [], cways: [], cg: build_graph([]), mstate: match_state_new(), covs: [], last_use: 0 };   // subs (step 19) + accumulating corridor cache (15-min TTL)
+  state = SyncState { subs: [], cways: [], cg: build_graph([]), mstate: match_state_new(), covs: [], last_use: 0 };
   srv.run(fn(ev: server::WsEvent) {
     if ev.http {
       serve(srv, ev.path);

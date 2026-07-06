@@ -210,6 +210,79 @@ pub fn parse_ways(response: text) -> vector<Way> {
   ways
 }
 
+// --- Tile store (PLAN-TILES) — read side, so the server can match from the data block ------------
+// Shared struct layout for both the generator (write) and the server (read): a durable-store hash of
+// tiles, keyed by grid cell. Coords are fixed-point (1e-7°) deltas from the tile origin; `h` is mm.
+TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
+TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
+
+pub struct TStep { x: i32, y: i32, h: i32 }
+pub struct TRoad { tp: u8, flags: u8, steps: u8 }
+pub struct TTile { tkey: integer, ox: integer, oy: integer, oh: integer, roads: vector<TRoad>, steps: vector<TStep> }
+
+// RoadType code → a representative OSM highway value, so the existing tag-based cost model works
+// unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
+fn tile_hw(tp: integer) -> text {
+  if tp == 0 { return "motorway"; }
+  if tp == 1 { return "primary"; }
+  if tp == 2 { return "secondary"; }
+  if tp == 3 { return "tertiary"; }
+  if tp == 4 { return "residential"; }
+  if tp == 5 { return "living_street"; }
+  if tp == 6 { return "service"; }
+  if tp == 7 { return "cycleway"; }
+  if tp == 8 { return "path"; }
+  if tp == 9 { return "footway"; }
+  if tp == 10 { return "pedestrian"; }
+  if tp == 11 { return "steps"; }
+  if tp == 13 { return "busway"; }
+  ""
+}
+
+// Reconstruct Way structs from the tiles covering the corridor (its bbox buffered by `margin` metres,
+// plus a one-cell ring for the assign-by-first-node fringe). Feeds build_graph exactly like parse_ways.
+pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
+  ways: vector<Way> = [];
+  if len(pts) < 1 { return ways; }
+  mnlat = pts[0].lat; mxlat = pts[0].lat; mnlon = pts[0].lon; mxlon = pts[0].lon;
+  for p in pts {
+    if p.lat < mnlat { mnlat = p.lat; } if p.lat > mxlat { mxlat = p.lat; }
+    if p.lon < mnlon { mnlon = p.lon; } if p.lon > mxlon { mxlon = p.lon; }
+  }
+  dlat = margin / 111320.0;
+  dlon = margin / (111320.0 * cos(((mnlat + mxlat) / 2.0) * PI / 180.0));
+  gx0 = round((mnlon - dlon) * TILE_UNIT) as integer; gx1 = round((mxlon + dlon) * TILE_UNIT) as integer;
+  gy0 = round((mnlat - dlat) * TILE_UNIT) as integer; gy1 = round((mxlat + dlat) * TILE_UNIT) as integer;
+  tx0 = gx0 / TILE_CELL - 1; tx1 = gx1 / TILE_CELL + 1;
+  ty0 = gy0 / TILE_CELL - 1; ty1 = gy1 / TILE_CELL + 1;
+  // Iterate the tiles and keep those in the cell window. (Keyed lookup `store[key]` isn't reliable on
+  // a mmap-reloaded store, but iteration is — and a region's tile count is small.)
+  for t in store {
+    ttx = t.ox / TILE_CELL; tty = t.oy / TILE_CELL;
+    if ttx >= tx0 && ttx <= tx1 && tty >= ty0 && tty <= ty1 {
+      o = 0;
+      for r in t.roads {
+        cnt = r.steps as integer;
+        hw = tile_hw(r.tp as integer);
+        cw = ""; surf = "";
+        if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
+        if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
+        coords: vector<GeoPoint> = [];
+        for j in 0..cnt {
+          s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
+          coords += [GeoPoint { lat: (t.oy + s.y) as float / TILE_UNIT, lon: (t.ox + s.x) as float / TILE_UNIT }];
+        }
+        o = o + cnt;
+        if hw != "" && len(coords) >= 2 {
+          ways += [Way { highway: hw, surface: surf, tracktype: "", bicycle: "", access: "",
+                         oneway: "", onewaybike: "", svc: "", cycleway: cw, cyclestreet: "", name: "", coords: coords }];
+        }
+      }
+    }
+  }
+  ways
+}
+
 // --- v1 map-matcher (PLAN step 6) --------------------------------------------------------------
 // Build a graph from the corridor ways (nodes deduped by coordinate — VALIDATED on real Overpass
 // data: shared OSM intersection nodes merge into ONE connected graph), then find the least-cost
