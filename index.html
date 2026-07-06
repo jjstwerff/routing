@@ -25,6 +25,9 @@
   <!-- Matched-route length (PLAN step 7): the geodesic length of the server's map-matched route. -->
   <div id="server-length" class="hud-subreadout" role="status" aria-live="polite">matched —</div>
 
+  <!-- Follow-me progress (geolocate.js): done/left along the matched route while following. -->
+  <div id="follow-readout" class="hud-subreadout hud-follow hidden" role="status" aria-live="polite"></div>
+
   <!-- Optional goal length (PLAN step 14): feedback only — drives the ±delta, never reshapes. -->
   <div id="goal-bar" class="hud-goal">
     <label>goal <input id="goal-km" type="number" min="0" step="0.5" inputmode="decimal" placeholder="—"> km</label>
@@ -35,10 +38,12 @@
   <button id="rough-delete" class="hud-btn hud-btn--danger hidden" type="button"
           aria-label="Delete selected point">Delete point</button>
 
-  <!-- Activity × sub-mode (PLAN step 8): the match profile + Waymarkedtrails overlay (see controls.js). -->
+  <!-- Activity × sub-mode (PLAN step 8): the match profile + Waymarkedtrails overlay (see
+       controls.js). "Paths" hides/shows the overlay (DESIGN §7 — a cleaner read on scale). -->
   <div id="controls" class="hud-controls">
     <select id="activity" aria-label="Activity"></select>
     <select id="submode" aria-label="Sub-mode"></select>
+    <button id="overlay-toggle" type="button" aria-label="Toggle the known-paths overlay">Paths</button>
   </div>
 
   <!-- GPX export/import (PLAN steps 10/11, see gpx.js). -->
@@ -59,6 +64,10 @@
     </div>
     <ul id="routes-list"></ul>
   </div>
+
+  <!-- Device location (opt-in): the browser's permission prompt fires only on this button —
+       never at load (see geolocate.js). -->
+  <button id="gps-toggle" class="hud-gps-toggle" type="button" aria-label="Show my location">◎</button>
 
   <!-- Elevation dock (PLAN step 15): dismissable profile of the matched route, closed by default.
        Lag-tolerant — it trails the drawing and never blocks interaction (see elevation.js). -->
@@ -81,5 +90,6 @@
   <script src="undo.js"></script>
   <script src="elevation.js"></script>
   <script src="routes.js"></script>
+  <script src="geolocate.js"></script>
 </body>
 </html>

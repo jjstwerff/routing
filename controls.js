@@ -20,6 +20,23 @@
   let activity = "Walking";
   let subId = "paved";
 
+  // The last USER-selected activity × sub-mode is remembered per-browser (a restored sketch's
+  // profile still overrides at runtime via setProfile, but doesn't rewrite the preference).
+  const PROFILE_KEY = "routing.profile";
+  try {
+    const p = localStorage.getItem(PROFILE_KEY) || "";
+    const us = p.indexOf("_");
+    const name = Object.keys(KEY).find((k) => KEY[k] === p.slice(0, us));
+    const sub = p.slice(us + 1);
+    if (name && ACT[name].subs.some(([, id]) => id === sub)) {
+      activity = name;
+      subId = sub;
+    }
+  } catch (_) {}
+  const remember = () => {
+    try { localStorage.setItem(PROFILE_KEY, KEY[activity] + "_" + subId); } catch (_) {}
+  };
+
   NS.getProfile = () => KEY[activity] + "_" + subId;
 
   // Step 16: restore a stored "<activity>_<submode>" (opening a saved/working route). Updates the
@@ -41,12 +58,20 @@
         .join("");
     }
     syncOverlay();
+    if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // the restored activity brings its goal
   };
 
   // --- Waymarkedtrails overlay (MTB sub-mode → the mtb layer; else the activity's overlay) ---
+  // The overlay can be hidden entirely (DESIGN §7 — a cleaner read on scale); the choice is
+  // remembered per-browser like the other preferences.
+  const OVERLAY_KEY = "routing.overlay";
+  let overlayOn = true;
+  try { overlayOn = localStorage.getItem(OVERLAY_KEY) !== "0"; } catch (_) {}
+
   const layers = {};
   let currentOverlay = null;
   function wantedOverlay() {
+    if (!overlayOn) return null;
     if (activity === "Cycling" && subId === "mtb") return "mtb";
     return ACT[activity].overlay;
   }
@@ -55,14 +80,25 @@
     if (!layers[name]) {
       layers[name] = L.tileLayer(`https://tile.waymarkedtrails.org/${name}/{z}/{x}/{y}.png`, {
         maxZoom: 19, opacity: 0.7,
+        zIndex: 5,   // above whichever BASE layer is active (base swaps re-add at default z)
         attribution: '&copy; <a href="https://waymarkedtrails.org">Waymarkedtrails</a>',
       });
     }
     return layers[name];
   }
+
+  // The MTB sub-mode swaps the BASE map to CyclOSM (mtb:scale grading, surface, unsigned
+  // singletrack — the plain OSM base shows none of that). "Paths" off = the plain map, base
+  // included: one mental model — the toggle shows/hides ALL activity path info.
+  function wantedBase() {
+    if (!overlayOn) return "osm";
+    return activity === "Cycling" && subId === "mtb" ? "cyclosm" : "osm";
+  }
+
   function syncOverlay() {
     const map = NS.map;
     if (!map) return;
+    if (NS.setBase) NS.setBase(wantedBase());
     const want = wantedOverlay();
     if (currentOverlay && currentOverlay !== want) {
       const l = layer(currentOverlay);
@@ -98,14 +134,31 @@
       subId = ACT[activity].subs[0][1]; // reset sub-mode to the first for the new activity
       fillSubs();
       syncOverlay();
+      remember();
+      if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // recall this activity's goal
       rematch();
     });
     sSel.addEventListener("change", () => {
       subId = sSel.value;
       syncOverlay();
+      remember();
       rematch();
     });
+
+    const oBtn = document.getElementById("overlay-toggle");
+    if (oBtn) {
+      const paint = () => oBtn.classList.toggle("is-off", !overlayOn);
+      paint();
+      oBtn.addEventListener("click", () => {
+        overlayOn = !overlayOn;
+        try { localStorage.setItem(OVERLAY_KEY, overlayOn ? "1" : "0"); } catch (_) {}
+        syncOverlay();
+        paint();
+      });
+    }
+
     syncOverlay();
+    if (NS.applyGoalForActivity) NS.applyGoalForActivity(); // startup: the default activity's goal
   }
 
   if (document.readyState !== "loading") build();

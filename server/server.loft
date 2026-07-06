@@ -13,7 +13,7 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, TTile, tiles_corridor_ways, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, clean_track, retrace_m,
+use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, TTile, tiles_corridor_ways, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
@@ -27,15 +27,49 @@ RETRACE_EPS_M = 15.0;      // a segment this close to earlier ground, headed bac
 
 ROUTES_DIR = "routes";     // the named-route store: one file per route; the DISK is the store,
                            // so every save is write-through and a server restart loses nothing
-NOMINATIM = "https://nominatim.openstreetmap.org/reverse";   // area part of a proposed name
+NOMINATIM = "https://nominatim.openstreetmap.org/reverse";          // area part of a proposed name
+NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search";    // timezone-city locate (msg 26)
+
+CORRIDOR_CACHE_DIR = "scratch/corridor";   // Overpass responses keyed by query hash — repeat
+                                           // matches of the same sketch (every edit-debounce!)
+                                           // must not re-fetch; also what got us rate-limited
 
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";   // + "/z/x/y.png"
 TILE_CACHE_DIR = "scratch/tiles";   // disk cache doubles as the offline-test fixture path
-ELEV_MAX_ZOOM = 13;        // ~19 m/px — plenty for ascent/descent totals
+ELEV_MAX_ZOOM = 13;        // default terrain zoom when the client sends none (~19 m/px)
+ELEV_ZOOM_MIN = 9;         // clamp for the client's map zoom (terrarium serves z0–15)
+ELEV_ZOOM_MAX = 15;
 ELEV_MAX_TILES = 12;       // bbox cap: a sprawling sketch steps the zoom down instead
 ELEV_MAX_SAMPLES = 400.0;  // profile resolution: step = max(total/400, 25 m)
 ELEV_STEP_MIN_M = 25.0;
 ELEV_HYST_M = 3.0;         // dead-band (m) for the ascent/descent totals (tile noise)
+
+// FNV-1a (32-bit, masked so the multiply can't overflow i64) — the corridor-cache filename key.
+fn qhash(t: text) -> integer {
+  h = 2166136261;
+  for c in t {
+    h = ((h ^ (c as integer)) * 16777619) & 0xFFFFFFFF;
+  }
+  h
+}
+
+// The Overpass corridor for a query — disk-cached by query hash, so editing the same sketch
+// re-fetches nothing. "" = failure. A 429 (rate limit) gets ONE polite retry after a pause,
+// never a hammer; other non-200s just fail this attempt (match_for tries again wider).
+fn fetch_corridor(q: text) -> text {
+  _ = mkdir_all(CORRIDOR_CACHE_DIR);
+  path = "{CORRIDOR_CACHE_DIR}/c{qhash(q)}.json";
+  f = file(path);
+  if f.exists() { return f.content(); }
+  resp = web::http_post(OVERPASS, q);
+  if resp.status == 429 {
+    web::sleep_ms(3000);
+    resp = web::http_post(OVERPASS, q);
+  }
+  if resp.status != 200 { return ""; }
+  f.write(resp.body);
+  resp.body
+}
 
 // Parse "lat,lon;lat,lon;..." into points.
 fn parse_points(payload: text) -> vector<GeoPoint> {
@@ -86,13 +120,12 @@ fn reply_length(srv: server::Server, cid: integer, payload: text) {
 fn reply_corridor(srv: server::Server, cid: integer, payload: text) {
   pts = parse_points(payload);
   if len(pts) < 1 { _ = srv.send_to(cid, "3:0"); return; }
-  q = overpass_corridor_query(pts, corridor_margin(pts));
-  resp = web::http_post(OVERPASS, q);
-  if resp.status != 200 {
-    _ = srv.send_to(cid, "3:err {resp.status}");
+  body = fetch_corridor(overpass_corridor_query(pts, corridor_margin(pts)));
+  if body == "" {
+    _ = srv.send_to(cid, "3:err");
     return;
   }
-  _ = srv.send_to(cid, "3:{len(parse_ways(resp.body))}");
+  _ = srv.send_to(cid, "3:{len(parse_ways(body))}");
 }
 
 // Encode a route as "lat,lon;lat,lon;..." (the inverse of parse_points).
@@ -171,11 +204,11 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
   bestbr = 1000000;
   cm = margin;
   for _try in 0..3 {
-    resp = web::http_post(OVERPASS, overpass_corridor_query(pts, margin));
-    if resp.status == 200 {
+    body = fetch_corridor(overpass_corridor_query(pts, margin));
+    if body != "" {
       merged: vector<Way> = [];
       for w in base { merged += [w]; }
-      newways = parse_ways(resp.body);
+      newways = parse_ways(body);
       for w in newways { merged += [w]; }
       g = build_graph(merged);
       ms = match_incremental(match_state_new(), g, pts, profile);   // fresh graph → full build
@@ -188,7 +221,7 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
       if margin >= 350.0 { break; }   // widening past here is too heavy a download to be worth it
       margin = margin * 1.8;          // bridges (or empty) → widen and re-match
     }
-    // non-200 (Overpass 504/rate limit) — transient; just try again
+    // fetch failed (already retried a 429 once inside) — try the next attempt
   }
   // Remember this fetch's footprint for the coverage test (drop the oldest if we hit the cap).
   if bestbr < 1000000 {
@@ -221,8 +254,25 @@ fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: tex
 }
 
 // WS msg 6 → "7:<gpx>": the matched route as a GPX document (JS triggers the download).
+// Payload "<name>|<profile>|<points>": the route's real name goes into the file (Garmin shows it
+// in the course list), and the matched points get <ele> tags sampled from the terrain tiles —
+// ClimbPro et al. need them. Offline the tile fetch degrades to a bare track, never an error.
 fn reply_export(srv: server::Server, state: SyncState, cid: integer, payload: text) {
-  _ = srv.send_to(cid, "7:{gpx_export(match_for(state, payload).pts, "routing route")}");
+  nbar = payload.find("|");
+  name = "";
+  rest = payload;
+  if nbar >= 0 {
+    name = payload[..nbar];
+    rest = payload[nbar + 1..];
+  }
+  if name == "" { name = "routing route"; }
+  matched = match_for(state, rest).pts;
+  ez = elev_zoom(matched, ELEV_MAX_ZOOM, ELEV_MAX_TILES);
+  tiles: vector<TileHeights> = [];
+  if len(matched) >= 2 {
+    for key in elev_tiles_for(matched, ez) { add_tile(tiles, key); }
+  }
+  _ = srv.send_to(cid, "7:{gpx_export(matched, elev_at_points(matched, tiles, ez), name)}");
 }
 
 // WS msg 8 → "9:<retrace_m>|<cleaned points>": clean a raw GPX track into a sparse editable
@@ -294,6 +344,24 @@ fn area_name(lat: float, lon: float) -> text {
   // see loft-feedback.md).
   nm = jtext(addr, "city");
   nm
+}
+
+// WS msg 26 → "27:<lat>|<lon>" (bare "27:" when the lookup fails): forward-geocode a coarse
+// place name. The client derives it from the IANA timezone ("Europe/Amsterdam" → "Amsterdam") —
+// a permission-free way to open a fresh map near the user (never applied over a sketch or a
+// moved view; see app.js). The payload arrives URL-encoded.
+fn reply_locate(srv: server::Server, cid: integer, payload: text) {
+  if payload == "" { _ = srv.send_to(cid, "27:"); return; }
+  resp = web::http_get_h("{NOMINATIM_SEARCH}?q={payload}&format=jsonv2&limit=1",
+                         ["User-Agent: routing-dev/0.1 (personal dev tool)"]);
+  if resp.status != 200 { _ = srv.send_to(cid, "27:"); return; }
+  root = json_parse(resp.body);
+  if len(root) == 0 { _ = srv.send_to(cid, "27:"); return; }
+  hit = root.item(0);
+  la = jtext(hit, "lat");
+  lo = jtext(hit, "lon");
+  if la == "" || lo == "" { _ = srv.send_to(cid, "27:"); return; }
+  _ = srv.send_to(cid, "27:{la}|{lo}");
 }
 
 // WS msg 20 → "21:<proposed name>" for "<profile>|<points>" (bare "21:" for a degenerate sketch).
@@ -500,10 +568,25 @@ fn add_tile(tiles: &vector<TileHeights>, key: text) {
 // WS msg 10 → "11:<up>|<down>|<d,e;…>": the elevation profile of the DETAILED route the client
 // already holds (it sends the matched polyline back, so no re-match/Overpass here). Blocking
 // like the other handlers — fine single-user; the client treats the reply as trailing data.
+// Payload "<mapzoom>|<points>" (or bare "<points>"): the client's MAP zoom, clamped, is the
+// terrain-tile zoom ceiling — zoomed in on a short route samples fine z15 tiles, a zoomed-out
+// tour uses coarse ones; the tile cap still steps sprawling bboxes down.
 fn reply_elevation(srv: server::Server, cid: integer, payload: text) {
-  pts = parse_points(payload);
+  maxz = ELEV_MAX_ZOOM;
+  spec = payload;
+  zbar = payload.find("|");
+  if zbar >= 0 {
+    mz = payload[..zbar] as integer ?? -1;
+    if mz >= 0 {
+      spec = payload[zbar + 1..];
+      if mz < ELEV_ZOOM_MIN { maxz = ELEV_ZOOM_MIN; }
+      else if mz > ELEV_ZOOM_MAX { maxz = ELEV_ZOOM_MAX; }
+      else { maxz = mz; }
+    }
+  }
+  pts = parse_points(spec);
   if len(pts) < 2 { _ = srv.send_to(cid, "11:0|0|"); return; }
-  z = elev_zoom(pts, ELEV_MAX_ZOOM, ELEV_MAX_TILES);
+  z = elev_zoom(pts, maxz, ELEV_MAX_TILES);
   tiles: vector<TileHeights> = [];
   for key in elev_tiles_for(pts, z) { add_tile(tiles, key); }
   step = path_length_m(pts) / ELEV_MAX_SAMPLES;
@@ -541,6 +624,7 @@ fn main() {
       else if ev.msg_id == 18 { reply_delete(srv, state, ev.cid, ev.payload); }
       else if ev.msg_id == 20 { reply_name(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 24 { reply_persist(srv, state, ev.cid, ev.payload); }
+      else if ev.msg_id == 26 { reply_locate(srv, ev.cid, ev.payload); }
     }
   });
 }

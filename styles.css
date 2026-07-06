@@ -154,7 +154,8 @@ html, body {
   display: flex;
   gap: 6px;
 }
-.hud-controls select {
+.hud-controls select,
+.hud-controls button {
   font: inherit;
   font-size: 14px;
   padding: 6px 8px;
@@ -164,6 +165,8 @@ html, body {
   background: rgba(31, 41, 51, 0.92);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
+.hud-controls button { cursor: pointer; }
+.hud-controls button.is-off { color: #6b7683; text-decoration: line-through; }
 
 /* --- HUD buttons ----------------------------------------------------------- */
 .hud-btn {
@@ -316,6 +319,41 @@ html, body {
 }
 .hud-elev-toggle.is-active { background: #2b6cff; }
 
+/* Device-location button (opt-in, see geolocate.js) — stacked above the elevation toggle. */
+.hud-gps-toggle {
+  position: fixed;
+  right: calc(8px + env(safe-area-inset-right));
+  bottom: calc(56px + env(safe-area-inset-bottom));
+  z-index: 1200;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  color: #fff;
+  background: rgba(31, 41, 51, 0.92);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+.hud-gps-toggle.is-active { background: #1a73e8; }
+.hud-gps-toggle.is-follow { background: #17b26a; }
+
+/* Follow-me progress pill — below the goal bar, top-centre stack. */
+.hud-follow { top: calc(104px + env(safe-area-inset-top)); }
+
+/* The location dot (accuracy circle is a Leaflet vector layer). */
+.gps-wrap { display: flex; align-items: center; justify-content: center; }
+.gps-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #1a73e8;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
 .elev-dock {
   position: fixed;
   left: calc(8px + env(safe-area-inset-left));
@@ -374,4 +412,39 @@ html, body {
   border: none;
   padding: 4px 10px;
   cursor: pointer;
+}
+
+/* --- Desktop sizing ---------------------------------------------------------
+   The HUD chrome is sized for thumbs on a phone; on a desktop-class viewport the same targets
+   read small. Pure CSS detection — anything ≥900px wide gets bigger controls (and the corner
+   stacks shift so the grown buttons don't collide). Phones keep the compact layout. */
+@media (min-width: 900px) {
+  .hud-gpx button,
+  .hud-gpx .gpx-import {
+    font-size: 16px;
+    padding: 9px 14px;
+  }
+  .hud-controls select,
+  .hud-controls button {
+    font-size: 16px;
+    padding: 9px 12px;
+  }
+  .hud-routes-toggle {
+    font-size: 16px;
+    padding: 9px 14px;
+    top: calc(62px + env(safe-area-inset-top));
+  }
+  .routes-panel {
+    top: calc(112px + env(safe-area-inset-top));
+    width: min(320px, calc(100vw - 24px));
+    font-size: 15px;
+  }
+  .hud-elev-toggle,
+  .hud-gps-toggle {
+    font-size: 17px;
+    padding: 9px 15px;
+  }
+  .hud-gps-toggle { bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .hud-goal { font-size: 14px; }
+  .hud-btn { font-size: 16px; }
 }

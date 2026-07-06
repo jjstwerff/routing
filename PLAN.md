@@ -195,6 +195,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
   all 4 corners — and closes) pass **interpret == native**.
 
 ### ☑ 10. GPX export (§8)
+- **Amended (2026-07-03, Garmin integration):** the export now carries the route's REAL name
+  (from the routes panel — XML-escaped; it names the download file too) and per-point `<ele>`
+  tags sampled from the terrain tiles (`elev_at_points`; Garmin's ClimbPro/course-time need
+  them; offline the tile fetch degrades to a bare track). Live-verified: a Vondelpark export
+  returned 20 trkpts, all with plausible 1–4 m elevations and the escaped name.
 - **Goal:** get an accurate route out.
 - **Build:** loft emits a `<trk>` of the detailed route; JS triggers the download.
 - **Check:** export a route; the `.gpx` opens in another tool showing the same track.
@@ -260,6 +265,27 @@ accurate length. Ship nothing fancy; prove the pipeline.
   hit it — you remain the only actuator.
 - **Check:** set a 10 km goal; the ±delta tracks live as you edit; nothing about the route changes
   when the goal is set or changed.
+- **Amended (2026-07-03):** OPT-IN device location (`geolocate.js`): a "◎" button starts a
+  geolocation watch — dot + accuracy circle on the map; the map pans ONLY when the DEVICE moves
+  (>25 m) out of the current view, never over a user browsing elsewhere. The browser permission
+  prompt fires only on the click; the remembered opt-in resumes on later visits only when the
+  Permissions API already reports "granted" (no prompt spam); a denial flips the toggle off.
+  CDP-gated with mocked geolocation: no dot before opt-in, in-view fix draws without recentring,
+  an out-of-view move pans to the device, toggle-off removes the dot.
+- **Amended (2026-07-03):** the MTB sub-mode swaps the BASE map to CyclOSM (free OSM-France
+  tiles rendering mtb:scale difficulty, surface, and unsigned singletrack — WMT's mtb overlay
+  shows only signed routes); one chokepoint (`wantedBase` inside `syncOverlay`), gated by the
+  same "Paths" toggle (off = plain OSM everywhere). WMT overlays sit at a higher zIndex so base
+  swaps never cover them. CDP-gated: MTB+off→OSM, MTB+on→CyclOSM+/mtb/, running→OSM+/hiking/.
+- **Amended (2026-07-03):** the DESIGN §7 overlay hide-toggle is in — a "Paths" button hides
+  the Waymarkedtrails layer for a cleaner read on scale; the choice is remembered per-browser
+  (CDP gate: on by default, click hides + stores, reload keeps it hidden).
+- **Amended (2026-07-03):** the last USER-selected activity × sub-mode is remembered
+  per-browser and is the startup default (a restored sketch's profile still overrides at runtime
+  without rewriting the preference; programmatic setProfile never remembers — CDP-gated).
+- **Amended (2026-07-03):** the goal is remembered **per activity** (browser-local): switching
+  activity recalls that activity's goal (10 km running / 60 km cycling coexist); the restored
+  profile after a reload brings its goal back. CDP-gated in `client_routes_test`.
 - **DONE (2026-07-02):** a `goal … km` input; `renderLength` appends `(±delta)` to the instant
   readout when `routing.goalMeters > 0`, recomputed every frame (feedback-only — the goal input
   handler re-renders but never touches the points). Headless-Chromium test (5/5): goal 10 km →
@@ -398,6 +424,11 @@ accurate length. Ship nothing fancy; prove the pipeline.
 ---
 
 ## Deferred (post-v1) — from DESIGN.md §10
+- **Maritime routes — evaluated, not planned (2026-07-03):** kayak/canoe fits the graph-matcher (a
+  `["waterway"]` layer + a `paddling` profile + portage barriers); sailing-with-keel-draft needs a
+  second routing engine (grid least-cost over a bathymetry raster) + hazards + a tide/current time
+  axis. Held off deliberately until the land matcher and its dependants are thoroughly tested — see
+  **DESIGN.md §12** for the full evaluation.
 - **☑ "Not-done" / draft save (2026-07-02):** the instant persist (msg 24) now carries the recent
   undo stack ("#"-separated snapshots, last 30) as `_working`'s 4th line; restoring the working
   sketch imports it, so an unfinished route resumes **with undo intact** (CDP gate: reload →
@@ -434,9 +465,77 @@ accurate length. Ship nothing fancy; prove the pipeline.
 - **☑ Box select (2026-07-03):** SHIFT+drag a marquee → selects the contiguous range spanning
   the boxed points (the §1 range model; tap-first-last remains the touch path; Leaflet boxZoom
   off). CDP gate: marquee over both points → "2 selected".
+- **☑ Elevation zoom follows the map (2026-07-03):** the elevation request carries the map's
+  current zoom (`10:<mapzoom>|<points>`, clamped 9–15; the 12-tile cap still steps sprawling
+  bboxes down) — zoomed in on a short route the profile samples fine z15 terrain (~5 m/px),
+  zoomed out it stays coarse; reopening the dock after zooming re-samples. Gates: zoom-prefixed
+  + legacy forms profile the z13 fixture; a z15 request provably doesn't reuse it (offline:
+  empty; online: real flat-polder terrain, both ≠ the synthetic step signature). The dock's
+  OPEN state is remembered per-browser too (closed stays the default; CDP gate: reload keeps it
+  open).
+- **☑ Initial map view (2026-07-03):** the map opens, in order of what's known: the working
+  sketch (restore, fitBounds) → the REMEMBERED view (saved to localStorage on every moveend —
+  zero UI, the map simply opens where you last had it) → the TIMEZONE city ("Europe/Amsterdam"
+  carries "Amsterdam"; WS `26:` → `27:` Nominatim forward-geocode — permission-free, requested
+  at most once per browser, applied only to an untouched default view) → the Vondelpark default.
+  Gates: locate reply format in `routes_test`; remembered-view reload in `client_routes_test`;
+  live CDP run confirmed locate→save→reload-from-saved end to end.
 - **Still deferred:** offline Mode A (blocked upstream — loft browser data-in primitive), taking
   Nominatim/Overpass calls off the single-threaded event loop (needs loft-level async HTTP —
   also upstream), a touch lasso.
+- **☑ Follow-me lock, current (non-rotating) form (2026-07-03):** ◎ now cycles OFF → SHOW →
+  FOLLOW → OFF. FOLLOW keeps the map centred on the device (moved fixes only — jitter doesn't
+  wiggle the view); a manual drag drops back to SHOW (never fight the user — §1). With a matched
+  route present, the PROGRESS-ANCHORED projection (window around expected progress; the walked
+  part outranks the planned line; >40 m off-route freezes to "off route") drives a
+  "▶ done · left" readout. CDP-gated with mocked GPS: follow-centres along a synthetic route,
+  progress reads 1.36 km at its midpoint, off-route freezes, off clears everything.
+  Sketch-from-my-track can layer on the same stream later.
+- **Future — heading-up rotation (OPTIONAL, and the uncertain half of follow-me):**
+  - *Heading source is speed-dependent.* `coords.heading` is DOPPLER-derived on modern chips —
+    good to a few degrees at cycling/driving speed (≥ ~2.5–3 m/s) but null/garbage below that:
+    at walking pace the per-fix displacement (~1 m/s) drowns in the 5–15 m accuracy radius, so
+    course-up is viable for cycling/driving and genuinely NOT for walking.
+  - *Walking would need the compass* (`DeviceOrientationEvent`) — speed-independent but a SECOND
+    iOS permission prompt (against the no-prompt-spam rule), calibration/interference flakiness,
+    and fragmented platform APIs. Walking staying north-up is a defensible answer, not a gap.
+  - *The bigger blocker: core Leaflet cannot rotate the map at all* — this needs the community
+    `leaflet-rotate` plugin (touch + our panes/overlays would need vetting) or a renderer move
+    (MapLibre GL). That cost, not the heading source, decides whether rotation happens.
+  - *ROUTE-LINKED heading — the answer to the wildness.* When following a PLANNED route (the
+    normal case here: you sketched it before heading out), the route's own geometry is the
+    heading source: project the GPS fix onto the matched polyline, take the route's bearing at
+    that point. GPS then supplies only POSITION (reliable within its accuracy circle) — no
+    Doppler, no compass, works at walking pace, and it can't "behave wildly" because the bearing
+    only changes as you progress along a smooth known line. The parts that need care:
+    - *The WALKED route outranks the planned one.* Progress along the route is COMMITTED state,
+      not a hint: the user knows what they've already covered, and the algorithm must too. Each
+      new fix projects into a bounded window around the expected progress (last progress + the
+      distance actually moved, plus slack for a short backtrack) — NEVER a global nearest-point
+      search over the whole planned line. That is what kills the wildness where a route passes
+      near itself: at a loop crossing or between out-and-back legs, the walked-consistent leg
+      wins even when the other leg is geometrically nearer; already-covered segments are simply
+      not candidates. Travel direction falls out of the same anchor (progress advances =
+      forward), and a deviation → rejoin re-acquires against the UN-walked remainder, not the
+      whole route.
+    - *Deviation fallback:* fix further than ~40 m off the route → freeze the rotation (hold the
+      last bearing, or ease to north-up); resume when back on. Never rotate from noise.
+    - *Blend, don't switch:* at cycling+ speed, Doppler course and route bearing agree when
+      on-route; route bearing wins while on-route, Doppler covers off-route riding.
+  - *The projection is a shared primitive* (fix → nearest point + offset along the matched
+    route): the same helper powers progress display (done / remaining km), an off-route notice,
+    and sketch-from-my-track — build it once, client-side.
+  - If built: rotation only ever engages in follow mode, and off by default.
+- **Future — deviation guidance (obstacles / changed plans):** a deviation is INPUT, not an
+  error. When the device stays off-route (past the freeze threshold for real distance/time),
+  never point the user BACK to the abandoned point — they may have good reasons (a blocked path,
+  a spontaneous detour). Gently guide toward the route AHEAD, and above all the END point:
+  PROPOSE — never auto-apply (§1: the user is the only actuator) — a re-match from the CURRENT
+  position to the remaining route, weighted to rejoin naturally further along rather than to
+  return to the departure point. UI sketch: the frozen "off route" readout grows a one-tap
+  "re-route from here" affordance; accepting replaces the sketch's remainder (undo-able), the
+  walked part stays committed. The progress-anchored projection already supplies the trigger and
+  every anchor it needs (deviation point, un-walked remainder, end point).
 
 ---
 

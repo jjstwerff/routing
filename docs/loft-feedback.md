@@ -1,7 +1,7 @@
 # loft feedback from the `routing` consumer
 
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
-**Last updated:** 2026-07-03 — see the dated sections at the bottom; the CURRENT upstream asks are
+**Last updated:** 2026-07-06 — see the dated sections at the bottom; the CURRENT upstream asks are
 consolidated in *"2026-07-03 — remaining upstream blockers"*.
 
 `routing` (a phone-first route planner) consumes loft as a **native server** (v1) and, later, as a
@@ -490,3 +490,101 @@ per function.  #7's auto-invalidation and #8 (loft#475) were already fixed.
 **5. The `{m:1.0}` precision-0 ICE — fixed** (regression:
 `tests/scripts/448-float-format-precision-zero.loft`); your `round(m) as integer`
 workaround can stay or go.
+
+
+---
+
+## 2026-07-03 (loft side) — loft#488 ROOT-CAUSED + FIXED (pending merge)
+
+The "context-dependence" was an illusion: `parse_return`'s buffer-delivery gate only fired when
+the returned value's deps included an ARGUMENT — `return b.v` (field of param) delivered,
+`return r.pts` (field of a LOCAL) never did, in any program. Native returned the empty DbRef
+honestly; interpret only APPEARED correct (top-of-stack read off a freed record + a store leak).
+Your passing reductions all returned field-of-argument or whole locals — that's why bottom-up
+reduction couldn't corner it. Fixed on `tuxedo-work` `f7378b54` (gate now also fires for a dep on
+a non-vector local; regression `450-struct-field-vector-return.loft`); verified against THIS
+repo's real repro: `match_for` with the pre-workaround `return r.pts` delivers 20/20 points on
+both backends and the live WS round-trip returns `5:387.7…|…` again. **After the next loft merge
+the `&`-out-param workaround in `match_for` can be retired.** The return-shape differential
+corpus suggestion is noted on the issue for @PLN85's return-machinery pass.
+
+## 2026-07-03 — native: `return struct.field` (heap vector) DELIVERS EMPTY, context-dependent — FILED as loft#488
+
+Fifth of the week, same return-position family, found live (the app drew no matched routes). In
+the routing server, `match_for` ended with `return r.pts;` where `r` is a `MatchResult { pts:
+vector<GeoPoint>, gaps: integer }` local — and the caller received an EMPTY vector. Proof it's
+the return, not the compute: a `println` immediately before the return printed `pts=20 gaps=0`
+while the wire reply carried the empty encoding. Interpret is fine.
+
+**Context-dependent:** three standalone reductions (same corridor file, same trace, sliced-text
+args, both backends) all pass — the corruption only manifests inside the full server program,
+like the constructed-text/`float?` bug before its fix. So no minimal repro yet; the in-context
+evidence is: loft HEAD `f845424d`+, `--native`, `server/server.loft` @ `match_for`, reply `5:0|`
+with the debug print showing 20 points at the return site.
+
+**Workaround (applied):** the `&`-out-param pattern — the caller owns the vector, the fn appends
+element-by-element (`out += [r.pts[i] ?? …]`). That shape has been reliable all week.
+
+**Meta-observation for @PLN85:** all five native bugs this week sit in RETURN-position machinery
+around heap/wrapped values (float?-with-constructed-arg, E0605 parse temp, Str::new double-wrap,
+and now a struct-field vector delivering empty). A poison-style differential corpus over "return
+X" shapes (X = field/param/local/call, value = text/vector/struct/optional, arg mix constructed/
+literal) × (small/large program context) would likely net the whole class.
+
+**Consumer verification (routing side, 2026-07-03 13:0x).** Re-ran everything against
+`../loft` `0e18de1d` (release build 12:48, @PLN85 ownership flip default-ON) and
+`../loft2` `f7378b54`:
+
+| Check | ../loft `0e18de1d` | ../loft2 `f7378b54` |
+|---|---|---|
+| loft#488 real repro (`match_for` with `return r.pts`, DIRECT probe) | len=0 (fix not merged — expected control) | **len=20 — FIXED** |
+| precision-0 format `{m:1.0}` | prints `4` — **fixed** | prints `4` — **fixed** |
+| text tail-call, heap-param callee (`Str::new(&Str)`) | E0308 — still open | E0308 — still open |
+| full kernel suite (9 files, 31 tests, interpret + native) | **all green** | — |
+
+The `&`-out-param workaround in `match_for` stays until f7378b54 reaches the `../loft`
+checkout we build from; `area_name`'s bind-then-return stays load-bearing (tail-call E0308
+open in both trees).
+
+**Still-open problems on the routing side (same day, explicit list — the table above buries them):**
+
+1. **Heap-param tail-call E0308 is STILL BITING** — not historical: the minimal repro
+   (`pick`/`jtext`, this doc 2026-07-02) fails `--native` on BOTH `0e18de1d` and `f7378b54`
+   today. `area_name`'s bind-then-return workaround remains load-bearing in production.
+2. **loft#488's workaround is still in our tree** — the fix exists only on `tuxedo-work`;
+   until it reaches the checkout we build from, `match_for` keeps the `&`-out-param shape.
+   Please ping (or merge) when it lands so the natural `return r.pts` can come back.
+   → **RESOLVED 2026-07-06** (see the section below): the fix reached the build we use and the
+   workaround is gone — `match_for` now returns a `MatchResult`, so there is nothing left to retire.
+3. **Open question we can't answer alone:** does `engine_host::http_fetch`'s event-delivery
+   compose with the `server` lib's `srv.run` loop? Our server is srv.run-shaped; if http
+   completions only arrive under `engine_host::run`, the non-blocking HTTP path stays unusable
+   here and the `web::http_begin`/`http_poll` pair (marked "open design") becomes necessary
+   after all.
+4. **Every native build of our server prints two warts** (fresh 12:48 build, `srv_live15.log`):
+   - `loft: warning — …/target/release/libloft.rlib is STALE (older than deps/libloft.rlib …)`
+     on every run — if deps-first is always right, the bare-path rlib check reads like noise
+     consumers can't act on (we must not `cargo build` in ../loft).
+   - generated code carries a no-op `DbRef::NULL;` statement (`loft_native_*.rs:3837`,
+     rustc `path_statements` warning) — harmless, but it means `-D warnings` consumers of
+     generated output would break, and it hints at a dead value in the emit path.
+
+---
+
+## 2026-07-06 — loft#488 CLEARED on the routing side (fix reached our build; workaround gone)
+
+loft#488 (native `return struct.field` for a heap vector → empty result) is resolved for routing on
+two fronts, so still-open item 2 (2026-07-03 list) is closed:
+
+- **The fix is in the build we use.** On `../loft` `loft 2026.7.1` the field-of-local heap-vector
+  return delivers correctly on both backends. A direct probe — `return r.pts` where `r` is a local
+  `struct { pts: vector<integer>, gaps: integer }` — prints `len=5` under both `--interpret` and
+  `--native`; the same probe returned `len=0` on the unfixed `0e18de1d` build (see the table above).
+  The 9-file / 31-test kernel suite is green on both backends.
+- **The workaround is no longer in our tree.** `match_for`'s `&`-out-param shape is gone — routing's
+  map-matcher was rewritten and `match_for` now returns a `MatchResult`, with callers destructuring
+  `.pts` (`server/server.loft` `reply_match`, `reply_export`). Routing no longer emits the
+  `return struct.field` pattern at all, so #488 cannot bite here regardless of the toolchain.
+
+The remaining routing-side ask is the heap-param tail-call E0308 (still-open item 1) — a different
+bug, unaffected by this; `area_name`'s bind-then-return workaround stays load-bearing.

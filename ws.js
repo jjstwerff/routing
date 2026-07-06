@@ -21,6 +21,8 @@
   let latest = null;   // most recent points; sent once connected / after debounce
   let debounce = null;
   let remoteApply = false;   // step 19: applying a peer's edit — don't echo it back
+  let pendingEdit = false;   // a local edit is scheduled but not yet flushed (msg 4). A peer's
+                             // broadcast arriving in that window must not overwrite it — see applyRemoteSync.
 
   const profileOf = () => (NS.getProfile ? NS.getProfile() : "walking_paved");
   const encode = (points) => points.map((p) => p.lat + "," + p.lon).join(";");
@@ -40,6 +42,7 @@
     const lengthM = parseFloat(parts[0]) || 0;
     const pts = decode(parts[1] || "");
     const bridges = decode(parts[2] || "");
+    NS.matchedPoints = pts;   // the follow-me projection reads this (geolocate.js)
     if (NS.detailed) NS.detailed.set(pts, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(pts);
   }
@@ -48,6 +51,12 @@
   // on. Apply it directly — the broadcast carries the server's match, so nothing is re-requested
   // and nothing echoes (rough.setPoints fires onChange → sendPoints, gated by remoteApply).
   function applyRemoteSync(raw) {
+    // A local edit is mid-flight (its debounced match hasn't been sent yet). Applying a peer's
+    // state now would overwrite that un-sent edit — both the rough layer and `latest` — and it
+    // would be lost when the flush fires. The local edit wins and flushes; we pick the peer's
+    // state up on its next broadcast. (Also swallows a peer's OPEN echo of the same route, which
+    // would otherwise clobber a sketch the local user is in the middle of editing.)
+    if (pendingEdit) return;
     const p = raw.slice(raw.indexOf(":") + 1).split("|");
     if (p.length < 5) return;
     const profile = p[1];
@@ -63,6 +72,7 @@
     } finally {
       remoteApply = false;
     }
+    NS.matchedPoints = matched;
     if (NS.detailed) NS.detailed.set(matched, lengthM, bridges);
     if (NS.elevation) NS.elevation.onMatched(matched);
   }
@@ -79,12 +89,34 @@
     }
   }
 
-  function downloadGpx(gpx) {
+  let lastExportName = "";
+  const gpxFilename = () =>
+    (lastExportName || "route").replace(/[^\w\u00C0-\uFFFF -]+/g, "").trim() + ".gpx";
+
+  // Deliver the exported GPX. On phones the native SHARE SHEET is the best Garmin handoff —
+  // Garmin Connect registers as a .gpx handler, so picking it imports the course and offers the
+  // push-to-watch. navigator.share needs a secure context (HTTPS or localhost; a plain-http LAN
+  // address falls back) and a fresh user gesture (a slow match can outlive the activation window
+  // — also falls back). A cancelled share sheet delivers nothing, deliberately.
+  async function deliverGpx(gpx) {
+    const fname = gpxFilename();
+    if (navigator.canShare && window.File) {
+      try {
+        const file = new File([gpx], fname, { type: "application/gpx+xml" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: fname });
+          return;
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;   // the user closed the sheet
+        // NotAllowedError (activation expired) etc. — fall through to the download
+      }
+    }
     const blob = new Blob([gpx], { type: "application/gpx+xml" });
     const href = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    a.download = fname;
     a.href = href;
-    a.download = "route.gpx";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -93,11 +125,14 @@
 
   function flush() {
     if (!ws || ws.readyState !== WebSocket.OPEN || latest === null) return;
+    pendingEdit = false;   // flushing now — the edit is on the wire, peer broadcasts may apply again
     if (latest.length < 2) {
+      NS.matchedPoints = [];
       if (NS.detailed) NS.detailed.set([], 0);
       if (NS.elevation) NS.elevation.onMatched([]);
       return;
     }
+    if (NS.detailed && NS.detailed.pending) NS.detailed.pending();
     ws.send("4:" + profileOf() + "|" + encode(latest));
   }
 
@@ -112,13 +147,14 @@
       const raw = String(e.data);
       const id = raw.slice(0, raw.indexOf(":"));
       if (id === "5") applyMatched(raw);
-      else if (id === "7") downloadGpx(raw.slice(2));
+      else if (id === "7") deliverGpx(raw.slice(2));
       else if (id === "9" && NS.rough && NS.rough.setPoints) applyImported(raw);
       else if (id === "11" && NS.elevation) NS.elevation.apply(raw);
       else if (id === "13" && NS.routes) NS.routes.applyList(raw.slice(raw.indexOf(":") + 1));
       else if (id === "17" && NS.routes) NS.routes.applyRoute(raw.slice(raw.indexOf(":") + 1));
       else if (id === "21" && NS.routes) NS.routes.applyName(raw.slice(raw.indexOf(":") + 1));
       else if (id === "23") applyRemoteSync(raw);
+      else if (id === "27") applyLocate(raw);
     });
     ws.addEventListener("close", () => setTimeout(connect, 1000));
     ws.addEventListener("error", () => { try { ws.close(); } catch (_) {} });
@@ -142,13 +178,17 @@
     latest = points;
     if (remoteApply) return;
     if (committed) persistNow();
+    pendingEdit = true;   // un-flushed local edit — protect it from a peer's broadcast until it's sent
     clearTimeout(debounce);
     debounce = setTimeout(flush, MATCH_DEBOUNCE_MS);
   }
 
+  // The route's name travels with the export — Garmin shows it in the course list — and names
+  // the downloaded file too.
   function requestExport(points) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !points || points.length < 2) return;
-    ws.send("6:" + profileOf() + "|" + encode(points));
+    lastExportName = NS.routes && NS.routes.currentName ? NS.routes.currentName() : "";
+    ws.send("6:" + lastExportName.replace(/[|\n]/g, " ") + "|" + profileOf() + "|" + encode(points));
   }
 
   // Step 11: hand a raw GPX track to the server for cleaning → it replies "9:<cleaned points>".
@@ -158,10 +198,12 @@
   }
 
   // Step 15: the elevation profile of the DETAILED route (the client sends the matched polyline
-  // back, so the server needs no re-match). Reply "11:" lands in elevation.js.
+  // back, so the server needs no re-match). The current MAP zoom rides along as the terrain-tile
+  // zoom ceiling — profile resolution follows what you're looking at. Reply "11:" → elevation.js.
   function requestElevation(points) {
     if (!ws || ws.readyState !== WebSocket.OPEN || !points || points.length < 2) return;
-    ws.send("10:" + encode(points));
+    const zoom = NS.map ? Math.round(NS.map.getZoom()) : 13;
+    ws.send("10:" + zoom + "|" + encode(points));
   }
 
   // Step 16: the named route store (replies "13:" list / "17:" route land in routes.js).
@@ -188,9 +230,34 @@
     ws.send("20:" + profileOf() + "|" + encode(latest));
   }
 
+  // Coarse locate for a FRESH map (no working sketch to restore): the IANA timezone carries a
+  // city name ("Europe/Amsterdam" → "Amsterdam") — permission-free, geocoded server-side
+  // (26: → 27: → app.js centerIfUntouched). Zones without a city part ("UTC") just skip.
+  function requestLocate() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (NS.needsLocate && !NS.needsLocate()) return;   // a remembered/moved view is better info
+    let tz = "";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) { return; }
+    if (tz.indexOf("/") < 0) return;
+    const city = tz.slice(tz.lastIndexOf("/") + 1).replace(/_/g, " ");
+    if (city) ws.send("26:" + encodeURIComponent(city));
+  }
+
+  // "27:<lat>|<lon>" — apply only while the view is untouched (app.js guards).
+  function applyLocate(raw) {
+    const body = raw.slice(raw.indexOf(":") + 1);
+    const bar = body.indexOf("|");
+    if (bar < 0) return;
+    const lat = parseFloat(body.slice(0, bar));
+    const lon = parseFloat(body.slice(bar + 1));
+    if (Number.isFinite(lat) && Number.isFinite(lon) && NS.centerIfUntouched) {
+      NS.centerIfUntouched(lat, lon);
+    }
+  }
+
   NS.ws = {
     sendPoints, requestExport, requestImport, requestElevation, connect,
-    saveRoute, requestRoutesList, openRoute, deleteRoute, requestName,
+    saveRoute, requestRoutesList, openRoute, deleteRoute, requestName, requestLocate,
     get connected() { return !!ws && ws.readyState === WebSocket.OPEN; },
   };
   connect();

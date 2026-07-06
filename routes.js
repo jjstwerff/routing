@@ -92,7 +92,11 @@
   // "17:" payload — "<name>|<profile>|<points>|<history>" ("" when unknown; history only for
   // `_working` — the persisted undo stack, "#"-separated snapshots) (from ws.js).
   function applyRoute(payload) {
-    if (!payload) return;
+    if (!payload) {
+      // Nothing to restore — a genuinely fresh map: locate it coarsely by the timezone's city.
+      if (NS.ws && NS.ws.requestLocate) NS.ws.requestLocate();
+      return;
+    }
     const bar = payload.indexOf("|");
     const bar2 = payload.indexOf("|", bar + 1);
     if (bar < 0 || bar2 < 0) return;
@@ -130,5 +134,9 @@
   });
   toggle.addEventListener("click", () => setOpen(!open));
 
-  NS.routes = { applyList, applyRoute, applyName, onConnect };
+  // The current route's name (the opened/saved name or the accepted proposal) — the GPX export
+  // stamps it into the file.
+  const currentName = () => (nameInput.value || "").trim();
+
+  NS.routes = { applyList, applyRoute, applyName, onConnect, currentName };
 })();

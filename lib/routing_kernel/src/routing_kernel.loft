@@ -1239,14 +1239,46 @@ pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> te
 }
 
 // --- GPX export (PLAN step 10, DESIGN §8) ------------------------------------------------------
-// Emit the detailed route as a GPX 1.1 <trk>. loft owns import/export (§2). JS triggers the actual
-// download.
-pub fn gpx_export(points: vector<GeoPoint>, name: text) -> text {
+
+ELEV_NONE = -100000.0;   // "no elevation known" — safely below terrarium's −32768 m floor
+
+// The route name is user input inside XML — escape the three structural characters.
+fn xml_escape(t: text) -> text {
+  s = "";
+  for c in t {
+    ci = c as integer;
+    if ci == 38 { s += "&amp;"; }
+    else if ci == 60 { s += "&lt;"; }
+    else if ci == 62 { s += "&gt;"; }
+    else { s += "{c}"; }
+  }
+  s
+}
+
+// Heights (m) at each point from pre-decoded terrain tiles; a missing tile → ELEV_NONE.
+pub fn elev_at_points(pts: vector<GeoPoint>, tiles: vector<TileHeights>, zoom: integer) -> vector<float> {
+  out: vector<float> = [];
+  for i in 0..len(pts) {
+    out += [height_at(tiles, pts[i].lat, pts[i].lon, zoom) ?? ELEV_NONE];
+  }
+  out
+}
+
+// Emit the detailed route as a GPX 1.1 <trk>. loft owns import/export (§2); JS triggers the
+// actual download. `elevs` (parallel to `points`; ELEV_NONE = unknown) adds <ele> tags — Garmin's
+// climb features (ClimbPro, course time) need them; an empty vector emits a bare track.
+pub fn gpx_export(points: vector<GeoPoint>, elevs: vector<float>, name: text) -> text {
   s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
   s += "<gpx version=\"1.1\" creator=\"routing\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n";
-  s += "  <trk><name>{name}</name><trkseg>\n";
+  s += "  <trk><name>{xml_escape(name)}</name><trkseg>\n";
   for i in 0..len(points) {
-    s += "    <trkpt lat=\"{points[i].lat}\" lon=\"{points[i].lon}\"></trkpt>\n";
+    e = ELEV_NONE;
+    if i < len(elevs) { e = elevs[i] ?? ELEV_NONE; }
+    if e > -32768.0 {
+      s += "    <trkpt lat=\"{points[i].lat}\" lon=\"{points[i].lon}\"><ele>{e:1.1}</ele></trkpt>\n";
+    } else {
+      s += "    <trkpt lat=\"{points[i].lat}\" lon=\"{points[i].lon}\"></trkpt>\n";
+    }
   }
   s += "  </trkseg></trk>\n</gpx>\n";
   s

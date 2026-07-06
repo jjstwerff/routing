@@ -19,6 +19,7 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 
 fuser -k "$port"/tcp 2>/dev/null || true
 sleep 1
+rm -rf "$here/scratch/chromium-9223"   # hermetic: localStorage (dock/profile/goals) must not leak between runs
 echo "building + starting server (loft --native)…"
 ( cd "$here" && LOFT_TIMEOUT=0 "$loft" --native server/server.loft --lib "$here/lib" >"$here/scratch/srv_croutes.log" 2>&1 ) &
 srv=$!

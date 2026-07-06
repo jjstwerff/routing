@@ -28,13 +28,14 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
 | `index.html` | shell: map div, HUD readouts, controls, script tags |
 | `geo.js` | `geodesicMeters` (WGS84 Vincenty — same algorithm as the kernel, f64-identical), `roughLength`, `formatDistance` — the **instant** JS length (every frame) |
 | `rough.js` | `RoughLayer`: ordered rough points, markers, straight-line polyline; tap-place / drag / insert / delete; **contiguous range** select (two anchors, or SHIFT+drag box — spans the boxed points); `setPoints`; emits `onChange(points, committed)` |
-| `app.js` | creates the map + the read-only "detailed" pane; wires `rough.onChange` → instant length (+ goal ±delta) → `ws.sendPoints` → `undo.record` |
-| `ws.js` | WebSocket client: match (debounced on edit-release), export, import; draws the matched route |
-| `controls.js` | activity + sub-mode selectors → the match profile; Waymarkedtrails overlay switch |
+| `app.js` | creates the map (initial view: remembered localStorage view → timezone-city locate → Vondelpark default) + the read-only "detailed" pane; wires `rough.onChange` → undo → `ws.sendPoints`; goal length remembered PER ACTIVITY; shared toast |
+| `ws.js` | WebSocket client: match (debounced on edit-release), export (phone: native share sheet → Garmin Connect; else download), import; draws the matched route |
+| `controls.js` | activity + sub-mode selectors → the match profile (last USER selection remembered per-browser; a restored sketch's profile overrides at runtime without rewriting the preference); Waymarkedtrails overlay switch + a "Paths" hide-toggle (DESIGN §7), remembered too; the MTB sub-mode swaps the BASE map to CyclOSM (mtb:scale grading, unsigned singletrack), also gated by the toggle |
 | `gpx.js` | Export button; Import file input (parses `.gpx` with `DOMParser`) |
 | `undo.js` | per-session snapshot history; `Ctrl/Cmd+Z` / `Shift+Z` / `Ctrl+Y`; bulk-delete snackbar |
-| `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, requests `10:` on open / re-match — the **lag-tolerant** tier |
+| `elevation.js` | bottom-dock elevation profile (canvas, pointer crosshair with distance·elevation label) + ↑/↓ totals; closed by default, open state remembered per-browser; requests `10:` on open / re-match — the **lag-tolerant** tier |
 | `routes.js` | named-route panel (save/list/open/delete, closed by default) + the silent `_working` restore at first connect + the proposed-name prefill (typed text wins) |
+| `geolocate.js` | OPT-IN device location, ◎ cycles off→show→follow: SHOW pans only when the device moves out of view; FOLLOW centres the map (drag drops the lock) and runs the progress-anchored route projection ("done · left", walked-part priority, off-route freeze); prompt only on the button, remembered opt-in resumes as SHOW when already granted |
 | `vendor/leaflet/` | Leaflet 1.9.4, vendored (no CDN) |
 
 ### Server
@@ -42,7 +43,7 @@ where it has full HTTP/files. (Why not loft-in-the-browser: DESIGN.md §3/§4 + 
   HTTP+WS event loop (`server::listen` + `srv.poll_event`/`run`), serves the static files with
   `#cwd`, dispatches WS messages. Constants: `PORT=18080`, `CORRIDOR_MARGIN_M=30`,
   `ROUND_TRIP_RATIO=0.25`, `IMPORT_EPSILON_M=8`, `IMPORT_MIN_SEP_M=2`, `OVERPASS` endpoint;
-  elevation: `TERRAIN_URL` (AWS terrarium), `TILE_CACHE_DIR=scratch/tiles`, `ELEV_MAX_ZOOM=13`,
+  elevation: `TERRAIN_URL` (AWS terrarium), `TILE_CACHE_DIR=scratch/tiles`, `ELEV_MAX_ZOOM=13` (default when the client sends no zoom; clamp `ELEV_ZOOM_MIN=9`/`ELEV_ZOOM_MAX=15`),
   `ELEV_MAX_TILES=12`, `ELEV_MAX_SAMPLES=400`, `ELEV_STEP_MIN_M=25`, `ELEV_HYST_M=3`.
 - Terrain tiles are fetched with `web::http_get_file` (binary-safe download-to-file; added to the
   vendored web lib — `http_get` mangles binary bodies through UTF-8), disk-cached under
@@ -79,15 +80,16 @@ import, elevation), all asserted **interpret == native**.
 | Send (client→server) | Reply (server→client) | Purpose |
 |---|---|---|
 | `4:<profile>\|<lat,lon;…>` | `5:<length_m>\|<lat,lon;…>` | **match** — the matched route + length (drawn under the sketch); sent debounced on edit-release |
-| `6:<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as a GPX document (JS downloads it) |
+| `6:<name>\|<profile>\|<lat,lon;…>` | `7:<gpx>` | **export** — matched route as GPX 1.1 with the route's real name (XML-escaped) and per-point `<ele>` from the terrain tiles (Garmin ClimbPro needs them; offline degrades to a bare track) |
 | `8:<lat,lon;…>` | `9:<retrace_m>\|<lat,lon;…>` | **import** — clean a raw GPX track into a sparse rough route; a substantial retrace (`retrace_m`) is flagged with a toast, never silently edited |
-| `10:<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open |
+| `10:<mapzoom>\|<lat,lon;…>` | `11:<up_m>\|<down_m>\|<d,e;…>` | **elevation** — profile of the DETAILED route the client sends back (no re-match); requested only while the dock is open. The MAP zoom (clamped 9–15) is the terrain-tile zoom ceiling — resolution follows what you're looking at (bare `<points>` form = the z13 default) |
 | `12:<name>\|<profile>\|<pts>` | `13:<name>⏎<name>…` | **save** a named route (write-through to disk); reply = the updated list |
 | `14:` | `13:<name>⏎…` | **list** saved routes (reserved `_`-names hidden) |
 | `16:<name>` | `17:<name>\|<profile>\|<pts>\|<history>` | **open** a saved route (bare `17:` when unknown); `16:_working` restores the autosaved sketch WITH its undo stack (history is empty for named routes) |
 | `18:<name>` | `13:<name>⏎…` | **delete** a saved route; reply = the updated list |
 | `20:<profile>\|<pts>` | `21:<proposed name>` | **name proposal** — "area · length · type" (area via Nominatim midpoint reverse-geocode; degrades to "length · type" offline); prefills the panel's name input, typed text wins |
 | — | `23:<name>\|<profile>\|<rough>\|<len>\|<matched>` | **live sync** (server-pushed): a peer's accepted edit of the shared route you're on (subscribed via open/save). Carries the server's match, so the receiver applies without re-requesting — echo-free |
+| `26:<city>` | `27:<lat>\|<lon>` | **locate** — forward-geocode the IANA timezone's city ("Europe/Amsterdam" → "Amsterdam"; Nominatim); requested only for a truly fresh map (no remembered view, no sketch), applied only while the view is untouched |
 | `24:<profile>\|<pts>\|<history>` | `25:` | **instant persist** — sent on every COMMITTED edit (and on reconnect), un-debounced: saves `_working` (its SINGLE writer; history = the undo stack, "#"-separated snapshots ≤30, stored as line 4) + the subscribed route (history-free), no match, no fan-out |
 | `1:<lat,lon;…>` | `2:<length_m>` | rough geodesic length — a server-side diagnostic; the live client doesn't send it |
 | `2:<lat,lon;…>` | `3:<way_count>` | corridor probe — diagnostic |
@@ -175,8 +177,14 @@ our `http_get_file` (binary-safe download-to-file — upstream candidate, see lo
   real sketch — deliberate: never lose work).
 - **Name proposal:** the Nominatim lookup runs on the single-threaded event loop, so a slow
   reverse-geocode briefly delays other replies (fine single-user; queue it when 19 lands).
+- **GPX share sheet:** `navigator.share` (the phone→Garmin handoff) needs a SECURE context —
+  HTTPS or localhost; a plain-http LAN address falls back to a normal download (then: download
+  notification → open with Garmin Connect). Serving TLS would unlock the one-tap path on LAN.
 - **Live sync:** last-writer-wins on concurrent edits of the same route (no merge/OT); the sync
   unit is the accepted (debounced) edit, so mid-drag states don't stream.
+- **Corridor cache:** Overpass responses are disk-cached forever by query hash
+  (`scratch/corridor/`) — editing the same sketch re-fetches nothing, and a 429 gets one polite
+  retry. Stale roads only refresh after wiping the cache dir (fine for a personal tool).
 - **All 20 plan steps are complete** (18 folded into 4 by the server-first pivot), plus the
   post-v1 sweeps: full candidate-set matcher, tight corridor + widening, draft saves with undo
   history, WGS84 geodesic length, elevation crosshair, GPX retrace flagging, box select. Still

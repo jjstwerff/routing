@@ -69,6 +69,16 @@ check("persist round-trips points + history", r === `17:_working|cycling_road|${
 r = await send(`16:${A}`);
 check("persist updates the subscribed route (history-free)", r === `17:${A}|cycling_road|${ptsP}|`, r.slice(0, 80));
 
+// Timezone-city locate (26:): the reply is "27:" (offline / unknown place) or "27:<lat>|<lon>"
+// with two parseable floats — assert the format, not the live geocode.
+r = await send("26:Amsterdam", 60000);
+{
+  const body = r.slice(3);
+  const okLocate = r.startsWith("27:")
+    && (body === "" || body.split("|").length === 2 && body.split("|").every((v) => Number.isFinite(parseFloat(v))));
+  check("locate replies 27: with coords or empty", okLocate, r.slice(0, 40));
+}
+
 // Import (8:) replies "<retrace_m>|<cleaned points>" — a zigzag out-and-back gets flagged.
 r = await send("8:52.0,5.0;52.0,5.004;52.0,5.0002");
 check("import reply carries a retrace flag", /^9:\d+\|52,/.test(r) && parseInt(r.slice(2)) > 200, r.slice(0, 60));
