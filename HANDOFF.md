@@ -34,8 +34,14 @@ serialization, so there is no codec to write (see §4/§7).
   codec) and runs the **full matcher** (`parse_ways → build_graph → match_route`) byte-identically on
   interpret == native == native-wasm (472 ways → 90-pt route on the `real_stretch` fixture). This is the
   first wasm proof of the *whole* matcher — the earlier gate only covered the geodesic. Standing gate:
-  `tools/app_headless_test.sh`, wired into `make test-wasm`. Remaining for a real browser page: the
-  jco/browser shell (Track 1a–d), which needs `jco` (only missing tool on this box) — **not** loft#522.
+  `tools/app_headless_test.sh`, wired into `make test-wasm`.
+- **Serverless browser shell runs in a real browser** (`browser/`, PLAN-APP Track 1a–c) — the page
+  fetches a whole test set and runs the full matcher in **wasm transpiled by jco**
+  (`app_kernel.loft → --native-wasm component → jco → browser ESM`), draws the route on an SVG, **no
+  server**. Verified in headless Chromium: the in-browser route is **byte-identical to the native
+  reference** (`tools/browser_app_test.sh`, via CDP). `jco` + `@bytecodealliance/preview2-shim` now
+  installed under `browser/` (the WASI shim supplies the dataset via its in-memory FS). Remaining is
+  **Track 1d**: Leaflet base map + sketch UI + IndexedDB + GitHub Pages deploy — no loft dependency.
 - **Plan docs** — `PLAN-MATCH` (escalation ladder + §7 numbers + §9 mode×intent), `PLAN-ROUTING`
   (get-me-there fork), `PLAN-APP` (the standalone app; §10 concrete steps; §11 data freshness). Plus the
   pre-existing `PLAN`, `PLAN-BROWSER`, `PLAN-TILES`, `DESIGN`.
@@ -128,12 +134,12 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
    `store_load(path)`) alone unblocks whole-block wasm loading, provable under wasmtime now (#521 fixed).
 3. **F1/F2 (data freshness)** — stamp `osm_snapshot` in `gen-tiles.loft` + top index; show "data as of …"
    in the app attribution.
-4. **Track 1 — browser app.** ✅ **Compute+data core done headless** — `client/app_kernel.loft` runs the
-   full matcher over a whole-file test set, byte-identical in wasm (`tools/app_headless_test.sh`, in
-   `make test-wasm`). Remaining is the **browser shell** (needs `jco` + a browser, *not* loft#522):
-   transpile `app_kernel` → browser wasm (jco), rewire the Leaflet UI from WebSocket → wasm, whole-file
-   `fetch()` of one block/test-set, IndexedDB cache, deploy to Pages (unlisted URL). The whole-file model
-   holds until loft#522 lands the working-set partial load.
+4. **Track 1 — browser app.** ✅ **1a–c done** — `browser/` fetches a whole test set and runs the full
+   matcher in jco-transpiled wasm, no server, verified byte-identical to native in headless Chromium
+   (`tools/browser_app_test.sh`). Remaining is **Track 1d**: swap the SVG for a **Leaflet** base map +
+   sketch UI (draw → wasm match → redraw, dropping the WebSocket), **IndexedDB** cache, deploy to Pages
+   (unlisted URL). No loft dependency. The whole-file model holds until loft#522 lands the working-set
+   partial load. See `browser/README.md`.
 5. **Track 2 — Benelux**: `tools/build-blocks.sh` (F3) → generate blocks → top index → Release hosting
    (verify cross-origin CORS/Range) → working-set range loading. Enable the data-refresh cron (F4).
 6. **Track 3 — Western Europe**: more blocks + cross-block stitching + LRU.
