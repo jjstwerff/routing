@@ -22,12 +22,13 @@ jobs:
       # loft builds with the mold linker; the test harnesses use `fuser` (psmisc)
       # to free the server port, node (global WebSocket) for the WS clients, and
       # wasmtime for the wasm parity gate.
-      - name: System deps (mold, psmisc, wasmtime)
+      - name: System deps (mold, psmisc)
         run: |
           sudo apt-get update
           sudo apt-get install -y mold psmisc
-          curl -sSf https://wasmtime.dev/install.sh | bash
-          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Install wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
 
       - uses: dtolnay/rust-toolchain@stable
         with:
