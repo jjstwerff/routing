@@ -29,6 +29,13 @@ serialization, so there is no codec to write (see §4/§7).
 - **Match-quality instrumentation** (`lib/routing_kernel`) — `match_quality()` emits the PLAN-MATCH §7
   numbers (deviation, bridged length, on-network length, per-metre suitability penalty, road-class mix),
   captured **during assembly** (`assemble_stretch`) since the stitched route isn't a clean edge-walk.
+- **Browser-app compute+data core, proven headless in wasm** (`client/app_kernel.loft`, PLAN-APP Track 1
+  step 1) — loads a WHOLE test-set directly (one Overpass-JSON file via `parse_ways`, no mmap store, no
+  codec) and runs the **full matcher** (`parse_ways → build_graph → match_route`) byte-identically on
+  interpret == native == native-wasm (472 ways → 90-pt route on the `real_stretch` fixture). This is the
+  first wasm proof of the *whole* matcher — the earlier gate only covered the geodesic. Standing gate:
+  `tools/app_headless_test.sh`, wired into `make test-wasm`. Remaining for a real browser page: the
+  jco/browser shell (Track 1a–d), which needs `jco` (only missing tool on this box) — **not** loft#522.
 - **Plan docs** — `PLAN-MATCH` (escalation ladder + §7 numbers + §9 mode×intent), `PLAN-ROUTING`
   (get-me-there fork), `PLAN-APP` (the standalone app; §10 concrete steps; §11 data freshness). Plus the
   pre-existing `PLAN`, `PLAN-BROWSER`, `PLAN-TILES`, `DESIGN`.
@@ -121,9 +128,12 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
    `store_load(path)`) alone unblocks whole-block wasm loading, provable under wasmtime now (#521 fixed).
 3. **F1/F2 (data freshness)** — stamp `osm_snapshot` in `gen-tiles.loft` + top index; show "data as of …"
    in the app attribution.
-4. **Track 1 — browser app** (needs node/jco/browser): transpile kernel → browser wasm, rewire the
-   Leaflet UI from WebSocket → wasm, whole-file fetch of one block, IndexedDB, deploy to Pages
-   (unlisted URL for the selected group).
+4. **Track 1 — browser app.** ✅ **Compute+data core done headless** — `client/app_kernel.loft` runs the
+   full matcher over a whole-file test set, byte-identical in wasm (`tools/app_headless_test.sh`, in
+   `make test-wasm`). Remaining is the **browser shell** (needs `jco` + a browser, *not* loft#522):
+   transpile `app_kernel` → browser wasm (jco), rewire the Leaflet UI from WebSocket → wasm, whole-file
+   `fetch()` of one block/test-set, IndexedDB cache, deploy to Pages (unlisted URL). The whole-file model
+   holds until loft#522 lands the working-set partial load.
 5. **Track 2 — Benelux**: `tools/build-blocks.sh` (F3) → generate blocks → top index → Release hosting
    (verify cross-origin CORS/Range) → working-set range loading. Enable the data-refresh cron (F4).
 6. **Track 3 — Western Europe**: more blocks + cross-block stitching + LRU.

@@ -57,7 +57,7 @@ help:
 	@echo "test gates:"
 	@echo "  make test        offline: interpreter kernel suites + server harnesses"
 	@echo "  make test-native the kernel suites on the --native backend (slow, thorough)"
-	@echo "  make test-wasm   kernel geodesic parity on wasip2 via wasmtime"
+	@echo "  make test-wasm   wasip2 parity via wasmtime: kernel geodesic + full matcher (app_kernel)"
 	@echo "  make test-client headless-Chromium harnesses (routes / elevation / sync)"
 	@echo ""
 	@echo "after 'make install' (ensure $(BINDIR) is on PATH):"
@@ -198,6 +198,7 @@ test-native: check-rustc
 
 test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
+	@LOFT_BIN="$(LOFT)" ./tools/app_headless_test.sh
 
 test-client: check
 	@LOFT_BIN="$(LOFT)" ./tools/client_routes_test.sh

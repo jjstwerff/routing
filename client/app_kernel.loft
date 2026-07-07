@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Browser-app CLIENT entry (PLAN-APP Track 1, step 1): load a WHOLE test-set directly — one
+// file fetched as Overpass-JSON — and match a sketched route against it, printing the detailed
+// route. This is the compute+data core the browser app runs in wasm, proven headless under
+// wasmtime NOW, before the working-set partial-load (loft#522) lands.
+//
+// Why this needs no mmap store and no codec: the data path is `parse_ways(text)` — pure text
+// parsing into `vector<Way>` — then `build_graph` + `match_route`. All wasm-safe today; the
+// tile store / #522 only matter once we stream a subset instead of loading one whole block.
+//
+// Channel: arguments()-in / file()-dataset / println-out — shipped, generic, NO custom bridge
+// (DESIGN.md §3). Compiles identically to --interpret, --native, and --native-wasm.
+//   build: loft --native-wasm app.wasm --path <loft>/ --lib lib client/app_kernel.loft
+//   run:   wasmtime --dir . app.wasm <dataset.json> ["lat,lon;lat,lon;..."] [profile]
+
+#cwd
+use routing_kernel::(GeoPoint, parse_ways, build_graph, match_route, path_length_m);
+
+fn parse_pts(spec: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for pair in spec.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 {
+      pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }];
+    }
+  }
+  pts
+}
+
+// Built-in demo sketch: points 6..17 of the user's 41 km route — matches fixtures/real_stretch.json.
+// Used when no sketch argument is given, so a bare `<dataset>` run still produces a match.
+fn demo_trace() -> vector<GeoPoint> {
+  [
+    GeoPoint { lat: 52.24122987096219,  lon: 6.88344955444336 },
+    GeoPoint { lat: 52.246196269035615, lon: 6.885638236999513 },
+    GeoPoint { lat: 52.25008491227731,  lon: 6.8931055068969735 },
+    GeoPoint { lat: 52.2475363129658,   lon: 6.902117729187013 },
+    GeoPoint { lat: 52.24971708224195,  lon: 6.9126319885253915 },
+    GeoPoint { lat: 52.25505031926059,  lon: 6.916065216064454 },
+    GeoPoint { lat: 52.26342982483724,  lon: 6.919584274291993 },
+    GeoPoint { lat: 52.26947049234737,  lon: 6.91640853881836 },
+    GeoPoint { lat: 52.28401724342717,  lon: 6.922588348388673 },
+    GeoPoint { lat: 52.29115758313226,  lon: 6.9181251525878915 },
+    GeoPoint { lat: 52.30207587681469,  lon: 6.915206909179688 },
+    GeoPoint { lat: 52.31162717589892,  lon: 6.908855438232423 },
+  ]
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for a in arguments() { argv += [a]; }
+  data_path = argv[0] ?? "";
+  sketch    = argv[1] ?? "";
+  profile   = argv[2] ?? "cycling_road";
+
+  if data_path == "" {
+    println("usage: app_kernel <dataset.json> [\"lat,lon;lat,lon;...\"] [profile]");
+    return;
+  }
+
+  // Load the whole dataset directly (the "fetch one file" model), parse, build the graph, match.
+  ways = parse_ways(file(data_path).content());
+  g = build_graph(ways);
+  trace = if sketch == "" { demo_trace() } else { parse_pts(sketch) };
+  route = match_route(g, trace, profile);
+
+  drawn   = path_length_m(trace);
+  matched = path_length_m(route);
+
+  // Line 1: integer/text summary — byte-identical across backends.
+  println("ways={len(ways)} route_pts={len(route)} profile={profile} matched_m={matched:1.1} drawn_m={drawn:1.1}");
+  // Line 2: the detailed route the browser would draw — node coords are parsed data, so this is
+  // byte-identical across backends when the same discrete path is chosen (costs differ by metres,
+  // far above the ~1e-6 m geodesic ULP noise, so the choice never flips).
+  line = "";
+  for p in route { line += "{p.lat:2.7},{p.lon:2.7};"; }
+  println(line);
+}
