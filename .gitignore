@@ -29,3 +29,6 @@ scratch/
 routes/
 .env
 .env.local
+
+# Local tile data block (PLAN-TILES) — large binary, regenerate with gen6, never committed
+*.tiles

@@ -1,0 +1,33 @@
+Data license — routing tile blocks
+===================================
+
+This project's CODE is licensed under LGPL-3.0-or-later (see `LICENSE`).
+
+The generated ROUTING DATA — every `*.tiles` block produced by the generation
+pipeline, and any hosted data block distributed from this project — is a
+DERIVATIVE DATABASE of OpenStreetMap and is licensed separately:
+
+    © OpenStreetMap contributors
+    Open Database License (ODbL) v1.0
+    https://opendatacommons.org/licenses/odbl/1-0/
+
+What this means:
+
+- **Attribution** — any use or display of the data (or a work produced from it,
+  such as a matched route) must credit "© OpenStreetMap contributors".
+- **Share-Alike** — if you distribute a modified/adapted version of the data
+  block (a Derivative Database), you must make it available under ODbL too.
+- You may use, host, and redistribute the blocks, including commercially; you may
+  not relicense the DATA under a more permissive or proprietary license.
+
+Because the generation pipeline in this repository is open, the ODbL obligation
+to "make the derivative database available" is satisfied by the public source +
+tooling: anyone can rebuild the blocks from public OpenStreetMap data.
+
+Baked elevation (`h`) is derived from public terrain sources (Tilezen/Terrarium,
+itself composed from SRTM, NED, and other open data — see `ATTRIBUTION.md`).
+Curated foot/cycle route membership derives from OpenStreetMap route relations
+(also ODbL).
+
+The full ODbL 1.0 text is at the URL above; this file is a notice, not a
+substitute for it.

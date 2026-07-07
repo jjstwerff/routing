@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
 // routing_kernel — the pure-loft compute surface shared by BOTH the wasm client and the
 // native Mode-B server (DESIGN.md §3, "one kernel, two targets"). Tier 1 (pure loft): the
 // compiler emits the right variant for interpreter / --native / --native-wasm / --html with
@@ -766,6 +769,15 @@ fn edge_name_between(g: Graph, u: integer, v: integer) -> text {
   for k in s0..s1 { if (g.adj_to[k] ?? -1) == v { return g.edges[g.adj_edge[k] ?? 0].name; } }
   ""
 }
+// GEdge index between adjacent nodes u,v (or -1). Same CSR walk as edge_name_between, but returns the
+// edge so a caller can read its tags/length for the match-quality decomposition (PLAN-MATCH §7).
+fn edge_between(g: Graph, u: integer, v: integer) -> integer {
+  if u < 0 || v < 0 { return -1; }
+  s0 = g.adj_head[u] ?? 0;
+  s1 = g.adj_head[u + 1] ?? 0;
+  for k in s0..s1 { if (g.adj_to[k] ?? -1) == v { return g.adj_edge[k] ?? -1; } }
+  -1
+}
 // Two points closer than `eps` metres?
 fn near_m(a: GeoPoint, b: GeoPoint, eps: float) -> boolean { geodesic_m(a, b) < eps }
 
@@ -971,7 +983,12 @@ fn nearest_node1(g: Graph, p: GeoPoint) -> integer {
 // sub-paths; on a re-match we diff the trace, recompute ONLY the changed span (± one neighbour on each
 // side), and reuse the rest verbatim. The stitched result is IDENTICAL to a full rematch — incremental
 // is a pure speed-up, not an approximation (proven by test_incremental_matches_full).
-struct SubPath { pts: vector<GeoPoint>, bridged: boolean }
+// `pts`/`bridged` drive the geometry; `len_m`/`pen_m`/`class_m` are the match-quality accumulation
+// (PLAN-MATCH §7) captured HERE, during assembly, where the path is a clean adjacent-node walk — the
+// final stitched route isn't (remove_spurs folds joints), so quality can't be re-derived from it.
+// pen_m = Σ edge_length · ec.pen (the matcher's own per-metre suitability penalty). class_m: metres per
+// road_class bucket. A bridged stretch carries zeros (its gap is counted as bridged length downstream).
+struct SubPath { pts: vector<GeoPoint>, bridged: boolean, len_m: float, pen_m: float, class_m: vector<float> }
 pub struct MatchState {
   trace: vector<GeoPoint>,    // raw drawn trace this state was built for (for diffing the next edit)
   ctrace: vector<GeoPoint>,   // the trace actually matched (a loop has the start appended)
@@ -1006,15 +1023,30 @@ fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i:
   pts: vector<GeoPoint> = [];
   if ai < 0 || aj < 0 || ai == aj {
     if ai >= 0 { pts += [GeoPoint { lat: g.nodes[ai].lat, lon: g.nodes[ai].lon }]; }
-    return SubPath { pts: pts, bridged: false };
+    return SubPath { pts: pts, bridged: false, len_m: 0.0, pen_m: 0.0, class_m: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] };
   }
   win: vector<GeoPoint> = [GeoPoint { lat: g.nodes[ai].lat, lon: g.nodes[ai].lon }, GeoPoint { lat: g.nodes[aj].lat, lon: g.nodes[aj].lon }];
   path = dijkstra_win(g, ai, [aj], win, ec, sc, gen);
   if len(path) >= 2 {
-    for q in 0..len(path) { nj = path[q] ?? -1; if nj >= 0 { pts += [GeoPoint { lat: g.nodes[nj].lat, lon: g.nodes[nj].lon }]; } }
-    return SubPath { pts: pts, bridged: false };
+    lenm = 0.0; penm = 0.0; cm: vector<float> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    for q in 0..len(path) {
+      nj = path[q] ?? -1;
+      if nj >= 0 { pts += [GeoPoint { lat: g.nodes[nj].lat, lon: g.nodes[nj].lon }]; }
+      if q > 0 {
+        u = path[q - 1] ?? -1;
+        ei = edge_between(g, u, nj);   // adjacent path nodes → the edge always resolves here
+        if ei >= 0 {
+          e = g.edges[ei];
+          lenm = lenm + e.length;
+          penm = penm + (ec.pen[ei] ?? 0.0) * e.length;
+          c = road_class(e.hw);
+          cm[c] = (cm[c] ?? 0.0) + e.length;
+        }
+      }
+    }
+    return SubPath { pts: pts, bridged: false, len_m: lenm, pen_m: penm, class_m: cm };
   }
-  SubPath { pts: [ct[i], ct[i + 1]], bridged: true }
+  SubPath { pts: [ct[i], ct[i + 1]], bridged: true, len_m: 0.0, pen_m: 0.0, class_m: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }
 }
 
 // Stitch the cached sub-paths into the final route: concatenate (deduping shared joints), collect the
@@ -1039,6 +1071,52 @@ fn stitch(g: Graph, st: MatchState) -> MatchResult {
   detailed = remove_spurs(detailed, dname);
   if len(detailed) < 2 { return MatchResult { pts: detailed, bridges: 1, bseg: bseg }; }
   MatchResult { pts: detailed, bridges: bridges, bseg: bseg }
+}
+
+// --- Match-quality decomposition (PLAN-MATCH §7) -------------------------------------------------
+// The numbers that decide whether a match is the WANTED route — not speed, not raw length. Emitted so
+// the escalation gate (§3) and offline evaluation can judge on faithfulness + activity-suitability
+// instead of length. Computed once from the final route; off the hot search path.
+//   dev_*     — faithfulness: how far the matched route sits from the drawn sketch (metres).
+//   bridged_m — connectivity gaps: total straight-line bridged length (metres).
+//   len_m     — matched on-network length (Σ real-edge lengths; excludes bridges).
+//   pen_m     — Σ way_penalty × edge_length: the suitability-penalty-weighted length. pen_m/len_m is
+//               the per-metre "how unsuitable were the ways I was forced onto" tell (the §3 PEN_TOL gate).
+//   class_m   — metres per road-class bucket (see road_class): the human-legible "bigger streets" view.
+pub struct MatchQuality { dev_max: float, dev_mean: float, bridged_m: float, len_m: float, pen_m: float, class_m: vector<float> }
+
+// Road-class buckets for the metres-per-class mix. Coarse on purpose — the human question is "was I put
+// on a big road?", not the exact OSM value. 0 arterial · 1 through · 2 local · 3 cycleway · 4 foot/path · 5 other.
+fn road_class(hw: text) -> integer {
+  if hw == "motorway" || hw == "motorway_link" || hw == "trunk" || hw == "trunk_link" || hw == "primary" || hw == "primary_link" { return 0; }
+  if hw == "secondary" || hw == "secondary_link" || hw == "tertiary" || hw == "tertiary_link" || hw == "unclassified" { return 1; }
+  if hw == "residential" || hw == "living_street" || hw == "service" { return 2; }
+  if hw == "cycleway" { return 3; }
+  if hw == "path" || hw == "track" || hw == "footway" || hw == "steps" || hw == "pedestrian" || hw == "bridleway" { return 4; }
+  5
+}
+
+// Decompose a finished match into the §7 quality numbers. len_m / pen_m / class_m are summed from the
+// per-stretch quality CAPTURED during assembly (st.subs) — accurate, because each stretch was a clean
+// adjacent-node path when measured (the final stitched route is not). dev_* is each matched point's
+// distance to the drawn trace; bridged_m is the straight-line length of the bridge segments.
+pub fn match_quality(st: MatchState, trace: vector<GeoPoint>, mr: MatchResult) -> MatchQuality {
+  cm: vector<float> = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  lenm = 0.0; penm = 0.0;
+  for i in 0..len(st.subs) {
+    s = st.subs[i];
+    lenm = lenm + s.len_m;
+    penm = penm + s.pen_m;
+    for c in 0..6 { cm[c] = (cm[c] ?? 0.0) + (s.class_m[c] ?? 0.0); }
+  }
+  dmax = 0.0; dsum = 0.0; np = 0;
+  for p in mr.pts { d = point_polyline_m(p, trace); if d > dmax { dmax = d; } dsum = dsum + d; np = np + 1; }
+  dmean = 0.0;
+  if np > 0 { dmean = dsum / (np as float); }
+  bm = 0.0;
+  bi = 0;
+  while bi + 1 < len(mr.bseg) { bm = bm + geodesic_m(mr.bseg[bi], mr.bseg[bi + 1]); bi = bi + 2; }
+  MatchQuality { dev_max: dmax, dev_mean: dmean, bridged_m: bm, len_m: lenm, pen_m: penm, class_m: cm }
 }
 
 // Build a fresh MatchState (a full match). `close` closes a loop (is_loop → append the start).
@@ -1120,7 +1198,7 @@ fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: bool
     } else {
       oldJ = j;
       if j >= clenNew - s { oldJ = j + delta; }
-      subs += [prev.subs[oldJ] ?? SubPath { pts: [], bridged: false }];
+      subs += [prev.subs[oldJ] ?? SubPath { pts: [], bridged: false, len_m: 0.0, pen_m: 0.0, class_m: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }];
     }
   }
   tr: vector<GeoPoint> = [];
