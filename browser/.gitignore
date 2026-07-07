@@ -1,0 +1,4 @@
+# Generated / installed — reproducible via `npm i` + `npm run build`.
+node_modules/
+gen/
+*.wasm
