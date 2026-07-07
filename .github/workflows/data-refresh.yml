@@ -1,0 +1,71 @@
+name: data-refresh
+
+# Regenerate the routing tile blocks from fresh OpenStreetMap extracts and republish
+# them, so the hosted data tracks OSM automatically (PLAN-APP §11).
+#
+# DORMANT until the generation pipeline is scripted as `tools/build-blocks.sh`
+# (currently in scratch — Track C/2). The job SKIPS cleanly when that script is
+# absent, so the monthly cron does not fail before the pipeline lands. Enable by
+# committing tools/build-blocks.sh (and, if desired, a REGIONS list).
+
+on:
+  schedule:
+    - cron: "17 4 1 * *"   # 04:17 UTC on the 1st of each month
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Space-separated block ids to rebuild (default: all in tools/build-blocks.sh)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # publish the regenerated blocks as a Release
+
+concurrency:
+  group: data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pipeline present?
+        id: gate
+        run: |
+          if [ -x tools/build-blocks.sh ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::tools/build-blocks.sh not present yet — data-refresh is dormant (PLAN-APP §11)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Toolchain (osmium, mold, loft)
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool mold
+          git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
+          (cd /tmp/loft && cargo build --release --bin loft)
+          echo "LOFT=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+
+      # Downloads fresh Geofabrik extracts, runs osmium extract/filter/export →
+      # converter → gen6 per block, and stamps each block's osm_snapshot from
+      # `osmium fileinfo -e -g data.timestamp.last`. Emits blocks + a top index.
+      - name: Build blocks from fresh OSM
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          REGIONS: ${{ github.event.inputs.regions }}
+        run: ./tools/build-blocks.sh
+
+      - name: Publish blocks (dataset release)
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Tag by snapshot month; the app fetches blocks from this release and
+          # reads osm_snapshot + the bumped dataset version from the top index.
+          tag="data-$(date -u +%Y%m)"
+          gh release create "$tag" dist/blocks/* --title "Dataset $tag" --notes "Automated OSM refresh." \
+            || gh release upload "$tag" dist/blocks/* --clobber

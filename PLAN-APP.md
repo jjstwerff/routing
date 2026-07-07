@@ -233,3 +233,48 @@ Four tracks. **O** and **C** run **now** in this repo/env; **1–3** need node +
 
 **Critical path:** O1–O4 (openness) ∥ C1→C2→C3 (prove the codec in wasm) → C4→C5→C6 (working-set +
 range) → Track 1 (browser shell) → Track 2 (the real serverless spine) → Track 3 (scale).
+
+---
+
+## 11. Data freshness & automated refresh
+
+Two coupled needs: show users **how current the data is**, and **keep it current** without manual work.
+
+### Snapshot timestamp — "data as of …"
+
+Each block records the **OSM source snapshot** — the moment the underlying OpenStreetMap data was
+current, *not* the build time. Captured at generation from the extract's replication timestamp:
+
+```sh
+osmium fileinfo -e -g data.timestamp.last <region>.osm.pbf   # → 2026-07-01T20:21:02Z
+```
+
+Stored per block in the **top index** (and a per-block `meta`), so the app knows it without decoding
+tiles (PLAN-TILES carries `osm_snapshot` alongside the block's bbox/URL). The app **appends it to the
+map attribution control**, for the block(s) currently loaded (the working set) — so a user always sees
+the freshness of exactly what they're routing on:
+
+> © OpenStreetMap contributors · Overijssel data as of 2026-07-01
+
+Server mode shows "live (Overpass)" instead.
+
+### Automated refresh routine
+
+A **scheduled GitHub Actions workflow** (`.github/workflows/data-refresh.yml`) regenerates and
+republishes the blocks so the hosted data tracks OSM automatically:
+
+1. **Monthly** (cron) + manual (`workflow_dispatch`).
+2. Install osmium + build loft; per block, download the fresh **Geofabrik** extract.
+3. Run the pipeline (`tools/build-blocks.sh` — osmium extract/filter/export → converter → `gen6`),
+   stamping each block's `osm_snapshot` from `osmium fileinfo`.
+4. Publish the blocks + top index as/updating a **GitHub Release**, bumping a **dataset version** so
+   IndexedDB caches invalidate cleanly (§3).
+5. Everyone's "data as of" updates on next load — no app change, no manual step.
+
+The workflow is created now but **dormant until `tools/build-blocks.sh` exists** (the generation
+pipeline is currently in scratch; scripting it as a repo tool is Track C/2 work). It **skips cleanly**
+when the script is absent, so the monthly cron doesn't fail before the pipeline lands.
+
+*Steps:* **F1** capture `osm_snapshot` in `gen6` + the top index; **F2** show "data as of" in the app
+attribution; **F3** `tools/build-blocks.sh` (repo-script the pipeline); **F4** enable the refresh
+workflow's cron. F1–F2 can land with Track 1; F3–F4 gate on Track 2's generation.
