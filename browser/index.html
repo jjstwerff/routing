@@ -56,7 +56,25 @@ const imports = {
   },
   loft_gl: { host_asset_exists: () => 0 },
 };
-let instance, datasetText, net = [], tx;   // tx: {px, py, inv} fixed transform
+let instance, datasetText, net = [], tx, loadSrc = 'network';   // tx: {px, py, inv} fixed transform
+
+// --- IndexedDB cache: the fetched wasm + test set survive a reload with NO network (offline-first) ---
+const CACHE_DB = 'routing-cache', CACHE_STORE = 'assets', CACHE_VER = 'real_stretch-v1';
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(CACHE_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(CACHE_STORE);
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => { const rq = db.transaction(CACHE_STORE).objectStore(CACHE_STORE).get(key); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+}
+async function idbPut(key, val) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => { const tx2 = db.transaction(CACHE_STORE, 'readwrite'); tx2.objectStore(CACHE_STORE).put(val, key); tx2.oncomplete = () => res(); tx2.onerror = () => rej(tx2.error); });
+}
 
 function runMatch(sketch) {                 // sketch: [[lat,lon],...] → route [[lat,lon],...] + summary
   const blob = sketch.map((p) => `${p[0]},${p[1]}`).join(';') + `|${PROFILE}\n` + datasetText;
@@ -99,7 +117,7 @@ function match() {
   if (sketch.length < 2) { redraw([], `sketch ${sketch.length} pt — add ≥2`); return; }
   const t0 = performance.now();
   const { summary, route } = runMatch(sketch);
-  redraw(route, `${summary}  ·  ${(performance.now() - t0) | 0} ms`);
+  redraw(route, `${summary}  ·  ${(performance.now() - t0) | 0} ms  ·  ${loadSrc}`);
   window.__match = { summary, routeCount: route.length, polyline: route.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`).join(';') + (route.length ? ';' : '') };
 }
 
@@ -111,14 +129,27 @@ document.getElementById('map').addEventListener('pointerdown', (ev) => {
 document.getElementById('clear').addEventListener('click', () => { sketch = []; redraw([], 'sketch cleared'); });
 document.getElementById('demo').addEventListener('click', () => { sketch = DEMO.slice(); match(); });
 
+// Register the service worker so the app shell (html/js/wasm) is cached for a fully-offline reload.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
 (async function main() {
   try {
-    setStatus('fetching wasm + test set…');
-    const [wasmBuf, dataRes] = await Promise.all([
-      fetch('web_kernel.wasm').then((r) => { if (!r.ok) throw new Error('web_kernel.wasm ' + r.status + ' — run: node browser/build.mjs'); return r.arrayBuffer(); }),
-      fetch(DATASET).then((r) => { if (!r.ok) throw new Error(DATASET + ' ' + r.status); return r.text(); }),
-    ]);
-    datasetText = dataRes;
+    // Offline-first: serve the wasm + test set from IndexedDB if present, else fetch once and cache.
+    setStatus('loading (cache or network)…');
+    let wasmBuf = await idbGet('wasm:' + CACHE_VER).catch(() => null);
+    let dataText = await idbGet('data:' + CACHE_VER).catch(() => null);
+    loadSrc = (wasmBuf && dataText) ? 'cached (offline-capable)' : 'network';
+    if (!(wasmBuf && dataText)) {
+      setStatus('fetching wasm + test set…');
+      [wasmBuf, dataText] = await Promise.all([
+        fetch('web_kernel.wasm').then((r) => { if (!r.ok) throw new Error('web_kernel.wasm ' + r.status + ' — run: node browser/build.mjs'); return r.arrayBuffer(); }),
+        fetch(DATASET).then((r) => { if (!r.ok) throw new Error(DATASET + ' ' + r.status); return r.text(); }),
+      ]);
+      await idbPut('wasm:' + CACHE_VER, wasmBuf).catch(() => {});
+      await idbPut('data:' + CACHE_VER, dataText).catch(() => {});
+    }
+    window.__cache = { source: loadSrc };
+    datasetText = dataText;
     ({ instance } = await WebAssembly.instantiate(wasmBuf, imports));
     mem = instance.exports.memory;
     net = networkLines(JSON.parse(datasetText));

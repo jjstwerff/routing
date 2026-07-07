@@ -39,10 +39,12 @@ serialization, so there is no codec to write (see §4/§7).
   **loft-native way** — `client/web_kernel.loft` → `loft --html` → the page fetches a whole test set
   and runs the full matcher in wasm over loft's own `host_input()`/`println` channel (a 4-import shim;
   **no jco, no WASI, no npm**), draws the route on an SVG, re-matches on each map click, **no server**.
-  Verified in headless Chromium: the in-browser route is **byte-identical to the native reference**, and
-  a synthetic click re-matches (`tools/browser_app_test.sh`, via CDP). *(An earlier jco-based shell was
-  the wrong tool and was retired for this.)* Remaining is **Track 1d**: Leaflet base map + IndexedDB +
-  GitHub Pages deploy — no loft dependency.
+  It is **fully offline-capable**: a **service worker** (`sw.js`) caches the app shell + wasm and the test
+  set is cached in **IndexedDB**, so a reload with the **network entirely off** still loads and matches.
+  Verified in headless Chromium (`tools/browser_app_test.sh`, via CDP): the in-browser route is
+  **byte-identical to the native reference**, a synthetic click re-matches, and a fully-offline reload
+  still matches from cache. *(An earlier jco-based shell was the wrong tool and was retired for this.)*
+  Remaining **Track 1d**: a **Leaflet** base map + a **GitHub Pages** deploy — no loft dependency.
   - ⚠ **loft debugger `eval`/`setValue` break in any frame with a `vector` local** (`../loft` `dc06812a`):
     breakpoints verify, the `stopped` frame inspects fine, `stepOver`/`continue` work — but `eval` returns
     `null` for *everything* (even `2 + 2`) and `setValue` is rejected once the paused frame holds a
@@ -145,8 +147,9 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 4. **Track 1 — browser app.** ✅ **1a–c done** — `browser/` (loft-native: `web_kernel.loft` → `loft --html`,
    `host_input`/`println` engine, no jco) fetches a whole test set and runs the full matcher in wasm,
    interactive (click → match → redraw), no server, verified byte-identical to native in headless Chromium
-   (`tools/browser_app_test.sh`). Remaining is **Track 1d**: swap the SVG for a **Leaflet** base map +
-   sketch UI (draw → wasm match → redraw, dropping the WebSocket), **IndexedDB** cache, deploy to Pages
+   (`tools/browser_app_test.sh`), with a **service worker** + **IndexedDB** so a reload with the network
+   fully off still matches (verified). Remaining **Track 1d**: a **Leaflet**
+   base map, deploy to Pages
    (unlisted URL). No loft dependency. The whole-file model holds until loft#522 lands the working-set
    partial load. See `browser/README.md`.
 5. **Track 2 — Benelux**: `tools/build-blocks.sh` (F3) → generate blocks → top index → Release hosting

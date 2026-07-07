@@ -38,5 +38,21 @@ const after = await ev('window.__match?JSON.stringify(window.__match):(document.
 console.log('  after 1 click:', String(after).slice(0, 80));
 if (before === after) { console.log('FAIL: click did not change state'); ok = false; } else console.log('  interactive click re-ran the matcher');
 
-console.log(ok ? 'PASS — loft-native browser app functions (fetch → match in wasm → draw), byte-identical to native.' : 'FAILURES');
+// Fully offline: wait for the service worker to control the page, drop the network entirely, reload.
+// The SW must serve the shell + wasm and IndexedDB the dataset — a real no-network reload.
+let swReady = false;
+for (let i = 0; i < 40; i++) { if ((await ev('!!(navigator.serviceWorker && navigator.serviceWorker.controller)')) === true) { swReady = true; break; } await new Promise((r) => setTimeout(r, 300)); }
+if (!swReady) { console.log('FAIL: service worker never took control'); ok = false; }
+await call('Network.enable');
+await call('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+await call('Page.reload', {});
+let m2 = null;
+for (let i = 0; i < 60; i++) { const s = await ev('window.__match?JSON.stringify(window.__match):""'); if (s) { m2 = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 300)); }
+const cache = await ev('window.__cache?JSON.stringify(window.__cache):""') || '';
+console.log('  offline reload (network fully OFF):', (m2 && m2.summary) || '(no match)', '| source:', cache);
+if (!m2 || m2.error) { console.log('FAIL: fully-offline reload produced no match (SW/IndexedDB miss)'); ok = false; }
+else if (m2.routeCount !== 90 || !/cached/.test(cache)) { console.log('FAIL: offline reload wrong route or not served from cache'); ok = false; }
+else console.log('  ✓ matched with the network fully OFF (SW shell + IndexedDB data)');
+
+console.log(ok ? 'PASS — loft-native browser app functions online AND fully offline (service worker + IndexedDB), byte-identical to native.' : 'FAILURES');
 process.exit(ok ? 0 : 1);

@@ -23,6 +23,9 @@ index.html: fetch(web_kernel.wasm) + fetch(test set)
 - **Result out:** loft `println`s the route; the page reads it off the `loft_host_print` hook.
 - **Interactivity:** `loft_start` rebuilds fresh state each call, so every sketch edit is just another
   call — no re-instantiation.
+- **Fully offline:** a **service worker** (`sw.js`) caches the app shell + wasm; the test set is cached in
+  **IndexedDB** (keyed by a dataset version). A reload with the network **entirely off** still loads and
+  matches — verified by the gate (`Network offline` + reload).
 
 ## Build & run
 
@@ -46,6 +49,6 @@ The same kernel logic is also proven headless under `wasmtime` (`--native-wasm`)
 
 ## What's next (Track 1d)
 
-- Leaflet base map (needs a tile source; keep the © OpenStreetMap attribution visible — ODbL).
-- IndexedDB cache of the fetched block for offline reload; deploy to GitHub Pages.
+- **Leaflet** base map (needs a tile source; keep the © OpenStreetMap attribution visible — ODbL).
+- Deploy to **GitHub Pages** (unlisted URL).
 - Working-set streaming instead of one whole file — waits on loft#522.
