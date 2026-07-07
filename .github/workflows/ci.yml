@@ -81,10 +81,11 @@ jobs:
         run: make test
 
       # Non-blocking: the wasm CLIENT build above already proves --native-wasm compiles.
-      # This RUNS the wasm under wasmtime for interpret-parity, but wasmtime 46 SIGABRTs on
-      # loft's wasip2 component (works on older wasmtime + locally) — a toolchain-version issue,
-      # not a routing bug. Informational until the wasmtime version is pinned/investigated.
-      - name: WASM parity gate (interpret == native-wasm) — informational
+      # This RUNS the wasm under wasmtime for interpret-parity, but loft #518's stack-overflow
+      # guard spawns a "main-stack" thread wasip2 can't create, so every --native-wasm program
+      # aborts at runtime (wasmtime 43 AND 46 — not a version issue). Tracked: loft-lang/loft#521.
+      # Re-make this blocking once #521 lands (gate the thread-spawn to non-wasm targets).
+      - name: WASM parity gate (interpret == native-wasm) — informational (loft#521)
         continue-on-error: true
         run: make test-wasm
 
