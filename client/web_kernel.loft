@@ -1,0 +1,54 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Browser compute kernel (PLAN-APP Track 1), the loft-NATIVE way: communication is loft's own
+// host_input()/println byte channel (WEB_APPS.md §4c), NOT jco/WASI/fs. The browser (`loft --html`)
+// page lets JavaScript `fetch` the data over HTTP and hand it in via `globalThis.loftInput`; the
+// matched route comes back on `println` (loft's runtime is the comms + debug channel — errors and
+// output surface on the page). `loft_start` rebuilds fresh state each call, so re-matching per
+// sketch edit is just another call with new input — no re-instantiation.
+//
+// Input framing (one host_input() blob):
+//   line 1: "<sketch>|<profile>"   sketch = "lat,lon;lat,lon;..."   profile = e.g. cycling_road
+//   line 2+: the Overpass-JSON dataset (verbatim, may contain newlines)
+//
+// Identical on every target: pipe the same bytes on stdin for --interpret / --native / --native-wasm;
+// the browser feeds the same bytes via host_input(). See client/app_kernel.loft for the file+args
+// variant used by the headless (wasmtime) gate.
+use routing_kernel::(GeoPoint, parse_ways, build_graph, match_route, path_length_m);
+
+fn parse_pts(spec: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for pair in spec.split(';') {
+    xy = pair.split(',');
+    if len(xy) == 2 {
+      pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }];
+    }
+  }
+  pts
+}
+
+fn main() {
+  blob = host_input();
+  lines = blob.split('\n');
+  header = lines[0] ?? "";
+  hp = header.split('|');
+  sketch  = hp[0] ?? "";
+  profile = hp[1] ?? "cycling_road";
+
+  // Everything after the first line is the dataset (rejoined; parse_ways is whitespace-insensitive).
+  dataset = "";
+  for li in 1..len(lines) { dataset += lines[li] ?? ""; dataset += "\n"; }
+
+  ways = parse_ways(dataset);
+  g = build_graph(ways);
+  trace = parse_pts(sketch);
+  route = match_route(g, trace, profile);
+
+  drawn   = path_length_m(trace);
+  matched = path_length_m(route);
+  println("ways={len(ways)} route_pts={len(route)} profile={profile} matched_m={matched:1.1} drawn_m={drawn:1.1}");
+  line = "";
+  for p in route { line += "{p.lat:2.7},{p.lon:2.7};"; }
+  println(line);
+}

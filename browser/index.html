@@ -4,149 +4,132 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Routing — serverless browser match (PLAN-APP Track 1)</title>
-<!-- Resolve the jco WASI shim's bare specifiers to the browser build (no bundler needed). -->
-<script type="importmap">
-{
-  "imports": {
-    "@bytecodealliance/preview2-shim/cli":        "./node_modules/@bytecodealliance/preview2-shim/dist/browser/cli.js",
-    "@bytecodealliance/preview2-shim/clocks":     "./node_modules/@bytecodealliance/preview2-shim/dist/browser/clocks.js",
-    "@bytecodealliance/preview2-shim/filesystem": "./node_modules/@bytecodealliance/preview2-shim/dist/browser/filesystem.js",
-    "@bytecodealliance/preview2-shim/io":         "./node_modules/@bytecodealliance/preview2-shim/dist/browser/io.js",
-    "@bytecodealliance/preview2-shim/random":     "./node_modules/@bytecodealliance/preview2-shim/dist/browser/random.js"
-  }
-}
-</script>
+<title>Routing — serverless browser match (loft engine)</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1rem 1.25rem;
-         background: Canvas; color: CanvasText; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1rem 1.25rem; background: Canvas; color: CanvasText; }
   h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
-  p.sub { margin: 0 0 1rem; opacity: .75; }
-  #status { font-variant-numeric: tabular-nums; padding: .4rem .6rem; border-radius: .4rem;
-            background: color-mix(in srgb, Canvas 85%, gray); display: inline-block; }
-  #status.ok  { background: color-mix(in srgb, Canvas 70%, green); }
+  p.sub { margin: 0 0 .75rem; opacity: .75; }
+  #status { font-variant-numeric: tabular-nums; padding: .4rem .6rem; border-radius: .4rem; background: color-mix(in srgb, Canvas 85%, gray); display: inline-block; }
+  #status.ok { background: color-mix(in srgb, Canvas 70%, green); }
   #status.err { background: color-mix(in srgb, Canvas 70%, red); }
-  svg { width: 100%; max-width: 900px; height: auto; margin-top: 1rem;
-        border: 1px solid color-mix(in srgb, Canvas 60%, gray); border-radius: .5rem; background: Canvas; }
-  .net    { stroke: color-mix(in srgb, Canvas 55%, gray); stroke-width: .8; fill: none; }
-  .sketch { stroke: #e8730c; stroke-width: 2.2; stroke-dasharray: 6 5; fill: none; opacity: .9; }
-  .route  { stroke: #1e73e8; stroke-width: 2.6; fill: none; }
-  .legend { font-size: 12px; }
+  button { font: inherit; padding: .25rem .7rem; border-radius: .4rem; border: 1px solid color-mix(in srgb, Canvas 55%, gray); background: Canvas; color: CanvasText; cursor: pointer; }
+  svg { width: 100%; max-width: 900px; height: auto; margin-top: .75rem; border: 1px solid color-mix(in srgb, Canvas 60%, gray); border-radius: .5rem; background: Canvas; touch-action: none; cursor: crosshair; }
+  .net { stroke: color-mix(in srgb, Canvas 55%, gray); stroke-width: .8; fill: none; }
+  .sketch { stroke: #e8730c; stroke-width: 2.2; stroke-dasharray: 6 5; fill: none; }
+  .sketch-pt { fill: #e8730c; }
+  .route { stroke: #1e73e8; stroke-width: 2.6; fill: none; }
+  .foot { margin-top: .5rem; font-size: 12px; opacity: .7; }
 </style>
 </head>
 <body>
-<h1>Serverless route match — in the browser, no server</h1>
-<p class="sub">Fetches a whole test set (one Overpass-JSON file), runs the <b>full loft matcher in wasm</b>
-(jco-transpiled), and draws the matched route. No mmap store, no codec, no backend.</p>
-<div id="status">loading wasm…</div>
-<svg id="map" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet" aria-label="matched route">
-  <g id="layer-net"></g>
-  <g id="layer-sketch"></g>
-  <g id="layer-route"></g>
-  <g class="legend" id="legend"></g>
+<h1>Serverless route match — loft matcher in the browser, no server</h1>
+<p class="sub">Fetches one test-set file over HTTP and runs the <b>full loft matcher in wasm</b> via loft's
+own <code>host_input()</code>/<code>println</code> channel. Click the map to sketch a route; it re-matches on every point.</p>
+<div><span id="status">loading…</span> &nbsp; <button id="clear">Clear sketch</button> <button id="demo">Demo route</button></div>
+<svg id="map" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet" aria-label="route map">
+  <g id="net"></g><g id="sketch"></g><g id="route"></g>
 </svg>
+<p class="foot">© OpenStreetMap contributors (ODbL) · data: south-Overijssel test corridor · compute: loft → wasm (no backend)</p>
 
 <script type="module">
-import { run } from './gen/app_kernel.js';
-import { _setArgs, _setStdout } from '@bytecodealliance/preview2-shim/cli';
-import { _setFileData } from '@bytecodealliance/preview2-shim/filesystem';
-
 const DATASET = '../lib/routing_kernel/tests/fixtures/real_stretch.json';
 const PROFILE = 'cycling_road';
-// The drawn sketch (points 6..17 of the reference route) — kept in JS so we can draw the input too.
-const SKETCH = [
-  [52.24122987096219, 6.88344955444336], [52.246196269035615, 6.885638236999513],
-  [52.25008491227731, 6.8931055068969735], [52.2475363129658, 6.902117729187013],
-  [52.24971708224195, 6.9126319885253915], [52.25505031926059, 6.916065216064454],
-  [52.26342982483724, 6.919584274291993], [52.26947049234737, 6.91640853881836],
-  [52.28401724342717, 6.922588348388673], [52.29115758313226, 6.9181251525878915],
-  [52.30207587681469, 6.915206909179688], [52.31162717589892, 6.908855438232423],
+const DEMO = [
+  [52.24122987096219,6.88344955444336],[52.246196269035615,6.885638236999513],[52.25008491227731,6.8931055068969735],
+  [52.2475363129658,6.902117729187013],[52.24971708224195,6.9126319885253915],[52.25505031926059,6.916065216064454],
+  [52.26342982483724,6.919584274291993],[52.26947049234737,6.91640853881836],[52.28401724342717,6.922588348388673],
+  [52.29115758313226,6.9181251525878915],[52.30207587681469,6.915206909179688],[52.31162717589892,6.908855438232423],
 ];
-
+const W = 900, H = 620, PAD = 24, svgns = 'http://www.w3.org/2000/svg';
 const statusEl = document.getElementById('status');
-const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = cls || ''; };
+const setStatus = (m, c) => { statusEl.textContent = m; statusEl.className = c || ''; };
 
-function parsePolyline(text) {
-  const pts = [];
-  for (const pair of text.split(';')) {
-    const c = pair.split(',');
-    if (c.length === 2) { const la = +c[0], lo = +c[1]; if (!isNaN(la) && !isNaN(lo)) pts.push([la, lo]); }
-  }
-  return pts;
+// --- loft engine: instantiate the wasm with loft's 4-import comms shim ---
+const dec = new TextDecoder(), enc = new TextEncoder();
+let mem, inQ = [], out = '';
+const imports = {
+  loft_io: {
+    loft_host_print: (p, l) => { out += dec.decode(new Uint8Array(mem.buffer, p, l)); },
+    loft_host_input_len: () => (inQ[0] ? inQ[0].length : 0),
+    loft_host_input_copy: (p) => { const b = inQ.shift(); if (b) new Uint8Array(mem.buffer, p, b.length).set(b); },
+  },
+  loft_gl: { host_asset_exists: () => 0 },
+};
+let instance, datasetText, net = [], tx;   // tx: {px, py, inv} fixed transform
+
+function runMatch(sketch) {                 // sketch: [[lat,lon],...] → route [[lat,lon],...] + summary
+  const blob = sketch.map((p) => `${p[0]},${p[1]}`).join(';') + `|${PROFILE}\n` + datasetText;
+  inQ = [enc.encode(blob)]; out = '';
+  instance.exports.loft_start();            // fresh state each call — re-runnable
+  const lines = out.trim().split('\n');
+  const route = [];
+  for (const pair of (lines[1] || '').split(';')) { const c = pair.split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) route.push([a, b]); } }
+  return { summary: lines[0] || '', route };
 }
 
-// Parse the Overpass ways just for a faint background network (drawing only).
 function networkLines(json) {
-  const out = [];
-  for (const el of (json.elements || [])) {
-    if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length > 1)
-      out.push(el.geometry.map((g) => [g.lat, g.lon]));
-  }
-  return out;
+  const out2 = [];
+  for (const el of (json.elements || [])) if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length > 1) out2.push(el.geometry.map((g) => [g.lat, g.lon]));
+  return out2;
+}
+function makeTransform(lines) {             // fixed transform from the network bbox → pixels (+ inverse)
+  let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+  for (const w of lines) for (const [la, lo] of w) { miLa = Math.min(miLa, la); maLa = Math.max(maLa, la); miLo = Math.min(miLo, lo); maLo = Math.max(maLo, lo); }
+  const s = Math.min((W - 2 * PAD) / Math.max(1e-9, maLo - miLo), (H - 2 * PAD) / Math.max(1e-9, maLa - miLa));
+  return {
+    px: (lo) => PAD + (lo - miLo) * s, py: (la) => H - PAD - (la - miLa) * s,
+    inv: (x, y) => [miLa + (H - PAD - y) / s, miLo + (x - PAD) / s],
+  };
+}
+const pathD = (pts) => pts.map((p, i) => (i ? 'L' : 'M') + tx.px(p[1]).toFixed(1) + ' ' + tx.py(p[0]).toFixed(1)).join(' ');
+function el(name, attrs) { const e = document.createElementNS(svgns, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+let sketch = [];
+function redraw(route, summary) {
+  document.getElementById('net').replaceChildren(...net.map((w) => el('path', { class: 'net', d: pathD(w) })));
+  const sg = document.getElementById('sketch');
+  sg.replaceChildren();
+  if (sketch.length) sg.appendChild(el('path', { class: 'sketch', d: pathD(sketch) }));
+  for (const p of sketch) sg.appendChild(el('circle', { class: 'sketch-pt', cx: tx.px(p[1]).toFixed(1), cy: tx.py(p[0]).toFixed(1), r: 3.5 }));
+  document.getElementById('route').replaceChildren(route && route.length ? el('path', { class: 'route', d: pathD(route) }) : el('g', {}));
+  if (summary !== undefined) setStatus('✓ ' + summary, 'ok');
+}
+function match() {
+  if (sketch.length < 2) { redraw([], `sketch ${sketch.length} pt — add ≥2`); return; }
+  const t0 = performance.now();
+  const { summary, route } = runMatch(sketch);
+  redraw(route, `${summary}  ·  ${(performance.now() - t0) | 0} ms`);
+  window.__match = { summary, routeCount: route.length, polyline: route.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`).join(';') + (route.length ? ';' : '') };
 }
 
-function draw(net, sketch, route) {
-  const all = [...sketch, ...route];
-  let minLa = Infinity, maxLa = -Infinity, minLo = Infinity, maxLo = -Infinity;
-  for (const [la, lo] of all) { minLa = Math.min(minLa, la); maxLa = Math.max(maxLa, la);
-                                minLo = Math.min(minLo, lo); maxLo = Math.max(maxLo, lo); }
-  const pad = 24, W = 900, H = 620;
-  const sx = (W - 2 * pad) / Math.max(1e-9, maxLo - minLo);
-  const sy = (H - 2 * pad) / Math.max(1e-9, maxLa - minLa);
-  const s = Math.min(sx, sy);
-  const px = (lo) => pad + (lo - minLo) * s;
-  const py = (la) => H - pad - (la - minLa) * s;   // lat up
-  const path = (pts) => pts.map((p, i) => (i ? 'L' : 'M') + px(p[1]).toFixed(1) + ' ' + py(p[0]).toFixed(1)).join(' ');
-  const svgns = 'http://www.w3.org/2000/svg';
-  const add = (layer, cls, d) => { const e = document.createElementNS(svgns, 'path'); e.setAttribute('class', cls); e.setAttribute('d', d); document.getElementById(layer).appendChild(e); };
-  for (const w of net) add('layer-net', 'net', path(w));
-  add('layer-sketch', 'sketch', path(sketch));
-  add('layer-route', 'route', path(route));
-  document.getElementById('legend').innerHTML =
-    '<rect x="24" y="18" width="18" height="3" fill="#e8730c"/><text x="48" y="24" fill="CanvasText">drawn sketch</text>' +
-    '<rect x="150" y="18" width="18" height="3" fill="#1e73e8"/><text x="174" y="24" fill="CanvasText">matched route</text>';
-}
+document.getElementById('map').addEventListener('pointerdown', (ev) => {
+  const r = ev.currentTarget.getBoundingClientRect();
+  const x = (ev.clientX - r.left) / r.width * W, y = (ev.clientY - r.top) / r.height * H;
+  sketch.push(tx.inv(x, y)); match();
+});
+document.getElementById('clear').addEventListener('click', () => { sketch = []; redraw([], 'sketch cleared'); });
+document.getElementById('demo').addEventListener('click', () => { sketch = DEMO.slice(); match(); });
 
-async function main() {
+(async function main() {
   try {
-    // 1. Fetch the whole test set directly (the browser data model until working-set streaming, loft#522).
-    setStatus('fetching test set…');
-    const res = await fetch(DATASET);
-    if (!res.ok) throw new Error(`fetch ${DATASET}: ${res.status}`);
-    const datasetText = await res.text();
-
-    // 2. Hand the file to the wasm via the shim's in-memory FS (no real FS in the browser).
-    _setFileData({ dir: { 'data.json': { source: datasetText } } });
-
-    // 3. Capture the matcher's stdout.
-    let bytes = [];
-    _setStdout({ write(b) { bytes.push(b.slice()); }, blockingFlush() {}, [Symbol.dispose]() {} });
-
-    // 4. Drive it: argv = <dataset> <sketch> <profile>  (loft skips argv[0]).
-    const sketchArg = SKETCH.map((p) => `${p[0]},${p[1]}`).join(';');
-    _setArgs(['app_kernel', 'data.json', sketchArg, PROFILE]);
-
-    setStatus('matching in wasm…');
-    try { run.run(); } catch (e) { if (e?.constructor?.name !== 'ComponentExit' || e.code) throw e; }
-
-    // 5. Decode output: line 1 = summary, line 2 = matched polyline.
-    const total = bytes.reduce((n, a) => n + a.length, 0);
-    const merged = new Uint8Array(total);
-    let off = 0; for (const a of bytes) { merged.set(a, off); off += a.length; }
-    const out = new TextDecoder().decode(merged).trim().split('\n');
-    const summary = out[0] || '';
-    const route = parsePolyline(out[1] || '');
-
-    draw(networkLines(JSON.parse(datasetText)), SKETCH, route);
-    setStatus(`✓ matched in-browser — ${summary}`, 'ok');
-    window.__match = { summary, routeCount: route.length, polyline: out[1] || '' };
+    setStatus('fetching wasm + test set…');
+    const [wasmBuf, dataRes] = await Promise.all([
+      fetch('web_kernel.wasm').then((r) => { if (!r.ok) throw new Error('web_kernel.wasm ' + r.status + ' — run: node browser/build.mjs'); return r.arrayBuffer(); }),
+      fetch(DATASET).then((r) => { if (!r.ok) throw new Error(DATASET + ' ' + r.status); return r.text(); }),
+    ]);
+    datasetText = dataRes;
+    ({ instance } = await WebAssembly.instantiate(wasmBuf, imports));
+    mem = instance.exports.memory;
+    net = networkLines(JSON.parse(datasetText));
+    tx = makeTransform(net.length ? net : [DEMO]);
+    sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
+    match();
   } catch (e) {
     setStatus('✗ ' + (e?.message || e), 'err');
     window.__match = { error: String(e?.stack || e) };
   }
-}
-main();
+})();
 </script>
 </body>
 </html>

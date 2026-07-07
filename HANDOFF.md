@@ -35,13 +35,17 @@ serialization, so there is no codec to write (see §4/§7).
   interpret == native == native-wasm (472 ways → 90-pt route on the `real_stretch` fixture). This is the
   first wasm proof of the *whole* matcher — the earlier gate only covered the geodesic. Standing gate:
   `tools/app_headless_test.sh`, wired into `make test-wasm`.
-- **Serverless browser shell runs in a real browser** (`browser/`, PLAN-APP Track 1a–c) — the page
-  fetches a whole test set and runs the full matcher in **wasm transpiled by jco**
-  (`app_kernel.loft → --native-wasm component → jco → browser ESM`), draws the route on an SVG, **no
-  server**. Verified in headless Chromium: the in-browser route is **byte-identical to the native
-  reference** (`tools/browser_app_test.sh`, via CDP). `jco` + `@bytecodealliance/preview2-shim` now
-  installed under `browser/` (the WASI shim supplies the dataset via its in-memory FS). Remaining is
-  **Track 1d**: Leaflet base map + sketch UI + IndexedDB + GitHub Pages deploy — no loft dependency.
+- **Serverless browser shell runs in a real browser** (`browser/`, PLAN-APP Track 1a–c), built the
+  **loft-native way** — `client/web_kernel.loft` → `loft --html` → the page fetches a whole test set
+  and runs the full matcher in wasm over loft's own `host_input()`/`println` channel (a 4-import shim;
+  **no jco, no WASI, no npm**), draws the route on an SVG, re-matches on each map click, **no server**.
+  Verified in headless Chromium: the in-browser route is **byte-identical to the native reference**, and
+  a synthetic click re-matches (`tools/browser_app_test.sh`, via CDP). *(An earlier jco-based shell was
+  the wrong tool and was retired for this.)* Remaining is **Track 1d**: Leaflet base map + IndexedDB +
+  GitHub Pages deploy — no loft dependency.
+  - ⚠ **loft debugger `eval`/`setValue` are inert** in the `../loft` build tried (`dc06812a`): breakpoints
+    verify, the `stopped` frame inspects fine, `stepOver`/`continue` work, but `eval` returns `null` for
+    everything (even `2 + 2`) and `setValue` is rejected — a dogfooding finding, no open tracker issue.
 - **Plan docs** — `PLAN-MATCH` (escalation ladder + §7 numbers + §9 mode×intent), `PLAN-ROUTING`
   (get-me-there fork), `PLAN-APP` (the standalone app; §10 concrete steps; §11 data freshness). Plus the
   pre-existing `PLAN`, `PLAN-BROWSER`, `PLAN-TILES`, `DESIGN`.
@@ -113,9 +117,10 @@ loft maintainer; watch it for the `store_load*` primitive that Track C builds on
     `--native-wasm` runs under wasmtime, no pre-#518 workaround needed. For the wasm **build/rlib**: `rustup target add wasm32-wasip2`
     then `cargo build --release --target wasm32-wasip2 --lib --no-default-features --features random`.
 - **Build/test/run:** `export SDKROOT=…` (mac); `make build`, `make test`, `make run`. CI mirrors this.
-- **Browser packaging (Track 1) needs, and this environment lacked:** **node** + **jco** (wasm-bindgen
-  transpile of the kernel) + a **browser** to run. wasmtime is enough for headless wasm, and with #521
-  fixed it now runs (verified via `make test-wasm`). On this box only `jco` is still missing.
+- **Browser (Track 1) needs only `node` + a `browser`** — the app is built with `loft --html` (loft's
+  own browser engine), so **no jco / npm / WASI**. `node browser/build.mjs` produces `browser/web_kernel.wasm`;
+  `node browser/serve.mjs` serves it. wasmtime is enough for the separate headless `--native-wasm` gate,
+  and with #521 fixed it runs (verified via `make test-wasm`).
 
 ---
 
@@ -134,8 +139,9 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
    `store_load(path)`) alone unblocks whole-block wasm loading, provable under wasmtime now (#521 fixed).
 3. **F1/F2 (data freshness)** — stamp `osm_snapshot` in `gen-tiles.loft` + top index; show "data as of …"
    in the app attribution.
-4. **Track 1 — browser app.** ✅ **1a–c done** — `browser/` fetches a whole test set and runs the full
-   matcher in jco-transpiled wasm, no server, verified byte-identical to native in headless Chromium
+4. **Track 1 — browser app.** ✅ **1a–c done** — `browser/` (loft-native: `web_kernel.loft` → `loft --html`,
+   `host_input`/`println` engine, no jco) fetches a whole test set and runs the full matcher in wasm,
+   interactive (click → match → redraw), no server, verified byte-identical to native in headless Chromium
    (`tools/browser_app_test.sh`). Remaining is **Track 1d**: swap the SVG for a **Leaflet** base map +
    sketch UI (draw → wasm match → redraw, dropping the WebSocket), **IndexedDB** cache, deploy to Pages
    (unlisted URL). No loft dependency. The whole-file model holds until loft#522 lands the working-set
