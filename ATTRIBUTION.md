@@ -15,6 +15,11 @@ The generated tile blocks (`*.tiles`) are a **derivative database** under ODbL �
 see [`LICENSE.data`](LICENSE.data). This credit is shown **in the app** (the map
 attribution control) and must remain visible in any deployment.
 
+Each block also carries its **OSM snapshot date** (when the source data was
+current, captured via `osmium fileinfo`), which the app shows alongside the
+credit — e.g. "© OpenStreetMap contributors · Overijssel data as of 2026-07-01"
+— so users see how fresh the routing data is (see PLAN-APP §11).
+
 ## Elevation / terrain
 
 Baked heights (`h`) are sampled from **Terrarium** terrain tiles (Tilezen /
