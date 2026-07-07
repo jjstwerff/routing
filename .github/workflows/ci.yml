@@ -31,7 +31,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip2
+          targets: wasm32-wasip2, wasm32-unknown-unknown
 
       - uses: actions/setup-node@v4
         with:
@@ -60,7 +60,11 @@ jobs:
 
       - name: Build loft toolchain
         run: |
-          (cd /tmp/loft && cargo build --release --bin loft)
+          cd /tmp/loft
+          cargo build --release --bin loft
+          # loft --native-wasm links libloft.rlib built for wasip2 (no default features:
+          # mmap/threading aren't wasm-safe) — needed by the wasm client + `make test-wasm`.
+          cargo build --release --target wasm32-wasip2 --lib --no-default-features --features random
           echo "LOFT=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
 
       # --- build binaries ---
