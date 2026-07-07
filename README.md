@@ -104,6 +104,8 @@ tools/                test harnesses
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it's built: components, the WS protocol, the
   kernel API, build/run/test, and known limitations.
 - **[docs/loft-feedback.md](docs/loft-feedback.md)** — gaps found in loft while building (for the loft team).
+- **[HANDOFF.md](HANDOFF.md)** — resume state: what's done, external (loft) blockers, how to regenerate
+  the data, environment setup, and the next steps. **Start here to pick the project up.**
 - **Plans of record:** [PLAN-BROWSER](PLAN-BROWSER.md) (serverless), [PLAN-TILES](PLAN-TILES.md) (data
   format), [PLAN-MATCH](PLAN-MATCH.md) (the matcher), [PLAN-ROUTING](PLAN-ROUTING.md) (get-me-there),
   [PLAN-APP](PLAN-APP.md) (the standalone Western-Europe app).
