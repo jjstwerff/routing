@@ -43,9 +43,12 @@ serialization, so there is no codec to write (see §4/§7).
   a synthetic click re-matches (`tools/browser_app_test.sh`, via CDP). *(An earlier jco-based shell was
   the wrong tool and was retired for this.)* Remaining is **Track 1d**: Leaflet base map + IndexedDB +
   GitHub Pages deploy — no loft dependency.
-  - ⚠ **loft debugger `eval`/`setValue` are inert** in the `../loft` build tried (`dc06812a`): breakpoints
-    verify, the `stopped` frame inspects fine, `stepOver`/`continue` work, but `eval` returns `null` for
-    everything (even `2 + 2`) and `setValue` is rejected — a dogfooding finding, no open tracker issue.
+  - ⚠ **loft debugger `eval`/`setValue` break in any frame with a `vector` local** (`../loft` `dc06812a`):
+    breakpoints verify, the `stopped` frame inspects fine, `stepOver`/`continue` work — but `eval` returns
+    `null` for *everything* (even `2 + 2`) and `setValue` is rejected once the paused frame holds a
+    `vector<T>` local (scalars/structs are fine). Since real code always has vector locals, eval/setValue
+    are effectively unusable. Minimal repro + narrowing in `docs/loft-feedback.md` (2026-07-07); no open
+    tracker issue — maintainer's call to file.
 - **Plan docs** — `PLAN-MATCH` (escalation ladder + §7 numbers + §9 mode×intent), `PLAN-ROUTING`
   (get-me-there fork), `PLAN-APP` (the standalone app; §10 concrete steps; §11 data freshness). Plus the
   pre-existing `PLAN`, `PLAN-BROWSER`, `PLAN-TILES`, `DESIGN`.
