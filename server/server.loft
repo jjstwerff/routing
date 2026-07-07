@@ -159,7 +159,7 @@ fn covered(state: SyncState, pts: vector<GeoPoint>, margin: float) -> boolean {
   true
 }
 
-fn match_for(state: SyncState, payload: text) -> MatchResult {
+fn match_for(state: SyncState, tstore: hash<TTile[tkey]>, payload: text) -> MatchResult {
   empty = MatchResult { pts: [], bridges: 0, bseg: [] };
   bar = payload.find("|");
   profile = "walking_paved";
@@ -172,11 +172,10 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
   if len(pts) < 2 { return empty; }
   margin = corridor_margin(pts);   // scales with the drawn line (see kernel corridor_margin)
 
-  // NOTE: local tile-block matching is proven (see tiles_corridor_ways / native read6), but wiring it
-  // into the server is blocked by loft's store_persist_bind: it can't bind-once-reuse across the event
-  // loop (a struct-field hash bind crashes, a standalone hash can't be captured by the closure, re-bind
-  // returns empty, and repeated binds appear to mutate the file). Re-enable once the persist path is
-  // fixed. Until then the server matches from Overpass (below).
+  // Corridor ways come from the local TILE BLOCK (`tstore`, mmap-bound once at startup) when it covers
+  // this area, otherwise from Overpass — see the fetch loop below. Reading the block is local (no
+  // network), so the warm-edit path is identical either way: the first match populates the accumulated
+  // graph, and covered() + match_incremental keep later edits fast.
 
   // 15-min TTL: if it's been a while since the last edit, drop the accumulated map data (free the RAM)
   // and start fresh. now() is wall-clock epoch milliseconds.
@@ -203,28 +202,43 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
   best = empty;
   bestbr = 1000000;
   cm = margin;
+  from_tiles = false;   // true once a match was committed from the (complete, local) tile block
   for _try in 0..3 {
-    body = fetch_corridor(overpass_corridor_query(pts, margin));
-    if body != "" {
+    // Prefer the local tile block; an empty tile corridor (area outside the block) falls back to Overpass.
+    newways: vector<Way> = tiles_corridor_ways(tstore, pts, margin);
+    tile_src = len(newways) > 0;
+    if !tile_src {
+      body = fetch_corridor(overpass_corridor_query(pts, margin));
+      if body != "" { newways = parse_ways(body); }
+    }
+    if len(newways) > 0 {
+      // The tile block is complete for the corridor, so use it AS THE graph — no accumulation. Overpass
+      // is partial and slow to fetch, so its corridors ACCUMULATE (revisiting an area needs no re-fetch).
+      // Accumulating tile corridors instead would grow the graph without bound as the user pans (each
+      // miss rebuilding an ever-bigger build_graph — RSS and latency blow up), so tiles replace.
       merged: vector<Way> = [];
-      for w in base { merged += [w]; }
-      newways = parse_ways(body);
+      if !tile_src { for w in base { merged += [w]; } }
       for w in newways { merged += [w]; }
       g = build_graph(merged);
       ms = match_incremental(match_state_new(), g, pts, profile);   // fresh graph → full build
       r = match_state_result(g, ms);
       if len(r.pts) >= 2 && r.bridges < bestbr {                    // fewest bridges so far → commit it
-        bestbr = r.bridges; best = r; cm = margin;
+        bestbr = r.bridges; best = r; cm = margin; from_tiles = tile_src;
         state.cways = merged; state.cg = g; state.mstate = ms;
       }
       if len(r.pts) >= 2 && r.bridges == 0 { break; }               // clean match — stop widening
-      if margin >= 350.0 { break; }   // widening past here is too heavy a download to be worth it
+      if margin >= 350.0 { break; }   // widening past here is too heavy to be worth it
       margin = margin * 1.8;          // bridges (or empty) → widen and re-match
     }
-    // fetch failed (already retried a 429 once inside) — try the next attempt
+    // nothing this try (Overpass fetch failed — already retried a 429 once) — try the next attempt
   }
-  // Remember this fetch's footprint for the coverage test (drop the oldest if we hit the cap).
+  // Remember this corridor's footprint for the coverage test. Tile corridors replace (the cache holds
+  // only the current area — revisiting re-reads, which is local and cheap); Overpass corridors accumulate.
   if bestbr < 1000000 {
+    if from_tiles {
+      state.covs = [Corridor { pts: pts, margin: cm }];
+      return best;
+    }
     if len(state.covs) >= COVS_CAP {
       trimmed: vector<Corridor> = [];
       for i in 1..len(state.covs) { trimmed += [state.covs[i]]; }
@@ -241,9 +255,9 @@ fn match_for(state: SyncState, payload: text) -> MatchResult {
 // here would only clobber the history line.
 // Step 19: when the editor is ON a shared route, the accepted edit write-through saves the NAMED
 // route and fans out to its other subscribers (rough + profile + this match — msg 23).
-fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: text) {
+fn reply_match(srv: server::Server, state: SyncState, tstore: hash<TTile[tkey]>, cid: integer, payload: text) {
   wbar = payload.find("|");
-  mr = match_for(state, payload);
+  mr = match_for(state, tstore, payload);
   reply = "{path_length_m(mr.pts)}|{encode_points(mr.pts)}|{encode_points(mr.bseg)}";
   _ = srv.send_to(cid, "5:{reply}");
   rname = sub_name(state, cid);
@@ -257,7 +271,7 @@ fn reply_match(srv: server::Server, state: SyncState, cid: integer, payload: tex
 // Payload "<name>|<profile>|<points>": the route's real name goes into the file (Garmin shows it
 // in the course list), and the matched points get <ele> tags sampled from the terrain tiles —
 // ClimbPro et al. need them. Offline the tile fetch degrades to a bare track, never an error.
-fn reply_export(srv: server::Server, state: SyncState, cid: integer, payload: text) {
+fn reply_export(srv: server::Server, state: SyncState, tstore: hash<TTile[tkey]>, cid: integer, payload: text) {
   nbar = payload.find("|");
   name = "";
   rest = payload;
@@ -266,7 +280,7 @@ fn reply_export(srv: server::Server, state: SyncState, cid: integer, payload: te
     rest = payload[nbar + 1..];
   }
   if name == "" { name = "routing route"; }
-  matched = match_for(state, rest).pts;
+  matched = match_for(state, tstore, rest).pts;
   ez = elev_zoom(matched, ELEV_MAX_ZOOM, ELEV_MAX_TILES);
   tiles: vector<TileHeights> = [];
   if len(matched) >= 2 {
@@ -601,6 +615,21 @@ fn reply_elevation(srv: server::Server, cid: integer, payload: text) {
 }
 
 fn main() {
+  // Bind the local tile block ONCE (mmap) BEFORE the server starts; matching reads it instead of
+  // Overpass. The store is captured into the event-loop closure below and read by a per-request key —
+  // both fixed in loft (#511 capture, #513 re-init). An absent file is not an error: `tstore` stays
+  // empty and every match falls back to Overpass, so a fresh checkout still runs.
+  tstore: hash<TTile[tkey]> = [];
+  if exists(TILE_FILE) {
+    if store_persist_bind(tstore, TILE_FILE) {
+      nt = 0; for _t in tstore { nt = nt + 1; }
+      println("routing server: tile block bound ({nt} tiles from {TILE_FILE}) — matching reads it, not Overpass");
+    } else {
+      println("routing server: tile block {TILE_FILE} present but failed to bind — using Overpass");
+    }
+  } else {
+    println("routing server: no tile block ({TILE_FILE}) — using Overpass");
+  }
   srv = server::listen(PORT);
   if srv.handle < 0 {
     println("routing server: FAILED to listen on {PORT}");
@@ -614,8 +643,8 @@ fn main() {
     } else if ev.message {
       if ev.msg_id == 1 { reply_length(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 2 { reply_corridor(srv, ev.cid, ev.payload); }
-      else if ev.msg_id == 4 { reply_match(srv, state, ev.cid, ev.payload); }
-      else if ev.msg_id == 6 { reply_export(srv, state, ev.cid, ev.payload); }
+      else if ev.msg_id == 4 { reply_match(srv, state, tstore, ev.cid, ev.payload); }
+      else if ev.msg_id == 6 { reply_export(srv, state, tstore, ev.cid, ev.payload); }
       else if ev.msg_id == 8 { reply_import(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 10 { reply_elevation(srv, ev.cid, ev.payload); }
       else if ev.msg_id == 12 { reply_save(srv, state, ev.cid, ev.payload); }
