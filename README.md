@@ -104,5 +104,21 @@ tools/                test harnesses
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it's built: components, the WS protocol, the
   kernel API, build/run/test, and known limitations.
 - **[docs/loft-feedback.md](docs/loft-feedback.md)** — gaps found in loft while building (for the loft team).
+- **Plans of record:** [PLAN-BROWSER](PLAN-BROWSER.md) (serverless), [PLAN-TILES](PLAN-TILES.md) (data
+  format), [PLAN-MATCH](PLAN-MATCH.md) (the matcher), [PLAN-ROUTING](PLAN-ROUTING.md) (get-me-there),
+  [PLAN-APP](PLAN-APP.md) (the standalone Western-Europe app).
 
 Sibling consumer of the loft language (expected at `../loft`).
+
+## License & attribution
+
+- **Code:** LGPL-3.0-or-later — see [`LICENSE`](LICENSE).
+- **Data:** the generated routing tile blocks (`*.tiles`) are a derivative of OpenStreetMap, licensed
+  **ODbL-1.0** — see [`LICENSE.data`](LICENSE.data). **© OpenStreetMap contributors.**
+- Full source/terrain/trail credits: [`ATTRIBUTION.md`](ATTRIBUTION.md). The OSM credit is shown in the
+  app's map attribution control.
+
+## Contributing
+
+Issues and PRs welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md). Sign off commits with `git commit -s` (DCO).

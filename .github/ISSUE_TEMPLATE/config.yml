@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: loft toolchain / library issue
+    url: https://github.com/loft-lang/loft/issues
+    about: Bugs or gaps in the loft language, compiler, or libraries belong upstream.
+  - name: OpenStreetMap data fix
+    url: https://www.openstreetmap.org
+    about: If the underlying map data is wrong for an area, fix it at the source — everyone benefits.

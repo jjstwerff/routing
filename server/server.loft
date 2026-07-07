@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
 // routing server (PLAN step 4) — serves the static client AND does the routing work, over ONE port
 // (HTTP for files, WebSocket for the data transfer). loft runs NATIVE here, so it has full HTTP/fs;
 // the browser is thin JS (DESIGN.md §3/§4, the audience-demo shape).

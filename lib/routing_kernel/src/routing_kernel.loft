@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
 // routing_kernel — the pure-loft compute surface shared by BOTH the wasm client and the
 // native Mode-B server (DESIGN.md §3, "one kernel, two targets"). Tier 1 (pure loft): the
 // compiler emits the right variant for interpreter / --native / --native-wasm / --html with
