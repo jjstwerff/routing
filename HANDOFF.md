@@ -15,7 +15,9 @@ The compute (matcher) runs identically in wasm. **loft#521 — the regression th
 `--native-wasm` execution — is now fixed** (loft commit `db19ec43`, branch `tuxedo-add-to-project`;
 verified here: `make test-wasm` geodesic parity all-pass under wasmtime). The remaining blocker to
 running it *in a browser* is the packaging toolchain (`jco` wasm-bindgen transpile + a browser), which
-wasn't available in the environment this was built in.
+wasn't available in the environment this was built in. The working-set **data** path (fetch only the
+tiles a route needs) now rides on **loft#522** — partial store load over HTTP; a store file is its own
+serialization, so there is no codec to write (see §4/§7).
 
 ---
 
@@ -57,9 +59,11 @@ wasn't available in the environment this was built in.
 | loft#513 | store re-init (bind reads full data) | **FIXED (merged)** | **⚠ changed the on-disk store format** — `.tiles` written by pre-fix loft read *empty*; regenerate with current loft |
 | loft-libs-net #517 | HTTP range/bytes/headers/size stack | **implemented on branch `tuxedo-517-http-stack`, NOT merged** | needed for browser working-set **range reads** (Benelux+, PLAN-APP Track 2) |
 | **loft#521** | `--native-wasm` aborted at runtime (#518 spawned a main-stack thread wasip2 can't create) | **FIXED** — loft `db19ec43` (branch `tuxedo-add-to-project`): wasm `main` runs directly, native keeps the large-stack thread. **Confirm it reached loft `main`** before trusting a fresh main checkout. | **Unblocked**: Track 1 (browser) + Track C's "prove under wasmtime" run step now work — no pre-#518 workaround needed. |
+| **loft#522** | partial store load over HTTP range reads — materialise a local store from a remote store's working set | **OPEN** (`needs-design`), filed 2026-07-07; **maintainer-side loft work** (store engine + wasm), not ours to build | **This replaces the hand-written codec** for the browser data path — no TTile/TRoad decoder needed; a store file IS its own serialization. Track C's data-access core now *waits on* this loft primitive. Phase 1 (plain heap `store_load(path)`) alone unblocks whole-block wasm loading. |
 
 The #521 fix has landed on `tuxedo-add-to-project`; once it merges to loft `main`, flip the CI wasm gate
-back to blocking (§9).
+back to blocking (§9). **loft#522** is the newly-filed design for the working-set data path — left to the
+loft maintainer; watch it for the `store_load*` primitive that Track C builds on.
 
 ---
 
@@ -107,10 +111,14 @@ back to blocking (§9).
 Do in this order; **O** and the doc/tooling are done or in-flight.
 
 1. **Merge PR #8** (CI note) — trivial.
-2. **Track C — data-access core** (headless): `codec.loft` (C1 writer / C2 decoder — a **byte codec**,
-   because `store_persist_bind` mmap does **not** load in wasm), block **directory** (C4), working-set
-   **resolver** (C5), range loader over #517 (C6). *Note:* C3 "prove under wasmtime" now works directly
-   (loft#521 fixed); the decode+match logic is also testable natively.
+2. **Track C — data-access core** (headless). **⚠ Rescoped — no codec.** A store file IS its own
+   byte-exact serialization (portable native↔wasm), so there is nothing to hand-decode; loading a tile is
+   reading store bytes into a heap arena. The working-set data path is now **loft#522** (partial store
+   load over HTTP range reads → fill a local store that behaves as if the whole store loaded), which is
+   **maintainer-side loft work**. Routing side, once #522 lands: build blocks as `sorted<TTile[tkey]>`
+   (range-friendly for a geographic cell window — a hash index forces near-whole-file reads), a working-set
+   **resolver** (`pts+margin → tkey range`), then `store_load_range` → match. Phase 1 of #522 (plain heap
+   `store_load(path)`) alone unblocks whole-block wasm loading, provable under wasmtime now (#521 fixed).
 3. **F1/F2 (data freshness)** — stamp `osm_snapshot` in `gen-tiles.loft` + top index; show "data as of …"
    in the app attribution.
 4. **Track 1 — browser app** (needs node/jco/browser): transpile kernel → browser wasm, rewire the
@@ -125,7 +133,9 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 ## 8. Gotchas / things that cost time (don't relearn these)
 
 - **`store_persist_bind` is native-only** — returns `false` and reads/writes nothing under wasm (no
-  mmap in wasip2). The browser must fetch+decode bytes (a codec), not map the store. (PLAN-APP §3, verified.)
+  mmap in wasip2). But the browser does **not** need a codec: a store file is a byte-exact arena image,
+  portable native↔wasm, so wasm loads it by reading bytes into a heap arena (loft#522, phase 1). "Decode"
+  is a copy, not a parse. (Supersedes PLAN-APP §3's fetch+decode-codec framing.)
 - **loft#513 changed the store format** — any `.tiles` from an older loft reads *empty*; always
   regenerate after updating loft.
 - **`parse_ways` eats Overpass-JSON, not geojsonseq** — hence `tools/geojson2overpass.py`.
