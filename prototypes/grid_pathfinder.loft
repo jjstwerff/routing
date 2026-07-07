@@ -1,0 +1,280 @@
+// Grid pathfinder prototype — re-targets the routing kernel's core onto an abstract grid.
+//
+// Validates the game-world-sim recommendation: the three transferable pieces of the
+// matcher — the binary min-heap, Dijkstra over a CSR-style adjacency, and a *pluggable
+// per-step cost* — carry over unchanged when the domain is a terrain grid instead of an
+// OSM road graph. Here:
+//   - the Graph/Way/tags become a `Grid` of cells with a terrain movement cost;
+//   - `way_penalty` (per-metre road cost) becomes `move_cost_char` (per-cell terrain cost);
+//   - the Heap + Dijkstra are the SAME routine as lib/routing_kernel (heap_push/heap_pop
+//     copied verbatim), proving the search is domain-agnostic;
+//   - A* is shown as a one-line add: push `g + octile_heuristic` instead of `g`. The
+//     octile distance is the grid analog of the kernel's geodesic lower bound — an
+//     admissible heuristic (cheapest terrain step = 1.0), so A* stays optimal.
+//
+// Deterministic: same map in → same path + same expansion counts out, on every backend.
+// run: loft --interpret prototypes/grid_pathfinder.loft   (or --native)
+
+BIG   = 1000000000.0;               // stand-in for infinity (real path costs stay far below)
+SQRT2 = 1.4142135623730951;         // diagonal step length
+
+// --- terrain cost "profile" — the analog of way_penalty(profile, hw, surface, ...) ---
+// Per-cell cost to ENTER a cell of this terrain. '#' is impassable (BIG); the rest are
+// finite so the search trades detour length against terrain cost, exactly like the road
+// cost model trades deviation against surface/road-class penalties.
+fn move_cost_char(ch: character) -> float {
+  if ch == '#' { return BIG; }      // wall / impassable
+  if ch == '~' { return 8.0; }      // water / marsh — very costly to cross
+  if ch == '^' { return 3.0; }      // hill / rough — mildly costly
+  1.0                               // '.', 'S', 'G', open ground
+}
+
+// --- the grid (the Graph analog): row-major cells, node id = y*w + x ---
+struct Grid { w: integer, h: integer, cost: vector<float>, tch: vector<character> }
+
+fn row_chars(r: text) -> vector<character> {
+  cs: vector<character> = [];
+  for rc in r { cs += [rc]; }
+  cs
+}
+
+// Build a rectangular grid from ASCII rows; each row is padded/truncated to row-0 width so
+// a miscounted map can't corrupt the node indexing.
+fn build_grid(rows: vector<text>) -> Grid {
+  costs: vector<float> = [];
+  chars: vector<character> = [];
+  gw = 0;
+  if len(rows) > 0 { gw = len(row_chars(rows[0] ?? "")); }
+  gh = 0;
+  for row in rows {
+    cells = row_chars(row ?? "");
+    for cx in 0..gw {
+      ch = cells[cx] ?? '.';
+      costs += [move_cost_char(ch)];
+      chars += [ch];
+    }
+    gh += 1;
+  }
+  Grid { w: gw, h: gh, cost: costs, tch: chars }
+}
+
+fn find_char(g: Grid, target: character) -> integer {
+  for fi in 0..len(g.tch) {
+    c = g.tch[fi] ?? '.';
+    if c == target { return fi; }
+  }
+  -1
+}
+
+// --- binary min-heap over (cost, node) — copied VERBATIM from lib/routing_kernel ---
+// Array-backed with an explicit live size (loft vectors don't shrink); lazy-deletion, so a
+// node may be pushed several times and stale pops are skipped via the `done` flag in search.
+struct Heap { cost: vector<float>, node: vector<integer>, size: integer }
+
+fn heap_push(h: Heap, c: float, nd: integer) {
+  i = h.size;
+  if i < len(h.cost) { h.cost[i] = c; h.node[i] = nd; } else { h.cost += [c]; h.node += [nd]; }
+  h.size = i + 1;
+  while i > 0 {
+    p = (i - 1) / 2;
+    if (h.cost[p] ?? 0.0) <= (h.cost[i] ?? 0.0) { break; }
+    tc = h.cost[i] ?? 0.0; h.cost[i] = h.cost[p] ?? 0.0; h.cost[p] = tc;
+    tn = h.node[i] ?? 0;   h.node[i] = h.node[p] ?? 0;   h.node[p] = tn;
+    i = p;
+  }
+}
+
+struct Popped { cost: float, node: integer, ok: boolean }
+fn heap_pop(h: Heap) -> Popped {
+  if h.size == 0 { return Popped { cost: 0.0, node: -1, ok: false }; }
+  rc = h.cost[0] ?? 0.0;
+  rn = h.node[0] ?? 0;
+  last = h.size - 1;
+  h.cost[0] = h.cost[last] ?? 0.0;
+  h.node[0] = h.node[last] ?? 0;
+  h.size = last;
+  i = 0;
+  while true {
+    l = 2 * i + 1;
+    r = 2 * i + 2;
+    sm = i;
+    if l < h.size && (h.cost[l] ?? 0.0) < (h.cost[sm] ?? 0.0) { sm = l; }
+    if r < h.size && (h.cost[r] ?? 0.0) < (h.cost[sm] ?? 0.0) { sm = r; }
+    if sm == i { break; }
+    tc = h.cost[i] ?? 0.0; h.cost[i] = h.cost[sm] ?? 0.0; h.cost[sm] = tc;
+    tn = h.node[i] ?? 0;   h.node[i] = h.node[sm] ?? 0;   h.node[sm] = tn;
+    i = sm;
+  }
+  Popped { cost: rc, node: rn, ok: true }
+}
+
+// --- admissible heuristic: octile distance × cheapest terrain step (1.0) ---
+// The grid analog of the kernel's straight-line geodesic lower bound. Never overestimates,
+// so A* returns the same optimal cost as Dijkstra while expanding fewer cells.
+fn iabs(x: integer) -> integer { if x < 0 { -x } else { x } }
+fn octile(x: integer, y: integer, gx: integer, gy: integer) -> float {
+  dx = iabs(x - gx);
+  dy = iabs(y - gy);
+  lo = if dx < dy { dx } else { dy };
+  hi = if dx > dy { dx } else { dy };
+  (hi - lo) as float + (lo as float) * SQRT2
+}
+
+struct SearchOut { found: boolean, cost: float, prev: vector<integer>, expanded: integer }
+
+// Dijkstra (astar=false) or A* (astar=true) over the 8-connected grid. Edge cost = step
+// length × the destination cell's terrain cost — the direct grid image of the kernel's
+// `length × (1 + penalties)` per-edge cost.
+fn search(g: Grid, start: integer, goal: integer, astar: boolean) -> SearchOut {
+  n = g.w * g.h;
+  dist: vector<float> = [];
+  prev: vector<integer> = [];
+  done: vector<boolean> = [];
+  for _si in 0..n { dist += [BIG]; prev += [-1]; done += [false]; }
+
+  dx8 = [1, -1, 0, 0, 1, 1, -1, -1];
+  dy8 = [0, 0, 1, -1, 1, -1, 1, -1];
+  step8 = [1.0, 1.0, 1.0, 1.0, SQRT2, SQRT2, SQRT2, SQRT2];
+
+  gx = goal % g.w;
+  gy = goal / g.w;
+  h = Heap { cost: [], node: [], size: 0 };
+  dist[start] = 0.0;
+  heap_push(h, 0.0, start);
+  expanded = 0;
+
+  while h.size > 0 {
+    pop = heap_pop(h);
+    u = pop.node;
+    if u < 0 { break; }
+    if !(done[u] ?? true) {
+      done[u] = true;
+      expanded += 1;
+      if u == goal { break; }
+      ux = u % g.w;
+      uy = u / g.w;
+      for d in 0..8 {
+        nx = ux + (dx8[d] ?? 0);
+        ny = uy + (dy8[d] ?? 0);
+        if nx >= 0 && nx < g.w && ny >= 0 && ny < g.h {
+          v = ny * g.w + nx;
+          cv = g.cost[v] ?? BIG;
+          if cv < BIG {
+            nd = (dist[u] ?? BIG) + (step8[d] ?? 1.0) * cv;
+            if nd < (dist[v] ?? BIG) {
+              dist[v] = nd;
+              prev[v] = u;
+              pri = if astar { nd + octile(nx, ny, gx, gy) } else { nd };
+              heap_push(h, pri, v);
+            }
+          }
+        }
+      }
+    }
+  }
+  SearchOut { found: (dist[goal] ?? BIG) < BIG, cost: dist[goal] ?? BIG, prev: prev, expanded: expanded }
+}
+
+// Walk the `prev` chain goal→start and reverse into start→goal order.
+fn reconstruct(g: Grid, prev: vector<integer>, start: integer, goal: integer) -> vector<integer> {
+  path: vector<integer> = [];
+  cur = goal;
+  limit = g.w * g.h + 1;
+  steps = 0;
+  while cur >= 0 && steps < limit {
+    path += [cur];
+    if cur == start { break; }
+    cur = prev[cur] ?? -1;
+    steps += 1;
+  }
+  ordered: vector<integer> = [];
+  for ri in 0..len(path) { ordered += [path[len(path) - 1 - ri] ?? -1]; }
+  ordered
+}
+
+fn render(g: Grid, path: vector<integer>, start: integer, goal: integer) {
+  onpath: vector<boolean> = [];
+  for _ci in 0..(g.w * g.h) { onpath += [false]; }
+  for pi in 0..len(path) {
+    idx = path[pi] ?? -1;
+    if idx >= 0 { onpath[idx] = true; }
+  }
+  for yy in 0..g.h {
+    line = "";
+    for xx in 0..g.w {
+      nid = yy * g.w + xx;
+      ch = g.tch[nid] ?? '.';
+      cell = "{ch}";
+      if nid == start { cell = "S"; }
+      else if nid == goal { cell = "G"; }
+      else if onpath[nid] ?? false { cell = "*"; }
+      line += cell;
+    }
+    println(line);
+  }
+}
+
+fn run_case(name: text, rows: vector<text>) {
+  g = build_grid(rows);
+  s = find_char(g, 'S');
+  gl = find_char(g, 'G');
+  println("=== {name}  ({g.w}x{g.h} grid) ===");
+  if s < 0 || gl < 0 {
+    println("  (missing S or G)");
+    println("");
+    return;
+  }
+  rd = search(g, s, gl, false);
+  ra = search(g, s, gl, true);
+  if rd.found {
+    path = reconstruct(g, rd.prev, s, gl);
+    println("legend: . open(1)  ^ hill(3)  ~ water(8)  # wall  * path");
+    render(g, path, s, gl);
+    println("optimal cost {rd.cost:7.2} over {len(path)} cells");
+    println("expanded:  Dijkstra {rd.expanded}   A* {ra.expanded}   (A* cost {ra.cost:7.2} — must equal Dijkstra)");
+  } else {
+    println("no path found");
+  }
+  println("");
+}
+
+fn main() {
+  // Case 1 — a water band: cheaper to detour around than to wade straight through.
+  map_water = [
+    "....................",
+    "....................",
+    "....~~~~~~~~~~......",
+    "....~~~~~~~~~~......",
+    ".S..~~~~~~~~~~..G...",
+    "....~~~~~~~~~~......",
+    "....~~~~~~~~~~......",
+    "....................",
+  ];
+  run_case("water detour", map_water);
+
+  // Case 2 — walls: the path must weave; A* should expand far fewer cells than Dijkstra.
+  map_walls = [
+    "....................",
+    ".......#............",
+    ".S.....#........G...",
+    ".......#............",
+    ".......#....#######.",
+    ".......#....#.......",
+    "....########....^^^.",
+    "............#..^^^^^.",
+    "............#....^^^.",
+    "....................",
+  ];
+  run_case("wall maze", map_walls);
+
+  // Case 3 — a hill field: prefers threading open ground over climbing.
+  map_hills = [
+    "....................",
+    ".S....^^^^^^........",
+    "......^^^^^^....G...",
+    "......^^^^^^........",
+    "..........^^^^^^....",
+    "....................",
+  ];
+  run_case("hill avoidance", map_hills);
+}
