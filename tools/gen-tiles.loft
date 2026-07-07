@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// gen-tiles — build a PLAN-TILES data block (hash<TTile[tkey]>) from OpenStreetMap.
+// Input: Overpass-JSON (elements[].{type:"way", tags, geometry:[{lat,lon},…]}), which you produce
+// from a Geofabrik .osm.pbf via osmium + tools/geojson2overpass.py (see HANDOFF.md / PLAN-APP §11).
+//   loft --native-release --lib lib tools/gen-tiles.loft <out.tiles> <overpass.json>
+// NOTE: writes an mmap store via store_persist_bind — native only; wasm loads via a codec (PLAN-APP §3).
+// Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
+use routing_kernel::(GeoPoint, Way, parse_ways, TStep, TRoad, TTile);
+
+fn class_of(hw: text) -> integer {
+  if hw == "motorway" || hw == "motorway_link" { return 0; }
+  if hw == "trunk" || hw == "trunk_link" || hw == "primary" || hw == "primary_link" { return 1; }
+  if hw == "secondary" || hw == "secondary_link" { return 2; }
+  if hw == "tertiary" || hw == "tertiary_link" || hw == "unclassified" { return 3; }
+  if hw == "residential" { return 4; }
+  if hw == "living_street" { return 5; }
+  if hw == "service" { return 6; }
+  if hw == "cycleway" { return 7; }
+  if hw == "path" || hw == "track" || hw == "bridleway" { return 8; }
+  if hw == "footway" { return 9; }
+  if hw == "pedestrian" { return 10; }
+  if hw == "steps" { return 11; }
+  if hw == "busway" { return 13; }
+  if hw == "platform" { return 14; }
+  15
+}
+fn flags_of(w: Way) -> integer {
+  f = 0;
+  if w.cyclestreet == "yes" || w.cycleway == "lane" || w.cycleway == "track" { f = f + 1; }
+  s = w.surface;
+  if s == "ground" || s == "gravel" || s == "unpaved" || s == "compacted" { f = f + 2; }
+  f
+}
+CELL = 200000;
+
+fn build(osm: text) -> hash<TTile[tkey]> {
+  ways = parse_ways(file(osm).content());
+  idx: hash<TTile[tkey]> = [];
+  for w in ways {
+    if len(w.coords) < 2 { continue; }
+    gx0 = round(w.coords[0].lon * 10000000.0) as integer;
+    gy0 = round(w.coords[0].lat * 10000000.0) as integer;
+    tx = gx0 / CELL; ty = gy0 / CELL;
+    key = ty * 1000000 + tx;
+    t = idx[key];
+    if t == null {
+      idx += TTile { tkey: key, ox: tx * CELL, oy: ty * CELL, oh: 0, roads: [], steps: [] };
+      t = idx[key];
+    }
+    n = len(w.coords); if n > 255 { n = 255; }
+    for i in 0..n {
+      gx = round(w.coords[i].lon * 10000000.0) as integer;
+      gy = round(w.coords[i].lat * 10000000.0) as integer;
+      t.steps += [TStep { x: (gx - t.ox) as i32? ?? (0 as i32), y: (gy - t.oy) as i32? ?? (0 as i32), h: 0 as i32 }];
+    }
+    t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: (flags_of(w) & 255) as u8, steps: (n & 255) as u8 }];
+  }
+  idx
+}
+fn main() {
+  a = arguments();
+  idx = build(a[1]);
+  nt = 0; nr = 0; for t in idx { nt = nt + 1; nr = nr + len(t.roads); }
+  println("built: tiles={nt} roads={nr}");
+  ok = store_persist_bind(idx, a[0]);
+  println("persist {ok}");
+}
