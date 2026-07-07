@@ -11,9 +11,13 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 The **server-first app works** and now **matches from a local tile data block** (falling back to
 Overpass). The **standalone/serverless browser app is designed but not built** — the design is
 `PLAN-APP.md` (staged: south-Overijssel → Benelux → Western Europe; reads only the working-set tiles).
-The compute (matcher) runs identically in wasm; the blocker to running it *in a browser* is (a) a loft
-regression that aborts all `--native-wasm` execution (**loft#521**) and (b) the browser packaging
-toolchain (node + jco + a browser), which wasn't available in the environment this was built in.
+The compute (matcher) runs identically in wasm. **loft#521 — the regression that aborted all
+`--native-wasm` execution — is now fixed** (loft commit `db19ec43`, branch `tuxedo-add-to-project`;
+verified here: `make test-wasm` geodesic parity all-pass under wasmtime). The remaining blocker to
+running it *in a browser* is the packaging toolchain (`jco` wasm-bindgen transpile + a browser), which
+wasn't available in the environment this was built in. The working-set **data** path (fetch only the
+tiles a route needs) now rides on **loft#522** — partial store load over HTTP; a store file is its own
+serialization, so there is no codec to write (see §4/§7).
 
 ---
 
@@ -32,7 +36,8 @@ toolchain (node + jco + a browser), which wasn't available in the environment th
   headers on our sources, `ATTRIBUTION.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
   `.github/ISSUE_TEMPLATE/`.
 - **CI** (`.github/workflows/ci.yml`) — builds binaries (server + wasm client) and runs `make test` on
-  every PR/push. The wasm-parity *run* is non-blocking (loft#521).
+  every PR/push. The wasm-parity *run* is non-blocking (was gated on loft#521, now fixed — re-enable
+  blocking once the fix reaches loft `main`; see §9).
 - **Data-refresh workflow** (`.github/workflows/data-refresh.yml`) — monthly, **dormant** until
   `tools/build-blocks.sh` exists (see §5).
 - **Pipeline tools** — `tools/gen-tiles.loft` (block generator) + `tools/geojson2overpass.py`
@@ -53,9 +58,12 @@ toolchain (node + jco + a browser), which wasn't available in the environment th
 | loft#511 | collection capture into closures | **FIXED (merged)** | unblocked the server binding the block into the event loop |
 | loft#513 | store re-init (bind reads full data) | **FIXED (merged)** | **⚠ changed the on-disk store format** — `.tiles` written by pre-fix loft read *empty*; regenerate with current loft |
 | loft-libs-net #517 | HTTP range/bytes/headers/size stack | **implemented on branch `tuxedo-517-http-stack`, NOT merged** | needed for browser working-set **range reads** (Benelux+, PLAN-APP Track 2) |
-| **loft#521** | `--native-wasm` aborts at runtime (#518 spawns a main-stack thread wasip2 can't create) | **OPEN**, triaged `sev:high`/`wa:partial`/`area:codegen`, **no fix yet** | **blocks running ANY wasm** — Track 1 (browser) and Track C's "prove under wasmtime" run step. Workaround: build loft **pre-#518** for wasm runs. wasm *build*, native, server are unaffected. |
+| **loft#521** | `--native-wasm` aborted at runtime (#518 spawned a main-stack thread wasip2 can't create) | **FIXED** — loft `db19ec43` (branch `tuxedo-add-to-project`): wasm `main` runs directly, native keeps the large-stack thread. **Confirm it reached loft `main`** before trusting a fresh main checkout. | **Unblocked**: Track 1 (browser) + Track C's "prove under wasmtime" run step now work — no pre-#518 workaround needed. |
+| **loft#522** | partial store load over HTTP range reads — materialise a local store from a remote store's working set | **OPEN** (`needs-design`), filed 2026-07-07; **maintainer-side loft work** (store engine + wasm), not ours to build | **This replaces the hand-written codec** for the browser data path — no TTile/TRoad decoder needed; a store file IS its own serialization. Track C's data-access core now *waits on* this loft primitive. Phase 1 (plain heap `store_load(path)`) alone unblocks whole-block wasm loading. |
 
-Watch loft `main` / branches for a #521 fix; when it lands, flip the CI wasm gate back to blocking.
+The #521 fix has landed on `tuxedo-add-to-project`; once it merges to loft `main`, flip the CI wasm gate
+back to blocking (§9). **loft#522** is the newly-filed design for the working-set data path — left to the
+loft maintainer; watch it for the `store_load*` primitive that Track C builds on.
 
 ---
 
@@ -88,13 +96,13 @@ Watch loft `main` / branches for a #521 fix; when it lands, flip the CI wasm gat
 
 - **loft** as a sibling checkout at `../loft`, built: `cargo build --release` (needs **mold** on Linux;
   `export SDKROOT=$(xcrun --show-sdk-path)` on macOS). Point the app at it via `LOFT=../loft/target/release/loft`.
-  - ⚠ The local `../loft` here is at #518 (has the #521 bug). For **wasm runtime** work, check out loft
-    **before #518** (or wait for #521's fix). For the wasm **build/rlib**: `rustup target add wasm32-wasip2`
+  - The local `../loft` here now includes the **#521 fix** (`db19ec43`, branch `tuxedo-add-to-project`):
+    `--native-wasm` runs under wasmtime, no pre-#518 workaround needed. For the wasm **build/rlib**: `rustup target add wasm32-wasip2`
     then `cargo build --release --target wasm32-wasip2 --lib --no-default-features --features random`.
 - **Build/test/run:** `export SDKROOT=…` (mac); `make build`, `make test`, `make run`. CI mirrors this.
 - **Browser packaging (Track 1) needs, and this environment lacked:** **node** + **jco** (wasm-bindgen
-  transpile of the kernel) + a **browser** to run. wasmtime is enough for headless wasm (but #521 blocks
-  the run right now).
+  transpile of the kernel) + a **browser** to run. wasmtime is enough for headless wasm, and with #521
+  fixed it now runs (verified via `make test-wasm`). On this box only `jco` is still missing.
 
 ---
 
@@ -103,10 +111,14 @@ Watch loft `main` / branches for a #521 fix; when it lands, flip the CI wasm gat
 Do in this order; **O** and the doc/tooling are done or in-flight.
 
 1. **Merge PR #8** (CI note) — trivial.
-2. **Track C — data-access core** (headless): `codec.loft` (C1 writer / C2 decoder — a **byte codec**,
-   because `store_persist_bind` mmap does **not** load in wasm), block **directory** (C4), working-set
-   **resolver** (C5), range loader over #517 (C6). *Caveat:* C3 "prove under wasmtime" needs a
-   **pre-#518 loft** until loft#521 is fixed (the decode+match logic itself is testable natively now).
+2. **Track C — data-access core** (headless). **⚠ Rescoped — no codec.** A store file IS its own
+   byte-exact serialization (portable native↔wasm), so there is nothing to hand-decode; loading a tile is
+   reading store bytes into a heap arena. The working-set data path is now **loft#522** (partial store
+   load over HTTP range reads → fill a local store that behaves as if the whole store loaded), which is
+   **maintainer-side loft work**. Routing side, once #522 lands: build blocks as `sorted<TTile[tkey]>`
+   (range-friendly for a geographic cell window — a hash index forces near-whole-file reads), a working-set
+   **resolver** (`pts+margin → tkey range`), then `store_load_range` → match. Phase 1 of #522 (plain heap
+   `store_load(path)`) alone unblocks whole-block wasm loading, provable under wasmtime now (#521 fixed).
 3. **F1/F2 (data freshness)** — stamp `osm_snapshot` in `gen-tiles.loft` + top index; show "data as of …"
    in the app attribution.
 4. **Track 1 — browser app** (needs node/jco/browser): transpile kernel → browser wasm, rewire the
@@ -121,12 +133,15 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 ## 8. Gotchas / things that cost time (don't relearn these)
 
 - **`store_persist_bind` is native-only** — returns `false` and reads/writes nothing under wasm (no
-  mmap in wasip2). The browser must fetch+decode bytes (a codec), not map the store. (PLAN-APP §3, verified.)
+  mmap in wasip2). But the browser does **not** need a codec: a store file is a byte-exact arena image,
+  portable native↔wasm, so wasm loads it by reading bytes into a heap arena (loft#522, phase 1). "Decode"
+  is a copy, not a parse. (Supersedes PLAN-APP §3's fetch+decode-codec framing.)
 - **loft#513 changed the store format** — any `.tiles` from an older loft reads *empty*; always
   regenerate after updating loft.
 - **`parse_ways` eats Overpass-JSON, not geojsonseq** — hence `tools/geojson2overpass.py`.
-- **loft#521**: every `--native-wasm` program aborts at runtime under any wasmtime (43 and 46) — it's the
-  #518 thread-spawn, **not** a wasmtime version; a wasmtime pin does not help.
+- **loft#521** (FIXED, loft `db19ec43`): every `--native-wasm` program *used to* abort at runtime under
+  any wasmtime (43 and 46) — the #518 thread-spawn, **not** a wasmtime version; a wasmtime pin did not
+  help. The fix runs wasm `main` directly. If you see the abort again, you're on a loft build predating it.
 - **`make test` needs** node 22 (global `WebSocket`), `fuser` (psmisc), and creates `scratch/` itself.
   `make test-wasm` needs wasmtime.
 - **CI builds loft from source** (no public binary); it caches on loft's HEAD sha and builds both the
@@ -136,7 +151,8 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 
 ## 9. Loose ends
 
-- CI wasm-parity gate is informational until loft#521 is fixed (then re-block it).
+- CI wasm-parity gate is informational; loft#521 is fixed on branch `tuxedo-add-to-project` — re-block it
+  once the fix merges to loft `main`.
 - `tools/build-blocks.sh` unwritten → data-refresh workflow dormant, Benelux/WE not yet generated.
 - #517 not merged upstream → browser range reads pending.
 - Elevation `h` in tiles is currently 0 (gen-tiles sets `h: 0`); needed for gradient/bike/climb
