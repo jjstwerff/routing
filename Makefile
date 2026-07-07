@@ -180,6 +180,7 @@ clean:
 # --- test gates -----------------------------------------------------------------
 # The shell harnesses honor LOFT_BIN; pass ours through so an overridden LOFT wins.
 test: check
+	@mkdir -p scratch scratch/tiles
 	@for t in $(KERNEL_TESTS); do \
 	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib || exit 1; \
 	done
