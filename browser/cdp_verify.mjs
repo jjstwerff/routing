@@ -28,6 +28,17 @@ let ok = true;
 if (m.routeCount < 2) { console.log('FAIL: empty route'); ok = false; }
 if (m.polyline !== refLine) { console.log('FAIL: polyline != native reference'); ok = false; } else console.log(`  polyline byte-identical to native (${m.routeCount} pts)`);
 
+// Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
+await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
+let mp = null;
+for (let i = 0; i < 25; i++) { const s = await ev('window.__match?JSON.stringify(window.__match):""'); if (s) { const j = JSON.parse(s); if (/profile=walking_paved/.test(j.summary)) { mp = j; break; } } await new Promise((r) => setTimeout(r, 200)); }
+console.log('  profile → walking_paved:', (mp && mp.summary) || '(no re-match)');
+if (!mp) { console.log('FAIL: profile change did not re-match'); ok = false; }
+else if (mp.routeCount === m.routeCount) { console.log('FAIL: route unchanged across profiles'); ok = false; }
+else console.log('  ✓ profile selector re-matched (route changed with profile)');
+// Restore the default profile so the offline-reload assertions compare against the cycling_road reference.
+await ev(`(()=>{const s=document.getElementById('profile');s.value='cycling_road';s.dispatchEvent(new Event('change'));})()`);
+
 // Interactivity: clear, then a synthetic click must produce a (different) match state.
 await ev('document.getElementById("clear").click(); window.__match=null;');
 const before = await ev('(document.getElementById("status")||{}).textContent');

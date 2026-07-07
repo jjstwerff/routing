@@ -26,7 +26,23 @@
 <h1>Serverless route match — loft matcher in the browser, no server</h1>
 <p class="sub">Fetches one test-set file over HTTP and runs the <b>full loft matcher in wasm</b> via loft's
 own <code>host_input()</code>/<code>println</code> channel. Click the map to sketch a route; it re-matches on every point.</p>
-<div><span id="status">loading…</span> &nbsp; <button id="clear">Clear sketch</button> <button id="demo">Demo route</button></div>
+<div>
+  <span id="status">loading…</span> &nbsp;
+  <label>Profile
+    <select id="profile">
+      <option value="cycling_road">Cycling · Road</option>
+      <option value="cycling_gravel">Cycling · Gravel</option>
+      <option value="cycling_mtb">Cycling · MTB</option>
+      <option value="walking_paved">Walking · Paved</option>
+      <option value="walking_trail">Walking · Trail</option>
+      <option value="running_fast">Running · Fast</option>
+      <option value="running_trail">Running · Trail</option>
+      <option value="driving_fastest">Driving · Fastest</option>
+      <option value="driving_avoid">Driving · Avoid highways</option>
+    </select>
+  </label> &nbsp;
+  <button id="clear">Clear sketch</button> <button id="demo">Demo route</button>
+</div>
 <svg id="map" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet" aria-label="route map">
   <g id="net"></g><g id="sketch"></g><g id="route"></g>
 </svg>
@@ -34,7 +50,6 @@ own <code>host_input()</code>/<code>println</code> channel. Click the map to ske
 
 <script type="module">
 const DATASET = '../lib/routing_kernel/tests/fixtures/real_stretch.json';
-const PROFILE = 'cycling_road';
 const DEMO = [
   [52.24122987096219,6.88344955444336],[52.246196269035615,6.885638236999513],[52.25008491227731,6.8931055068969735],
   [52.2475363129658,6.902117729187013],[52.24971708224195,6.9126319885253915],[52.25505031926059,6.916065216064454],
@@ -76,8 +91,8 @@ async function idbPut(key, val) {
   return new Promise((res, rej) => { const tx2 = db.transaction(CACHE_STORE, 'readwrite'); tx2.objectStore(CACHE_STORE).put(val, key); tx2.oncomplete = () => res(); tx2.onerror = () => rej(tx2.error); });
 }
 
-function runMatch(sketch) {                 // sketch: [[lat,lon],...] → route [[lat,lon],...] + summary
-  const blob = sketch.map((p) => `${p[0]},${p[1]}`).join(';') + `|${PROFILE}\n` + datasetText;
+function runMatch(sketch, profile) {                 // sketch: [[lat,lon],...] → route [[lat,lon],...] + summary
+  const blob = sketch.map((p) => `${p[0]},${p[1]}`).join(';') + `|${profile}\n` + datasetText;
   inQ = [enc.encode(blob)]; out = '';
   instance.exports.loft_start();            // fresh state each call — re-runnable
   const lines = out.trim().split('\n');
@@ -116,7 +131,8 @@ function redraw(route, summary) {
 function match() {
   if (sketch.length < 2) { redraw([], `sketch ${sketch.length} pt — add ≥2`); return; }
   const t0 = performance.now();
-  const { summary, route } = runMatch(sketch);
+  const profile = document.getElementById('profile').value;
+  const { summary, route } = runMatch(sketch, profile);
   redraw(route, `${summary}  ·  ${(performance.now() - t0) | 0} ms  ·  ${loadSrc}`);
   window.__match = { summary, routeCount: route.length, polyline: route.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`).join(';') + (route.length ? ';' : '') };
 }
@@ -128,6 +144,7 @@ document.getElementById('map').addEventListener('pointerdown', (ev) => {
 });
 document.getElementById('clear').addEventListener('click', () => { sketch = []; redraw([], 'sketch cleared'); });
 document.getElementById('demo').addEventListener('click', () => { sketch = DEMO.slice(); match(); });
+document.getElementById('profile').addEventListener('change', () => { if (sketch.length >= 2) match(); });
 
 // Register the service worker so the app shell (html/js/wasm) is cached for a fully-offline reload.
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

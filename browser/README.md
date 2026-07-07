@@ -3,7 +3,8 @@
 
 A **no-server** browser page that fetches a whole test set (one Overpass-JSON file) and runs the
 **full loft matcher in wasm** — `parse_ways → build_graph → match_route` — then draws the matched
-route. Click the map to sketch; it re-matches on every point.
+route. Click the map to sketch; it re-matches on every point. A **profile selector** (cycling / walking /
+running / driving sub-modes) re-matches with the chosen activity weighting.
 
 Built the **loft-native way**: the wasm comes from `loft --html` and talks to JavaScript over loft's
 own `host_input()`/`println` byte channel (WEB_APPS.md §4c). **No jco, no WASI, no npm deps** — the
