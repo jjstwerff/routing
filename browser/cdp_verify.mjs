@@ -1,0 +1,69 @@
+// Headless-Chromium verifier for the loft-native browser app: load the page, wait for the in-browser
+// wasm match, assert the route is byte-identical to the native reference, and exercise interactivity
+// (a synthetic click must re-match). Driven over the DevTools protocol.
+//   node browser/cdp_verify.mjs <dt-host:port> <page-url> <ref-file>
+import { readFileSync } from 'node:fs';
+const [dt, app, refFile] = process.argv.slice(2);
+const refLine = readFileSync(refFile, 'utf8').trim().split('\n')[1] || '';
+setTimeout(() => { console.log('[hard-timeout]'); process.exit(3); }, 30000);
+
+const list = await (await fetch(`http://${dt}/json/list`)).json();
+const page = list.find((t) => t.type === 'page');
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+let id = 0; const pending = new Map();
+const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
+ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
+await new Promise((r) => ws.addEventListener('open', r));
+await call('Runtime.enable'); await call('Page.enable');
+await call('Page.navigate', { url: app });
+const ev = async (expr) => (await call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true })).result?.result?.value;
+
+let m = null;
+for (let i = 0; i < 50; i++) { const s = await ev('window.__match?JSON.stringify(window.__match):""'); if (s) { m = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 300)); }
+if (!m) { console.log('FAIL: no window.__match'); process.exit(1); }
+if (m.error) { console.log('FAIL: page error —', m.error.split('\n')[0]); process.exit(1); }
+console.log('  default match:', m.summary);
+
+let ok = true;
+if (m.routeCount < 2) { console.log('FAIL: empty route'); ok = false; }
+if (m.polyline !== refLine) { console.log('FAIL: polyline != native reference'); ok = false; } else console.log(`  polyline byte-identical to native (${m.routeCount} pts)`);
+
+// Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
+await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
+let mp = null;
+for (let i = 0; i < 25; i++) { const s = await ev('window.__match?JSON.stringify(window.__match):""'); if (s) { const j = JSON.parse(s); if (/profile=walking_paved/.test(j.summary)) { mp = j; break; } } await new Promise((r) => setTimeout(r, 200)); }
+console.log('  profile → walking_paved:', (mp && mp.summary) || '(no re-match)');
+if (!mp) { console.log('FAIL: profile change did not re-match'); ok = false; }
+else if (mp.routeCount === m.routeCount) { console.log('FAIL: route unchanged across profiles'); ok = false; }
+else console.log('  ✓ profile selector re-matched (route changed with profile)');
+// Restore the default profile so the offline-reload assertions compare against the cycling_road reference.
+await ev(`(()=>{const s=document.getElementById('profile');s.value='cycling_road';s.dispatchEvent(new Event('change'));})()`);
+
+// Interactivity: clear, then a synthetic click must produce a (different) match state.
+await ev('document.getElementById("clear").click(); window.__match=null;');
+const before = await ev('(document.getElementById("status")||{}).textContent');
+await ev(`(()=>{const svg=document.getElementById('map');const r=svg.getBoundingClientRect();
+  const e=new PointerEvent('pointerdown',{clientX:r.left+r.width*0.3,clientY:r.top+r.height*0.5,bubbles:true});
+  svg.dispatchEvent(e);})()`);
+const after = await ev('window.__match?JSON.stringify(window.__match):(document.getElementById("status")||{}).textContent');
+console.log('  after 1 click:', String(after).slice(0, 80));
+if (before === after) { console.log('FAIL: click did not change state'); ok = false; } else console.log('  interactive click re-ran the matcher');
+
+// Fully offline: wait for the service worker to control the page, drop the network entirely, reload.
+// The SW must serve the shell + wasm and IndexedDB the dataset — a real no-network reload.
+let swReady = false;
+for (let i = 0; i < 40; i++) { if ((await ev('!!(navigator.serviceWorker && navigator.serviceWorker.controller)')) === true) { swReady = true; break; } await new Promise((r) => setTimeout(r, 300)); }
+if (!swReady) { console.log('FAIL: service worker never took control'); ok = false; }
+await call('Network.enable');
+await call('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+await call('Page.reload', {});
+let m2 = null;
+for (let i = 0; i < 60; i++) { const s = await ev('window.__match?JSON.stringify(window.__match):""'); if (s) { m2 = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 300)); }
+const cache = await ev('window.__cache?JSON.stringify(window.__cache):""') || '';
+console.log('  offline reload (network fully OFF):', (m2 && m2.summary) || '(no match)', '| source:', cache);
+if (!m2 || m2.error) { console.log('FAIL: fully-offline reload produced no match (SW/IndexedDB miss)'); ok = false; }
+else if (m2.routeCount !== 90 || !/cached/.test(cache)) { console.log('FAIL: offline reload wrong route or not served from cache'); ok = false; }
+else console.log('  ✓ matched with the network fully OFF (SW shell + IndexedDB data)');
+
+console.log(ok ? 'PASS — loft-native browser app functions online AND fully offline (service worker + IndexedDB), byte-identical to native.' : 'FAILURES');
+process.exit(ok ? 0 : 1);

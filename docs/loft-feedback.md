@@ -588,3 +588,90 @@ two fronts, so still-open item 2 (2026-07-03 list) is closed:
 
 The remaining routing-side ask is the heap-param tail-call E0308 (still-open item 1) — a different
 bug, unaffected by this; `area_name`'s bind-then-return workaround stays load-bearing.
+
+---
+
+## 2026-07-07 — debugger `--rpc`: `eval`/`setValue` return null in ANY frame that has a `vector` local
+
+Trying out the `@PLN16` live debugger (`loft debug <file> --rpc`) on the map-matcher, `eval` and
+`setValue` were unusable — `eval` returned `value:null` for **every** expression, including pure
+literals like `2 + 2`, and `setValue` was `"edit rejected"`. Breakpoints, the `stopped` frame
+(locals render inline), `stepOver`, and `continue` all work. Narrowed to a precise, minimal, **program-
+independent** trigger.
+
+Build: `../loft` `loft 2026.7.1`, branch `tuxedo-add-to-project` @ `dc06812a`. Breakpoints report
+`verified:true` with absolute paths (so this is **not** the closed relative-path bug loft#342), and it
+reproduces on both `--interpret` and `--native`.
+
+### What we found (all verified, one `eval "2 + 2"` per row)
+
+The ONLY thing that varies is what locals the paused `main` frame holds:
+
+| frame contents at the breakpoint | `eval "2 + 2"` |
+|---|---|
+| scalars only (`x = 2 + 2`) | **`4`** ✓ |
+| + a `use routing_kernel::(…)` import | `4` ✓ |
+| + a second function in the file | `4` ✓ |
+| + a **struct** local (`P { a, b }`, live) | `4` ✓ |
+| + an integer `for`-loop accumulator (no vector) | `4` ✓ |
+| **+ a `vector<integer>` literal (`[1,2,3]`)** | **`null`** ✗ |
+| **+ a `vector` built by append (`v += [i]`), any length ≥ 1** | **`null`** ✗ |
+| **+ a `vector` local that is DEAD at the breakpoint** | **`null`** ✗ |
+| the real matcher (`ways`, `route`, … vector locals) | `null` ✗ |
+
+So: **the mere presence of a `vector<T>` local in the frame's var-table makes `debug_eval` return
+`null` for all expressions** — independent of the expression, of the vector's *liveness* at the
+breakpoint line, and of its length. Structs and scalars in the frame are fine. `setValue` follows the
+same split: it edits a scalar frame correctly (`setValue x = 42` → frame updates, and `continue`
+prints `42`), but is `"edit rejected"` in a vector-local frame.
+
+Frame *inspection* is unaffected — the `stopped` event still renders the vector inline
+(`ways` and the `Graph` printed fine) — it is specifically the `debug_eval` / `debug_set` engine
+methods that abort in a vector-local frame.
+
+### Minimal repro
+
+```loft
+// prog.loft — delete the `v` line and `eval "2 + 2"` returns 4 instead of null
+fn main() {
+  v: vector<integer> = [1, 2, 3];
+  x = 2 + 2;
+  println("{x} {len(v)}");
+}
+```
+```sh
+printf '%s\n' \
+  '{"id":1,"req":"launch","file":"/abs/prog.loft"}' \
+  '{"id":2,"req":"setBreakpoints","file":"/abs/prog.loft","breakpoints":[{"line":3}]}' \
+  '{"id":3,"req":"run"}' \
+  '{"id":4,"req":"eval","expr":"2 + 2"}' \
+  '{"id":5,"req":"disconnect"}' \
+| loft debug /abs/prog.loft --rpc
+# → {"id":4,"ok":true,"value":null}    (with the vector local)
+# → {"id":4,"ok":true,"value":4}       (without it)
+```
+
+### Expected (PROTOCOL.md)
+
+`eval` maps to `debug_eval` → `{ok, value, type}`; `setValue` maps to `debug_set` → `{ok, frame}`
+("edits the live run"). Both are advertised from day one. Here they silently degrade to `value:null`
+/ `"edit rejected"` whenever a `vector` slot is present — no error surfaced, just null.
+
+### Why it matters
+
+This is the difference between a usable and an unusable agent debugger. The loft-debug workflow leans
+on exactly these two — "`eval` runs against the paused frame", "`setValue` edits the live run… inject
+the suspect value instead of rebuilding". But essentially **every realistic loft function has a
+`vector` local**, so in practice `eval`/`setValue` never work: on the map-matcher we could set
+breakpoints and read the frame, but could not evaluate `len(route)` or inject a value. We fell back to
+reading the whole `stopped` frame + `stepOver`.
+
+### Guess at the mechanism (for the maintainer to confirm)
+
+`debug_eval` likely builds its evaluation scope by walking the frame's var-table, and a `vector`-typed
+slot (a store-backed growable collection) trips that walk — aborting the *whole* eval to `null` rather
+than that one variable. That it fires even for a literal (`2 + 2`, which references no locals) and even
+when the vector is dead points at scope construction, not value resolution; that structs pass but
+vectors fail points at the vector slot's store/DbRef handling specifically. No open tracker issue
+matches (`debug eval`, `debugger rpc`). Routing can't fix loft here (`../loft` is read-only for us) —
+filing/looking is the maintainer's call.

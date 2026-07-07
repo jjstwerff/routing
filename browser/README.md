@@ -3,33 +3,36 @@
 
 A **no-server** browser page that fetches a whole test set (one Overpass-JSON file) and runs the
 **full loft matcher in wasm** — `parse_ways → build_graph → match_route` — then draws the matched
-route. This is the browser realization of `client/app_kernel.loft`; the compute + data path is the
-same one proven byte-identical across interpret / native / native-wasm (`make test-wasm`).
+route. Click the map to sketch; it re-matches on every point. A **profile selector** (cycling / walking /
+running / driving sub-modes) re-matches with the chosen activity weighting.
 
-No mmap store and no codec: the data is plain text handed to `parse_ways`. The working-set
-partial-load (fetch only the tiles a route needs) is a later step, gated on loft#522; until then the
-page loads one whole file.
+Built the **loft-native way**: the wasm comes from `loft --html` and talks to JavaScript over loft's
+own `host_input()`/`println` byte channel (WEB_APPS.md §4c). **No jco, no WASI, no npm deps** — the
+page instantiates the wasm with a tiny 4-import shim.
 
 ## How it works
 
 ```
-client/app_kernel.loft ──loft --native-wasm──▶ app_kernel.wasm (wasip2 component)
-                       ──jco transpile───────▶ gen/ (browser ESM + core wasm)
-index.html: importmap → preview2-shim (browser WASI) ; fetch(test set) → shim virtual FS
-            → run.run() → capture stdout → parse polyline → draw SVG
+client/web_kernel.loft ──loft --html──▶ (self-contained page) ──extract──▶ browser/web_kernel.wasm
+index.html: fetch(web_kernel.wasm) + fetch(test set)
+            → instantiate with loft_io { print, input_len, input_copy } + one stub
+            → set input (sketch|profile\n<dataset>) → loft_start() → read printed route → draw SVG
 ```
 
-The jco-transpiled component imports WASI (`wasi:cli`, `wasi:filesystem`, …); in the browser those
-are the `@bytecodealliance/preview2-shim` browser build, resolved via the page's import map (no
-bundler). The fetched dataset is injected into the shim's in-memory filesystem (`_setFileData`), the
-route is read back off captured stdout.
+- **Data in:** JavaScript `fetch`es the file and hands loft the bytes via the input queue
+  (`host_input()`); loft has no filesystem/HTTP in the browser by design.
+- **Result out:** loft `println`s the route; the page reads it off the `loft_host_print` hook.
+- **Interactivity:** `loft_start` rebuilds fresh state each call, so every sketch edit is just another
+  call — no re-instantiation.
+- **Fully offline:** a **service worker** (`sw.js`) caches the app shell + wasm; the test set is cached in
+  **IndexedDB** (keyed by a dataset version). A reload with the network **entirely off** still loads and
+  matches — verified by the gate (`Network offline` + reload).
 
 ## Build & run
 
 ```sh
-npm --prefix browser install          # jco + preview2-shim (devDeps)
-npm --prefix browser run build        # loft --native-wasm + jco transpile → browser/gen/
-node browser/serve.mjs                # static server (correct application/wasm MIME) on :8099
+node browser/build.mjs        # loft --html client/web_kernel.loft → browser/web_kernel.wasm
+node browser/serve.mjs        # static server (correct application/wasm MIME) on :8099
 # open http://127.0.0.1:8099/browser/
 ```
 
@@ -37,16 +40,16 @@ node browser/serve.mjs                # static server (correct application/wasm 
 
 ## Headless test
 
-`tools/browser_app_test.sh` serves the page, drives headless Chromium over the DevTools protocol,
-and asserts the in-browser route is **byte-identical** to the native reference. Requires `chromium`,
-`node`, the loft toolchain, and a built `gen/`. (Snap-confined Chromium cannot start inside a
-restrictive command sandbox.)
+`tools/browser_app_test.sh` builds the wasm, serves the page, drives headless Chromium over the
+DevTools protocol, and asserts the in-browser route is **byte-identical to the native reference** and
+that a synthetic click re-matches. Requires `chromium`, `node`, the loft toolchain. (Snap-confined
+Chromium cannot start inside a restrictive command sandbox.)
 
-`smoke.mjs` runs the same component under Node (`node browser/smoke.mjs`) — a faster, browserless
-parity check.
+The same kernel logic is also proven headless under `wasmtime` (`--native-wasm`) by
+`tools/app_headless_test.sh` (via `client/app_kernel.loft`, the file+args variant) in `make test-wasm`.
 
 ## What's next (Track 1d)
 
-- Swap the SVG for a **Leaflet** base map (needs a tile source; keep attribution visible — ODbL).
-- Wire the sketch UI (draw → match → redraw) and drop the WebSocket for matching.
-- IndexedDB cache of the fetched block; deploy to GitHub Pages.
+- **Leaflet** base map (needs a tile source; keep the © OpenStreetMap attribution visible — ODbL).
+- Deploy to **GitHub Pages** (unlisted URL).
+- Working-set streaming instead of one whole file — waits on loft#522.
