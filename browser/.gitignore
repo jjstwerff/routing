@@ -2,3 +2,4 @@
 *.wasm
 .web_kernel.html
 standalone.html
+areas.txt

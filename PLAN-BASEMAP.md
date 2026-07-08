@@ -227,6 +227,12 @@ at S5.0 from the probe result.**
 ### Phase 3 — render (Leaflet canvas, drawn under the route)
 - **S7. Areas.** Filled polygons coloured by `AreaUse`. *Check:* screenshot shows terrain fills (forest
   green, water blue) beneath the road network.
+  **✓ DONE:** classification stays in loft (`client/basemap/emit_areas.loft` → `browser/areas.txt`, built by
+  `build.mjs`); the browser draws 668 filled polygons coloured per cover. It's a **selectable base layer** —
+  the map now offers "OpenStreetMap" (rich, online) or "Terrain (our data)" (self-contained, no tiles). The
+  headless-Chromium screenshot on the terrain base shows our forest/grass/water fills + road network + route
+  with **no OSM tiles**; the gate reports `terrain: 668 area fills drawn`. S0 green. (Coverage is the
+  southern sample region; full coverage is a data step.)
 - **S8. Buildings.** Filled footprints. *Check:* screenshot shows building blocks in a town.
 - **S9. Place labels.** Text sized/shown by `rank`. *Check:* town names appear; hamlets hidden when zoomed
   out.

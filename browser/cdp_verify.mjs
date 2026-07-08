@@ -28,6 +28,11 @@ let ok = true;
 if (m.routeCount < 2) { console.log('FAIL: empty route'); ok = false; }
 if (m.polyline !== refLine) { console.log('FAIL: polyline != native reference'); ok = false; } else console.log(`  polyline byte-identical to native (${m.routeCount} pts)`);
 
+// PLAN-BASEMAP S7: our own terrain fills (the "Terrain (our data)" base) should draw from areas.txt.
+const areasN = await ev('window.__areas ? window.__areas.count : -1');
+if (areasN > 0) console.log(`  terrain: ${areasN} area fills drawn (S7 — our self-contained base)`);
+else console.log('  terrain: none (areas.txt absent — S7 render skipped)');
+
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
 let mp = null;

@@ -73,13 +73,19 @@ const imports = {
   loft_gl: { host_asset_exists: () => 0 },
 };
 let instance, datasetText, net = [], loadSrc = 'network';
-let map, netLayer, sketchLayer, routeLayer, tilesOk = true;
+let map, areasLayer, netLayer, sketchLayer, routeLayer, tilesOk = true;
 
 // Leaflet path styles (options, not CSS — reliable across Leaflet's defaults).
 const NET_STYLE = { color: '#7a7a7a', weight: 1.2, opacity: 0.55, interactive: false };
 const SKETCH_STYLE = { color: '#e8730c', weight: 2.5, dashArray: '6 5', interactive: false };
 const SKETCH_PT = { radius: 4, color: '#e8730c', weight: 1, fillColor: '#e8730c', fillOpacity: 1, interactive: false };
 const ROUTE_STYLE = { color: '#1e73e8', weight: 3.5, opacity: 0.9, interactive: false };
+// Terrain fills (PLAN-BASEMAP S7) — our own landcover, so the map reads as a map with no OSM tiles. One
+// colour per AreaUse class (OSM-carto-like); classification is done in loft (client/basemap/emit_areas.loft).
+const COVER_COLORS = {
+  water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
+  residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
+};
 
 // --- IndexedDB cache: the fetched wasm + test set survive a reload with NO network (offline-first) ---
 const CACHE_DB = 'routing-cache', CACHE_STORE = 'assets', CACHE_VER = 'real_stretch-v1';
@@ -118,20 +124,44 @@ function networkLines(json) {
 let sketch = [];
 function initMap() {
   map = L.map('map', { zoomControl: true, worldCopyJump: false });
-  // Base: OSM raster tiles (needs network). If they fail — offline, throttled, or blocked — the
-  // road network below stays visible, so the app never goes blank. HTTPS-only (Pages is HTTPS).
+  map.createPane('terrain');                   // our terrain fills sit above tiles, below the network
+  map.getPane('terrain').style.zIndex = 250;
+  // Two BASE maps (pick one): OSM raster tiles (rich, needs network) or our own terrain (self-contained,
+  // works offline — landcover we classify + store ourselves). The road network + route always overlay.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  }).addTo(map);
-  tiles.on('tileerror', () => { if (tilesOk) { tilesOk = false; document.getElementById('mapnote').textContent = '· base map offline — showing our road network'; } });
-  netLayer = L.layerGroup().addTo(map);       // our data as the always-on fallback base
+  });
+  tiles.on('tileerror', () => { if (tilesOk) { tilesOk = false; document.getElementById('mapnote').textContent = '· OSM base map offline — switch to “Terrain (our data)”'; } });
+  areasLayer = L.layerGroup([], { pane: 'terrain' });   // our terrain fills — the alternate base (loadAreas fills it)
+  netLayer = L.layerGroup().addTo(map);       // road network — always on top of whichever base
   sketchLayer = L.layerGroup().addTo(map);
   routeLayer = L.layerGroup().addTo(map);
+  tiles.addTo(map);                            // default base: OSM
+  L.control.layers({ 'OpenStreetMap': tiles, 'Terrain (our data)': areasLayer }, null, { position: 'topright' }).addTo(map);
+  window.__bases = { osm: tiles, terrain: areasLayer };  // gates/S7 switch base through this
   for (const w of net) L.polyline(w, NET_STYLE).addTo(netLayer);
   const bounds = L.latLngBounds(net.length ? net.flat() : DEMO);
   map.fitBounds(bounds, { padding: [20, 20] });
   map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
   window.__map = map;                          // test hook: gates fire map clicks through this
+}
+
+// PLAN-BASEMAP S7: draw our own terrain fills (classified in loft, emitted to areas.txt / inlined for
+// standalone). Graceful — if the file is absent, the map simply has no terrain fill. One filled polygon
+// per area, coloured by AreaUse, under the road network.
+async function loadAreas() {
+  let txt = window.__STANDALONE && window.__STANDALONE.areas;
+  if (!txt) txt = await fetch('areas.txt').then((r) => (r.ok ? r.text() : '')).catch(() => '');
+  if (!txt) return;
+  let n = 0;
+  for (const line of txt.split('\n')) {
+    const parts = line.split(';');
+    if (parts.length < 4) continue;
+    const cover = parts[0], ring = [];
+    for (let i = 1; i < parts.length; i++) { const c = parts[i].split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) ring.push([a, b]); } }
+    if (ring.length >= 3) { L.polygon(ring, { pane: 'terrain', fillColor: COVER_COLORS[cover] || '#e8e8e8', fillOpacity: 1, weight: 0, interactive: false }).addTo(areasLayer); n++; }
+  }
+  window.__areas = { count: n };
 }
 
 function redraw(route, summary) {
@@ -195,6 +225,7 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     const snap = parsed.osm3s && parsed.osm3s.timestamp_osm_base;
     if (snap) document.getElementById('freshness').textContent = `data as of ${String(snap).slice(0, 10)} · `;
     initMap();
+    await loadAreas();              // draw our own terrain fills under the network (S7)
     sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
     match();
   } catch (e) {

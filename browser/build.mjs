@@ -24,4 +24,13 @@ if (!m) throw new Error('wasmB64 not found in --html output (loft output format 
 const wasm = Buffer.from(m[1], 'base64');
 writeFileSync(join(here, 'web_kernel.wasm'), wasm);
 rmSync(html, { force: true });
-console.log(`wrote browser/web_kernel.wasm (${(wasm.length / 1024 | 0)} KB) — serve with: node browser/serve.mjs`);
+console.log(`wrote browser/web_kernel.wasm (${(wasm.length / 1024 | 0)} KB)`);
+
+// Terrain fills (PLAN-BASEMAP S7): classify the area fixture in loft and emit one polygon per line for the
+// browser's "Terrain (our data)" base. Reproducible from the committed sample.
+const areasFixture = process.env.AREAS || join(repo, 'client/basemap/fixtures/real_stretch_areas.sample.json');
+console.log('loft emit_areas → browser/areas.txt …');
+const areas = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
+  join(repo, 'client/basemap/emit_areas.loft'), areasFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
+writeFileSync(join(here, 'areas.txt'), areas);
+console.log(`wrote browser/areas.txt (${(areas.length / 1024 | 0)} KB, ${areas.trim().split('\n').length} areas) — serve with: node browser/serve.mjs`);
