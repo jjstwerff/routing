@@ -41,6 +41,9 @@ else console.log('  places: none (places.txt absent — S9 render skipped)');
 const stN = await ev('window.__streets ? window.__streets.count : -1');
 if (stN > 0) console.log(`  streets: ${stN} centerlines (S10 — labels repeat along the line on zoom)`);
 else console.log('  streets: none (streets.txt absent — S10 render skipped)');
+const stamp = await ev('window.__stamp || (document.getElementById("freshness")||{}).textContent || ""');
+if (stamp && /\d{4}-\d\d-\d\d/.test(stamp)) console.log(`  freshness: "${String(stamp).trim()}" (S12)`);
+else console.log('  freshness: no date rendered (S12)');
 
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);

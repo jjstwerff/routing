@@ -39,8 +39,11 @@ const fx = (f) => process.env[f.toUpperCase()] || join(repo, `client/basemap/fix
 console.log('loft emit_{areas,buildings,places,streets} → inline presentation data …');
 const areas = emit('emit_areas.loft', fx('areas'));
 const buildings = emit('emit_buildings.loft', fx('buildings'));
-const places = emit('emit_places.loft', join(repo, 'client/basemap/fixtures/real_stretch_places.json'));
+const placesFixture = join(repo, 'client/basemap/fixtures/real_stretch_places.json');
+const places = emit('emit_places.loft', placesFixture);
 const streets = emit('emit_streets.loft', fx('streets'));
+// Data-freshness stamp (S12): the OSM snapshot the presentation data was cut from.
+const stamp = ((JSON.parse(readFileSync(placesFixture, 'utf8')).osm3s || {}).timestamp_osm_base || '').slice(0, 10);
 
 // 4. Inline the vendored Leaflet lib so the single file stays self-contained.
 const leafletCss = readFileSync(join(here, 'vendor/leaflet/leaflet.css'), 'utf8');
@@ -48,7 +51,7 @@ const leafletJs = readFileSync(join(here, 'vendor/leaflet/leaflet.js'), 'utf8').
 
 // 5. Inject wasm + test set + presentation layers as window.__STANDALONE, before the module script runs.
 //    JSON.stringify makes valid JS; escaping `<` keeps the payload </script>-safe.
-const payload = JSON.stringify({ wasmB64, dataset, areas, buildings, places, streets }).replace(/</g, '\\u003c');
+const payload = JSON.stringify({ wasmB64, dataset, areas, buildings, places, streets, stamp }).replace(/</g, '\\u003c');
 const inject = `<script>window.__STANDALONE=${payload};</script>\n`;
 let page = readFileSync(join(here, 'index.html'), 'utf8');
 if (!page.includes('</head>')) throw new Error('index.html has no </head> to inject before');

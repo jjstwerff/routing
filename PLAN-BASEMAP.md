@@ -270,6 +270,12 @@ at S5.0 from the probe result.**
   has all at once — a data step, not a render one). The mechanism is there; polish + coverage remain.
 - **S12. Freshness.** Stamp both stores with the same OSM snapshot; footer shows "data as of …" from the
   presentation stamp. *Check:* the date renders.
+  **✓ DONE:** the presentation data carries the OSM snapshot it was cut from (`osm3s.timestamp_osm_base`,
+  stamped by Overpass); `build.mjs` writes it to `browser/stamp.txt` and `build-standalone.mjs` inlines it.
+  The footer shows **"data as of 2026-07-08"** (prefers the presentation stamp; falls back to the routing
+  dataset's own `osm3s` if it has one). Gate reports `freshness: "2026-07-08"`; both gates PASS; S0 green.
+  *(The routing store gets the same stamp when regenerated — that's the F1/F2 pipeline step in PLAN-APP §11.)*
+  **Phase 4 complete (S11–S12).**
 
 ### Phase 5 — scale (later; the two DIY hard parts — sequenced, not blocking the single-region proof)
 - **S13. Per-zoom generalization.** Buildings only ≥ z14; areas simplified at low zoom; label rank

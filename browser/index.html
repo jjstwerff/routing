@@ -280,6 +280,16 @@ function placeStreetLabels() {
   }
 }
 
+// PLAN-BASEMAP S12: show the OSM snapshot the data was cut from. Prefer the presentation stamp (inlined
+// for standalone, else stamp.txt); fall back to the routing dataset's own osm3s if it carries one.
+async function setFreshness(parsed) {
+  let stamp = window.__STANDALONE && window.__STANDALONE.stamp;
+  if (!stamp) stamp = await fetch('stamp.txt').then((r) => (r.ok ? r.text() : '')).catch(() => '');
+  stamp = (stamp || '').trim();
+  if (!stamp && parsed && parsed.osm3s) stamp = String(parsed.osm3s.timestamp_osm_base || '').slice(0, 10);
+  if (stamp) { document.getElementById('freshness').textContent = `data as of ${stamp} · `; window.__stamp = stamp; }
+}
+
 function redraw(route, summary) {
   sketchLayer.clearLayers();
   if (sketch.length) L.polyline(sketch, SKETCH_STYLE).addTo(sketchLayer);
@@ -337,9 +347,7 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     mem = instance.exports.memory;
     const parsed = JSON.parse(datasetText);
     net = networkLines(parsed);
-    // Data freshness: an Overpass snapshot carries osm3s.timestamp_osm_base; show "data as of …" when present.
-    const snap = parsed.osm3s && parsed.osm3s.timestamp_osm_base;
-    if (snap) document.getElementById('freshness').textContent = `data as of ${String(snap).slice(0, 10)} · `;
+    await setFreshness(parsed);     // "data as of …" from the presentation snapshot stamp (S12)
     initMap();
     await loadAreas();              // draw our own terrain fills under the network (S7)
     await loadBuildings();          // draw our own building footprints on the terrain base (S8)

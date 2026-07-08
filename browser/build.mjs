@@ -57,4 +57,11 @@ console.log('loft emit_streets → browser/streets.txt …');
 const streets = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
   join(repo, 'client/basemap/emit_streets.loft'), streetsFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
 writeFileSync(join(here, 'streets.txt'), streets);
-console.log(`wrote browser/streets.txt (${(streets.length / 1024 | 0)} KB, ${streets.trim().split('\n').length} streets) — serve with: node browser/serve.mjs`);
+console.log(`wrote browser/streets.txt (${(streets.length / 1024 | 0)} KB, ${streets.trim().split('\n').length} streets)`);
+
+// Data-freshness stamp (PLAN-BASEMAP S12): the OSM snapshot the presentation data was cut from
+// (osm3s.timestamp_osm_base, stamped by Overpass). The app shows "data as of …" from this.
+const stampSrc = JSON.parse(readFileSync(placesFixture, 'utf8'));
+const stamp = ((stampSrc.osm3s || {}).timestamp_osm_base || '').slice(0, 10);
+writeFileSync(join(here, 'stamp.txt'), stamp);
+console.log(`wrote browser/stamp.txt ("${stamp}") — serve with: node browser/serve.mjs`);
