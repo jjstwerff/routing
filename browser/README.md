@@ -2,9 +2,10 @@
 # Serverless browser shell (PLAN-APP Track 1)
 
 A **no-server** browser page that fetches a whole test set (one Overpass-JSON file) and runs the
-**full loft matcher in wasm** — `parse_ways → build_graph → match_route` — then draws the matched
-route. Click the map to sketch; it re-matches on every point. A **profile selector** (cycling / walking /
-running / driving sub-modes) re-matches with the chosen activity weighting.
+**full loft matcher in wasm** — `parse_ways → build_graph → match_route` — then draws the matched route on
+a **Leaflet map** (OpenStreetMap base tiles). Click the map to sketch; it re-matches on every point. A
+**profile selector** (cycling / walking / running / driving sub-modes) re-matches with the chosen
+activity weighting.
 
 Built the **loft-native way**: the wasm comes from `loft --html` and talks to JavaScript over loft's
 own `host_input()`/`println` byte channel (WEB_APPS.md §4c). **No jco, no WASI, no npm deps** — the
@@ -16,7 +17,7 @@ page instantiates the wasm with a tiny 4-import shim.
 client/web_kernel.loft ──loft --html──▶ (self-contained page) ──extract──▶ browser/web_kernel.wasm
 index.html: fetch(web_kernel.wasm) + fetch(test set)
             → instantiate with loft_io { print, input_len, input_copy } + one stub
-            → set input (sketch|profile\n<dataset>) → loft_start() → read printed route → draw SVG
+            → set input (sketch|profile\n<dataset>) → loft_start() → read printed route → draw on Leaflet
 ```
 
 - **Data in:** JavaScript `fetch`es the file and hands loft the bytes via the input queue
@@ -24,9 +25,14 @@ index.html: fetch(web_kernel.wasm) + fetch(test set)
 - **Result out:** loft `println`s the route; the page reads it off the `loft_host_print` hook.
 - **Interactivity:** `loft_start` rebuilds fresh state each call, so every sketch edit is just another
   call — no re-instantiation.
-- **Fully offline:** a **service worker** (`sw.js`) caches the app shell + wasm; the test set is cached in
-  **IndexedDB** (keyed by a dataset version). A reload with the network **entirely off** still loads and
-  matches — verified by the gate (`Network offline` + reload).
+- **Base map:** a **Leaflet** map with OpenStreetMap raster tiles (vendored `vendor/leaflet/`, © OSM). The
+  road network is drawn from the local data as an always-on layer, so if tiles can't load — offline, throttled,
+  or blocked — the map falls back to that render and the route is never on a blank canvas.
+- **Fully offline:** a **service worker** (`sw.js`) caches the app shell + wasm + Leaflet; the test set is
+  cached in **IndexedDB** (keyed by a dataset version). A reload with the network **entirely off** still loads
+  and matches (base tiles are skipped, road network + route still draw) — verified by the gate.
+- **Data freshness:** when the dataset carries an Overpass snapshot (`osm3s.timestamp_osm_base`), the footer
+  shows "data as of …". Test fixtures have none; generated blocks will stamp it (PLAN-APP §11).
 
 ## Build & run
 
@@ -64,9 +70,16 @@ The same kernel logic is also proven headless under `wasmtime` (`--native-wasm`)
 `tools/standalone_app_test.sh` (`make test-standalone`) proves the single-file `standalone.html` runs
 over `file://` with the network emulated **fully off**, byte-identical to the native reference.
 
-## What's next (Track 1d)
+## Deploy (GitHub Pages)
 
-- **Leaflet** base map (needs a tile source; keep the © OpenStreetMap attribution visible — ODbL).
-- Deploy to **GitHub Pages** (unlisted URL) — `standalone.html` is already a drop-in artifact.
-- Working-set streaming instead of one whole file — now unblocked by loft's `store_load`/`store_load_key`
-  (loft#522 landed); JS does the HTTP Range fetches and feeds loft the bytes.
+`.github/workflows/pages.yml` builds the single-file `standalone.html` and publishes it as the Pages site
+index (one self-contained file → no asset-path / MIME / CORS concerns; OSM tiles load at run time). It runs
+on push to `main`; the live URL appears in the workflow's `deploy` job.
+
+## What's next
+
+- **Track 1d done:** Leaflet base map ✓, GitHub Pages deploy ✓, data-freshness readout ✓.
+- **Working-set streaming** instead of one whole file — now unblocked by loft's `store_load`/`store_load_key`
+  (loft#522 landed); JS does the HTTP Range fetches and feeds loft the bytes (PLAN-APP Track 2).
+- **OSM tile policy:** the public `tile.openstreetmap.org` service is fine for a low-traffic demo but forbids
+  heavy use / app distribution — swap in own/provider tiles before real scale.

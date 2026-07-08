@@ -1,0 +1,77 @@
+name: pages
+
+# Publish the serverless app to GitHub Pages. We deploy the SINGLE-FILE standalone build
+# (wasm + test set + Leaflet all inlined) as the site index: one self-contained file, so there are no
+# asset-path, MIME, or CORS concerns on Pages — the OSM base-map tiles load at run time when online.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (mold)
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No public loft binary yet — build it from source (cached on loft's HEAD sha, like ci.yml).
+      - name: Resolve loft revision
+        id: loft
+        run: echo "sha=$(git ls-remote https://github.com/loft-lang/loft HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      - name: Clone loft
+        run: git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
+      - name: Cache cargo + loft build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/loft/target
+          key: loft-${{ runner.os }}-${{ steps.loft.outputs.sha }}
+          restore-keys: |
+            loft-${{ runner.os }}-
+      - name: Build loft toolchain
+        run: |
+          cd /tmp/loft
+          cargo build --release --bin loft
+          echo "LOFT_BIN=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+          echo "LOFT_ROOT=/tmp/loft" >> "$GITHUB_ENV"
+
+      - name: Build the single-file app
+        run: node browser/build-standalone.mjs
+
+      - name: Assemble Pages site
+        run: |
+          mkdir -p _site
+          cp browser/standalone.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

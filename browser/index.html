@@ -5,6 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Routing — serverless browser match (loft engine)</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <style>
   :root { color-scheme: light dark; }
   body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 1rem 1.25rem; background: Canvas; color: CanvasText; }
@@ -14,18 +15,17 @@
   #status.ok { background: color-mix(in srgb, Canvas 70%, green); }
   #status.err { background: color-mix(in srgb, Canvas 70%, red); }
   button { font: inherit; padding: .25rem .7rem; border-radius: .4rem; border: 1px solid color-mix(in srgb, Canvas 55%, gray); background: Canvas; color: CanvasText; cursor: pointer; }
-  svg { width: 100%; max-width: 900px; height: auto; margin-top: .75rem; border: 1px solid color-mix(in srgb, Canvas 60%, gray); border-radius: .5rem; background: Canvas; touch-action: none; cursor: crosshair; }
-  .net { stroke: color-mix(in srgb, Canvas 55%, gray); stroke-width: .8; fill: none; }
-  .sketch { stroke: #e8730c; stroke-width: 2.2; stroke-dasharray: 6 5; fill: none; }
-  .sketch-pt { fill: #e8730c; }
-  .route { stroke: #1e73e8; stroke-width: 2.6; fill: none; }
-  .foot { margin-top: .5rem; font-size: 12px; opacity: .7; }
+  #map { width: 100%; max-width: 960px; height: 66vh; min-height: 360px; margin-top: .75rem; border: 1px solid color-mix(in srgb, Canvas 60%, gray); border-radius: .5rem; background: color-mix(in srgb, Canvas 92%, gray); }
+  .leaflet-container { font: inherit; background: color-mix(in srgb, Canvas 92%, gray); }  /* fallback bg when tiles are absent */
+  .foot { margin-top: .5rem; font-size: 12px; opacity: .7; max-width: 960px; }
+  #mapnote { color: #b26a00; }
 </style>
 </head>
 <body>
 <h1>Serverless route match — loft matcher in the browser, no server</h1>
-<p class="sub">Fetches one test-set file over HTTP and runs the <b>full loft matcher in wasm</b> via loft's
-own <code>host_input()</code>/<code>println</code> channel. Click the map to sketch a route; it re-matches on every point.</p>
+<p class="sub">Runs the <b>full loft matcher in wasm</b> via loft's own <code>host_input()</code>/<code>println</code>
+channel. Click the map to sketch a route; it re-matches on every point. The road network is drawn from the
+local data, so it stays visible even when the base map can't load.</p>
 <div>
   <span id="status">loading…</span> &nbsp;
   <label>Profile
@@ -43,11 +43,13 @@ own <code>host_input()</code>/<code>println</code> channel. Click the map to ske
   </label> &nbsp;
   <button id="clear">Clear sketch</button> <button id="demo">Demo route</button>
 </div>
-<svg id="map" viewBox="0 0 900 620" preserveAspectRatio="xMidYMid meet" aria-label="route map">
-  <g id="net"></g><g id="sketch"></g><g id="route"></g>
-</svg>
-<p class="foot">© OpenStreetMap contributors (ODbL) · data: south-Overijssel test corridor · compute: loft → wasm (no backend)</p>
+<div id="map" aria-label="route map"></div>
+<p class="foot">
+  © OpenStreetMap contributors (ODbL) · <span id="freshness"></span>data: south-Overijssel corridor ·
+  compute: loft → wasm (no backend) <span id="mapnote"></span>
+</p>
 
+<script src="vendor/leaflet/leaflet.js"></script>
 <script type="module">
 const DATASET = '../lib/routing_kernel/tests/fixtures/real_stretch.json';
 const DEMO = [
@@ -56,7 +58,6 @@ const DEMO = [
   [52.26342982483724,6.919584274291993],[52.26947049234737,6.91640853881836],[52.28401724342717,6.922588348388673],
   [52.29115758313226,6.9181251525878915],[52.30207587681469,6.915206909179688],[52.31162717589892,6.908855438232423],
 ];
-const W = 900, H = 620, PAD = 24, svgns = 'http://www.w3.org/2000/svg';
 const statusEl = document.getElementById('status');
 const setStatus = (m, c) => { statusEl.textContent = m; statusEl.className = c || ''; };
 
@@ -71,7 +72,14 @@ const imports = {
   },
   loft_gl: { host_asset_exists: () => 0 },
 };
-let instance, datasetText, net = [], tx, loadSrc = 'network';   // tx: {px, py, inv} fixed transform
+let instance, datasetText, net = [], loadSrc = 'network';
+let map, netLayer, sketchLayer, routeLayer, tilesOk = true;
+
+// Leaflet path styles (options, not CSS — reliable across Leaflet's defaults).
+const NET_STYLE = { color: '#7a7a7a', weight: 1.2, opacity: 0.55, interactive: false };
+const SKETCH_STYLE = { color: '#e8730c', weight: 2.5, dashArray: '6 5', interactive: false };
+const SKETCH_PT = { radius: 4, color: '#e8730c', weight: 1, fillColor: '#e8730c', fillOpacity: 1, interactive: false };
+const ROUTE_STYLE = { color: '#1e73e8', weight: 3.5, opacity: 0.9, interactive: false };
 
 // --- IndexedDB cache: the fetched wasm + test set survive a reload with NO network (offline-first) ---
 const CACHE_DB = 'routing-cache', CACHE_STORE = 'assets', CACHE_VER = 'real_stretch-v1';
@@ -106,26 +114,32 @@ function networkLines(json) {
   for (const el of (json.elements || [])) if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length > 1) out2.push(el.geometry.map((g) => [g.lat, g.lon]));
   return out2;
 }
-function makeTransform(lines) {             // fixed transform from the network bbox → pixels (+ inverse)
-  let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
-  for (const w of lines) for (const [la, lo] of w) { miLa = Math.min(miLa, la); maLa = Math.max(maLa, la); miLo = Math.min(miLo, lo); maLo = Math.max(maLo, lo); }
-  const s = Math.min((W - 2 * PAD) / Math.max(1e-9, maLo - miLo), (H - 2 * PAD) / Math.max(1e-9, maLa - miLa));
-  return {
-    px: (lo) => PAD + (lo - miLo) * s, py: (la) => H - PAD - (la - miLa) * s,
-    inv: (x, y) => [miLa + (H - PAD - y) / s, miLo + (x - PAD) / s],
-  };
-}
-const pathD = (pts) => pts.map((p, i) => (i ? 'L' : 'M') + tx.px(p[1]).toFixed(1) + ' ' + tx.py(p[0]).toFixed(1)).join(' ');
-function el(name, attrs) { const e = document.createElementNS(svgns, name); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
 
 let sketch = [];
+function initMap() {
+  map = L.map('map', { zoomControl: true, worldCopyJump: false });
+  // Base: OSM raster tiles (needs network). If they fail — offline, throttled, or blocked — the
+  // road network below stays visible, so the app never goes blank. HTTPS-only (Pages is HTTPS).
+  const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+  tiles.on('tileerror', () => { if (tilesOk) { tilesOk = false; document.getElementById('mapnote').textContent = '· base map offline — showing our road network'; } });
+  netLayer = L.layerGroup().addTo(map);       // our data as the always-on fallback base
+  sketchLayer = L.layerGroup().addTo(map);
+  routeLayer = L.layerGroup().addTo(map);
+  for (const w of net) L.polyline(w, NET_STYLE).addTo(netLayer);
+  const bounds = L.latLngBounds(net.length ? net.flat() : DEMO);
+  map.fitBounds(bounds, { padding: [20, 20] });
+  map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
+  window.__map = map;                          // test hook: gates fire map clicks through this
+}
+
 function redraw(route, summary) {
-  document.getElementById('net').replaceChildren(...net.map((w) => el('path', { class: 'net', d: pathD(w) })));
-  const sg = document.getElementById('sketch');
-  sg.replaceChildren();
-  if (sketch.length) sg.appendChild(el('path', { class: 'sketch', d: pathD(sketch) }));
-  for (const p of sketch) sg.appendChild(el('circle', { class: 'sketch-pt', cx: tx.px(p[1]).toFixed(1), cy: tx.py(p[0]).toFixed(1), r: 3.5 }));
-  document.getElementById('route').replaceChildren(route && route.length ? el('path', { class: 'route', d: pathD(route) }) : el('g', {}));
+  sketchLayer.clearLayers();
+  if (sketch.length) L.polyline(sketch, SKETCH_STYLE).addTo(sketchLayer);
+  for (const p of sketch) L.circleMarker(p, SKETCH_PT).addTo(sketchLayer);
+  routeLayer.clearLayers();
+  if (route && route.length) L.polyline(route, ROUTE_STYLE).addTo(routeLayer);
   if (summary !== undefined) setStatus('✓ ' + summary, 'ok');
 }
 function match() {
@@ -137,16 +151,11 @@ function match() {
   window.__match = { summary, routeCount: route.length, polyline: route.map((p) => `${p[0].toFixed(7)},${p[1].toFixed(7)}`).join(';') + (route.length ? ';' : '') };
 }
 
-document.getElementById('map').addEventListener('pointerdown', (ev) => {
-  const r = ev.currentTarget.getBoundingClientRect();
-  const x = (ev.clientX - r.left) / r.width * W, y = (ev.clientY - r.top) / r.height * H;
-  sketch.push(tx.inv(x, y)); match();
-});
 document.getElementById('clear').addEventListener('click', () => { sketch = []; redraw([], 'sketch cleared'); });
 document.getElementById('demo').addEventListener('click', () => { sketch = DEMO.slice(); match(); });
 document.getElementById('profile').addEventListener('change', () => { if (sketch.length >= 2) match(); });
 
-// Register the service worker so the app shell (html/js/wasm) is cached for a fully-offline reload.
+// Register the service worker so the app shell (html/js/wasm/leaflet) is cached for offline reload.
 // Skipped in the standalone build: everything is already inline, and SWs don't run from file://.
 if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
@@ -180,8 +189,12 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     datasetText = dataText;
     ({ instance } = await WebAssembly.instantiate(wasmBuf, imports));
     mem = instance.exports.memory;
-    net = networkLines(JSON.parse(datasetText));
-    tx = makeTransform(net.length ? net : [DEMO]);
+    const parsed = JSON.parse(datasetText);
+    net = networkLines(parsed);
+    // Data freshness: an Overpass snapshot carries osm3s.timestamp_osm_base; show "data as of …" when present.
+    const snap = parsed.osm3s && parsed.osm3s.timestamp_osm_base;
+    if (snap) document.getElementById('freshness').textContent = `data as of ${String(snap).slice(0, 10)} · `;
+    initMap();
     sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
     match();
   } catch (e) {

@@ -30,15 +30,26 @@ if (!wasmB64) throw new Error('wasmB64 not found in --html output (loft output f
 // 2. The test set (raw JSON text — the page hands loft the bytes and also parses it for the network view).
 const dataset = readFileSync(dataFile, 'utf8');
 
-// 3. Inject both into index.html as window.__STANDALONE, before the module script runs.
+// 3. Inline the vendored Leaflet lib so the single file stays self-contained (base map still needs
+//    network tiles at run time, but the library itself ships in the file).
+const leafletCss = readFileSync(join(here, 'vendor/leaflet/leaflet.css'), 'utf8');
+const leafletJs = readFileSync(join(here, 'vendor/leaflet/leaflet.js'), 'utf8').replace(/<\/script>/gi, '<\\/script>');
+
+// 4. Inject the wasm + test set as window.__STANDALONE, before the module script runs.
 //    JSON.stringify makes valid JS; escaping `<` keeps the payload </script>-safe.
 const payload = JSON.stringify({ wasmB64, dataset }).replace(/</g, '\\u003c');
 const inject = `<script>window.__STANDALONE=${payload};</script>\n`;
-const page = readFileSync(join(here, 'index.html'), 'utf8');
+let page = readFileSync(join(here, 'index.html'), 'utf8');
 if (!page.includes('</head>')) throw new Error('index.html has no </head> to inject before');
+if (!page.includes('vendor/leaflet/leaflet.css') || !page.includes('vendor/leaflet/leaflet.js'))
+  throw new Error('index.html no longer references the vendored leaflet assets (build-standalone needs updating)');
+page = page
+  .replace('<link rel="stylesheet" href="vendor/leaflet/leaflet.css">', `<style>\n${leafletCss}\n</style>`)
+  .replace('<script src="vendor/leaflet/leaflet.js"></script>', `<script>\n${leafletJs}\n</script>`);
 writeFileSync(out, page.replace('</head>', inject + '</head>'));
 
 const kb = (n) => (n / 1024) | 0;
-console.log(`wrote browser/standalone.html (${kb(readFileSync(out).length)} KB` +
-  ` — wasm ${kb(Buffer.from(wasmB64, 'base64').length)} KB + data ${kb(dataset.length)} KB inline).`);
+console.log(`wrote browser/standalone.html (${kb(readFileSync(out).length)} KB — wasm ` +
+  `${kb(Buffer.from(wasmB64, 'base64').length)} KB + data ${kb(dataset.length)} KB + leaflet ` +
+  `${kb(leafletJs.length + leafletCss.length)} KB inline).`);
 console.log('Open it directly in a browser — no server needed.');

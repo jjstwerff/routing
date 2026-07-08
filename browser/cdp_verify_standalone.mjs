@@ -44,12 +44,10 @@ console.log('  profile → walking_paved:', (mp && mp.summary) || '(no re-match)
 if (!mp || mp.routeCount === m.routeCount) { console.log('FAIL: profile change did not re-match differently'); ok = false; }
 else console.log('  ✓ profile selector re-matched');
 
-// Interactivity: clear, then a synthetic click must produce a new match state.
+// Interactivity: clear, then a synthetic map click must produce a new sketch state.
 await ev('document.getElementById("clear").click(); window.__match=null;');
 const before = await ev('(document.getElementById("status")||{}).textContent');
-await ev(`(()=>{const svg=document.getElementById('map');const r=svg.getBoundingClientRect();
-  const e=new PointerEvent('pointerdown',{clientX:r.left+r.width*0.3,clientY:r.top+r.height*0.5,bubbles:true});
-  svg.dispatchEvent(e);})()`);
+await ev(`window.__map.fire('click',{latlng:{lat:52.255,lng:6.905}})`);
 const after = await ev('window.__match?JSON.stringify(window.__match):(document.getElementById("status")||{}).textContent');
 if (before === after) { console.log('FAIL: click did not change state'); ok = false; } else console.log('  interactive click re-ran the matcher');
 
