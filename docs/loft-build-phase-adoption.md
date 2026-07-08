@@ -7,12 +7,12 @@ works locally with plain `loft` (validated: `loft build` → `_site/index.html`,
 on loft `main`** (origin/main is still @PLN98), so the Pages *workflow* still pins loft to the
 `tuxedo-pln100-build-phase` branch. Reference: loft `doc/claude/PACKAGES.md` § "The build phase".
 
-> ⚠ **Install caveat (2026-07-08):** the @PLN100 install refreshed the loft binary + `libloft.rlib` (rustc
-> 1.96.1) but left a **stale `libloft_ffi`** compiled by rustc 1.96.0 in `/usr/local/share/loft/deps`, so
-> **`--native` builds fail `E0514`** (incompatible rustc). Interpret + `--html`/wasm are fine (S0, kernel
-> tests, and this Pages build all pass — the html target never touches native). Fix is a **clean loft
-> re-install** (rebuilds `loft_ffi`); until then routing's *native* path (`make build`, server gate) is
-> blocked, the *browser/Pages* path is not.
+> **Install note (2026-07-08, resolved):** the first @PLN100 install left a **stale `libloft_ffi`** (rustc
+> 1.96.0) beside the fresh binary + `libloft.rlib` (rustc 1.96.1), so `--native` briefly failed `E0514`
+> (incompatible rustc). A clean re-install removed the stale rlib — **native is green again** (matcher test
+> passes `--native`, alongside S0 interpret + the Pages/html build). Kept as a note because it's the same
+> class as the earlier `loft_ffi` StableCrateId collision: a mixed `loft_ffi` in the deps dir breaks native
+> while interpret/html sail through — probe `--native` after any loft re-install.
 
 ## What @PLN100 gives us
 
