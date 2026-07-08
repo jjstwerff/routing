@@ -106,10 +106,6 @@ jobs:
   # publishes from main. No hand-orchestrated build steps — the manifest is the source of truth.
   pages:
     runs-on: ubuntu-latest
-    env:
-      # `loft build` (the build phase) is not yet on loft's default branch. PIN loft to the feature
-      # branch that has it; drop this to HEAD (like build-test) once @PLN100 merges to loft main.
-      LOFT_REF: tuxedo-pln100-build-phase
     steps:
       - uses: actions/checkout@v4
 
@@ -123,12 +119,13 @@ jobs:
         with:
           node-version: 22
 
-      # No public loft binary — build the @PLN100 build-phase branch from source, cached on its sha.
+      # No public loft binary — build loft HEAD from source (it now carries @PLN100's `loft build`,
+      # merged as loft-lang/loft#531), cached on its sha and shared with the build-test loft cache.
       - name: Resolve loft revision
         id: loft
-        run: echo "sha=$(git ls-remote https://github.com/loft-lang/loft "$LOFT_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git ls-remote https://github.com/loft-lang/loft HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
       - name: Clone loft
-        run: git clone --depth=1 --branch "$LOFT_REF" https://github.com/loft-lang/loft /tmp/loft
+        run: git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
       - name: Cache cargo + loft build
         uses: actions/cache@v4
         with:
@@ -136,9 +133,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             /tmp/loft/target
-          key: loft-pages-${{ runner.os }}-${{ steps.loft.outputs.sha }}
+          key: loft-${{ runner.os }}-${{ steps.loft.outputs.sha }}
           restore-keys: |
-            loft-pages-${{ runner.os }}-
+            loft-${{ runner.os }}-
       - name: Build loft toolchain
         run: |
           cd /tmp/loft

@@ -3,9 +3,10 @@
 
 **Status:** the **GitHub Pages build is now automated via `loft build`** (implemented + validated). @PLN100
 has since been installed — the **installed `/usr/local/bin/loft` now has the build phase**, so `loft build`
-works locally with plain `loft` (validated: `loft build` → `_site/index.html`, incremental). It is **not yet
-on loft `main`** (origin/main is still @PLN98), so the Pages *workflow* still pins loft to the
-`tuxedo-pln100-build-phase` branch. Reference: loft `doc/claude/PACKAGES.md` § "The build phase".
+works locally with plain `loft` (validated: `loft build` → `_site/index.html`, incremental). @PLN100 has now
+also **merged to loft `main`** (loft-lang/loft#531), so CI builds loft from HEAD — the `pages` job's earlier
+`tuxedo-pln100-build-phase` pin is dropped (the branch was deleted on merge, which is what broke the first
+CI run). Reference: loft `doc/claude/PACKAGES.md` § "The build phase".
 
 > **Install note (2026-07-08, resolved):** the first @PLN100 install left a **stale `libloft_ffi`** (rustc
 > 1.96.0) beside the fresh binary + `libloft.rlib` (rustc 1.96.1), so `--native` briefly failed `E0514`
