@@ -1,0 +1,114 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BUILD B3 — the unified base-map kernel. Loads the two loft stores (layout PTile + roads TTile) and
+// serves two commands, emitting text over println for JS to render:
+//   view                        → the base map (A/B/L/P/N/S/R lines, see the grammar below)
+//   match <lat,lon;…> <profile> → the matched route (tiles_corridor_ways → build_graph → match_route)
+// Reuses the B1 store→text `view` (emit_*) + the B2 matcher (server.loft's match_for path). Args-driven
+// for native verification here; B4 compiles this with `loft --html` and swaps the arg parsing for a
+// host_input() command blob (the store bytes + command over loft's native channel), same println out.
+//   loft --native --path <loft>/ --lib lib client/basemap_kernel.loft <layout.store> <roads.store> [view|match] [sketch] [profile]
+// Grammar: A cover;… · B name;… · L kind;name;… · P kind;name;lat,lon · N rank;name;lat,lon ·
+//          S name;… (street label) · R class;… (road) · ROUTE lat,lon;… · SUMMARY ways=… len=…m
+
+#cwd
+
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile);
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep,
+                     tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m);
+
+fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
+
+fn class_name(tp: integer) -> text {
+  if tp == 0 { "motorway" } else if tp == 1 { "primary" } else if tp == 2 { "secondary" }
+  else if tp == 3 { "tertiary" } else if tp == 4 { "residential" } else if tp == 5 { "residential" }
+  else if tp == 6 { "service" } else if tp == 7 { "cycle" } else if tp == 8 { "path" }
+  else if tp == 9 { "foot" } else if tp == 10 { "pedestrian" } else if tp == 11 { "foot" }
+  else { "residential" }
+}
+
+fn ring_text(pre: text, ox: integer, oy: integer, ring: vector<Coord>) -> text {
+  line = pre;
+  for c in ring { line += ";{deg(oy + (c.y as integer)):2.6},{deg(ox + (c.x as integer)):2.6}"; }
+  line
+}
+
+// --- view: each layer in its own function (a single function with all loops trips a loft codegen bug) ---
+fn emit_areas(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for ar in t.areas { println(ring_text("A {ar.cover}", t.ox, t.oy, ar.ring)); n += 1; } } n
+}
+fn emit_buildings(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for b in t.buildings { println(ring_text("B {b.name}", t.ox, t.oy, b.ring)); n += 1; } } n
+}
+fn emit_lines(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for ln in t.lines { println(ring_text("L {ln.kind};{ln.name}", t.ox, t.oy, ln.geom)); n += 1; } } n
+}
+fn emit_pois(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for p in t.pois { println("P {p.kind};{p.name};{deg(t.oy + (p.at.y as integer)):2.6},{deg(t.ox + (p.at.x as integer)):2.6}"); n += 1; } } n
+}
+fn emit_labels(layout: hash<PTile[tkey]>) -> integer {
+  n = 0;
+  for t in layout {
+    for lb in t.labels {
+      if lb.kind == "street" { println(ring_text("S {lb.name}", t.ox, t.oy, lb.line)); }
+      else { c = lb.line[0] ?? Coord { x: 0 as i32, y: 0 as i32 }; println("N {lb.rank};{lb.name};{deg(t.oy + (c.y as integer)):2.6},{deg(t.ox + (c.x as integer)):2.6}"); }
+      n += 1;
+    }
+  }
+  n
+}
+fn emit_roads(roads: hash<TTile[tkey]>) -> integer {
+  n = 0;
+  for t in roads {
+    si = 0;
+    for r in t.roads {
+      cnt = r.steps as integer;
+      line = "R {class_name(r.tp as integer)}";
+      for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
+      si += cnt; println(line); n += 1;
+    }
+  }
+  n
+}
+fn do_view(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>) {
+  na = emit_areas(layout); nb = emit_buildings(layout); nl = emit_lines(layout);
+  npo = emit_pois(layout); nlab = emit_labels(layout); nr = emit_roads(roads);
+  println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr}");
+}
+
+// --- match: the rough sketch → the actual route, from roads.store (server.loft's match_for path) ---
+fn parse_sketch(spec: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for tok in spec.split(';') {
+    xy = tok.split(',');
+    if len(xy) == 2 { pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }]; }
+  }
+  pts
+}
+fn do_match(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
+  if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
+  ways = tiles_corridor_ways(roads, trace, corridor_margin(trace));
+  route = match_route(build_graph(ways), trace, profile);
+  line = "ROUTE";
+  for p in route { line += ";{p.lat:2.6},{p.lon:2.6}"; }
+  println(line);
+  println("SUMMARY ways={len(ways)} route_pts={len(route)} len={path_length_m(route):1.1}m profile={profile}");
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: basemap_kernel <layout.store> <roads.store> [view|match] [sketch] [profile]"); return; }
+  cmd = a[2] ?? "view";
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[1] ?? "");                 // roads store needed by both commands
+
+  if cmd == "match" {
+    do_match(roads, parse_sketch(a[3] ?? ""), a[4] ?? "cycling_road");
+  } else {
+    layout: hash<PTile[tkey]> = [];
+    store_load(layout, a[0] ?? "");              // layout only for view
+    do_view(layout, roads);
+  }
+}
