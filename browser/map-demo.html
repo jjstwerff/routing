@@ -1,0 +1,55 @@
+<!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PLAN-MAP M0 — canvas + Mercator</title>
+<style>
+  html, body { margin: 0; height: 100vh; height: 100dvh; overflow: hidden; font-family: system-ui, sans-serif; }
+  /* A <canvas> is a REPLACED element — inset:0 alone keeps its intrinsic 300×150, so it needs an
+     explicit width/height to fill the viewport (unlike Leaflet's plain <div>). */
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #e8e8e8; }
+  #hud { position: fixed; left: 8px; top: 8px; z-index: 10; background: rgba(31,41,51,.85); color: #fff;
+         padding: 6px 10px; border-radius: 8px; font: 12px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="hud">M0…</div>
+<script type="module">
+import { RouteMap } from './map.mjs';
+
+// Known points around the Enschede region — the M0 render() plots them as dots.
+const CITIES = [
+  { lat: 52.2215, lon: 6.8937, name: 'Enschede' },
+  { lat: 52.2530, lon: 6.9050, name: 'Lonneker' },
+  { lat: 52.3130, lon: 6.9280, name: 'Oldenzaal' },
+  { lat: 52.2660, lon: 6.7930, name: 'Hengelo' },
+];
+
+const map = new RouteMap(document.getElementById('map'), { lat: 52.2215, lon: 6.8937, zoom: 12, points: CITIES });
+map.render();
+window.__map = map;                          // gate hook
+
+// In-page self-check (read by the CDP gate) — proves the DOM / DPR / render path, not just the math.
+function selfCheck() {
+  const W = map.width, H = map.height, dpr = map.dpr;
+  const c = map.project(map.camera.lat, map.camera.lon);
+  const centerOK = Math.abs(c.x - W / 2) < 1e-6 && Math.abs(c.y - H / 2) < 1e-6;
+  const q = CITIES[2];                        // round-trip a real point
+  const s = map.project(q.lat, q.lon);
+  const r = map.unproject(s.x, s.y);
+  const roundtripDeg = Math.max(Math.abs(r.lat - q.lat), Math.abs(r.lon - q.lon));
+  let bg = null, rendered = false;             // sample the centre device-pixel — background is opaque
+  try { bg = Array.from(map.ctx.getImageData(Math.round(W / 2 * dpr), Math.round(H / 2 * dpr), 1, 1).data); rendered = bg[3] === 255; } catch (e) {}
+  return { W, H, dpr, center: { x: c.x, y: c.y }, centerOK, roundtripDeg, bg, rendered };
+}
+const m0 = selfCheck();
+window.__m0 = m0;
+document.getElementById('hud').textContent =
+  `M0  ${m0.W}×${m0.H} @${m0.dpr}x\ncentre → (${m0.center.x.toFixed(1)},${m0.center.y.toFixed(1)}) ${m0.centerOK ? 'OK' : 'BAD'}\n` +
+  `round-trip ${m0.roundtripDeg.toExponential(1)}°\nrendered ${m0.rendered}`;
+</script>
+</body>
+</html>
