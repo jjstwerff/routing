@@ -44,7 +44,7 @@ URL    := http://127.0.0.1:$(PORT)/
 KERNEL_TESTS = geodesic corridor gpx import loop matcher profiles roundtrip elevation
 
 .PHONY: help build check check-rustc install uninstall run stop clean \
-        test test-native test-wasm test-client standalone test-standalone
+        test test-native test-wasm test-map
 
 help:
 	@echo "routing — targets:"
@@ -53,7 +53,6 @@ help:
 	@echo "  make install    build + install a stable copy to $(PREFIX) (no sudo)"
 	@echo "  make uninstall  remove the installed copy (keeps saved routes)"
 	@echo "  make run        build + start from this repo and open the browser (dev)"
-	@echo "  make standalone build browser/standalone.html — one self-contained file, no server"
 	@echo "  make stop       stop a repo-local server"
 	@echo "  make clean      remove dist/ and the native build cache"
 	@echo ""
@@ -61,8 +60,7 @@ help:
 	@echo "  make test        offline: interpreter kernel suites + server harnesses"
 	@echo "  make test-native the kernel suites on the --native backend (slow, thorough)"
 	@echo "  make test-wasm   wasip2 parity via wasmtime: kernel geodesic + full matcher (app_kernel)"
-	@echo "  make test-client headless-Chromium harnesses (routes / elevation / sync)"
-	@echo "  make test-standalone  headless proof standalone.html runs from file:// with no network"
+	@echo "  make test-map    headless-Chromium: the canvas base-map app (PLAN-MAP M0..M5)"
 	@echo ""
 	@echo "after 'make install' (ensure $(BINDIR) is on PATH):"
 	@echo "  routing         start (if not already up) + open primary browser"
@@ -204,15 +202,6 @@ test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/app_headless_test.sh
 
-test-client: check
-	@LOFT_BIN="$(LOFT)" ./tools/client_routes_test.sh
-	@LOFT_BIN="$(LOFT)" ./tools/client_elev_test.sh
-	@LOFT_BIN="$(LOFT)" ./tools/client_sync_test.sh
-	@echo "  ALL CLIENT (CHROMIUM) GATES PASS"
-
-# Single self-contained file: the full matcher + a test set inlined, runs with no server (open in a browser).
-standalone: check
-	@LOFT_BIN="$(LOFT)" node browser/build-standalone.mjs
-
-test-standalone: check
-	@LOFT_BIN="$(LOFT)" ./tools/standalone_app_test.sh
+# The canvas base-map app (PLAN-MAP): pure projection invariant + headless-Chromium render/pan/zoom/tiles.
+test-map:
+	@./tools/map_render_gate.sh
