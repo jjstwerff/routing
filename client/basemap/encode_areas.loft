@@ -58,7 +58,8 @@ pub fn build(osm: text) -> hash<PTile[tkey]> {
 
 fn main() {
   data_path = arguments()[0] ?? "";
-  if data_path == "" { println("usage: encode_areas <areas.json>"); return; }
+  out_path  = arguments()[1] ?? "";        // if given (S5.3): persist the store → reload → verify → recount
+  if data_path == "" { println("usage: encode_areas <areas.json> [out.store]"); return; }
   osm = file(data_path).content();
 
   // Independent input count — a PURE count of area ways (classification lives in build(), where reading
@@ -96,5 +97,24 @@ fn main() {
     println("S5.2 OK: {binned} areas binned into {tiles} cells (none dropped); a water polygon re-keys to its cell");
   } else {
     println("S5.2 FAIL");
+  }
+
+  // S5.3 — persist the REAL store to its own file, reload into a fresh store, verify, and recount.
+  if out_path != "" {
+    ok = store_persist_bind(idx, out_path);
+    dst: hash<PTile[tkey]> = [];
+    lok = store_load(dst, out_path);
+    vok = store_verify(dst);
+    tiles2 = 0; areas2 = 0; water2 = 0; forest2 = 0;
+    for t in dst {
+      tiles2 += 1;
+      for a in t.areas { areas2 += 1; if a.cover == "water" { water2 += 1; } if a.cover == "forest" { forest2 += 1; } }
+    }
+    println("persist {ok} load {lok} verify {vok} | reloaded tiles={tiles2} areas={areas2} water={water2} forest={forest2}");
+    if ok && lok && vok && tiles2 == tiles && areas2 == binned && water2 == water && forest2 == forest {
+      println("S5.3 OK: real area store round-trips on disk (verify true, tiles+areas+covers match)");
+    } else {
+      println("S5.3 FAIL");
+    }
   }
 }
