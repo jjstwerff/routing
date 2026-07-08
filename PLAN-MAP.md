@@ -147,58 +147,83 @@ minZoom}`. Target palette — **extend freely; each addition is a row + (if new)
   on `#c6b8a5`, POIs the Carto icon hues). **Styling is a lookup against Carto**, not a per-feature call —
   so it stays consistent as the catalog grows.
 
-## 5. Steps (ordered, falsifier-first — each has a Build and a Check)
+## 4c. Modules & the two pipelines (concrete)
 
-> M0 is the cheapest falsifier: prove `project`/`unproject` and one `render()` on a *known* point before any
-> data or interaction. Everything after is "mutate camera → render" or "draw one more layer."
+**Render pipeline — one new browser module `browser/map.js`** (replaces `vendor/leaflet/`; `build-standalone.mjs`
+inlines it like it inlines Leaflet today):
 
-### M0 — Canvas + camera + projection  *(the invariant probe)*
-- **Build.** A full-bleed `<canvas>`; `camera{centerLat,centerLon,zoom}`; Web-Mercator `project`/`unproject`
-  (HiDPI-aware); one `render()` that plots a few known lat/lons as dots.
-- **Check.** `project` a known place (e.g. Enschede centre) lands at the expected pixel; `unproject(project(p))
-  ≈ p` to < 1e-6°; a resize keeps the centre centred.
+| Piece | Responsibility |
+|---|---|
+| `mercator` | `project(lat,lon)→{x,y}` and `unproject(x,y)→{lat,lon}` — spherical Web-Mercator, `camera` + `devicePixelRatio` applied |
+| `Camera` | `{centerLat, centerLon, zoom}`; the *only* mutable view state |
+| `render(ctx, layers)` | clear → draw z-order **Area → Building → Line → Poi → Label**; viewport-cull; per-feature `minZoom` gate (S13); label collision (S14) |
+| `drawArea / drawBuilding / drawLine / drawPoi / drawLabel` | the per-primitive canvas ops (fill / footprint / stroke / glyph / haloed text) |
+| `catalog` | `class → {fill, stroke, width, dash, glyph, minZoom}` — values = OSM-Carto (§4b) |
+| `glyphs` | a tiny canvas symbol per `Poi.kind` (tree, bench, viewpoint, tower, crossing…) |
+| `interact` | left-drag pan + wheel zoom (cursor-anchored) → mutate `Camera` → `requestAnimationFrame(render)` |
+| **seam** (for PLAN-EDIT) | exports `project`, `unproject`, `camera`, `onRender`, `hitTest` |
 
-### M1 — Pan (left-drag) + zoom (wheel), cursor-anchored
-- **Build.** `mousedown`+`mousemove`+`mouseup` → pan by keeping the grabbed lat/lon under the cursor;
-  `wheel` → change `zoom` while holding `unproject(cursor)` fixed. Each updates `camera`, requests `render`.
-- **Check.** Headless (CDP): the lat/lon under the cursor is invariant across a drag and across a wheel tick
-  (the two properties from §2); no other state changes.
+**Data pipeline — per layer, loft side → assets the browser reads:**
+1. **Fetch** — `tools/basemap/fetch.sh <kind> <bbox>` (Overpass) → raw JSON, whole-Enschede bbox (§4).
+2. **Classify + simplify** — `client/basemap/emit_<kind>.loft` via `lib/basemap` (`area_use`/`line_kind`/
+   `poi_kind`/`place_rank`, DP `dp_mask`) → typed records.
+3. **Encode → store** — `build_store.loft` packs records into `PTile` (tile-local `Coord` i32) in the
+   parametric-grid `PTile` store — one store for the whole region.
+4. **Load working set** — from the `Camera` viewport compute visible `tkey`s → `store_load_keys` → decode →
+   in-memory `{areas, buildings, lines, pois, labels}` that `render()` draws.
 
-### M2 — Terrain fills (areas)
-- **Build.** Draw area rings as filled canvas paths, coloured by `AreaUse` (`COVER_COLORS`), back-most layer.
-- **Check.** The region's terrain renders; polygon count == the emitted area count; visually matches today's
-  Leaflet terrain for an overlapping view.
+**The renderer is source-agnostic:** M2/M3 feed it the existing per-layer `*.txt`; M4 swaps the source to the
+working-set store — `render()` is unchanged. That decoupling is what lets us prove rendering early and scale
+data late.
 
-### M3 — Generic primitive renderer + catalog v1 (buildings, streets, labels)
-- **Build.** One canvas draw per **primitive** — filled `Area` (by cover), `Building` footprint, stroked
-  `Line`, `Poi` symbol, `Label` — dispatched by the §4b **catalog** (`class → style, minZoom`). v1 catalog =
-  the classes we already classify (areas / buildings / streets / places). Port S13 generalization + S14
-  label collision to canvas.
-- **Check.** Every v1 catalog class renders with its style; buildings ≥ z14; small areas drop when zoomed
-  out; no two labels overlap; street labels repeat as you zoom in.
+---
 
-### M3b — Enrich the catalog: Lines + POIs (streams, crossings, trees, the full palette)
-- **Build.** Extend `fetch.sh` to pull `Line` ways (waterway / railway / barrier) and node **POIs**
-  (natural=tree, amenity=bench/parking/drinking_water, tourism=viewpoint/camp_site, man_made=tower,
-  leisure=playground, historic=ruins/monument, highway=crossing, …); add `line_kind`/`poi_kind` classifiers
-  + emitters (PLAN-BASEMAP S5.5b); add catalog rows + `Poi` glyphs. **Richness = catalog rows, not renderer
-  changes.**
-- **Check.** Streams/rivers stroke as lines; POIs draw as zoom-gated symbols (towers/viewpoints mid-zoom,
-  trees/benches high-zoom); adding one more feature type is a single catalog row (+ one glyph if new), with
-  no change to `render()` or the seam.
+## 5. Concrete steps (falsifier-first — each names its layer + its rendering)
 
-### M4 — Whole-region working set
-- **Build.** Fetch the Enschede bbox (§4), build the `PTile` store, load visible tiles on camera-settle via
-  `store_load_keys`; evict off-screen tiles.
-- **Check.** Panning across Enschede loads tiles incrementally; the bytes/features held track the viewport,
-  not the region; every part of the region is reachable and draws.
+### Phase A — Render engine (no data)
+**M0 — Canvas + Mercator + `render()`.** *Build:* `browser/map.js` — full-bleed `<canvas>` (backing store ×
+`dpr`); `Camera`; `project`/`unproject`; a `render()` that plots given test lat/lons. *Check:*
+`project(Enschede centre)` = the expected pixel; `unproject∘project ≈ id` (< 1e-6°); a resize keeps the
+centre centred.
 
-### M5 — Full-bleed interface, Leaflet removed, gates
-- **Build.** Port the original full-bleed shell (`styles.css`, viewport meta); delete `vendor/leaflet/` and
-  every `L.*` reference; a minimal HUD (attribution + "data as of" S12). Rebuild standalone; extend the CDP
-  gate to render + pan/zoom the region headlessly.
-- **Check.** `grep -r 'leaflet\|L\.' browser/` is empty; the app is a full-viewport canvas; standalone builds
-  and the headless gate pans/zooms and draws the region; `basemap_isolation_gate.sh` still PASS.
+**M1 — Pan (left-drag) + wheel zoom.** *Build:* `interact` — `mousedown/move/up` pans by holding the grabbed
+lat/lon under the cursor; `wheel` changes `zoom` holding `unproject(cursor)` fixed; each → `Camera` →
+`render`. *Check (CDP):* the cursor's lat/lon is invariant across a drag and across a wheel tick (the two §2
+properties); no other state changes.
+
+### Phase B — One layer end-to-end (the pipeline falsifier)
+**M2 — Areas (terrain).** *Data:* `fetch.sh areas` → `emit_areas.loft` (`area_use` + DP) → `areas.txt`
+(existing path). *Render:* `drawArea` filled paths, Carto cover colours, back-most layer. *Check:* the
+region's terrain renders on our canvas; polygon count == emitted; a view overlapping today's Leaflet terrain
+looks the same. **This proves the whole render pipeline on one real layer before adding any other.**
+
+### Phase C — Grow the layers (on the proven engine + pipeline)
+**M3 — Buildings + streets + labels (catalog v1).** *Data:* existing `emit_buildings/streets/places` →
+`*.txt`. *Render:* `drawBuilding` (fill+stroke, ≥ z14 S13), `drawLine` (street centrelines), `drawLabel`
+(place labels rank-gated S9 + street labels repeated along the line S10) — all dispatched through the
+`catalog`; port S13 generalization + S14 collision to canvas. *Check:* every v1 class renders per Carto;
+buildings ≥ z14; small areas drop zoomed-out; no label overlap; street labels repeat on zoom.
+
+**M3b — Lines + POIs (enrich the catalog).** *Data:* extend `fetch.sh` (node POIs across natural/leisure/
+amenity/tourism/man_made/historic/barrier/`highway=crossing`; `waterway`/`railway`/`barrier` lines); add
+`line_kind`/`poi_kind` in `lib/basemap`; new `emit_lines.loft`/`emit_pois.loft` → `lines.txt`/`pois.txt`
+(the deferred PLAN-BASEMAP **S5.5b** encoders). *Render:* `drawLine` per kind (river/stream/railway dash…),
+`drawPoi` glyph per kind + halo, minZoom-gated; add the catalog rows. *Check:* streams/rivers stroke; POIs
+draw as zoom-gated symbols; **a new feature type is one catalog row (+ one glyph if new) — `render()` and the
+seam are untouched.**
+
+### Phase D — Whole region + finish
+**M4 — Whole-Enschede working set.** *Data:* fetch the Enschede bbox for all kinds → `build_store.loft` →
+the `PTile` store (whole region); the client loads only the visible `tkey`s → decode → the renderer's
+`{…}`; evict off-screen tiles. **Decide the client-read here:** loft-wasm `store_load_keys` vs. baked static
+per-tile files (§7). *Check:* panning across Enschede loads tiles incrementally; held features track the
+viewport not the region; every part of the region draws.
+
+**M5 — Full-bleed shell, drop Leaflet, gates.** *Build:* port the original full-bleed shell (`styles.css`,
+viewport meta); delete `vendor/leaflet/` and every `L.*`; a minimal HUD (attribution + "data as of" S12);
+rebuild standalone (inline `map.js` + assets); extend the CDP gate to render + pan + zoom the region
+headlessly. *Check:* `grep -r 'leaflet\|L\.' browser/` is empty; the app is a full-viewport canvas;
+standalone builds; the headless gate pans/zooms/draws; `basemap_isolation_gate.sh` still PASS.
 
 ---
 
