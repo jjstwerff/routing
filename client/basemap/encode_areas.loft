@@ -39,7 +39,7 @@ pub fn build(osm: text) -> hash<PTile[tkey]> {
         key = tkey(tx, ty, CELL_P);
         t = idx[key];
         if t == null {
-          idx += PTile { tkey: key, ox: origin(tx, CELL_P), oy: origin(ty, CELL_P), areas: [], buildings: [], labels: [] };
+          idx += PTile { tkey: key, ox: origin(tx, CELL_P), oy: origin(ty, CELL_P), areas: [], buildings: [], lines: [], labels: [], pois: [] };
           t = idx[key];
         }
         ring: vector<Coord> = [];

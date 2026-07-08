@@ -37,16 +37,28 @@ load (a tube along the route) and the map viewport load (a rectangle) are **diff
 Its own keyed store, mirroring `hash<TTile[tkey]>`; a cell holds three feature kinds. Coords reuse the
 routing block's fixed-point (1e-7°) deltas from the tile origin.
 
+Five geometry-typed record kinds cover a full base map. Fields are `text` (no enums in loft); `cover`
+because `use` is a loft keyword. `name` is `""` when absent.
 ```
-struct Area     { cover: AreaUse, ring: vector<Coord> }        // landcover/landuse polygon (filled; `use` is a loft keyword → `cover`)
-struct Building { ring: vector<Coord>, name: text? }            // footprint; name optional (POI buildings)
-struct Label    { name: text, kind: LabelKind, rank: integer,  // place labels + street labels
-                  line: vector<Coord> }                         // street: simplified centerline (option B);
-                                                                //   place: a single point (line of length 1)
+struct Coord    { x: i32, y: i32 }
+struct Area     { cover: text, ring: vector<Coord> }           // filled polygon: landcover + parking/camp/ruins-area/playground
+struct Building { name: text, ring: vector<Coord> }            // footprint polygon
+struct Line     { kind: text, name: text, geom: vector<Coord> }// stroked line: stream/ditch/river, railway (simplified like streets)
+struct Label    { name: text, kind: text, rank: integer,       // place + street name labels
+                  line: vector<Coord> }                         //   street: simplified centerline (option B); place: 1 point
+struct Poi      { kind: text, name: text, at: Coord }          // point icon: tree, bench, viewpoint, tower, ruin-point,
+                                                                //   + stream crossings (ford, stepping_stones, footbridge)
 struct PTile    { tkey: integer, ox: integer, oy: integer,      // same grid MECHANISM, its OWN cell size
-                  areas: vector<Area>,
-                  buildings: vector<Building>, labels: vector<Label> }
+                  areas: vector<Area>, buildings: vector<Building>,
+                  lines: vector<Line>, labels: vector<Label>, pois: vector<Poi> }
 ```
+`Line` and `Poi` were added after S5.2 (evaluating afstandmeten's coverage): the OSM detail we lacked —
+individual trees, parking, playgrounds, viewpoints/lookout towers, benches, campsites, ruins, **streams
+and where to cross them (fords / stepping-stones / footbridges)** — is all "current data", and fits the
+SAME store/tiling/encoder. Polygon ones reuse `Area` (extend `area_use`); water/rail lines are `Line`
+(a `Label` clone, DP-simplified); point symbols incl. crossings are `Poi` (shallower than what S5.0 already
+round-tripped — one re-probe when added). **Density:** individual trees rival buildings → high-zoom only
+(S13); streams/rail are moderate; crossings/benches/viewpoints are sparse. All presentation-only — S0 unaffected.
 
 **Same mechanism, its own tile size; separate store.** `PTile` reuses the routing tiling *mechanism* —
 grid-index `= coord/CELL`, a packed `tkey`, fixed-point coords as deltas from `ox,oy`, a `bbox → cell

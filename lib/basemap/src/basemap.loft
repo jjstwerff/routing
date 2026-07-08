@@ -42,12 +42,19 @@ pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
 // --- The presentation store schema (PLAN-BASEMAP) --------------------------------------------------
 // A parallel store to the routing block, on the same grid MECHANISM (its own cell size). Coords are i32
 // deltas from the tile origin (ox,oy), exactly like the routing TStep. The map matcher never reads this.
+// Five geometry-typed record kinds cover a full base map (name "" = absent; `cover` because `use` is a
+// loft keyword). Area/Building are polygons; Line is a stroked line (streams/ditches/rivers, railways);
+// Label is text; Poi is a point icon (trees, benches, viewpoints, towers, ruins — and stream crossings:
+// fords, stepping-stones, footbridges). The map matcher reads none of it.
 pub struct Coord    { x: i32, y: i32 }
-pub struct Area     { cover: text, ring: vector<Coord> }        // `use` is a loft keyword → `cover`
-pub struct Building { name: text, ring: vector<Coord> }         // name "" when absent
+pub struct Area     { cover: text, ring: vector<Coord> }        // filled polygon (landcover + parking/camp/ruin/playground)
+pub struct Building { name: text, ring: vector<Coord> }         // footprint polygon
+pub struct Line     { kind: text, name: text, geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
 pub struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
+pub struct Poi      { kind: text, name: text, at: Coord }       // point icon (tree/bench/viewpoint/tower/ruin/crossing)
 pub struct PTile    { tkey: integer, ox: integer, oy: integer,
-                      areas: vector<Area>, buildings: vector<Building>, labels: vector<Label> }
+                      areas: vector<Area>, buildings: vector<Building>,
+                      lines: vector<Line>, labels: vector<Label>, pois: vector<Poi> }
 
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".

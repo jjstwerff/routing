@@ -1,22 +1,16 @@
 // Copyright (c) 2026 Jurjen Stellingwerff
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// PLAN-BASEMAP S5.0 — schema round-trip probe (the falsifier, built first). Builds a tiny nested
-// hash<PTile[tkey]>, persists it, reloads into a fresh store, verifies integrity, and counts every nested
-// feature back. This is the load-bearing test that loft's store engine round-trips the presentation
-// schema — a hash of a struct with vectors of structs that each hold heap `text` + a nested vector<Coord>,
-// one level deeper than the routing TTile. If the counts don't match or store_verify is false, the schema
-// must flatten (PLAN-BASEMAP S5 fallback) — decided here, before any encoder is written.
-//   loft --interpret --path <loft>/ client/basemap/store_probe.loft <out.store>
+// PLAN-BASEMAP S5.0 — schema round-trip probe (the falsifier). Builds a tiny hash<PTile[tkey]> holding
+// EVERY record kind — areas, buildings, lines, labels, pois (incl. a stream crossing) — persists it,
+// reloads into a fresh store, verifies integrity, and counts every nested feature back. This is the
+// load-bearing test that loft's store engine round-trips the full presentation schema (from lib/basemap).
+// If the counts don't match or store_verify is false, the schema must flatten (PLAN-BASEMAP S5 fallback).
+//   loft --interpret --path <loft>/ --lib lib client/basemap/store_probe.loft <out.store>
 
 #cwd
 
-struct Coord    { x: i32, y: i32 }
-struct Area     { cover: text, ring: vector<Coord> }
-struct Building { name: text, ring: vector<Coord> }
-struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
-struct PTile    { tkey: integer, ox: integer, oy: integer,
-                  areas: vector<Area>, buildings: vector<Building>, labels: vector<Label> }
+use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
 
 fn c(a: integer, b: integer) -> Coord {
   Coord { x: a as i32? ?? (0 as i32), y: b as i32? ?? (0 as i32) }
@@ -27,14 +21,16 @@ fn ring3(a: integer, b: integer) -> vector<Coord> {
 
 // A stable text summary of every nested count — equal before and after == a faithful round-trip.
 fn tally(store: hash<PTile[tkey]>) -> text {
-  nt = 0; na = 0; nb = 0; nl = 0; nc = 0;
+  nt = 0; na = 0; nb = 0; nln = 0; nl = 0; np = 0; nc = 0;
   for t in store {
     nt += 1;
     for a in t.areas { na += 1; nc += len(a.ring); }
     for bl in t.buildings { nb += 1; nc += len(bl.ring); }
+    for ln in t.lines { nln += 1; nc += len(ln.geom); }
     for l in t.labels { nl += 1; nc += len(l.line); }
+    for p in t.pois { np += 1; nc += 1; }
   }
-  "tiles={nt} areas={na} buildings={nb} labels={nl} coords={nc}"
+  "tiles={nt} areas={na} buildings={nb} lines={nln} labels={nl} pois={np} coords={nc}"
 }
 
 fn main() {
@@ -42,18 +38,23 @@ fn main() {
   if path == "" { println("usage: store_probe <out.store>"); return; }
 
   src: hash<PTile[tkey]> = [];
-  src += PTile { tkey: 1, ox: 1000, oy: 2000, areas: [], buildings: [], labels: [] };
+  src += PTile { tkey: 1, ox: 1000, oy: 2000, areas: [], buildings: [], lines: [], labels: [], pois: [] };
   t = src[1];
   t.areas += [Area { cover: "water", ring: ring3(1, 1) }];
   t.areas += [Area { cover: "forest", ring: ring3(5, 5) }];
   t.buildings += [Building { name: "Elimkerk", ring: ring3(2, 2) }];
   t.buildings += [Building { name: "", ring: ring3(4, 4) }];
+  t.lines += [Line { kind: "stream", name: "Beek", geom: ring3(6, 6) }];
   t.labels += [Label { name: "Oldenzaal", kind: "town", rank: 5, line: [c(7, 8)] }];
+  t.pois += [Poi { kind: "tree", name: "", at: c(3, 3) }];
+  t.pois += [Poi { kind: "ford", name: "", at: c(4, 5) }];              // a stream crossing
 
-  src += PTile { tkey: 2, ox: 3000, oy: 4000, areas: [], buildings: [], labels: [] };
+  src += PTile { tkey: 2, ox: 3000, oy: 4000, areas: [], buildings: [], lines: [], labels: [], pois: [] };
   t = src[2];
   t.areas += [Area { cover: "grass", ring: ring3(9, 9) }];
+  t.lines += [Line { kind: "railway", name: "", geom: ring3(2, 2) }];
   t.labels += [Label { name: "Hoofdstraat", kind: "street", rank: 0, line: ring3(3, 3) }];
+  t.pois += [Poi { kind: "viewpoint", name: "Uitkijk", at: c(1, 1) }];
 
   before = tally(src);
   println("before: {before}");
@@ -73,7 +74,7 @@ fn main() {
   println("after:  {after}");
 
   if before == after && vok {
-    println("S5.0 OK: nested schema round-trips (persist + load + verify), counts match");
+    println("S5.0 OK: full schema (areas+buildings+lines+labels+pois) round-trips, counts match");
   } else {
     println("S5.0 FAIL: schema does NOT round-trip — flatten per PLAN-BASEMAP S5 fallback");
   }
