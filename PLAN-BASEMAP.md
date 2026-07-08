@@ -119,6 +119,80 @@ for a load-bearing claim (only where one exists). **S0 runs first and re-runs af
   *Check:* features returned == a full-decode of the same bbox. *Probe:* log **bytes fetched ≪ whole store**
   (the countable working-set assertion), via `LOFT_LOADER_STATS`.
 
+## S5 in detail — the presentation store (design before code)
+
+S5 is load-bearing (a data format + a mechanism), so it gets a written falsifier first. **The real risk
+is not the grid — it is whether loft's store engine round-trips a schema *deeper* than the routing block.**
+`TTile` is a hash of a struct with vectors of *flat* structs (`steps: vector<TStep{i32,i32,i32}>`,
+`roads: vector<TRoad{u8,u8,u8}>`). The presentation schema wants a hash of a struct with **vectors of
+structs that each hold a `text` field and a nested `vector<Coord>`** — one level deeper, with heap text.
+Whether `store_persist_bind` + whole-file `store_load` + `store_verify` survive that is a *claim*, and the
+arc-G note that per-element `vector<struct>` relocation is deferred (loft#522 phase 3b.4b) is about the
+PARTIAL path (S6), not whole-file load. Cheapest way to know: build the smallest store of exactly that
+shape and round-trip it — **before** writing any encoder.
+
+### Schema (loft) — nested form (tried first)
+```
+struct Coord    { x: i32, y: i32 }                       // fixed-point (1e-7°) delta from tile origin
+struct Area     { use: text, ring: vector<Coord> }
+struct Building { name: text, ring: vector<Coord> }      // name "" when absent (defer text? until S5.0 says)
+struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
+struct PTile    { tkey: integer, ox: integer, oy: integer,
+                  areas: vector<Area>, buildings: vector<Building>, labels: vector<Label> }
+// store: hash<PTile[tkey]>
+```
+
+### Parametric grid — reimplemented, size is a parameter
+```
+cell_ix(fixed, CELL) = fixed / CELL            // floor to the grid
+origin(tx, CELL)     = tx * CELL
+tkey(tx, ty, CELL)   = (ty + BIAS) * MULT(CELL) + (tx + BIAS)
+```
+`MULT(CELL)` must exceed the world's `|tx|` span at that `CELL` (lon span 3.6e9 fixed units / `CELL`);
+routing's `1e6` is only correct because `CELL = 200000`. `BIAS` offsets negative `tx/ty` (other
+hemispheres) so keys stay positive and non-colliding — routing never hit this (all-positive NL); the
+mechanism must, to "still work" at any size/place.
+
+### Sub-steps — each `Do → Check → Probe`
+
+- **S5.0 — schema round-trip probe (the falsifier; build FIRST, throwaway).** A tiny loft program builds a
+  synthetic `hash<PTile[tkey]>` (2 tiles; each a couple of areas/buildings/labels, 3–4 Coords + a text
+  name), `store_persist_bind` → fresh `store_load` → `store_verify` → count every nested feature back.
+  *Check:* counts in == out, `store_verify` true. *Probe (load-bearing):* this is the falsifier for "the
+  engine handles the nesting + heap text." **If it fails, FLATTEN the schema (below) and re-probe — before
+  the encoder,** not after.
+- **S5.1 — parametric grid (`client/basemap/grid.loft`).** `cell_ix` / `origin` / `tkey(CELL)` with
+  `MULT` derived from `CELL` + a hemisphere `BIAS`. *Check:* a known lat/lon → expected cell; origin+delta
+  reconstructs the coord within 1 unit. *Probe:* at a fine `CELL` (≈100 m) two adjacent cells get distinct
+  keys — routing's `1e6` packing would collide there; ours must not.
+- **S5.2 — encoder (areas first).** Read the areas fixture → bin each ring into its cell's `PTile.areas` at
+  the presentation `CELL`. *Check:* tiles > 0; areas binned == input count; a known water polygon lands in
+  the expected cell.
+- **S5.3 — persist + load + verify (real areas).** `store_persist_bind` → `store_load` fresh →
+  `store_verify` → area count round-trips. *Check:* counts equal, verify true. *Probe:* its own file path;
+  routing block untouched.
+- **S5.4 — size-agnostic.** Build + round-trip at `CELL = 200000` **and** a finer `CELL` (≈50000). *Check:*
+  both round-trip; finer `CELL` ⇒ strictly more tiles (the mechanism isn't tied to routing's size).
+- **S5.5 — all feature types.** Extend the encoder to buildings + labels (place = 1-Coord line; street =
+  S3's simplified centerline). *Check:* all four types round-trip, `store_verify` sound, a named building +
+  a town label survive.
+- **S5.6 — isolation.** *Check:* **S0 gate PASS**; grep the routing block still roads-only; the presentation
+  store is a distinct file.
+
+### Fallback if S5.0 falsifies the nested schema (decided by the probe, not guessed)
+Flatten to mirror `TTile` exactly — one flat coord pool per tile + count-prefixed headers (the shape the
+routing block already proves the engine persists):
+```
+struct PTile { tkey, ox, oy,
+  coords: vector<Coord>,                                  // one flat pool for the whole tile
+  areas: vector<AreaHdr>,      // AreaHdr{ use: text, n: integer }       → next n coords in the pool
+  buildings: vector<BldHdr>,   // BldHdr{ name: text, n: integer }
+  labels: vector<LblHdr> }     // LblHdr{ name: text, kind: text, rank: integer, n: integer }
+```
+One level shallower (vectors of flat structs + a shared pool). If even heap `text` in a persisted struct is
+the problem, intern strings into a per-tile `vector<text>` and store indices. **Pick nested / flat / interned
+at S5.0 from the probe result.**
+
 ### Phase 3 — render (Leaflet canvas, drawn under the route)
 - **S7. Areas.** Filled polygons coloured by `AreaUse`. *Check:* screenshot shows terrain fills (forest
   green, water blue) beneath the road network.
