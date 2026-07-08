@@ -34,7 +34,7 @@ for i in $(seq 1 120); do
 done
 
 echo "== HTTP static serve =="
-if curl -s -m5 "$url/" | grep -q "<!DOCTYPE html>"; then echo "PASS http serves index.html"; else echo "FAIL http"; fail=1; fi
+if curl -s -m5 "$url/" | grep -qi "<!doctype html>"; then echo "PASS http serves index.html"; else echo "FAIL http"; fail=1; fi
 
 echo "== Node WS round-trip =="
 node "$here/tools/ws_roundtrip.mjs" "ws://127.0.0.1:$port/ws" || fail=1

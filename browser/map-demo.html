@@ -1,0 +1,91 @@
+<!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PLAN-MAP M0 — canvas + Mercator</title>
+<style>
+  html, body { margin: 0; height: 100vh; height: 100dvh; overflow: hidden; font-family: system-ui, sans-serif; }
+  /* A <canvas> is a REPLACED element — inset:0 alone keeps its intrinsic 300×150, so it needs an
+     explicit width/height to fill the viewport (unlike Leaflet's plain <div>). */
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #e8e8e8; }
+  #hud { position: fixed; left: 8px; top: 8px; z-index: 10; background: rgba(31,41,51,.85); color: #fff;
+         padding: 6px 10px; border-radius: 8px; font: 12px/1.4 ui-monospace, monospace; white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="hud">M0…</div>
+<script type="module">
+import { RouteMap, parseAreas, parseBuildings, parseStreets, parsePlaces, parseLines, parsePois } from './map.mjs';
+
+// Known points around the Enschede region — the M0 render() plots them as dots.
+const CITIES = [
+  { lat: 52.2215, lon: 6.8937, name: 'Enschede' },
+  { lat: 52.2530, lon: 6.9050, name: 'Lonneker' },
+  { lat: 52.3130, lon: 6.9280, name: 'Oldenzaal' },
+  { lat: 52.2660, lon: 6.7930, name: 'Hengelo' },
+];
+
+// Interaction (M1: left-drag pan + wheel zoom) is on by default.
+const map = new RouteMap(document.getElementById('map'), { lat: 52.2215, lon: 6.8937, zoom: 12, points: [] });
+window.__map = map;                          // gate hook
+
+// In-page self-check (read by the CDP gate) — proves the DOM / DPR / render path, not just the math.
+function selfCheck() {
+  const W = map.width, H = map.height, dpr = map.dpr;
+  const c = map.project(map.camera.lat, map.camera.lon);
+  const centerOK = Math.abs(c.x - W / 2) < 1e-6 && Math.abs(c.y - H / 2) < 1e-6;
+  const q = CITIES[2];                        // round-trip a real point
+  const s = map.project(q.lat, q.lon);
+  const r = map.unproject(s.x, s.y);
+  const roundtripDeg = Math.max(Math.abs(r.lat - q.lat), Math.abs(r.lon - q.lon));
+  let bg = null, rendered = false;             // sample the centre device-pixel — background is opaque
+  try { bg = Array.from(map.ctx.getImageData(Math.round(W / 2 * dpr), Math.round(H / 2 * dpr), 1, 1).data); rendered = bg[3] === 255; } catch (e) {}
+  return { W, H, dpr, center: { x: c.x, y: c.y }, centerOK, roundtripDeg, bg, rendered };
+}
+const hud = document.getElementById('hud');
+function updateHud() {
+  const m0 = selfCheck(); window.__m0 = m0;    // keep the gate hook fresh as the camera moves
+  const cam = map.camera;
+  hud.textContent =
+    `drag to pan · wheel to zoom\n${m0.W}×${m0.H} @${m0.dpr}x  z${cam.zoom.toFixed(2)}\n` +
+    `centre ${cam.lat.toFixed(5)}, ${cam.lon.toFixed(5)} ${m0.centerOK ? 'OK' : 'BAD'}\nround-trip ${m0.roundtripDeg.toExponential(1)}°`;
+}
+map.onRender(updateHud);                       // HUD follows every pan/zoom render
+map.render();
+updateHud();
+
+// M2: load the terrain (areas.txt), fit the view to it, render. Fraction of the central 200×200 that
+// is painted (not the Carto land background) is the "terrain rendered" signal the gate reads.
+function terrainFrac() {
+  const W = map.width, H = map.height, dpr = map.dpr;
+  const x = Math.round((W / 2 - 100) * dpr), y = Math.round((H / 2 - 100) * dpr);
+  const w = Math.max(1, Math.round(200 * dpr)), h = Math.max(1, Math.round(200 * dpr));
+  const d = map.ctx.getImageData(x, y, w, h).data;
+  let colored = 0, total = 0;
+  for (let i = 0; i < d.length; i += 4) { total++; if (!(d[i] === 242 && d[i + 1] === 239 && d[i + 2] === 233)) colored++; }
+  return total ? colored / total : 0;
+}
+const grab = (f) => fetch(f).then((r) => (r.ok ? r.text() : '')).catch(() => '');
+Promise.all(['areas.txt', 'buildings.txt', 'places.txt', 'streets.txt', 'lines.txt', 'pois.txt'].map(grab)).then(([a, b, p, s, l, po]) => {
+  map.areas = parseAreas(a);
+  map.buildings = parseBuildings(b);
+  map.places = parsePlaces(p);
+  map.streets = parseStreets(s);
+  map.lines = parseLines(l);
+  map.pois = parsePois(po);
+  if (map.areas.length) {
+    let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+    for (const ar of map.areas) for (const [la, lo] of ar.ring) { miLa = Math.min(miLa, la); maLa = Math.max(maLa, la); miLo = Math.min(miLo, lo); maLo = Math.max(maLo, lo); }
+    map.fitBounds(miLa, miLo, maLa, maLo);
+  }
+  map.render();
+  window.__m2 = { areas: map.areas.length, frac: terrainFrac() };
+  window.__m3 = { counts: { buildings: map.buildings.length, streets: map.streets.length, places: map.places.length }, stats: map._stats };
+  window.__m3b = { counts: { lines: map.lines.length, pois: map.pois.length }, stats: map._stats };
+});
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
 #   tools/basemap/fetch.sh <areas|places|streets|buildings> [S,W,N,E] [out.json]
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-kind="${1:?usage: fetch.sh <areas|places|streets|buildings> [bbox] [out.json]}"
+kind="${1:?usage: fetch.sh <areas|places|streets|buildings|lines|pois> [bbox] [out.json]}"
 bbox="${2:-52.23232,6.87046,52.31858,6.93253}"   # south,west,north,east of fixtures/real_stretch.json + margin
 out="${3:-$here/client/basemap/fixtures/real_stretch_${kind}.json}"
 
@@ -15,7 +15,9 @@ case "$kind" in
   places)    sel="node[\"place\"]($bbox);";                                                  mode=""     ;;  # nodes carry lat/lon inline
   streets)   sel="way[\"highway\"][\"name\"]($bbox);";                                       mode="geom" ;;
   buildings) sel="way[\"building\"]($bbox);";                                                mode="geom" ;;
-  *) echo "unknown kind: $kind (areas|places|streets|buildings)"; exit 1 ;;
+  lines)     sel="way[\"waterway\"]($bbox);way[\"railway\"]($bbox);way[\"barrier\"~\"^(hedge|wall|fence)\$\"]($bbox);"; mode="geom" ;;
+  pois)      sel="node[\"natural\"~\"^(tree|peak|spring)\$\"]($bbox);node[\"amenity\"~\"^(bench|drinking_water|picnic_table|shelter|fountain)\$\"]($bbox);node[\"tourism\"~\"^(viewpoint|camp_site|picnic_site|information)\$\"]($bbox);node[\"man_made\"~\"^(tower|water_tower)\$\"]($bbox);node[\"historic\"~\"^(ruins|monument|memorial)\$\"]($bbox);node[\"leisure\"=\"playground\"]($bbox);node[\"highway\"=\"crossing\"]($bbox);"; mode="" ;;
+  *) echo "unknown kind: $kind (areas|places|streets|buildings|lines|pois)"; exit 1 ;;
 esac
 q="[out:json][timeout:120];($sel);out ${mode};"
 ua='routing-basemap/0.1 (github.com/jjstwerff/routing)'

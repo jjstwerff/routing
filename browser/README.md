@@ -1,85 +1,56 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
-# Serverless browser shell (PLAN-APP Track 1)
+# Browser base-map app (PLAN-MAP)
 
-A **no-server** browser page that fetches a whole test set (one Overpass-JSON file) and runs the
-**full loft matcher in wasm** — `parse_ways → build_graph → match_route` — then draws the matched route on
-a **Leaflet map** (OpenStreetMap base tiles). Click the map to sketch; it re-matches on every point. A
-**profile selector** (cycling / walking / running / driving sub-modes) re-matches with the chosen
-activity weighting.
+A **no-server, no-Leaflet, no-wasm** base-map viewer for the Enschede region, rendered on our **own HTML5
+canvas**. It presents our own vector data — terrain, buildings, streets, place/street labels, water &
+barrier lines, and POIs — styled to the OpenStreetMap standard (Carto) palette. Left-drag to pan, mouse
+wheel to zoom. (Route drawing / matching is deferred to **PLAN-EDIT**, which will ride this renderer's seam.)
 
-Built the **loft-native way**: the wasm comes from `loft --html` and talks to JavaScript over loft's
-own `host_input()`/`println` byte channel (WEB_APPS.md §4c). **No jco, no WASI, no npm deps** — the
-page instantiates the wasm with a tiny 4-import shim.
+## Pieces
 
-## How it works
+- **`map.mjs`** — the renderer (no dependencies): spherical Web-Mercator `project`/`unproject`, a `Camera`,
+  a full-bleed HiDPI `<canvas>`, `render()` drawing z-order Area → Building → Line → Poi → Label with per-zoom
+  generalization (S13) + collision-aware labels (S14), pan/wheel interaction, per-kind Carto styles
+  (`COVER_COLORS`/`LINE_STYLES`/`POI_STYLES`), and the seam PLAN-EDIT builds on
+  (`project`/`unproject`/`camera`/`onRender`/`hitTest`).
+- **`tiles.mjs`** — the working set: on camera-settle, loads only the tiles overlapping the viewport from
+  `tiles/`, evicts off-screen ones, and assembles the loaded features into the renderer (deduped). Data held
+  tracks the **viewport, not the region**.
+- **`index.html`** — the full-bleed app (RouteMap + TileLoader).
+- **`bake_tiles.mjs`** — buckets the whole-region layer text (`*.txt`, emitted by `client/basemap/emit_*.loft`)
+  into a static tile pyramid `tiles/<ty>_<tx>.json` + `index.json` (0.01° grid; features spanning cells are
+  written to each; the client dedups by identical line).
+- **`build-site.mjs`** — bakes the tiles and inlines `map.mjs`+`tiles.mjs` into a single `_site/index.html`
+  (+ `tiles/`) for GitHub Pages (avoids `.mjs` MIME concerns; fewer requests).
+- **`map-demo.html`** — the M0–M3b test harness over the committed crop samples (see the gate).
+
+## Data pipeline
 
 ```
-client/web_kernel.loft ──loft --html──▶ (self-contained page) ──extract──▶ browser/web_kernel.wasm
-index.html: fetch(web_kernel.wasm) + fetch(test set)
-            → instantiate with loft_io { print, input_len, input_copy } + one stub
-            → set input (sketch|profile\n<dataset>) → loft_start() → read printed route → draw on Leaflet
+tools/basemap/fetch.sh <kind>   (Overpass → client/basemap/fixtures/real_stretch_<kind>.json)
+client/basemap/emit_<kind>.loft (classify + DP-simplify → browser/<kind>.txt)   [needs loft]
+browser/bake_tiles.mjs          (browser/*.txt → browser/tiles/)                [node only]
 ```
+The layer `*.txt` are committed (the deploy source); the tile pyramid is regenerated (node) at build time.
+The loft `PTile` store (PLAN-BASEMAP S6) remains the canonical working-set format for a future
+wasm/HTTP-Range reader (see PLAN-MAP §7).
 
-- **Data in:** JavaScript `fetch`es the file and hands loft the bytes via the input queue
-  (`host_input()`); loft has no filesystem/HTTP in the browser by design.
-- **Result out:** loft `println`s the route; the page reads it off the `loft_host_print` hook.
-- **Interactivity:** `loft_start` rebuilds fresh state each call, so every sketch edit is just another
-  call — no re-instantiation.
-- **Base map:** a **Leaflet** map with OpenStreetMap raster tiles (vendored `vendor/leaflet/`, © OSM). The
-  road network is drawn from the local data as an always-on layer, so if tiles can't load — offline, throttled,
-  or blocked — the map falls back to that render and the route is never on a blank canvas.
-- **Fully offline:** a **service worker** (`sw.js`) caches the app shell + wasm + Leaflet; the test set is
-  cached in **IndexedDB** (keyed by a dataset version). A reload with the network **entirely off** still loads
-  and matches (base tiles are skipped, road network + route still draw) — verified by the gate.
-- **Data freshness:** when the dataset carries an Overpass snapshot (`osm3s.timestamp_osm_base`), the footer
-  shows "data as of …". Test fixtures have none; generated blocks will stamp it (PLAN-APP §11).
-
-## Build & run
+## Run
 
 ```sh
-node browser/build.mjs        # loft --html client/web_kernel.loft → browser/web_kernel.wasm
-node browser/serve.mjs        # static server (correct application/wasm MIME) on :8099
-# open http://127.0.0.1:8099/browser/
+node browser/bake_tiles.mjs     # browser/*.txt → browser/tiles/
+node browser/serve.mjs          # static server on :8099
+# open http://127.0.0.1:8099/browser/index.html
 ```
 
-`LOFT_BIN` overrides the loft binary (default: `loft` on PATH); `LOFT_ROOT` the loft source tree
-(default `../loft`, for the `default/` library needed by `--html`).
+## Test (headless)
 
-## Standalone (single self-contained file)
-
-```sh
-node browser/build-standalone.mjs   # → browser/standalone.html  (or: make standalone)
-# open browser/standalone.html directly — double-click / file://, no server
-```
-
-`standalone.html` inlines the wasm (base64) **and** one test set as `window.__STANDALONE`, so the whole
-app is one file that runs with **no server and no network** — index.html detects the inlined assets and
-skips the fetch/service-worker/IndexedDB paths. Same UI, same matcher; drop it on any static host or
-share the file. Rebuild it whenever the kernel or the test set changes.
-
-## Headless test
-
-`tools/browser_app_test.sh` builds the wasm, serves the page, drives headless Chromium over the
-DevTools protocol, and asserts the in-browser route is **byte-identical to the native reference** and
-that a synthetic click re-matches. Requires `chromium`, `node`, the loft toolchain. (Snap-confined
-Chromium cannot start inside a restrictive command sandbox.)
-
-The same kernel logic is also proven headless under `wasmtime` (`--native-wasm`) by
-`tools/app_headless_test.sh` (via `client/app_kernel.loft`, the file+args variant) in `make test-wasm`.
-
-`tools/standalone_app_test.sh` (`make test-standalone`) proves the single-file `standalone.html` runs
-over `file://` with the network emulated **fully off**, byte-identical to the native reference.
+`tools/map_render_gate.sh` runs the pure projection invariant (`map.test.mjs`, node) then a headless-Chromium
+gate: `cdp_verify_map.mjs` proves M0–M3b (projection, pan/zoom, terrain, buildings/streets/labels, lines,
+POIs) against `map-demo.html`, and — if `browser/tiles/` is baked — `cdp_verify_tiles.mjs` proves M4 (the
+whole-region tiled working set) against `index.html`. Requires `chromium` + `node`.
 
 ## Deploy (GitHub Pages)
 
-`.github/workflows/pages.yml` builds the single-file `standalone.html` and publishes it as the Pages site
-index (one self-contained file → no asset-path / MIME / CORS concerns; OSM tiles load at run time). It runs
-on push to `main`; the live URL appears in the workflow's `deploy` job.
-
-## What's next
-
-- **Track 1d done:** Leaflet base map ✓, GitHub Pages deploy ✓, data-freshness readout ✓.
-- **Working-set streaming** instead of one whole file — now unblocked by loft's `store_load`/`store_load_key`
-  (loft#522 landed); JS does the HTTP Range fetches and feeds loft the bytes (PLAN-APP Track 2).
-- **OSM tile policy:** the public `tile.openstreetmap.org` service is fine for a low-traffic demo but forbids
-  heavy use / app distribution — swap in own/provider tiles before real scale.
+The `pages` + `deploy` jobs in `.github/workflows/ci.yml` run `node browser/build-site.mjs` → `_site/`
+(node-only — no loft, no network) and publish on push to `main`.

@@ -95,6 +95,44 @@ pub fn place_rank(kind: text) -> integer {
   else { 0 }
 }
 
+// waterway / railway / barrier way → a compact Line kind (stroke style per kind). "" = not a line we draw.
+pub fn line_kind(waterway: text, railway: text, barrier: text) -> text {
+  if waterway == "river" { return "river"; }
+  if waterway == "stream" || waterway == "tidal_channel" { return "stream"; }
+  if waterway == "ditch" || waterway == "drain" { return "ditch"; }
+  if waterway == "canal" { return "canal"; }
+  if waterway != "" { return "stream"; }
+  if railway == "tram" { return "tram"; }
+  if railway == "rail" || railway == "light_rail" || railway == "subway" || railway == "narrow_gauge" { return "railway"; }
+  if railway != "" { return "railway"; }
+  if barrier == "hedge" { return "hedge"; }
+  if barrier == "wall" { return "wall"; }
+  if barrier == "fence" { return "fence"; }
+  ""
+}
+
+// A POI node's tags → a compact Poi kind (one glyph per kind). "" = not a POI we draw. First match wins.
+pub fn poi_kind(natural: text, amenity: text, tourism: text, man_made: text, historic: text, leisure: text, highway: text) -> text {
+  if natural == "tree" { return "tree"; }
+  if natural == "peak" { return "peak"; }
+  if natural == "spring" { return "spring"; }
+  if amenity == "bench" { return "bench"; }
+  if amenity == "drinking_water" { return "drinking_water"; }
+  if amenity == "picnic_table" { return "picnic"; }
+  if amenity == "shelter" { return "shelter"; }
+  if amenity == "fountain" { return "fountain"; }
+  if tourism == "viewpoint" { return "viewpoint"; }
+  if tourism == "camp_site" { return "camp"; }
+  if tourism == "picnic_site" { return "picnic"; }
+  if tourism == "information" { return "information"; }
+  if man_made == "tower" || man_made == "water_tower" { return "tower"; }
+  if historic == "ruins" { return "ruins"; }
+  if historic == "monument" || historic == "memorial" { return "monument"; }
+  if leisure == "playground" { return "playground"; }
+  if highway == "crossing" { return "crossing"; }
+  ""
+}
+
 // --- Douglas–Peucker line simplification (for street/line centerlines) -----------------------------
 // Squared perpendicular distance (m²) from P to segment A–B in planar metre coords.
 pub fn seg_dist2(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float {
