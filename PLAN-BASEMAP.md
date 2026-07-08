@@ -130,6 +130,16 @@ for a load-bearing claim (only where one exists). **S0 runs first and re-runs af
 - **S6. Working-set load.** Viewport bbox → `tkey` range → `store_load_keys` only those cells (loft#522).
   *Check:* features returned == a full-decode of the same bbox. *Probe:* log **bytes fetched ≪ whole store**
   (the countable working-set assertion), via `LOFT_LOADER_STATS`.
+  **✓ DONE (`client/basemap/load_working_set.loft`):** the load-bearing uncertainty is resolved —
+  `store_load_keys` **works on our full `PTile` schema** (`vector<struct>` entries; loft#522's relocation
+  handles it). Correctness holds at both store sizes: a 2-cell viewport partial-loads exactly the same
+  tiles/areas as a full-decode of that bbox. Bytes: a 2-cell viewport fetches 131 KB of a 300 KB store
+  (44%) but only 327 KB of a 1.6 MB store (20%) — the **fraction shrinks as the store grows**, the
+  working-set property. It is not a dramatic `≪` at test scale because (a) 64 KB page granularity and (b)
+  a cell's heap children (rings) are scattered across the arena, so gathering a cell touches several pages.
+  A store *layout* that clusters a cell's heap near its record would tighten the fetch — a loft store-engine
+  concern (loft#522 layout), not ours. At country scale (viewport = tiny fraction of a large store) the `≪`
+  is realized; the mechanism is proven.
 
 ## S5 in detail — the presentation store (design before code)
 
