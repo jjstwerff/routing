@@ -1,0 +1,35 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-MAP M3b — emit POINT-of-interest features (trees, benches, viewpoints, towers, crossings, …) for
+// the browser to draw as zoom-gated glyphs. Each node is classified (poi_kind). One line per POI:
+//   <kind>;<name>;<lat>,<lon>                     (name may be empty)
+//   loft --interpret --path <loft>/ --lib lib client/basemap/emit_pois.loft <pois.json> > browser/pois.txt
+
+#cwd
+
+use basemap::(poi_kind);
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+fn main() {
+  path = arguments()[0] ?? "";
+  if path == "" { println("usage: emit_pois <pois.json>"); return; }
+  root = json_parse(file(path).content());
+  elements = root.field("elements");
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "node" {
+      tags = el.field("tags");
+      kind = poi_kind(atag(tags, "natural"), atag(tags, "amenity"), atag(tags, "tourism"),
+                      atag(tags, "man_made"), atag(tags, "historic"), atag(tags, "leisure"), atag(tags, "highway"));
+      if kind != "" {
+        name = atag(tags, "name");
+        println("{kind};{name};{el.field(\"lat\").as_number():2.6},{el.field(\"lon\").as_number():2.6}");
+      }
+    }
+  }
+}

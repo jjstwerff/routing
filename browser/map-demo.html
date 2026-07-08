@@ -18,7 +18,7 @@
 <canvas id="map"></canvas>
 <div id="hud">M0…</div>
 <script type="module">
-import { RouteMap, parseAreas, parseBuildings, parseStreets, parsePlaces } from './map.mjs';
+import { RouteMap, parseAreas, parseBuildings, parseStreets, parsePlaces, parseLines, parsePois } from './map.mjs';
 
 // Known points around the Enschede region — the M0 render() plots them as dots.
 const CITIES = [
@@ -69,11 +69,13 @@ function terrainFrac() {
   return total ? colored / total : 0;
 }
 const grab = (f) => fetch(f).then((r) => (r.ok ? r.text() : '')).catch(() => '');
-Promise.all([grab('areas.txt'), grab('buildings.txt'), grab('places.txt'), grab('streets.txt')]).then(([a, b, p, s]) => {
+Promise.all(['areas.txt', 'buildings.txt', 'places.txt', 'streets.txt', 'lines.txt', 'pois.txt'].map(grab)).then(([a, b, p, s, l, po]) => {
   map.areas = parseAreas(a);
   map.buildings = parseBuildings(b);
   map.places = parsePlaces(p);
   map.streets = parseStreets(s);
+  map.lines = parseLines(l);
+  map.pois = parsePois(po);
   if (map.areas.length) {
     let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
     for (const ar of map.areas) for (const [la, lo] of ar.ring) { miLa = Math.min(miLa, la); maLa = Math.max(maLa, la); miLo = Math.min(miLo, lo); maLo = Math.max(maLo, lo); }
@@ -82,6 +84,7 @@ Promise.all([grab('areas.txt'), grab('buildings.txt'), grab('places.txt'), grab(
   map.render();
   window.__m2 = { areas: map.areas.length, frac: terrainFrac() };
   window.__m3 = { counts: { buildings: map.buildings.length, streets: map.streets.length, places: map.places.length }, stats: map._stats };
+  window.__m3b = { counts: { lines: map.lines.length, pois: map.pois.length }, stats: map._stats };
 });
 </script>
 </body>

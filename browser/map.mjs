@@ -124,6 +124,42 @@ export function parsePlaces(txt) {                  // `rank;name;lat,lon`
   }
   return out;
 }
+export function parseLines(txt) {                   // `kind;name;lat,lon;…`
+  const out = [];
+  for (const line of (txt || '').split('\n')) {
+    const parts = line.split(';'); if (parts.length < 3) continue;
+    const kind = parts[0], name = parts[1], geom = [];
+    for (let i = 2; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) geom.push([a, b]); }
+    if (geom.length >= 2) out.push({ kind, name, geom });
+  }
+  return out;
+}
+export function parsePois(txt) {                    // `kind;name;lat,lon`
+  const out = [];
+  for (const line of (txt || '').split('\n')) {
+    const parts = line.split(';'); if (parts.length < 3) continue;
+    const kind = parts[0], name = parts[1], c = parts[2].split(','); const a = +c[0], b = +c[1];
+    if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) out.push({ kind, name, at: [a, b] });
+  }
+  return out;
+}
+
+// --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
+const LINE_STYLES = {                               // waterway = blue; railway = grey dashes; barriers muted
+  river: { color: '#a5c8e8', width: 3, minZoom: 11 }, stream: { color: '#a5c8e8', width: 1.5, minZoom: 13 },
+  ditch: { color: '#b6d0e6', width: 1, minZoom: 14 }, canal: { color: '#a5c8e8', width: 2.5, minZoom: 12 },
+  railway: { color: '#8a8a8a', width: 1.6, dash: [6, 4], minZoom: 12 }, tram: { color: '#9a9a9a', width: 1.2, dash: [4, 4], minZoom: 13 },
+  hedge: { color: '#8fb37a', width: 1.4, minZoom: 15 }, wall: { color: '#b0a89a', width: 1, minZoom: 15 }, fence: { color: '#c2bbaa', width: 0.8, minZoom: 16 },
+};
+const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
+  tree: { color: '#6b9b37', z: 15, shape: 'circle', r: 2.5 }, bench: { color: '#8a6d3b', z: 16, shape: 'square', r: 2 },
+  picnic: { color: '#8a6d3b', z: 15, shape: 'square', r: 2.5 }, shelter: { color: '#8a6d3b', z: 15, shape: 'square', r: 2.5 },
+  drinking_water: { color: '#4a90d9', z: 16, shape: 'circle', r: 2 }, fountain: { color: '#4a90d9', z: 15, shape: 'circle', r: 2.5 }, spring: { color: '#4a90d9', z: 14, shape: 'circle', r: 2.5 },
+  viewpoint: { color: '#b5651d', z: 13, shape: 'triangle', r: 4 }, tower: { color: '#7a5230', z: 12, shape: 'triangle', r: 4 }, peak: { color: '#7a5230', z: 12, shape: 'triangle', r: 4.5 }, camp: { color: '#2e7d32', z: 12, shape: 'triangle', r: 4.5 },
+  crossing: { color: '#555555', z: 16, shape: 'square', r: 2 }, playground: { color: '#e08a2b', z: 14, shape: 'circle', r: 3 },
+  ruins: { color: '#7a5230', z: 13, shape: 'square', r: 3 }, monument: { color: '#7a5230', z: 13, shape: 'triangle', r: 3.5 }, information: { color: '#4a90d9', z: 15, shape: 'square', r: 2.5 },
+};
+const POI_FALLBACK = { color: '#777777', z: 15, shape: 'circle', r: 2.5 };
 
 // The camera centre that puts geographic `latlon` under screen point `mouse` (CSS px) at `zoom`.
 // Pan is "hold the grabbed lat/lon under the cursor"; zoom-about-a-point is "hold the cursor's
@@ -145,6 +181,8 @@ export class RouteMap {
     this.buildings = opts.buildings || [];    // [{ring}]                  — M3 footprints
     this.streets = opts.streets || [];        // [{name, line}]            — M3 roads + labels
     this.places = opts.places || [];          // [{rank, name, at}]        — M3 place labels
+    this.lines = opts.lines || [];            // [{kind, name, geom}]      — M3b streams/rails/barriers
+    this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
     this._stats = {};                         // per-render draw counts (gate hook)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
@@ -226,11 +264,13 @@ export class RouteMap {
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     let areasN = 0;
     for (const a of this.areas) if (z >= a.minZoom) { this.drawArea(a); areasN++; }
+    const lnN = this.drawLines();              // streams / rails / barriers, above terrain
     let bN = 0;
     if (z >= BUILDINGS_MINZOOM) for (const b of this.buildings) { const px = this._projLine(b.ring); if (px.length >= 3 && this._inView(px, 20)) { this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); bN++; } }
     const sN = this.drawStreets();
+    const poiN = this.drawPois();              // point glyphs, above roads
     const lab = this.layoutLabels();
-    this._stats = { areas: areasN, buildings: bN, streets: sN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels };
+    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels };
     // M0 probe: optional test dots (empty once real layers are loaded).
     for (const p of this.points) {
       const s = this.project(p.lat, p.lon);
@@ -278,6 +318,38 @@ export class RouteMap {
     this._visStreets = vis;                                                                             // reused by labels
     return vis.length;
   }
+
+  // M3b: stroked lines (streams/rails/barriers), per-kind Carto style, zoom-gated + culled.
+  drawLines() {
+    if (!this.lines.length) return 0;
+    const z = this.camera.zoom, ctx = this.ctx; let n = 0;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (const ln of this.lines) {
+      const st = LINE_STYLES[ln.kind]; if (!st || z < st.minZoom) continue;
+      const px = this._projLine(ln.geom); if (px.length < 2 || !this._inView(px)) continue;
+      ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
+      this._strokePx(px); n++;
+    }
+    ctx.setLineDash([]);
+    return n;
+  }
+
+  // M3b: one POI glyph (circle/square/triangle), zoom-gated, with a white halo. Returns true if drawn.
+  drawPoi(p) {
+    const st = POI_STYLES[p.kind] || POI_FALLBACK;
+    if (this.camera.zoom < st.z) return false;
+    const s = this.project(p.at[0], p.at[1]);
+    if (s.x < 0 || s.x > this.width || s.y < 0 || s.y > this.height) return false;
+    const ctx = this.ctx, r = st.r || 2.5;
+    ctx.beginPath();
+    if (st.shape === 'square') ctx.rect(s.x - r, s.y - r, 2 * r, 2 * r);
+    else if (st.shape === 'triangle') { ctx.moveTo(s.x, s.y - r); ctx.lineTo(s.x + r, s.y + r); ctx.lineTo(s.x - r, s.y + r); ctx.closePath(); }
+    else ctx.arc(s.x, s.y, r, 0, 2 * Math.PI);
+    ctx.setLineDash([]); ctx.fillStyle = st.color; ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1;
+    ctx.fill(); ctx.stroke();
+    return true;
+  }
+  drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
 
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
   // labels along the centreline, repeated, skipping any candidate overlapping an already-placed label.

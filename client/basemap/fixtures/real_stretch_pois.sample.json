@@ -1,0 +1,2462 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "osm3s": {
+    "timestamp_osm_base": "2026-07-08T19:44:02Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "node",
+  "id": 45847550,
+  "lat": 52.2407133,
+  "lon": 6.8917012,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "kerb": "lowered",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 45849781,
+  "lat": 52.2413435,
+  "lon": 6.8904251,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 331548166,
+  "lat": 52.2403839,
+  "lon": 6.8916353,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 331548181,
+  "lat": 52.2403794,
+  "lon": 6.8917265,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 331548209,
+  "lat": 52.2404384,
+  "lon": 6.8932284,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 331548275,
+  "lat": 52.2414167,
+  "lon": 6.8909001,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 331548284,
+  "lat": 52.2411028,
+  "lon": 6.8916440,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 335558497,
+  "lat": 52.2400624,
+  "lon": 6.9067748,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 335558708,
+  "lat": 52.2415604,
+  "lon": 6.9101365,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 767057472,
+  "lat": 52.2712734,
+  "lon": 6.9109251,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "colour": "brown",
+    "material": "wood",
+    "seats": "3"
+  }
+},
+{
+  "type": "node",
+  "id": 767057477,
+  "lat": 52.2667746,
+  "lon": 6.9153776,
+  "tags": {
+    "description": "Infopaneel voor het wandel- en MTB-netwerk Twente",
+    "hiking": "yes",
+    "information": "map",
+    "map_size": "region",
+    "mtb": "yes",
+    "name": "Startpunt Lonnekerberg",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 1250597712,
+  "lat": 52.2835022,
+  "lon": 6.8796246,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 2012905413,
+  "lat": 52.2807312,
+  "lon": 6.9297944,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 2217043474,
+  "lat": 52.2416937,
+  "lon": 6.8878268,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 2217043477,
+  "lat": 52.2417423,
+  "lon": 6.8891219,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 2217043486,
+  "lat": 52.2418840,
+  "lon": 6.8903582,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 2217387795,
+  "lat": 52.2479597,
+  "lon": 6.9013886,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "check_date": "2023-03-18",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 2303141897,
+  "lat": 52.2411912,
+  "lon": 6.9114480,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 2324746400,
+  "lat": 52.2839800,
+  "lon": 6.8976113,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 2324746402,
+  "lat": 52.2840334,
+  "lon": 6.8911864,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 2544284366,
+  "lat": 52.2554709,
+  "lon": 6.8895019,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "colour": "brown",
+    "material": "wood",
+    "seats": "5"
+  }
+},
+{
+  "type": "node",
+  "id": 2557858622,
+  "lat": 52.2836977,
+  "lon": 6.9273761,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 2884621788,
+  "lat": 52.2498875,
+  "lon": 6.9296353,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "material": "metal"
+  }
+},
+{
+  "type": "node",
+  "id": 3456580777,
+  "lat": 52.2404204,
+  "lon": 6.9082174,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4127908795,
+  "lat": 52.2701327,
+  "lon": 6.8934909,
+  "tags": {
+    "name": "Air Fuel Station Zuid",
+    "source": "survey",
+    "tourism": "viewpoint"
+  }
+},
+{
+  "type": "node",
+  "id": 4147480360,
+  "lat": 52.2763319,
+  "lon": 6.9052428,
+  "tags": {
+    "board_type": "history",
+    "information": "board",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 4340338714,
+  "lat": 52.2631838,
+  "lon": 6.9070439,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 4340338715,
+  "lat": 52.2640436,
+  "lon": 6.9140226,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 4340338716,
+  "lat": 52.2745459,
+  "lon": 6.9159139,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468196,
+  "lat": 52.2400357,
+  "lon": 6.8951662,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468198,
+  "lat": 52.2400141,
+  "lon": 6.8932596,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468199,
+  "lat": 52.2400849,
+  "lon": 6.8931772,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468200,
+  "lat": 52.2401570,
+  "lon": 6.8930772,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468201,
+  "lat": 52.2401642,
+  "lon": 6.8929007,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468202,
+  "lat": 52.2402543,
+  "lon": 6.8927869,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468203,
+  "lat": 52.2402327,
+  "lon": 6.8929477,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468204,
+  "lat": 52.2402543,
+  "lon": 6.8925260,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468205,
+  "lat": 52.2402711,
+  "lon": 6.8924378,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4619468211,
+  "lat": 52.2401690,
+  "lon": 6.8952054,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 4910201863,
+  "lat": 52.2464863,
+  "lon": 6.8939163,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "kerb": "flush",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 4952325577,
+  "lat": 52.2520861,
+  "lon": 6.9101227,
+  "tags": {
+    "leisure": "playground"
+  }
+},
+{
+  "type": "node",
+  "id": 5141105508,
+  "lat": 52.2473549,
+  "lon": 6.8915473,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "kerb": "flush",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 5376486792,
+  "lat": 52.2408043,
+  "lon": 6.9145026,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 5610098343,
+  "lat": 52.2472817,
+  "lon": 6.8903301,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "kerb": "flush",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 5634700681,
+  "lat": 52.2593419,
+  "lon": 6.9065300,
+  "tags": {
+    "tourism": "picnic_site"
+  }
+},
+{
+  "type": "node",
+  "id": 5665849220,
+  "lat": 52.2719499,
+  "lon": 6.9162804,
+  "tags": {
+    "ele": "56",
+    "name": "Lonnekerberg",
+    "natural": "peak"
+  }
+},
+{
+  "type": "node",
+  "id": 5669856209,
+  "lat": 52.2467950,
+  "lon": 6.8904337,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "kerb": "flush",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 5782713371,
+  "lat": 52.2774414,
+  "lon": 6.8988956,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "inscription": "Pauze"
+  }
+},
+{
+  "type": "node",
+  "id": 5782723696,
+  "lat": 52.2731862,
+  "lon": 6.9086493,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 5782727509,
+  "lat": 52.2571231,
+  "lon": 6.8784738,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 5782727512,
+  "lat": 52.2670118,
+  "lon": 6.8901933,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "inscription": "Pauze"
+  }
+},
+{
+  "type": "node",
+  "id": 6276755259,
+  "lat": 52.2517416,
+  "lon": 6.9142737,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6276755260,
+  "lat": 52.2517774,
+  "lon": 6.9140996,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6276755261,
+  "lat": 52.2518057,
+  "lon": 6.9141674,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6276755262,
+  "lat": 52.2518519,
+  "lon": 6.9141797,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6276755263,
+  "lat": 52.2517199,
+  "lon": 6.9143199,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033938,
+  "lat": 52.2500062,
+  "lon": 6.9115320,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033939,
+  "lat": 52.2499955,
+  "lon": 6.9115845,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033940,
+  "lat": 52.2499619,
+  "lon": 6.9118157,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033941,
+  "lat": 52.2499519,
+  "lon": 6.9118822,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033942,
+  "lat": 52.2499397,
+  "lon": 6.9119500,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033949,
+  "lat": 52.2497573,
+  "lon": 6.9116404,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033950,
+  "lat": 52.2497533,
+  "lon": 6.9117659,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6316033951,
+  "lat": 52.2497116,
+  "lon": 6.9118721,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 6638398637,
+  "lat": 52.2817283,
+  "lon": 6.8960084,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6638398638,
+  "lat": 52.2819604,
+  "lon": 6.8957990,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6638398639,
+  "lat": 52.2818750,
+  "lon": 6.8959265,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6638434882,
+  "lat": 52.2817952,
+  "lon": 6.8958073,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6638434883,
+  "lat": 52.2816642,
+  "lon": 6.8959617,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6638434884,
+  "lat": 52.2817019,
+  "lon": 6.8956931,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6639739480,
+  "lat": 52.2817905,
+  "lon": 6.8956957,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 6649578085,
+  "lat": 52.2524076,
+  "lon": 6.8886001,
+  "tags": {
+    "highway": "crossing"
+  }
+},
+{
+  "type": "node",
+  "id": 6857221823,
+  "lat": 52.2492926,
+  "lon": 6.9224172,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 7435718176,
+  "lat": 52.2764421,
+  "lon": 6.9060630,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "board_type": "history",
+    "information": "board",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 7435718177,
+  "lat": 52.2765529,
+  "lon": 6.9068901,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "board_type": "history",
+    "information": "board",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 7435718178,
+  "lat": 52.2766794,
+  "lon": 6.9078328,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "board_type": "history",
+    "information": "board",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 7435718180,
+  "lat": 52.2777644,
+  "lon": 6.9098015,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "information": "board",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 7488948670,
+  "lat": 52.2456946,
+  "lon": 6.9240439,
+  "tags": {
+    "direction": "135",
+    "tourism": "viewpoint"
+  }
+},
+{
+  "type": "node",
+  "id": 7733609604,
+  "lat": 52.2416394,
+  "lon": 6.8957673,
+  "tags": {
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "crossing:signals": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 7815347844,
+  "lat": 52.2434646,
+  "lon": 6.9183757,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7815347845,
+  "lat": 52.2418758,
+  "lon": 6.9172874,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7817295810,
+  "lat": 52.2433924,
+  "lon": 6.9165280,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7817295811,
+  "lat": 52.2435311,
+  "lon": 6.9166004,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7817295820,
+  "lat": 52.2431661,
+  "lon": 6.9166467,
+  "tags": {
+    "amenity": "shelter",
+    "shelter_type": "weather_shelter"
+  }
+},
+{
+  "type": "node",
+  "id": 7818340809,
+  "lat": 52.2432414,
+  "lon": 6.9166405,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7818340810,
+  "lat": 52.2431535,
+  "lon": 6.9166566,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833608907,
+  "lat": 52.2488369,
+  "lon": 6.9144009,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833608908,
+  "lat": 52.2488213,
+  "lon": 6.9140938,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833608909,
+  "lat": 52.2487269,
+  "lon": 6.9135775,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833608910,
+  "lat": 52.2488394,
+  "lon": 6.9135506,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833608911,
+  "lat": 52.2489510,
+  "lon": 6.9135144,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611034,
+  "lat": 52.2490894,
+  "lon": 6.9105506,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611046,
+  "lat": 52.2490510,
+  "lon": 6.9105788,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611047,
+  "lat": 52.2490426,
+  "lon": 6.9105244,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611048,
+  "lat": 52.2490699,
+  "lon": 6.9105033,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611052,
+  "lat": 52.2496415,
+  "lon": 6.9102824,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611053,
+  "lat": 52.2496867,
+  "lon": 6.9103099,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611054,
+  "lat": 52.2497438,
+  "lon": 6.9103622,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611055,
+  "lat": 52.2497967,
+  "lon": 6.9104138,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611056,
+  "lat": 52.2498624,
+  "lon": 6.9105218,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611057,
+  "lat": 52.2498591,
+  "lon": 6.9104279,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611058,
+  "lat": 52.2496067,
+  "lon": 6.9102696,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611059,
+  "lat": 52.2495471,
+  "lon": 6.9102468,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611060,
+  "lat": 52.2494761,
+  "lon": 6.9102126,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611061,
+  "lat": 52.2494289,
+  "lon": 6.9102046,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611062,
+  "lat": 52.2493772,
+  "lon": 6.9101845,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611063,
+  "lat": 52.2493172,
+  "lon": 6.9102502,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611064,
+  "lat": 52.2492491,
+  "lon": 6.9102837,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611065,
+  "lat": 52.2493353,
+  "lon": 6.9101469,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611066,
+  "lat": 52.2493016,
+  "lon": 6.9101670,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611067,
+  "lat": 52.2493098,
+  "lon": 6.9101308,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611068,
+  "lat": 52.2492827,
+  "lon": 6.9101416,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611069,
+  "lat": 52.2492220,
+  "lon": 6.9101778,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611070,
+  "lat": 52.2491670,
+  "lon": 6.9102247,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611071,
+  "lat": 52.2491415,
+  "lon": 6.9102462,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833611072,
+  "lat": 52.2491161,
+  "lon": 6.9102918,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621915,
+  "lat": 52.2499786,
+  "lon": 6.9121351,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621922,
+  "lat": 52.2499121,
+  "lon": 6.9120681,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621923,
+  "lat": 52.2499051,
+  "lon": 6.9120231,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621924,
+  "lat": 52.2500127,
+  "lon": 6.9120037,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621925,
+  "lat": 52.2500985,
+  "lon": 6.9120151,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621926,
+  "lat": 52.2501370,
+  "lon": 6.9119795,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621927,
+  "lat": 52.2501173,
+  "lon": 6.9119038,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621928,
+  "lat": 52.2500861,
+  "lon": 6.9118642,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621929,
+  "lat": 52.2500529,
+  "lon": 6.9118253,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621930,
+  "lat": 52.2500110,
+  "lon": 6.9118025,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621931,
+  "lat": 52.2499954,
+  "lon": 6.9119306,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621932,
+  "lat": 52.2499819,
+  "lon": 6.9119916,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621933,
+  "lat": 52.2501317,
+  "lon": 6.9116845,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621934,
+  "lat": 52.2500907,
+  "lon": 6.9116604,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621935,
+  "lat": 52.2500590,
+  "lon": 6.9116510,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621936,
+  "lat": 52.2500266,
+  "lon": 6.9116174,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621937,
+  "lat": 52.2500262,
+  "lon": 6.9115792,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621938,
+  "lat": 52.2500455,
+  "lon": 6.9115383,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621939,
+  "lat": 52.2500570,
+  "lon": 6.9115236,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621940,
+  "lat": 52.2496005,
+  "lon": 6.9121110,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621941,
+  "lat": 52.2495504,
+  "lon": 6.9121110,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621942,
+  "lat": 52.2496395,
+  "lon": 6.9119930,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621943,
+  "lat": 52.2496855,
+  "lon": 6.9118662,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621944,
+  "lat": 52.2496600,
+  "lon": 6.9118944,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621945,
+  "lat": 52.2495722,
+  "lon": 6.9117710,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621946,
+  "lat": 52.2496415,
+  "lon": 6.9117583,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621947,
+  "lat": 52.2496949,
+  "lon": 6.9117710,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621948,
+  "lat": 52.2497122,
+  "lon": 6.9116208,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621949,
+  "lat": 52.2497126,
+  "lon": 6.9117509,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621950,
+  "lat": 52.2497397,
+  "lon": 6.9115028,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621951,
+  "lat": 52.2496641,
+  "lon": 6.9113338,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621952,
+  "lat": 52.2496777,
+  "lon": 6.9114002,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621953,
+  "lat": 52.2499336,
+  "lon": 6.9112044,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7833621954,
+  "lat": 52.2499065,
+  "lon": 6.9111682,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 7952204970,
+  "lat": 52.2497419,
+  "lon": 6.9152489,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 7952204971,
+  "lat": 52.2499759,
+  "lon": 6.9298301,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 8225265814,
+  "lat": 52.2462206,
+  "lon": 6.8978142,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fiets-, wandel- en MTB-netwerk Twente",
+    "hiking": "yes",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "mtb": "yes",
+    "name": "TIP Zuidkamp",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 8225286831,
+  "lat": 52.2497439,
+  "lon": 6.9116884,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fiets-, wandel- en MTB-netwerk Twente",
+    "hiking": "yes",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "mtb": "yes",
+    "name": "TIP Lonneker",
+    "note": "Twents verhaal: Bakker wet van anpakken",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 8513058186,
+  "lat": 52.2441905,
+  "lon": 6.9064789,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 8557285794,
+  "lat": 52.2563037,
+  "lon": 6.9236835,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8557285795,
+  "lat": 52.2564644,
+  "lon": 6.9204988,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8812733134,
+  "lat": 52.2540402,
+  "lon": 6.9279090,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 8812738605,
+  "lat": 52.2484528,
+  "lon": 6.9230180,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 8812738606,
+  "lat": 52.2573512,
+  "lon": 6.9243799,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 8812738607,
+  "lat": 52.2564559,
+  "lon": 6.9204686,
+  "tags": {
+    "amenity": "bench"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097630,
+  "lat": 52.2847333,
+  "lon": 6.9245251,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097631,
+  "lat": 52.2847483,
+  "lon": 6.9244497,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097661,
+  "lat": 52.2845521,
+  "lon": 6.9233291,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097662,
+  "lat": 52.2845509,
+  "lon": 6.9235045,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097663,
+  "lat": 52.2845533,
+  "lon": 6.9236687,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097664,
+  "lat": 52.2845475,
+  "lon": 6.9238139,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097665,
+  "lat": 52.2845602,
+  "lon": 6.9239931,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097666,
+  "lat": 52.2845359,
+  "lon": 6.9240950,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097667,
+  "lat": 52.2845463,
+  "lon": 6.9241742,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097668,
+  "lat": 52.2845509,
+  "lon": 6.9243440,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097669,
+  "lat": 52.2845452,
+  "lon": 6.9246949,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097670,
+  "lat": 52.2845348,
+  "lon": 6.9247666,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097671,
+  "lat": 52.2845659,
+  "lon": 6.9248817,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097672,
+  "lat": 52.2845567,
+  "lon": 6.9249722,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097673,
+  "lat": 52.2845636,
+  "lon": 6.9252514,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097674,
+  "lat": 52.2845659,
+  "lon": 6.9255929,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097675,
+  "lat": 52.2845648,
+  "lon": 6.9257626,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097676,
+  "lat": 52.2845556,
+  "lon": 6.9261041,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097677,
+  "lat": 52.2845567,
+  "lon": 6.9261852,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097678,
+  "lat": 52.2847356,
+  "lon": 6.9270190,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097679,
+  "lat": 52.2847564,
+  "lon": 6.9288678,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097680,
+  "lat": 52.2845567,
+  "lon": 6.9281830,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097681,
+  "lat": 52.2845671,
+  "lon": 6.9279396,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 8952097682,
+  "lat": 52.2845729,
+  "lon": 6.9277302,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 9419376220,
+  "lat": 52.2454890,
+  "lon": 6.8978995,
+  "tags": {
+    "amenity": "bench",
+    "material": "wood"
+  }
+},
+{
+  "type": "node",
+  "id": 9529244034,
+  "lat": 52.2415374,
+  "lon": 6.8787214,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 9529244035,
+  "lat": 52.2415160,
+  "lon": 6.8797151,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 9529244036,
+  "lat": 52.2414951,
+  "lon": 6.8806894,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 9529244037,
+  "lat": 52.2414738,
+  "lon": 6.8816800,
+  "tags": {
+    "crossing": "unmarked",
+    "crossing:island": "no",
+    "crossing:markings": "no",
+    "highway": "crossing",
+    "tactile_paving": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 9709995283,
+  "lat": 52.2774326,
+  "lon": 6.8988319,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "inscription": "Pauze"
+  }
+},
+{
+  "type": "node",
+  "id": 10117839779,
+  "lat": 52.2425122,
+  "lon": 6.9048229,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fietsnetwerk Twente",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "name": "KNP28 Lonneker Spoorlijn",
+    "note": "Twents verhaal: De eerste voetbalwedstried",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 10550086349,
+  "lat": 52.2406969,
+  "lon": 6.8926904,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 10552753808,
+  "lat": 52.2417873,
+  "lon": 6.8926826,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 10553241425,
+  "lat": 52.2422023,
+  "lon": 6.8983606,
+  "tags": {
+    "highway": "crossing"
+  }
+},
+{
+  "type": "node",
+  "id": 10698807801,
+  "lat": 52.2495786,
+  "lon": 6.9260547,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fietsnetwerk Twente",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "name": "KNP1 Lonnekermolen",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 10701233056,
+  "lat": 52.2822204,
+  "lon": 6.9137425,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fietsnetwerk Twente",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "name": "KNP80 Technology Base Twente",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 10701244321,
+  "lat": 52.2654862,
+  "lon": 6.8970140,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fiets-, wandel- en MTB-netwerk Twente",
+    "hiking": "yes",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "mtb": "yes",
+    "name": "Startpunt TIP Vliegbasis Twenthe",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 10701247281,
+  "lat": 52.2672025,
+  "lon": 6.8908553,
+  "tags": {
+    "bicycle": "yes",
+    "description": "Infopaneel voor het fietsnetwerk Twente",
+    "information": "map",
+    "map_size": "region",
+    "map_type": "topo",
+    "name": "KNP21 Duitse Rolbaan",
+    "operator": "Routenetwerken Twente",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 10745108804,
+  "lat": 52.2496253,
+  "lon": 6.9115147,
+  "tags": {
+    "leaf_type": "broadleaved",
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10810757263,
+  "lat": 52.2401565,
+  "lon": 6.8806051,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "metal"
+  }
+},
+{
+  "type": "node",
+  "id": 10810757264,
+  "lat": 52.2403395,
+  "lon": 6.8808711,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "yes",
+    "material": "metal"
+  }
+},
+{
+  "type": "node",
+  "id": 10822798233,
+  "lat": 52.2431691,
+  "lon": 6.8783445,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10832927914,
+  "lat": 52.2498035,
+  "lon": 6.9123270,
+  "tags": {
+    "amenity": "clock",
+    "date": "no",
+    "display": "analog",
+    "faces": "4",
+    "man_made": "tower",
+    "tower:type": "bell_tower",
+    "visibility": "area"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931140,
+  "lat": 52.2845530,
+  "lon": 6.9293729,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931159,
+  "lat": 52.2834607,
+  "lon": 6.9294129,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931160,
+  "lat": 52.2836364,
+  "lon": 6.9294261,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931161,
+  "lat": 52.2837192,
+  "lon": 6.9293856,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931162,
+  "lat": 52.2838124,
+  "lon": 6.9293955,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931163,
+  "lat": 52.2839330,
+  "lon": 6.9294026,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931164,
+  "lat": 52.2840148,
+  "lon": 6.9294092,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931165,
+  "lat": 52.2840864,
+  "lon": 6.9294111,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931166,
+  "lat": 52.2841828,
+  "lon": 6.9293479,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931167,
+  "lat": 52.2841742,
+  "lon": 6.9294177,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931168,
+  "lat": 52.2842653,
+  "lon": 6.9294214,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931169,
+  "lat": 52.2842942,
+  "lon": 6.9293677,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931170,
+  "lat": 52.2843259,
+  "lon": 6.9293252,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931171,
+  "lat": 52.2843594,
+  "lon": 6.9294299,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931172,
+  "lat": 52.2843963,
+  "lon": 6.9293356,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931173,
+  "lat": 52.2844436,
+  "lon": 6.9294346,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860931174,
+  "lat": 52.2844448,
+  "lon": 6.9293139,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957826,
+  "lat": 52.2854222,
+  "lon": 6.9299869,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957827,
+  "lat": 52.2855056,
+  "lon": 6.9299949,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957828,
+  "lat": 52.2853236,
+  "lon": 6.9299841,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957836,
+  "lat": 52.2847878,
+  "lon": 6.9299416,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957837,
+  "lat": 52.2848152,
+  "lon": 6.9300029,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957838,
+  "lat": 52.2848700,
+  "lon": 6.9299496,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957839,
+  "lat": 52.2849465,
+  "lon": 6.9299553,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957840,
+  "lat": 52.2850512,
+  "lon": 6.9299619,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957841,
+  "lat": 52.2851366,
+  "lon": 6.9299713,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957842,
+  "lat": 52.2852197,
+  "lon": 6.9299756,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957872,
+  "lat": 52.2844485,
+  "lon": 6.9299176,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 10860957873,
+  "lat": 52.2845551,
+  "lon": 6.9299263,
+  "tags": {
+    "natural": "tree"
+  }
+},
+{
+  "type": "node",
+  "id": 12077949418,
+  "lat": 52.2733883,
+  "lon": 6.9086843,
+  "tags": {
+    "amenity": "bench",
+    "colour": "brown",
+    "material": "wood",
+    "seats": "4"
+  }
+},
+{
+  "type": "node",
+  "id": 12078049300,
+  "lat": 52.2767663,
+  "lon": 6.9138502,
+  "tags": {
+    "amenity": "bench",
+    "material": "wood",
+    "seats": "4"
+  }
+},
+{
+  "type": "node",
+  "id": 12078058597,
+  "lat": 52.2766941,
+  "lon": 6.9104100,
+  "tags": {
+    "information": "board",
+    "operator": "Landschap Overijssel",
+    "tourism": "information"
+  }
+},
+{
+  "type": "node",
+  "id": 13462833212,
+  "lat": 52.2592810,
+  "lon": 6.9064975,
+  "tags": {
+    "tourism": "picnic_site"
+  }
+},
+{
+  "type": "node",
+  "id": 13832148899,
+  "lat": 52.2400797,
+  "lon": 6.8957435,
+  "tags": {
+    "amenity": "bench",
+    "armrest": "no",
+    "backrest": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13894128513,
+  "lat": 52.2412398,
+  "lon": 6.8907911,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 13894128514,
+  "lat": 52.2412275,
+  "lon": 6.8907757,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 13894128515,
+  "lat": 52.2411567,
+  "lon": 6.8907459,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 13894128516,
+  "lat": 52.2411473,
+  "lon": 6.8907664,
+  "tags": {
+    "amenity": "bench",
+    "backrest": "no"
+  }
+}
+
+  ]
+}

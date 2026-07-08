@@ -15,6 +15,8 @@ ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id &
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
 const ev = async (expr) => (await call('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true })).result?.result?.value;
+// Centre the map on ll=[lat,lon] at zoom z, render, and read back a small JSON selector of _stats.
+const at = async (ll, z, sel) => JSON.parse(await ev(`(()=>{const m=window.__map;m.camera.lat=${ll[0]};m.camera.lon=${ll[1]};m.camera.zoom=${z};m.render();return JSON.stringify(${sel});})()`) || '{}');
 
 await call('Page.navigate', { url: app });
 
@@ -57,7 +59,6 @@ else {
     const st=m.streets[0], sp=st.line[Math.floor(st.line.length/2)];
     const b=m.buildings[0], bp=b.ring[0]; const p=m.places[0];
     return JSON.stringify({sp,bp,pp:p.at});})()`));
-  const at = async (ll, z, sel) => JSON.parse(await ev(`(()=>{const m=window.__map;m.camera.lat=${ll[0]};m.camera.lon=${ll[1]};m.camera.zoom=${z};m.render();return JSON.stringify(${sel});})()`) || '{}');
   // S13: centre on a building — hidden below z14, shown at/above.
   const blo = await at(anchors.bp, 12, '{b:m._stats.buildings}'), bhi = await at(anchors.bp, 16, '{b:m._stats.buildings}');
   if (!(blo.b === 0 && bhi.b > 0)) { console.log(`FAIL: S13 building zoom-gate wrong (z12 ${blo.b}, z16 ${bhi.b})`); ok = false; } else console.log(`  ✓ S13 buildings gated by zoom (z12 hidden → z16 ${bhi.b} in view)`);
@@ -68,6 +69,22 @@ else {
   // place labels: centre on a place at z13.
   const pT = await at(anchors.pp, 13, '{pl:m._stats.placeLabels}');
   if (!(pT.pl > 0)) { console.log('FAIL: no place labels'); ok = false; } else console.log(`  ✓ ${pT.pl} place labels (rank-gated)`);
+}
+
+// M3b · lines + POIs: counts == emitted; streams stroke; POI glyphs draw (zoom-gated).
+const srcL = cnt('./lines.txt', 3), srcPo = cnt('./pois.txt', 3);
+let m3b = null;
+for (let i = 0; i < 40; i++) { const s = await ev('window.__m3b?JSON.stringify(window.__m3b):""'); if (s) { m3b = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 250)); }
+if (srcL === null) console.log('  ~ M3b skipped: no browser/{lines,pois}.txt (run the emitters)');
+else if (!m3b) { console.log('FAIL: layers present but window.__m3b never set'); ok = false; }
+else {
+  console.log(`  layers: lines ${m3b.counts.lines}/${srcL} · pois ${m3b.counts.pois}/${srcPo}`);
+  if (m3b.counts.lines !== srcL || m3b.counts.pois !== srcPo) { console.log('FAIL: parsed line/poi counts != emitted'); ok = false; } else console.log('  ✓ lines/pois all parsed');
+  const anc = JSON.parse(await ev(`(()=>{const m=window.__map;const l=m.lines[0],lp=l.geom[Math.floor(l.geom.length/2)];return JSON.stringify({lp,pp:m.pois[0].at});})()`));
+  const lT = await at(anc.lp, 14, '{lines:m._stats.lines}');
+  if (!(lT.lines > 0)) { console.log('FAIL: no lines stroked'); ok = false; } else console.log(`  ✓ ${lT.lines} lines stroked (streams/rails/barriers)`);
+  const poT = await at(anc.pp, 17, '{pois:m._stats.pois}');
+  if (!(poT.pois > 0)) { console.log('FAIL: no POI glyphs drawn'); ok = false; } else console.log(`  ✓ ${poT.pois} POI glyphs (zoom-gated, catalog rows)`);
 }
 
 // M1 · pan: dispatch a real left-drag; the lat/lon grabbed at mousedown must sit under the cursor at
@@ -99,5 +116,5 @@ const j = JSON.parse(r2 || '{}');
 const rOK = Math.abs(j.x - j.W / 2) < 1e-6 && Math.abs(j.y - j.H / 2) < 1e-6;
 if (!rOK) { console.log('FAIL: resize did not keep the centre centred — ' + r2); ok = false; } else console.log(`  ✓ resize keeps the centre centred (${j.W}×${j.H})`);
 
-console.log(ok ? 'PASS — M0+M1+M2+M3: projection + pan/zoom + terrain + buildings/streets/labels verified headless.' : 'FAILURES');
+console.log(ok ? 'PASS — M0..M3b: projection + pan/zoom + terrain + buildings/streets/labels + lines/POIs verified headless.' : 'FAILURES');
 process.exit(ok ? 0 : 1);
