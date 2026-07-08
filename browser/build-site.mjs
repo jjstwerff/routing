@@ -29,4 +29,7 @@ if (existsSync(site)) rmSync(site, { recursive: true });
 mkdirSync(site);
 writeFileSync(join(site, 'index.html'), html);
 cpSync(join(here, 'tiles'), join(site, 'tiles'), { recursive: true });
-console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/tiles/`);
+// The binary loft stores (layout + roads) — served static so the browser (loft-wasm, PLAN-BUILD) can fetch
+// and read them. Regenerable via build_store.loft / gen-tiles.loft; committed under browser/stores/.
+if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 'stores'), { recursive: true });
+console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/tiles/ + _site/stores/`);
