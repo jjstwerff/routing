@@ -1,0 +1,115 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S3 — street-name centerlines, option B (the presentation layer, SEPARATE from routing).
+// Each named `highway` way becomes a Label carrying a SIMPLIFIED centerline (Douglas–Peucker) + name, so
+// the renderer draws the name ALONG the road and can repeat it at intervals when zoomed in. The
+// simplification drops interior points a label doesn't need while keeping the endpoints exactly.
+// The routing kernel is untouched; the S0 isolation gate proves the matcher is unaffected.
+//
+//   loft --interpret --path <loft>/ client/basemap/streets.loft client/basemap/fixtures/real_stretch_streets.json
+//   regenerate the fixture: tools/basemap/fetch.sh streets
+
+#cwd
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+// Squared perpendicular distance (m²) from P to segment A–B, in planar metre coords.
+fn seg_dist2(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float {
+  dx = bx - ax; dy = by - ay;
+  l2 = dx * dx + dy * dy;
+  t = 0.0;
+  if l2 > 0.0 {
+    t = ((px - ax) * dx + (py - ay) * dy) / l2;
+    if t < 0.0 { t = 0.0; }
+    if t > 1.0 { t = 1.0; }
+  }
+  cx = ax + t * dx; cy = ay + t * dy;
+  ex = px - cx; ey = py - cy;
+  ex * ex + ey * ey
+}
+
+// Douglas–Peucker at tolerance eps (m): how many points survive. xs/ys are planar metres. Endpoints
+// always survive; an interior point survives iff it (recursively) lies > eps off its bracket's chord.
+// Iterative, with a manual (lo,hi) stack — no recursion depth to worry about on long ways.
+fn dp_keep_count(xs: vector<float>, ys: vector<float>, eps: float) -> integer {
+  n = len(xs);
+  if n <= 2 { return n; }
+  keep: vector<boolean> = [];
+  for i in 0..n { keep += [false]; }
+  keep[0] = true; keep[n - 1] = true;
+  eps2 = eps * eps;
+  lo: vector<integer> = [0]; hi: vector<integer> = [n - 1]; sp = 1;
+  while sp > 0 {
+    sp -= 1;
+    a = lo[sp] ?? 0; b = hi[sp] ?? 0;
+    ax = xs[a] ?? 0.0; ay = ys[a] ?? 0.0; bx = xs[b] ?? 0.0; by = ys[b] ?? 0.0;
+    maxd = 0.0; idx = -1;
+    for i in (a + 1)..b {
+      d = seg_dist2(xs[i] ?? 0.0, ys[i] ?? 0.0, ax, ay, bx, by);
+      if d > maxd { maxd = d; idx = i; }
+    }
+    if maxd > eps2 && idx >= 0 {
+      keep[idx] = true;
+      if sp < len(lo) { lo[sp] = a; hi[sp] = idx; } else { lo += [a]; hi += [idx]; }
+      sp += 1;
+      if sp < len(lo) { lo[sp] = idx; hi[sp] = b; } else { lo += [idx]; hi += [b]; }
+      sp += 1;
+    }
+  }
+  kept = 0;
+  for i in 0..n { if keep[i] ?? false { kept += 1; } }
+  kept
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for a in arguments() { argv += [a]; }
+  data_path = argv[0] ?? "";
+  if data_path == "" { println("usage: streets <streets.json>"); return; }
+
+  root = json_parse(file(data_path).content());
+  elements = root.field("elements");
+  d2r = PI / 180.0;
+  eps = 10.0;   // metres — centerline tolerance for label placement
+
+  streets = 0; orig_total = 0; simp_total = 0;
+  best_name = ""; best_orig = 0; best_simp = 0;
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "way" {
+      tags = el.field("tags");
+      name = atag(tags, "name");
+      hw = atag(tags, "highway");
+      geom = el.field("geometry");
+      m = len(geom);
+      if name != "" && hw != "" && m >= 2 {
+        lat0 = geom.item(0).field("lat").as_number();
+        lon0 = geom.item(0).field("lon").as_number();
+        mlon = 111320.0 * cos(lat0 * d2r);       // metres per degree lon at this latitude
+        xs: vector<float> = []; ys: vector<float> = [];
+        for j in 0..m {
+          g = geom.item(j);
+          xs += [(g.field("lon").as_number() - lon0) * mlon];
+          ys += [(g.field("lat").as_number() - lat0) * 111320.0];
+        }
+        kept = dp_keep_count(xs, ys, eps);
+        streets += 1; orig_total += m; simp_total += kept;
+        if m > best_orig { best_orig = m; best_simp = kept; best_name = name; }
+      }
+    }
+  }
+
+  println("streets={streets} orig_pts={orig_total} simplified_pts={simp_total}");
+  println("longest: {best_name} {best_orig} -> {best_simp} pts");
+  // S3 check: simplification reduced the point total, and the longest street shrank while keeping ≥2
+  // points (endpoints preserved by construction — DP never drops first/last).
+  if simp_total < orig_total && best_simp >= 2 && best_simp < best_orig {
+    println("S3 OK: centerlines simplified ({simp_total} < {orig_total} pts), endpoints preserved");
+  } else {
+    println("S3 FAIL: no reduction");
+  }
+}
