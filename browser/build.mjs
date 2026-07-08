@@ -33,4 +33,12 @@ console.log('loft emit_areas → browser/areas.txt …');
 const areas = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
   join(repo, 'client/basemap/emit_areas.loft'), areasFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
 writeFileSync(join(here, 'areas.txt'), areas);
-console.log(`wrote browser/areas.txt (${(areas.length / 1024 | 0)} KB, ${areas.trim().split('\n').length} areas) — serve with: node browser/serve.mjs`);
+console.log(`wrote browser/areas.txt (${(areas.length / 1024 | 0)} KB, ${areas.trim().split('\n').length} areas)`);
+
+// Building footprints (PLAN-BASEMAP S8): one ring per line for the "Terrain (our data)" base.
+const bldFixture = process.env.BUILDINGS || join(repo, 'client/basemap/fixtures/real_stretch_buildings.sample.json');
+console.log('loft emit_buildings → browser/buildings.txt …');
+const bld = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
+  join(repo, 'client/basemap/emit_buildings.loft'), bldFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
+writeFileSync(join(here, 'buildings.txt'), bld);
+console.log(`wrote browser/buildings.txt (${(bld.length / 1024 | 0)} KB, ${bld.trim().split('\n').length} buildings) — serve with: node browser/serve.mjs`);

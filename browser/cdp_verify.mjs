@@ -32,6 +32,9 @@ if (m.polyline !== refLine) { console.log('FAIL: polyline != native reference');
 const areasN = await ev('window.__areas ? window.__areas.count : -1');
 if (areasN > 0) console.log(`  terrain: ${areasN} area fills drawn (S7 — our self-contained base)`);
 else console.log('  terrain: none (areas.txt absent — S7 render skipped)');
+const bldN = await ev('window.__buildings ? window.__buildings.count : -1');
+if (bldN > 0) console.log(`  buildings: ${bldN} footprints drawn (S8)`);
+else console.log('  buildings: none (buildings.txt absent — S8 render skipped)');
 
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);

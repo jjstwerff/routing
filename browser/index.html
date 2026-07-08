@@ -126,6 +126,8 @@ function initMap() {
   map = L.map('map', { zoomControl: true, worldCopyJump: false });
   map.createPane('terrain');                   // our terrain fills sit above tiles, below the network
   map.getPane('terrain').style.zIndex = 250;
+  map.createPane('buildings');                 // building footprints above terrain, below the network
+  map.getPane('buildings').style.zIndex = 260;
   // Two BASE maps (pick one): OSM raster tiles (rich, needs network) or our own terrain (self-contained,
   // works offline — landcover we classify + store ourselves). The road network + route always overlay.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -162,6 +164,22 @@ async function loadAreas() {
     if (ring.length >= 3) { L.polygon(ring, { pane: 'terrain', fillColor: COVER_COLORS[cover] || '#e8e8e8', fillOpacity: 1, weight: 0, interactive: false }).addTo(areasLayer); n++; }
   }
   window.__areas = { count: n };
+}
+
+// PLAN-BASEMAP S8: building footprints, drawn onto the same "Terrain (our data)" base (a pane above the
+// terrain fills, below the network). Graceful if buildings.txt is absent.
+const BLD_STYLE = { pane: 'buildings', fillColor: '#d9c7b0', fillOpacity: 1, color: '#b6a488', weight: 0.5, interactive: false };
+async function loadBuildings() {
+  let txt = window.__STANDALONE && window.__STANDALONE.buildings;
+  if (!txt) txt = await fetch('buildings.txt').then((r) => (r.ok ? r.text() : '')).catch(() => '');
+  if (!txt) return;
+  let n = 0, miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+  for (const line of txt.split('\n')) {
+    const ring = [];
+    for (const p of line.split(';')) { const c = p.split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) { ring.push([a, b]); miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); } } }
+    if (ring.length >= 3) { L.polygon(ring, BLD_STYLE).addTo(areasLayer); n++; }
+  }
+  window.__buildings = { count: n, bounds: n ? [[miLa, miLo], [maLa, maLo]] : null };
 }
 
 function redraw(route, summary) {
@@ -226,6 +244,7 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     if (snap) document.getElementById('freshness').textContent = `data as of ${String(snap).slice(0, 10)} · `;
     initMap();
     await loadAreas();              // draw our own terrain fills under the network (S7)
+    await loadBuildings();          // draw our own building footprints on the terrain base (S8)
     sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
     match();
   } catch (e) {

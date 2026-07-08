@@ -234,6 +234,10 @@ at S5.0 from the probe result.**
   with **no OSM tiles**; the gate reports `terrain: 668 area fills drawn`. S0 green. (Coverage is the
   southern sample region; full coverage is a data step.)
 - **S8. Buildings.** Filled footprints. *Check:* screenshot shows building blocks in a town.
+  **✓ DONE:** `client/basemap/emit_buildings.loft` → `browser/buildings.txt` (built by `build.mjs`); the
+  browser draws 647 footprints (tan fill) in a pane above the terrain, below the network. Screenshot on the
+  terrain base, zoomed to the town, shows the building cluster (Lonneker) with terrain fills + network +
+  route and **no OSM tiles**; gate reports `buildings: 647 footprints drawn`. S0 green.
 - **S9. Place labels.** Text sized/shown by `rank`. *Check:* town names appear; hamlets hidden when zoomed
   out.
 - **S10. Street labels + repetition.** Name drawn along the centerline, **repeated at intervals when zoomed
