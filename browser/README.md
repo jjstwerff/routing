@@ -36,7 +36,20 @@ node browser/serve.mjs        # static server (correct application/wasm MIME) on
 # open http://127.0.0.1:8099/browser/
 ```
 
-`LOFT_BIN` / `LOFT_ROOT` override the loft toolchain location (default `../loft`).
+`LOFT_BIN` overrides the loft binary (default: `loft` on PATH); `LOFT_ROOT` the loft source tree
+(default `../loft`, for the `default/` library needed by `--html`).
+
+## Standalone (single self-contained file)
+
+```sh
+node browser/build-standalone.mjs   # → browser/standalone.html  (or: make standalone)
+# open browser/standalone.html directly — double-click / file://, no server
+```
+
+`standalone.html` inlines the wasm (base64) **and** one test set as `window.__STANDALONE`, so the whole
+app is one file that runs with **no server and no network** — index.html detects the inlined assets and
+skips the fetch/service-worker/IndexedDB paths. Same UI, same matcher; drop it on any static host or
+share the file. Rebuild it whenever the kernel or the test set changes.
 
 ## Headless test
 
@@ -48,8 +61,12 @@ Chromium cannot start inside a restrictive command sandbox.)
 The same kernel logic is also proven headless under `wasmtime` (`--native-wasm`) by
 `tools/app_headless_test.sh` (via `client/app_kernel.loft`, the file+args variant) in `make test-wasm`.
 
+`tools/standalone_app_test.sh` (`make test-standalone`) proves the single-file `standalone.html` runs
+over `file://` with the network emulated **fully off**, byte-identical to the native reference.
+
 ## What's next (Track 1d)
 
 - **Leaflet** base map (needs a tile source; keep the © OpenStreetMap attribution visible — ODbL).
-- Deploy to **GitHub Pages** (unlisted URL).
-- Working-set streaming instead of one whole file — waits on loft#522.
+- Deploy to **GitHub Pages** (unlisted URL) — `standalone.html` is already a drop-in artifact.
+- Working-set streaming instead of one whole file — now unblocked by loft's `store_load`/`store_load_key`
+  (loft#522 landed); JS does the HTTP Range fetches and feeds loft the bytes.

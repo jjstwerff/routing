@@ -2,7 +2,7 @@
 //   loft --html web_kernel.loft  →  a page whose wasm uses loft's own host_input()/println channel.
 // We only need the raw wasm out of it — the page (index.html) loads it directly with a tiny 4-import
 // shim (loft_io: print + input queue, one asset stub). No jco, no npm deps, no WASI.
-//   LOFT_BIN=... node browser/build.mjs        (default loft at ../loft/target/release/loft)
+//   LOFT_BIN=... node browser/build.mjs        (default loft = whatever `loft` resolves to on PATH)
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { dirname, resolve, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
-const loft = process.env.LOFT_BIN || resolve(repo, '../loft/target/release/loft');
+const loft = process.env.LOFT_BIN || 'loft';
 const loftRoot = process.env.LOFT_ROOT || resolve(repo, '../loft');
 const html = join(here, '.web_kernel.html');
 

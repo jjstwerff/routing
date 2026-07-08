@@ -147,23 +147,34 @@ document.getElementById('demo').addEventListener('click', () => { sketch = DEMO.
 document.getElementById('profile').addEventListener('change', () => { if (sketch.length >= 2) match(); });
 
 // Register the service worker so the app shell (html/js/wasm) is cached for a fully-offline reload.
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// Skipped in the standalone build: everything is already inline, and SWs don't run from file://.
+if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 (async function main() {
   try {
-    // Offline-first: serve the wasm + test set from IndexedDB if present, else fetch once and cache.
-    setStatus('loading (cache or network)…');
-    let wasmBuf = await idbGet('wasm:' + CACHE_VER).catch(() => null);
-    let dataText = await idbGet('data:' + CACHE_VER).catch(() => null);
-    loadSrc = (wasmBuf && dataText) ? 'cached (offline-capable)' : 'network';
-    if (!(wasmBuf && dataText)) {
-      setStatus('fetching wasm + test set…');
-      [wasmBuf, dataText] = await Promise.all([
-        fetch('web_kernel.wasm').then((r) => { if (!r.ok) throw new Error('web_kernel.wasm ' + r.status + ' — run: node browser/build.mjs'); return r.arrayBuffer(); }),
-        fetch(DATASET).then((r) => { if (!r.ok) throw new Error(DATASET + ' ' + r.status); return r.text(); }),
-      ]);
-      await idbPut('wasm:' + CACHE_VER, wasmBuf).catch(() => {});
-      await idbPut('data:' + CACHE_VER, dataText).catch(() => {});
+    // Standalone build (browser/build-standalone.mjs) injects the wasm + test set inline as
+    // window.__STANDALONE, so the page runs from a single file — no fetch, no server, no IndexedDB.
+    let wasmBuf, dataText;
+    if (window.__STANDALONE) {
+      setStatus('loading (embedded)…');
+      wasmBuf = Uint8Array.from(atob(window.__STANDALONE.wasmB64), (c) => c.charCodeAt(0)).buffer;
+      dataText = window.__STANDALONE.dataset;
+      loadSrc = 'embedded (standalone)';
+    } else {
+      // Offline-first: serve the wasm + test set from IndexedDB if present, else fetch once and cache.
+      setStatus('loading (cache or network)…');
+      wasmBuf = await idbGet('wasm:' + CACHE_VER).catch(() => null);
+      dataText = await idbGet('data:' + CACHE_VER).catch(() => null);
+      loadSrc = (wasmBuf && dataText) ? 'cached (offline-capable)' : 'network';
+      if (!(wasmBuf && dataText)) {
+        setStatus('fetching wasm + test set…');
+        [wasmBuf, dataText] = await Promise.all([
+          fetch('web_kernel.wasm').then((r) => { if (!r.ok) throw new Error('web_kernel.wasm ' + r.status + ' — run: node browser/build.mjs'); return r.arrayBuffer(); }),
+          fetch(DATASET).then((r) => { if (!r.ok) throw new Error(DATASET + ' ' + r.status); return r.text(); }),
+        ]);
+        await idbPut('wasm:' + CACHE_VER, wasmBuf).catch(() => {});
+        await idbPut('data:' + CACHE_VER, dataText).catch(() => {});
+      }
     }
     window.__cache = { source: loadSrc };
     datasetText = dataText;
