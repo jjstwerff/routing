@@ -11,6 +11,12 @@ architecture (in-browser wasm match; single self-contained file).
 This is a **restoration, not a redesign.** Multi-select and undo are the *original* design's own primitives,
 not additions. Nothing here touches the matched line — see the invariant.
 
+> **Sequencing (2026-07-08):** deferred until after **[PLAN-MAP](PLAN-MAP.md)** lands. We are dropping
+> Leaflet for our own canvas renderer; editing must be built **once**, on that renderer's seam
+> (`project/unproject/camera/hitTest`), not on Leaflet. So E0's "point model + commit chokepoint" sits on
+> PLAN-MAP, and the gesture math below (drag/insert/`nearestSegment`) uses the seam's `project`/`hitTest`
+> instead of Leaflet's `latLngToLayerPoint`/`L.LineUtil`. The design is otherwise unchanged.
+
 ---
 
 ## 0. Provenance — the original design and code (read these, don't reinvent)
