@@ -138,6 +138,14 @@ minZoom}`. Target palette — **extend freely; each addition is a row + (if new)
   their emitters (the deferred PLAN-BASEMAP **S5.5b** `Line`/`Poi` encoders).
 - **Per-class `minZoom` (S13)** keeps a zoomed-out view legible (towns, forests, water, rivers) and reveals
   detail (trees, benches, crossings) only when you zoom in — the afstandmeten feel.
+- **Palette — follow OpenStreetMap standard (Carto).** Every `style` in the catalog matches the familiar
+  **openstreetmap.org standard tile** look (the `openstreetmap-carto` colours) — fine and easy on the eyes,
+  no bespoke scheme. The existing `COVER_COLORS` (`browser/index.html`) already track Carto (water
+  `#a5c8e8` · forest `#a6d99a` · grass `#cfeca8` · park `#c6e2a6` · farmland `#eff0d6` · residential
+  `#e6e1de` · industrial `#e6d5e2` · sand `#f5e7c0` · wetland `#bfd8d8` · bare `#e0dccb`); extend from
+  there for new classes (rivers/water `#a5c8e8`, railway grey dashes, wood `#add19e`, building `#d9c7b0`
+  on `#c6b8a5`, POIs the Carto icon hues). **Styling is a lookup against Carto**, not a per-feature call —
+  so it stays consistent as the catalog grows.
 
 ## 5. Steps (ordered, falsifier-first — each has a Build and a Check)
 
