@@ -7,6 +7,8 @@
 //   loft --native-release --lib lib tools/gen-tiles.loft <out.tiles> <overpass.json>
 // NOTE: writes an mmap store via store_persist_bind — native only; wasm loads via a codec (PLAN-APP §3).
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
+#cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
+
 use routing_kernel::(GeoPoint, Way, parse_ways, TStep, TRoad, TTile);
 
 fn class_of(hw: text) -> integer {

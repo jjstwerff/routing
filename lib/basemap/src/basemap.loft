@@ -95,6 +95,22 @@ pub fn place_rank(kind: text) -> integer {
   else { 0 }
 }
 
+// highway=* → a compact road class (stroke style + width + minZoom per class). "" = not drawn.
+pub fn road_class(highway: text) -> text {
+  if highway == "motorway" || highway == "motorway_link" { return "motorway"; }
+  if highway == "trunk" || highway == "trunk_link" { return "trunk"; }
+  if highway == "primary" || highway == "primary_link" { return "primary"; }
+  if highway == "secondary" || highway == "secondary_link" { return "secondary"; }
+  if highway == "tertiary" || highway == "tertiary_link" { return "tertiary"; }
+  if highway == "residential" || highway == "living_street" || highway == "unclassified" || highway == "road" { return "residential"; }
+  if highway == "pedestrian" { return "pedestrian"; }
+  if highway == "cycleway" { return "cycle"; }
+  if highway == "path" { return "path"; }
+  if highway == "footway" || highway == "steps" || highway == "bridleway" { return "foot"; }
+  if highway == "track" { return "track"; }
+  ""
+}
+
 // waterway / railway / barrier way → a compact Line kind (stroke style per kind). "" = not a line we draw.
 pub fn line_kind(waterway: text, railway: text, barrier: text) -> text {
   if waterway == "river" { return "river"; }

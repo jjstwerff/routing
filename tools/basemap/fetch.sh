@@ -13,7 +13,7 @@ out="${3:-$here/client/basemap/fixtures/real_stretch_${kind}.json}"
 case "$kind" in
   areas)     sel="way[\"landuse\"]($bbox);way[\"natural\"]($bbox);way[\"leisure\"]($bbox);"; mode="geom" ;;
   places)    sel="node[\"place\"]($bbox);";                                                  mode=""     ;;  # nodes carry lat/lon inline
-  streets)   sel="way[\"highway\"][\"name\"]($bbox);";                                       mode="geom" ;;
+  streets)   sel="way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|pedestrian|road|track|path|footway|cycleway|steps|bridleway|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)\$\"]($bbox);"; mode="geom" ;;
   buildings) sel="way[\"building\"]($bbox);";                                                mode="geom" ;;
   lines)     sel="way[\"waterway\"]($bbox);way[\"railway\"]($bbox);way[\"barrier\"~\"^(hedge|wall|fence)\$\"]($bbox);"; mode="geom" ;;
   pois)      sel="node[\"natural\"~\"^(tree|peak|spring)\$\"]($bbox);node[\"amenity\"~\"^(bench|drinking_water|picnic_table|shelter|fountain)\$\"]($bbox);node[\"tourism\"~\"^(viewpoint|camp_site|picnic_site|information)\$\"]($bbox);node[\"man_made\"~\"^(tower|water_tower)\$\"]($bbox);node[\"historic\"~\"^(ruins|monument|memorial)\$\"]($bbox);node[\"leisure\"=\"playground\"]($bbox);node[\"highway\"=\"crossing\"]($bbox);"; mode="" ;;
