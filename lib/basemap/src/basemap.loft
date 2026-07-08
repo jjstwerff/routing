@@ -79,3 +79,63 @@ pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
 
   "other"
 }
+
+// NB: JSON parsing helpers that take a `JsonValue` (e.g. an `atag` tag reader) are deliberately NOT in
+// this lib — a JsonValue does not survive being passed into a cross-package function, so element parsing
+// must happen in the same file that json_parse'd the text. The lib only takes plain scalars/text.
+
+// place=* kind → importance rank (higher = more prominent; 0 = don't label).
+pub fn place_rank(kind: text) -> integer {
+  if kind == "city" { 6 }
+  else if kind == "town" { 5 }
+  else if kind == "village" { 4 }
+  else if kind == "suburb" || kind == "borough" { 3 }
+  else if kind == "hamlet" || kind == "neighbourhood" || kind == "quarter" { 2 }
+  else if kind == "locality" || kind == "isolated_dwelling" || kind == "farm" || kind == "islet" { 1 }
+  else { 0 }
+}
+
+// --- Douglas–Peucker line simplification (for street/line centerlines) -----------------------------
+// Squared perpendicular distance (m²) from P to segment A–B in planar metre coords.
+pub fn seg_dist2(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float {
+  dx = bx - ax; dy = by - ay;
+  l2 = dx * dx + dy * dy;
+  t = 0.0;
+  if l2 > 0.0 {
+    t = ((px - ax) * dx + (py - ay) * dy) / l2;
+    if t < 0.0 { t = 0.0; }
+    if t > 1.0 { t = 1.0; }
+  }
+  cx = ax + t * dx; cy = ay + t * dy;
+  ex = px - cx; ey = py - cy;
+  ex * ex + ey * ey
+}
+
+// Douglas–Peucker at tolerance eps (m): a keep-mask over xs/ys (planar metres). Endpoints always kept.
+pub fn dp_mask(xs: vector<float>, ys: vector<float>, eps: float) -> vector<boolean> {
+  n = len(xs);
+  keep: vector<boolean> = [];
+  for i in 0..n { keep += [false]; }
+  if n <= 2 { for i in 0..n { keep[i] = true; } return keep; }
+  keep[0] = true; keep[n - 1] = true;
+  eps2 = eps * eps;
+  lo: vector<integer> = [0]; hi: vector<integer> = [n - 1]; sp = 1;
+  while sp > 0 {
+    sp -= 1;
+    a = lo[sp] ?? 0; b = hi[sp] ?? 0;
+    ax = xs[a] ?? 0.0; ay = ys[a] ?? 0.0; bx = xs[b] ?? 0.0; by = ys[b] ?? 0.0;
+    maxd = 0.0; idx = -1;
+    for i in (a + 1)..b {
+      d = seg_dist2(xs[i] ?? 0.0, ys[i] ?? 0.0, ax, ay, bx, by);
+      if d > maxd { maxd = d; idx = i; }
+    }
+    if maxd > eps2 && idx >= 0 {
+      keep[idx] = true;
+      if sp < len(lo) { lo[sp] = a; hi[sp] = idx; } else { lo += [a]; hi += [idx]; }
+      sp += 1;
+      if sp < len(lo) { lo[sp] = idx; hi[sp] = b; } else { lo += [idx]; hi += [b]; }
+      sp += 1;
+    }
+  }
+  keep
+}
