@@ -41,6 +41,35 @@ else {
   if (!(m2.frac > 0.3)) { console.log(`FAIL: terrain not painted (central colored fraction ${m2.frac})`); ok = false; } else console.log('  ✓ terrain fills the view (Carto cover colours)');
 }
 
+// M3 · buildings + streets + labels: counts == emitted; S13 gates buildings by zoom; labels draw.
+const cnt = (f, min) => { try { return readFileSync(new URL(f, import.meta.url), 'utf8').split('\n').filter((l) => l.split(';').length >= min).length; } catch { return null; } };
+const srcB = cnt('./buildings.txt', 3), srcS = cnt('./streets.txt', 3), srcP = cnt('./places.txt', 3);
+let m3 = null;
+for (let i = 0; i < 40; i++) { const s = await ev('window.__m3?JSON.stringify(window.__m3):""'); if (s) { m3 = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 250)); }
+if (srcB === null) console.log('  ~ M3 skipped: no browser/{buildings,streets,places}.txt (run `node browser/build.mjs`)');
+else if (!m3) { console.log('FAIL: layers present but window.__m3 never set'); ok = false; }
+else {
+  console.log(`  layers: buildings ${m3.counts.buildings}/${srcB} · streets ${m3.counts.streets}/${srcS} · places ${m3.counts.places}/${srcP}`);
+  if (m3.counts.buildings !== srcB || m3.counts.streets !== srcS || m3.counts.places !== srcP) { console.log('FAIL: parsed layer counts != emitted'); ok = false; } else console.log('  ✓ buildings/streets/places all parsed');
+  // The sample crops sit in different sub-regions (S11 fixture mismatch — M4 unifies them), so verify
+  // each layer WHERE its data lives: centre on it, render, read the stats.
+  const anchors = JSON.parse(await ev(`(()=>{const m=window.__map;
+    const st=m.streets[0], sp=st.line[Math.floor(st.line.length/2)];
+    const b=m.buildings[0], bp=b.ring[0]; const p=m.places[0];
+    return JSON.stringify({sp,bp,pp:p.at});})()`));
+  const at = async (ll, z, sel) => JSON.parse(await ev(`(()=>{const m=window.__map;m.camera.lat=${ll[0]};m.camera.lon=${ll[1]};m.camera.zoom=${z};m.render();return JSON.stringify(${sel});})()`) || '{}');
+  // S13: centre on a building — hidden below z14, shown at/above.
+  const blo = await at(anchors.bp, 12, '{b:m._stats.buildings}'), bhi = await at(anchors.bp, 16, '{b:m._stats.buildings}');
+  if (!(blo.b === 0 && bhi.b > 0)) { console.log(`FAIL: S13 building zoom-gate wrong (z12 ${blo.b}, z16 ${bhi.b})`); ok = false; } else console.log(`  ✓ S13 buildings gated by zoom (z12 hidden → z16 ${bhi.b} in view)`);
+  // streets + street labels: centre on a street at z15.
+  const sT = await at(anchors.sp, 15, '{streets:m._stats.streets,sl:m._stats.streetLabels}');
+  if (!(sT.streets > 0)) { console.log('FAIL: no streets drawn where streets are'); ok = false; } else console.log(`  ✓ ${sT.streets} streets drawn (casing + core)`);
+  if (!(sT.sl > 0)) { console.log('FAIL: no street labels'); ok = false; } else console.log(`  ✓ ${sT.sl} street labels along centrelines (collision-filtered)`);
+  // place labels: centre on a place at z13.
+  const pT = await at(anchors.pp, 13, '{pl:m._stats.placeLabels}');
+  if (!(pT.pl > 0)) { console.log('FAIL: no place labels'); ok = false; } else console.log(`  ✓ ${pT.pl} place labels (rank-gated)`);
+}
+
 // M1 · pan: dispatch a real left-drag; the lat/lon grabbed at mousedown must sit under the cursor at
 // mouseup (and zoom must not change).
 const pan = JSON.parse(await ev(`(()=>{const map=window.__map,cv=map.canvas;
@@ -70,5 +99,5 @@ const j = JSON.parse(r2 || '{}');
 const rOK = Math.abs(j.x - j.W / 2) < 1e-6 && Math.abs(j.y - j.H / 2) < 1e-6;
 if (!rOK) { console.log('FAIL: resize did not keep the centre centred — ' + r2); ok = false; } else console.log(`  ✓ resize keeps the centre centred (${j.W}×${j.H})`);
 
-console.log(ok ? 'PASS — M0+M1+M2 canvas renderer: projection + pan/zoom + terrain fills verified headless.' : 'FAILURES');
+console.log(ok ? 'PASS — M0+M1+M2+M3: projection + pan/zoom + terrain + buildings/streets/labels verified headless.' : 'FAILURES');
 process.exit(ok ? 0 : 1);
