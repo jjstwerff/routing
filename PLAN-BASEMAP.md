@@ -281,6 +281,26 @@ at S5.0 from the probe result.**
 - **S13. Per-zoom generalization.** Buildings only ≥ z14; areas simplified at low zoom; label rank
   thresholds. *Check:* feature/byte counts drop at low zoom, visual holds. *(This is where a DIY format
   earns its keep or where PMTiles tooling would take over — decide at S13, not before.)*
+  **✓ DONE (render-side gating):** `updateGeneralization()` in `index.html` hides buildings below z14 and
+  drops small areas (per-area `minZoom` from bbox size) when zoomed out; place labels are rank-gated (S9),
+  street labels ≥ z13 (S10). Measured on the terrain base: **z11 → 144 of 668 areas + 0 buildings; z16 →
+  668 + 647** (≈9× fewer features zoomed out), the coarse shape (big forests/water + towns) holds. Gate
+  reports the `generalization` counts. S0 green.
+
+  **DEFERRED (an additional layer, not built now) — a second "rough features" dataset for low zoom.**
+  Render-gating cuts *render* cost but the browser still *loads* every feature; the coarse view just shows
+  the large detail features that survive. The next level of detail is a **separate, much smaller coarse
+  dataset** — only large landcover, heavily DP-simplified, no buildings, major roads/towns only — shown when
+  zoomed out *instead of* the detail. That makes the **byte** count drop too (you fetch the rough layer, not
+  the full one), reads cleaner, and scales to many zoom levels. It's our own level-of-detail (LOD): the
+  detail layer we have + one (or more) rough layers, the app switching by zoom.
+  - *Design sketch:* `emit_areas_rough.loft` (a size filter + coarse `dp_mask`) → `areas_rough.txt` (small);
+    the browser loads it as a `roughAreasLayer` and, below ~z13, shows rough + hides detail/buildings; at/above
+    z13 shows detail. Same for a coarse street/label layer later.
+  - *The DIY-vs-PMTiles call this is:* one or two hand-made LOD levels for one region is cheap and stays in
+    the loft store + working-set spine (S6). But **many** zoom levels with per-zoom simplification + feature
+    selection is exactly what vector-tile tooling (Planetiler → PMTiles) generates for free — that's the point
+    at scale to adopt PMTiles for the *presentation* base while keeping the loft store for *routing*.
 - **S14. Label collision.** No overlapping text. *Check:* no overlaps in a dense-town screenshot.
 
 ## The probes that gate the whole design (summary)

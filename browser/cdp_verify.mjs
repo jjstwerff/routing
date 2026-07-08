@@ -44,6 +44,8 @@ else console.log('  streets: none (streets.txt absent — S10 render skipped)');
 const stamp = await ev('window.__stamp || (document.getElementById("freshness")||{}).textContent || ""');
 if (stamp && /\d{4}-\d\d-\d\d/.test(stamp)) console.log(`  freshness: "${String(stamp).trim()}" (S12)`);
 else console.log('  freshness: no date rendered (S12)');
+const gen = await ev('window.__gen ? JSON.stringify(window.__gen) : ""');
+if (gen) console.log(`  generalization: ${gen} (S13 — buildings ≥z14, small areas drop out zoomed out)`);
 
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);

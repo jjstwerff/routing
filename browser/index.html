@@ -81,7 +81,9 @@ const imports = {
   loft_gl: { host_asset_exists: () => 0 },
 };
 let instance, datasetText, net = [], loadSrc = 'network';
-let map, areasLayer, netLayer, sketchLayer, routeLayer, streetLabelsLayer, tilesOk = true;
+let map, areasLayer, buildingsLayer, netLayer, sketchLayer, routeLayer, streetLabelsLayer, tilesOk = true;
+let areaFeatures = [];                          // {polygon, minZoom} — small areas drop out when zoomed out (S13)
+const BUILDINGS_MINZOOM = 14;                   // footprints only when zoomed in (S13)
 
 // Leaflet path styles (options, not CSS — reliable across Leaflet's defaults).
 const NET_STYLE = { color: '#7a7a7a', weight: 1.2, opacity: 0.55, interactive: false };
@@ -155,12 +157,14 @@ function initMap() {
   for (const w of net) L.polyline(w, NET_STYLE).addTo(netLayer);
   const bounds = L.latLngBounds(net.length ? net.flat() : DEMO);
   map.fitBounds(bounds, { padding: [20, 20] });
+  buildingsLayer = L.layerGroup([], { pane: 'buildings' });   // toggled by zoom (S13); rides the terrain base
   streetLabelsLayer = L.layerGroup([], { pane: 'labels' });
   areasLayer.addLayer(streetLabelsLayer);      // street labels ride the terrain base; recomputed per view
   map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
   map.on('zoomend', updatePlaceVisibility);    // rank-gated place labels appear/vanish with zoom (S9)
   map.on('zoomend moveend', placeStreetLabels);// street labels re-laid along the line, more when zoomed in (S10)
-  map.on('baselayerchange', () => setTimeout(() => { updatePlaceVisibility(); placeStreetLabels(); }, 0));
+  map.on('zoomend', updateGeneralization);     // per-zoom generalization: buildings + small areas (S13)
+  map.on('baselayerchange', () => setTimeout(() => { updatePlaceVisibility(); placeStreetLabels(); updateGeneralization(); }, 0));
   window.__map = map;                          // test hook: gates fire map clicks through this
 }
 
@@ -177,9 +181,20 @@ async function loadAreas() {
     if (parts.length < 4) continue;
     const cover = parts[0], ring = [];
     for (let i = 1; i < parts.length; i++) { const c = parts[i].split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) ring.push([a, b]); } }
-    if (ring.length >= 3) { L.polygon(ring, { pane: 'terrain', fillColor: COVER_COLORS[cover] || '#e8e8e8', fillOpacity: 1, weight: 0, interactive: false }).addTo(areasLayer); n++; }
+    if (ring.length >= 3) {
+      const poly = L.polygon(ring, { pane: 'terrain', fillColor: COVER_COLORS[cover] || '#e8e8e8', fillOpacity: 1, weight: 0, interactive: false }).addTo(areasLayer);
+      areaFeatures.push({ polygon: poly, minZoom: areaMinZoom(ring) });
+      n++;
+    }
   }
   window.__areas = { count: n };
+}
+// Bigger areas (forest, water) survive to low zoom; tiny grass patches only appear zoomed in (S13).
+function areaMinZoom(ring) {
+  let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+  for (const [a, b] of ring) { miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); }
+  const diag = Math.hypot(maLa - miLa, maLo - miLo);   // degrees
+  return diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
 }
 
 // PLAN-BASEMAP S8: building footprints, drawn onto the same "Terrain (our data)" base (a pane above the
@@ -193,9 +208,28 @@ async function loadBuildings() {
   for (const line of txt.split('\n')) {
     const ring = [];
     for (const p of line.split(';')) { const c = p.split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) { ring.push([a, b]); miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); } } }
-    if (ring.length >= 3) { L.polygon(ring, BLD_STYLE).addTo(areasLayer); n++; }
+    if (ring.length >= 3) { L.polygon(ring, BLD_STYLE).addTo(buildingsLayer); n++; }
   }
   window.__buildings = { count: n, bounds: n ? [[miLa, miLo], [maLa, maLo]] : null };
+  updateGeneralization();
+}
+
+// PLAN-BASEMAP S13 — per-zoom generalization. Buildings only appear ≥ z14; small areas drop out when
+// zoomed out. So the low-zoom view renders far fewer features (faster + less cluttered) while the coarse
+// shape (forests, water, towns) holds. Recomputed on zoomend.
+function updateGeneralization() {
+  if (!map || !areasLayer) return;
+  const z = map.getZoom();
+  if (z >= BUILDINGS_MINZOOM) { if (!areasLayer.hasLayer(buildingsLayer)) areasLayer.addLayer(buildingsLayer); }
+  else if (areasLayer.hasLayer(buildingsLayer)) areasLayer.removeLayer(buildingsLayer);
+  let shown = 0;
+  for (const af of areaFeatures) {
+    const el = af.polygon.getElement();
+    const vis = z >= af.minZoom;
+    if (el) el.style.display = vis ? '' : 'none';
+    if (vis) shown++;
+  }
+  window.__gen = { zoom: z, areasShown: shown, buildingsShown: z >= BUILDINGS_MINZOOM ? (window.__buildings ? window.__buildings.count : 0) : 0 };
 }
 
 // PLAN-BASEMAP S9: place labels. rank → font size AND the minimum zoom at which the label shows, so towns
