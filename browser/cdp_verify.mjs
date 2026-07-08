@@ -47,6 +47,15 @@ else console.log('  freshness: no date rendered (S12)');
 const gen = await ev('window.__gen ? JSON.stringify(window.__gen) : ""');
 if (gen) console.log(`  generalization: ${gen} (S13 — buildings ≥z14, small areas drop out zoomed out)`);
 
+// PLAN-BASEMAP S14: on the terrain base at a town zoom, the collision layout must leave NO two labels
+// overlapping. (Then restore OSM base + fit so the later profile/click/offline checks are unaffected.)
+await ev(`(()=>{try{const b=window.__bases;window.__map.removeLayer(b.osm);b.terrain.addTo(window.__map);window.__map.setView([52.304,6.917],16);}catch(e){}})()`);
+await new Promise((r) => setTimeout(r, 1600));
+const lbl = await ev(`(()=>{const rs=[...document.querySelectorAll('.plabel span,.slabel span')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>0);let ov=0;for(let i=0;i<rs.length;i++)for(let j=i+1;j<rs.length;j++){const a=rs[i],b=rs[j];if(!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom))ov++;}return{labels:rs.length,overlaps:ov};})()`);
+if (lbl && lbl.overlaps === 0) console.log(`  labels: ${lbl.labels} on terrain base, 0 overlaps (S14 collision layout)`);
+else { console.log(`  FAIL: ${lbl ? lbl.overlaps : '?'} label overlaps (S14)`); ok = false; }
+await ev(`(()=>{try{const b=window.__bases;window.__map.removeLayer(b.terrain);b.osm.addTo(window.__map);}catch(e){}})()`);
+
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
 let mp = null;

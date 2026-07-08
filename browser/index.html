@@ -161,10 +161,9 @@ function initMap() {
   streetLabelsLayer = L.layerGroup([], { pane: 'labels' });
   areasLayer.addLayer(streetLabelsLayer);      // street labels ride the terrain base; recomputed per view
   map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
-  map.on('zoomend', updatePlaceVisibility);    // rank-gated place labels appear/vanish with zoom (S9)
-  map.on('zoomend moveend', placeStreetLabels);// street labels re-laid along the line, more when zoomed in (S10)
   map.on('zoomend', updateGeneralization);     // per-zoom generalization: buildings + small areas (S13)
-  map.on('baselayerchange', () => setTimeout(() => { updatePlaceVisibility(); placeStreetLabels(); updateGeneralization(); }, 0));
+  map.on('zoomend moveend', layoutLabels);     // one collision-aware pass: place + street labels (S9/S10/S14)
+  map.on('baselayerchange', () => setTimeout(() => { updateGeneralization(); layoutLabels(); }, 0));
   window.__map = map;                          // test hook: gates fire map clicks through this
 }
 
@@ -237,12 +236,31 @@ function updateGeneralization() {
 let placeMarkers = [];
 const RANK_MINZOOM = { 6: 0, 5: 9, 4: 11, 3: 12, 2: 13, 1: 14 };      // city→hamlet
 const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
-function updatePlaceVisibility() {
-  const z = map ? map.getZoom() : 0;
-  for (const pm of placeMarkers) {
+const estWidth = (text, fontpx) => text.length * fontpx * 0.55;   // rough on-screen label width (px)
+// PLAN-BASEMAP S14: ONE label layout pass with a shared screen-space collision index, so no two labels
+// overlap. Place labels are placed first, highest rank first (towns win); street labels then skip any
+// candidate whose box would overlap an already-placed label.
+function layoutLabels() {
+  if (!map) return;
+  const z = map.getZoom(), placed = [];
+  const fits = (x, y, w, h) => {
+    if (window.__COLLIDE === false) return true;      // measurement hook: disable collision to compare
+    const l = x - w / 2, t = y - h / 2, r = x + w / 2, bb = y + h / 2;
+    for (const b of placed) if (!(r < b[0] || l > b[2] || bb < b[1] || t > b[3])) return false;
+    placed.push([l, t, r, bb]); return true;
+  };
+  let pShown = 0;
+  for (const pm of [...placeMarkers].sort((a, b) => b.rank - a.rank)) {
     const el = pm.marker.getElement();
-    if (el) el.style.display = z >= (RANK_MINZOOM[pm.rank] ?? 14) ? '' : 'none';
+    if (!el) continue;
+    if (z < (RANK_MINZOOM[pm.rank] ?? 14)) { el.style.display = 'none'; continue; }
+    const p = map.latLngToContainerPoint(pm.marker.getLatLng()), f = RANK_FONTPX[pm.rank] || 10;
+    const ok = fits(p.x, p.y, estWidth(pm.name, f) + 6, f + 6);
+    el.style.display = ok ? '' : 'none';
+    if (ok) pShown++;
   }
+  const sShown = placeStreetLabels(fits);
+  window.__labels = { placesShown: pShown, streetsShown: sShown };
 }
 async function loadPlaces() {
   let txt = window.__STANDALONE && window.__STANDALONE.places;
@@ -259,11 +277,11 @@ async function loadPlaces() {
     const icon = L.divIcon({ className: 'plabel', html: `<span style="font-size:${RANK_FONTPX[rank] || 10}px">${name}</span>`, iconSize: [0, 0] });
     const marker = L.marker([lat, lon], { icon, pane: 'labels', interactive: false });
     marker.addTo(areasLayer);
-    placeMarkers.push({ marker, rank });
+    placeMarkers.push({ marker, rank, name });
     n++;
   }
   window.__places = { count: n };
-  updatePlaceVisibility();
+  layoutLabels();
 }
 
 // PLAN-BASEMAP S10: street labels ALONG the centerline, REPEATED at intervals when zoomed in. Positions
@@ -284,13 +302,14 @@ async function loadStreets() {
   }
   window.__streets = { count: streets.length };
   window.__streetLabelCount = (nm) => Array.from(document.querySelectorAll('.slabel')).filter((e) => e.textContent === nm).length;
-  placeStreetLabels();
+  layoutLabels();
 }
-function placeStreetLabels() {
-  if (!streetLabelsLayer) return;
+function placeStreetLabels(fits) {
+  if (!streetLabelsLayer) return 0;
   streetLabelsLayer.clearLayers();
-  if (map.getZoom() < STREET_MINZOOM) return;
+  if (map.getZoom() < STREET_MINZOOM) return 0;
   const vb = map.getBounds().pad(0.1);
+  let placedN = 0;
   for (const st of streets) {
     if (!st.line.some(([a, b]) => vb.contains([a, b]))) continue;          // only streets in view
     const px = st.line.map(([a, b]) => map.latLngToContainerPoint([a, b]));
@@ -308,10 +327,17 @@ function placeStreetLabels() {
       const cx = p0.x + (p1.x - p0.x) * t, cy = p0.y + (p1.y - p0.y) * t;
       let ang = Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180 / Math.PI;
       if (ang > 90) ang -= 180; if (ang < -90) ang += 180;                  // keep the text upright
+      // S14: skip labels that would overlap. The rendered text is ROTATED, so collide on its rotated AABB.
+      const w0 = estWidth(st.name, 11) + 4, rad = ang * Math.PI / 180;
+      const aw = Math.abs(w0 * Math.cos(rad)) + Math.abs(14 * Math.sin(rad));
+      const ah = Math.abs(w0 * Math.sin(rad)) + Math.abs(14 * Math.cos(rad));
+      if (fits && !fits(cx, cy, aw, ah)) continue;
       const icon = L.divIcon({ className: 'slabel', html: `<span style="transform:translate(-50%,-50%) rotate(${ang.toFixed(1)}deg)">${st.name}</span>`, iconSize: [0, 0] });
       L.marker(map.containerPointToLatLng([cx, cy]), { icon, pane: 'labels', interactive: false }).addTo(streetLabelsLayer);
+      placedN++;
     }
   }
+  return placedN;
 }
 
 // PLAN-BASEMAP S12: show the OSM snapshot the data was cut from. Prefer the presentation stamp (inlined

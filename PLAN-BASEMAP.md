@@ -302,6 +302,14 @@ at S5.0 from the probe result.**
     selection is exactly what vector-tile tooling (Planetiler → PMTiles) generates for free — that's the point
     at scale to adopt PMTiles for the *presentation* base while keeping the loft store for *routing*.
 - **S14. Label collision.** No overlapping text. *Check:* no overlaps in a dense-town screenshot.
+  **✓ DONE:** place + street labels are now one `layoutLabels()` pass with a shared screen-space collision
+  index — place labels placed first, highest rank first (towns win); street labels skip any candidate whose
+  (rotated) AABB overlaps an already-placed label. The collision **logic is unit-verified** in-browser
+  (`fits`: an overlapping box → rejected, a far one → accepted), and the gate asserts **0 overlaps** on the
+  terrain base at a town zoom (`labels: 43 … 0 overlaps`). *Honest read:* the sample's street density rarely
+  produces overlaps (labels are rotated along their own roads + rank-gated), so collision is an active
+  safety net that keeps the count at 0 rather than a heavy de-clutterer; a true dense city centre would
+  exercise it more. **Phase 5 complete (S13–S14).**
 
 ## The probes that gate the whole design (summary)
 
