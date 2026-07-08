@@ -98,3 +98,79 @@ jobs:
             dist/routing-server-bin
             client/kernel.wasm
           if-no-files-found: error
+
+  # --- GitHub Pages: build the self-contained browser app, and DEPLOY it from main ------------------
+  # The whole Pages build is DECLARED in loft.toml (@PLN100 build phase): `loft build` runs the
+  # fingerprinted `standalone` + `pages-site` assets → _site/index.html (wasm + presentation layers +
+  # Leaflet, all inlined). This job VERIFIES that build on every push/PR; the deploy job below only
+  # publishes from main. No hand-orchestrated build steps — the manifest is the source of truth.
+  pages:
+    runs-on: ubuntu-latest
+    env:
+      # `loft build` (the build phase) is not yet on loft's default branch. PIN loft to the feature
+      # branch that has it; drop this to HEAD (like build-test) once @PLN100 merges to loft main.
+      LOFT_REF: tuxedo-pln100-build-phase
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (mold)
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No public loft binary — build the @PLN100 build-phase branch from source, cached on its sha.
+      - name: Resolve loft revision
+        id: loft
+        run: echo "sha=$(git ls-remote https://github.com/loft-lang/loft "$LOFT_REF" | cut -f1)" >> "$GITHUB_OUTPUT"
+      - name: Clone loft
+        run: git clone --depth=1 --branch "$LOFT_REF" https://github.com/loft-lang/loft /tmp/loft
+      - name: Cache cargo + loft build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            /tmp/loft/target
+          key: loft-pages-${{ runner.os }}-${{ steps.loft.outputs.sha }}
+          restore-keys: |
+            loft-pages-${{ runner.os }}-
+      - name: Build loft toolchain
+        run: |
+          cd /tmp/loft
+          cargo build --release --bin loft
+          echo "LOFT_BIN=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+          echo "LOFT_ROOT=/tmp/loft" >> "$GITHUB_ENV"
+
+      # One command: the loft.toml assets build the wasm + presentation layers, inline the standalone,
+      # and assemble _site/. Runs on push AND PR, so a broken browser build fails the PR.
+      - name: loft build → _site
+        run: "$LOFT_BIN build --lib lib"
+
+      # Publish the artifact only from main; PRs just prove the build above succeeds.
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write        # deploy-pages needs these; build-test/pages keep contents:read only
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages-deploy       # never cancel a live deploy mid-flight (separate from ci-${ref})
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
