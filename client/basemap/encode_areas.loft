@@ -21,7 +21,7 @@ fn atag(obj: JsonValue, name: text) -> text {
 // into a helper and calling `.field("tags")` on the parameter loses the nested object (scalar fields like
 // "type" survive; nested objects come back empty), so a `cover_of(el)` helper silently returns "".
 
-pub fn build(osm: text) -> hash<PTile[tkey]> {
+pub fn build(osm: text, cell: integer) -> hash<PTile[tkey]> {
   root = json_parse(osm);
   elements = root.field("elements");
   idx: hash<PTile[tkey]> = [];
@@ -34,12 +34,12 @@ pub fn build(osm: text) -> hash<PTile[tkey]> {
         tags = el.field("tags");
         cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"));
         g0 = geom.item(0);
-        tx = cell_ix(to_fixed(g0.field("lon").as_number()), CELL_P);
-        ty = cell_ix(to_fixed(g0.field("lat").as_number()), CELL_P);
-        key = tkey(tx, ty, CELL_P);
+        tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
+        ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
+        key = tkey(tx, ty, cell);
         t = idx[key];
         if t == null {
-          idx += PTile { tkey: key, ox: origin(tx, CELL_P), oy: origin(ty, CELL_P), areas: [], buildings: [], lines: [], labels: [], pois: [] };
+          idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] };
           t = idx[key];
         }
         ring: vector<Coord> = [];
@@ -54,6 +54,21 @@ pub fn build(osm: text) -> hash<PTile[tkey]> {
     }
   }
   idx
+}
+
+// Build at `cell`, persist to `path`, reload fresh, verify, and confirm the area count is preserved.
+// Returns the tile count on a sound round-trip, else -1. Used by S5.4 to compare two cell sizes.
+fn roundtrip(osm: text, cell: integer, path: text) -> integer {
+  idx = build(osm, cell);
+  nt = 0; na = 0;
+  for t in idx { nt += 1; for _a in t.areas { na += 1; } }
+  ok = store_persist_bind(idx, path);
+  dst: hash<PTile[tkey]> = [];
+  lok = store_load(dst, path);
+  vok = store_verify(dst);
+  nt2 = 0; na2 = 0;
+  for t in dst { nt2 += 1; for _a in t.areas { na2 += 1; } }
+  if ok && lok && vok && nt2 == nt && na2 == na { nt } else { 0 - 1 }
 }
 
 fn main() {
@@ -72,7 +87,7 @@ fn main() {
     if atag(el, "type") == "way" && len(el.field("geometry")) >= 3 { input += 1; }
   }
 
-  idx = build(osm);
+  idx = build(osm, CELL_P);
   tiles = 0; binned = 0; water = 0; forest = 0; cell_ok = false;
   for t in idx {
     tiles += 1;
@@ -115,6 +130,18 @@ fn main() {
       println("S5.3 OK: real area store round-trips on disk (verify true, tiles+areas+covers match)");
     } else {
       println("S5.3 FAIL");
+    }
+
+    // S5.4 — size-agnostic: round-trip at routing's 2 km cell AND the finer presentation cell. Both must
+    // round-trip soundly, and the finer cell must yield strictly MORE tiles (the mechanism isn't tied to a
+    // size — same areas, distributed over more cells).
+    coarse = roundtrip(osm, 200000, out_path + ".coarse");
+    fine   = roundtrip(osm, CELL_P, out_path + ".fine");
+    println("S5.4 sizes: cell=200000 → tiles={coarse}; cell={CELL_P} → tiles={fine}");
+    if coarse > 0 && fine > 0 && fine > coarse {
+      println("S5.4 OK: store round-trips at both cell sizes; finer cell → more tiles (mechanism is size-agnostic)");
+    } else {
+      println("S5.4 FAIL");
     }
   }
 }
