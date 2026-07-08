@@ -148,7 +148,8 @@ function initMap() {
   netLayer = L.layerGroup().addTo(map);       // road network — always on top of whichever base
   sketchLayer = L.layerGroup().addTo(map);
   routeLayer = L.layerGroup().addTo(map);
-  tiles.addTo(map);                            // default base: OSM
+  // Default base: OSM online, but our own terrain when standalone (file:// — OSM tiles can't load offline).
+  (window.__STANDALONE ? areasLayer : tiles).addTo(map);
   L.control.layers({ 'OpenStreetMap': tiles, 'Terrain (our data)': areasLayer }, null, { position: 'topright' }).addTo(map);
   window.__bases = { osm: tiles, terrain: areasLayer };  // gates/S7 switch base through this
   for (const w of net) L.polyline(w, NET_STYLE).addTo(netLayer);

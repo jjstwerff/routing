@@ -259,6 +259,15 @@ at S5.0 from the probe result.**
   layer; `standalone.html` carries its own presentation data too. *Check:* both browser gates still PASS
   (route byte-identical). *Probe:* **S0 green**; a **side-by-side screenshot vs afstandmeten.nl** for the
   same bbox — does it read as "near their presentation"?
+  **✓ DONE:** the two bases are a toggle ("OpenStreetMap" / "Terrain (our data)"); the terrain base sits under
+  the route with S7–S10 layers. `build-standalone.mjs` now inlines all four presentation layers, so the
+  single file defaults to our terrain base and shows a full map **offline** (verified: standalone `file://`
+  network-off, base=terrain, 668 areas, byte-identical route). Both gates PASS; S0 green.
+  *Side-by-side read (honest):* our base reads as a real street map — roads + dense along-road street names
+  + terrain/buildings where present — but afstandmeten's OSM base is richer (road-class colours + casings,
+  full landcover, POI icons). Gaps toward "their presentation" are **styling** (road classes/casings, POIs →
+  S13/polish) and **consistent coverage** (the sample layers cover different sub-regions, so no single view
+  has all at once — a data step, not a render one). The mechanism is there; polish + coverage remain.
 - **S12. Freshness.** Stamp both stores with the same OSM snapshot; footer shows "data as of …" from the
   presentation stamp. *Check:* the date renders.
 
