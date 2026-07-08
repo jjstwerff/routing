@@ -49,4 +49,12 @@ console.log('loft emit_places → browser/places.txt …');
 const places = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
   join(repo, 'client/basemap/emit_places.loft'), placesFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
 writeFileSync(join(here, 'places.txt'), places);
-console.log(`wrote browser/places.txt (${places.trim().split('\n').length} places) — serve with: node browser/serve.mjs`);
+console.log(`wrote browser/places.txt (${places.trim().split('\n').length} places)`);
+
+// Street-name centerlines (PLAN-BASEMAP S10): name;lat,lon;... — the browser labels along + repeats on zoom.
+const streetsFixture = process.env.STREETS || join(repo, 'client/basemap/fixtures/real_stretch_streets.sample.json');
+console.log('loft emit_streets → browser/streets.txt …');
+const streets = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
+  join(repo, 'client/basemap/emit_streets.loft'), streetsFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
+writeFileSync(join(here, 'streets.txt'), streets);
+console.log(`wrote browser/streets.txt (${(streets.length / 1024 | 0)} KB, ${streets.trim().split('\n').length} streets) — serve with: node browser/serve.mjs`);

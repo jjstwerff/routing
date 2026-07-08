@@ -247,6 +247,12 @@ at S5.0 from the probe result.**
 - **S10. Street labels + repetition.** Name drawn along the centerline, **repeated at intervals when zoomed
   in**. *Check/Probe:* a long street shows **1** label at low zoom and **N>1** at high zoom, following the
   road angle (this is the "multiply the name" behaviour, directly measurable).
+  **✓ DONE:** `client/basemap/emit_streets.loft` (lib `dp_mask`) → `browser/streets.txt` (`name;centerline`);
+  the browser walks each centerline in screen pixels and drops a rotated label every ~190 px, recomputed on
+  zoom/move — so the count grows with zoom. Measured on the terrain base: **"Eektestraat" 4 labels @z14 →
+  23 @z17** (the name multiplies along the line), rotated to the road angle. Gate reports `streets: 919
+  centerlines`. S0 green. **Phase 3 complete (S7–S10) — the self-contained base map renders terrain,
+  buildings, place labels, and along-line street labels.**
 
 ### Phase 4 — integrate + prove isolation
 - **S11. Wire it in.** Presentation layer under the route in `index.html`; OSM raster kept as an optional

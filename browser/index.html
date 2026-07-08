@@ -23,6 +23,10 @@
   .leaflet-div-icon.plabel { background: transparent; border: none; }
   .plabel span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-weight: 600;
     color: #3a3a3a; text-shadow: -1px -1px 2px #fff, 1px -1px 2px #fff, -1px 1px 2px #fff, 1px 1px 2px #fff, 0 0 3px #fff; }
+  /* Street labels (S10): smaller, rotated to follow the road; the inline transform sets the angle + centring. */
+  .leaflet-div-icon.slabel { background: transparent; border: none; }
+  .slabel span { position: absolute; transform-origin: center; white-space: nowrap; font-size: 11px; color: #555;
+    text-shadow: -1px -1px 2px #fff, 1px -1px 2px #fff, -1px 1px 2px #fff, 1px 1px 2px #fff; }
 </style>
 </head>
 <body>
@@ -77,7 +81,7 @@ const imports = {
   loft_gl: { host_asset_exists: () => 0 },
 };
 let instance, datasetText, net = [], loadSrc = 'network';
-let map, areasLayer, netLayer, sketchLayer, routeLayer, tilesOk = true;
+let map, areasLayer, netLayer, sketchLayer, routeLayer, streetLabelsLayer, tilesOk = true;
 
 // Leaflet path styles (options, not CSS — reliable across Leaflet's defaults).
 const NET_STYLE = { color: '#7a7a7a', weight: 1.2, opacity: 0.55, interactive: false };
@@ -150,9 +154,12 @@ function initMap() {
   for (const w of net) L.polyline(w, NET_STYLE).addTo(netLayer);
   const bounds = L.latLngBounds(net.length ? net.flat() : DEMO);
   map.fitBounds(bounds, { padding: [20, 20] });
+  streetLabelsLayer = L.layerGroup([], { pane: 'labels' });
+  areasLayer.addLayer(streetLabelsLayer);      // street labels ride the terrain base; recomputed per view
   map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
   map.on('zoomend', updatePlaceVisibility);    // rank-gated place labels appear/vanish with zoom (S9)
-  map.on('baselayerchange', () => setTimeout(updatePlaceVisibility, 0));
+  map.on('zoomend moveend', placeStreetLabels);// street labels re-laid along the line, more when zoomed in (S10)
+  map.on('baselayerchange', () => setTimeout(() => { updatePlaceVisibility(); placeStreetLabels(); }, 0));
   window.__map = map;                          // test hook: gates fire map clicks through this
 }
 
@@ -224,6 +231,54 @@ async function loadPlaces() {
   updatePlaceVisibility();
 }
 
+// PLAN-BASEMAP S10: street labels ALONG the centerline, REPEATED at intervals when zoomed in. Positions
+// are computed in screen pixels each view, so a street that's short on screen gets one label and a long
+// one gets several — the name "multiplies" as you zoom in. Each label is rotated to the local road angle.
+let streets = [];
+const STREET_MINZOOM = 13, STREET_SPACING_PX = 190;
+async function loadStreets() {
+  let txt = window.__STANDALONE && window.__STANDALONE.streets;
+  if (!txt) txt = await fetch('streets.txt').then((r) => (r.ok ? r.text() : '')).catch(() => '');
+  if (!txt) return;
+  for (const line of txt.split('\n')) {
+    const parts = line.split(';');
+    if (parts.length < 3) continue;
+    const name = parts[0], pts = [];
+    for (let i = 1; i < parts.length; i++) { const c = parts[i].split(','); if (c.length === 2) { const a = +c[0], b = +c[1]; if (!isNaN(a) && !isNaN(b)) pts.push([a, b]); } }
+    if (pts.length >= 2) streets.push({ name, line: pts });
+  }
+  window.__streets = { count: streets.length };
+  window.__streetLabelCount = (nm) => Array.from(document.querySelectorAll('.slabel')).filter((e) => e.textContent === nm).length;
+  placeStreetLabels();
+}
+function placeStreetLabels() {
+  if (!streetLabelsLayer) return;
+  streetLabelsLayer.clearLayers();
+  if (map.getZoom() < STREET_MINZOOM) return;
+  const vb = map.getBounds().pad(0.1);
+  for (const st of streets) {
+    if (!st.line.some(([a, b]) => vb.contains([a, b]))) continue;          // only streets in view
+    const px = st.line.map(([a, b]) => map.latLngToContainerPoint([a, b]));
+    const seg = []; let total = 0;
+    for (let i = 1; i < px.length; i++) { const d = px[i].distanceTo(px[i - 1]); seg.push(d); total += d; }
+    if (total < 70) continue;
+    const n = Math.max(1, Math.round(total / STREET_SPACING_PX));           // 1 when short on screen, N when long
+    const step = total / (n + 1);
+    for (let k = 1; k <= n; k++) {
+      const target = step * k;
+      let acc = 0, i = 1;
+      while (i < px.length && acc + seg[i - 1] < target) { acc += seg[i - 1]; i++; }
+      if (i >= px.length) i = px.length - 1;
+      const p0 = px[i - 1], p1 = px[i], t = seg[i - 1] ? (target - acc) / seg[i - 1] : 0;
+      const cx = p0.x + (p1.x - p0.x) * t, cy = p0.y + (p1.y - p0.y) * t;
+      let ang = Math.atan2(p1.y - p0.y, p1.x - p0.x) * 180 / Math.PI;
+      if (ang > 90) ang -= 180; if (ang < -90) ang += 180;                  // keep the text upright
+      const icon = L.divIcon({ className: 'slabel', html: `<span style="transform:translate(-50%,-50%) rotate(${ang.toFixed(1)}deg)">${st.name}</span>`, iconSize: [0, 0] });
+      L.marker(map.containerPointToLatLng([cx, cy]), { icon, pane: 'labels', interactive: false }).addTo(streetLabelsLayer);
+    }
+  }
+}
+
 function redraw(route, summary) {
   sketchLayer.clearLayers();
   if (sketch.length) L.polyline(sketch, SKETCH_STYLE).addTo(sketchLayer);
@@ -288,6 +343,7 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     await loadAreas();              // draw our own terrain fills under the network (S7)
     await loadBuildings();          // draw our own building footprints on the terrain base (S8)
     await loadPlaces();             // draw rank-gated place labels (S9)
+    await loadStreets();            // street labels along the centerline, repeated on zoom (S10)
     sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
     match();
   } catch (e) {

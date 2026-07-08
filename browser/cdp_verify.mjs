@@ -38,6 +38,9 @@ else console.log('  buildings: none (buildings.txt absent — S8 render skipped)
 const plN = await ev('window.__places ? window.__places.count : -1');
 if (plN > 0) console.log(`  places: ${plN} rank-gated labels (S9)`);
 else console.log('  places: none (places.txt absent — S9 render skipped)');
+const stN = await ev('window.__streets ? window.__streets.count : -1');
+if (stN > 0) console.log(`  streets: ${stN} centerlines (S10 — labels repeat along the line on zoom)`);
+else console.log('  streets: none (streets.txt absent — S10 render skipped)');
 
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
