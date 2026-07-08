@@ -1,0 +1,40 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// basemap — the presentation-layer kernel (PLAN-BASEMAP). SEPARATE from routing_kernel by design: the
+// map matcher never imports this, and this never imports the frozen routing kernel (S0 isolation). It
+// starts with the parametric tiling grid — the SAME mechanism as the routing tiles, but with the cell
+// size as a parameter, so a finer presentation grid still keys without collision (routing's fixed
+// `ty*1e6+tx` only works because its 2 km cells keep `tx < 1e6`). Grows in later steps to hold the
+// area/place/street/building encoders that build the hash<PTile[tkey]> presentation store.
+
+// A lat/lon degree in fixed-point 1e-7° units (same encoding as the routing block).
+pub fn to_fixed(deg: float) -> integer { round(deg * 10000000.0) as integer }
+
+// Floor division for a positive divisor. loft's `/` truncates toward zero, which is wrong for negative
+// coordinates (a point at -0.0000001° must land in cell -1, not 0) — so the grid must floor explicitly.
+pub fn floordiv(a: integer, b: integer) -> integer {
+  if a >= 0 { (a / b) ?? 0 } else { 0 - (((0 - a + b - 1) / b) ?? 0) }
+}
+
+// Grid cell index of a fixed-point coord at cell size `cell` (floored — correct in every hemisphere).
+pub fn cell_ix(fixed: integer, cell: integer) -> integer { floordiv(fixed, cell) }
+
+// Tile origin (fixed units) for a cell index.
+pub fn origin(ix: integer, cell: integer) -> integer { ix * cell }
+
+// Key packing that SCALES with `cell`. Bias tx/ty non-negative (so any hemisphere keys cleanly) and use a
+// row multiplier wider than the world's tx span at this cell — distinct cells then never collide, at any
+// cell size. `bias_x` covers ±180° lon, `bias_y` ±90° lat; `row_mult` > max biased tx.
+pub fn bias_x(cell: integer) -> integer { ((1800000000 / cell) ?? 0) + 1 }
+pub fn bias_y(cell: integer) -> integer { ((900000000 / cell) ?? 0) + 1 }
+pub fn row_mult(cell: integer) -> integer { 2 * bias_x(cell) + 2 }
+
+pub fn tkey(tx: integer, ty: integer, cell: integer) -> integer {
+  (ty + bias_y(cell)) * row_mult(cell) + (tx + bias_x(cell))
+}
+
+// Convenience: lat/lon → the cell key at `cell`.
+pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
+  tkey(cell_ix(to_fixed(lon), cell), cell_ix(to_fixed(lat), cell), cell)
+}
