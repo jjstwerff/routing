@@ -9,7 +9,7 @@
 //   loft --interpret --path <loft>/ client/basemap/areas.loft client/basemap/fixtures/real_stretch_areas.json
 //
 // Regenerate the fixture (gitignored — too big to commit) with the Overpass query in
-// tools/basemap/fetch-areas.sh for the test bbox.
+// tools/basemap/fetch.sh areas for the test bbox.
 
 #cwd
 

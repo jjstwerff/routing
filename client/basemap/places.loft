@@ -1,0 +1,65 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S2 — place labels (the presentation layer, SEPARATE from routing). Reads the Overpass
+// `place=*` nodes and turns each into a Label: name + kind + point + rank. The rank (importance tier)
+// drives min-zoom and font size at render time — cities show first and largest, hamlets last.
+// The routing kernel is untouched; the S0 isolation gate proves the matcher is unaffected.
+//
+//   loft --interpret --path <loft>/ client/basemap/places.loft client/basemap/fixtures/real_stretch_places.json
+//   regenerate the fixture: tools/basemap/fetch.sh places
+
+#cwd
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+// place=* kind → importance rank (higher = more prominent, shown at a lower zoom / larger font).
+pub fn place_rank(kind: text) -> integer {
+  if kind == "city" { 6 }
+  else if kind == "town" { 5 }
+  else if kind == "village" { 4 }
+  else if kind == "suburb" || kind == "borough" { 3 }
+  else if kind == "hamlet" || kind == "neighbourhood" || kind == "quarter" { 2 }
+  else if kind == "locality" || kind == "isolated_dwelling" || kind == "farm" || kind == "islet" { 1 }
+  else { 0 }
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for a in arguments() { argv += [a]; }
+  data_path = argv[0] ?? "";
+  if data_path == "" { println("usage: places <places.json>"); return; }
+
+  root = json_parse(file(data_path).content());
+  elements = root.field("elements");
+
+  total = 0; labeled = 0;
+  ol_ok = false; lo_ok = false;
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "node" {
+      tags = el.field("tags");
+      kind = atag(tags, "place");
+      name = atag(tags, "name");
+      if kind != "" && name != "" {
+        total += 1;
+        rank = place_rank(kind);
+        if rank > 0 { labeled += 1; }
+        lat = el.field("lat").as_number();
+        lon = el.field("lon").as_number();
+        println("place|{kind}|rank={rank}|{name}|{lat:2.7},{lon:2.7}");
+        if name == "Oldenzaal" && kind == "town" { ol_ok = true; }
+        if name == "Lonneker" && kind == "village" { lo_ok = true; }
+      }
+    }
+  }
+
+  tr = place_rank("town"); vr = place_rank("village");
+  println("places={total} labeled={labeled}");
+  // S2 check: the known town + village are present with the expected kind/rank.
+  if ol_ok && lo_ok { println("S2 OK: Oldenzaal(town rank {tr}) + Lonneker(village rank {vr}) present"); }
+  else { println("S2 FAIL: missing Oldenzaal/town or Lonneker/village"); }
+}
