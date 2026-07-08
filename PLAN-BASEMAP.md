@@ -195,6 +195,10 @@ mechanism must, to "still work" at any size/place.
   a town label survive.
 - **S5.6 — isolation.** *Check:* **S0 gate PASS**; grep the routing block still roads-only; the presentation
   store is a distinct file.
+  **✓ DONE:** `tools/basemap_isolation_gate.sh` now checks isolation on both axes — runtime (route
+  byte-identical + frozen sources) AND structural (routing never imports `basemap`, `basemap` never imports
+  the frozen `routing_kernel` — it reimplements the grid — and routing carries no presentation types). The
+  presentation store is its own `out.store`; routing writes `*.tiles`. **Phase 2 complete (S5.0–S5.6).**
 
 ### Fallback if S5.0 falsifies the nested schema (decided by the probe, not guessed)
 Flatten to mirror `TTile` exactly — one flat coord pool per tile + count-prefixed headers (the shape the

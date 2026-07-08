@@ -38,4 +38,14 @@ else
   echo "  FAIL a frozen source changed — basemap work touched the routing input path:"; ( cd "$here" && sha256sum -c "$frozen" 2>&1 | grep -v ': OK$' ); ok=0
 fi
 
-[ "$ok" = 1 ] && echo "PASS — routing kernel is isolated from the presentation layer (PLAN-BASEMAP S0)." || { echo "FAILURES — isolation invariant violated."; exit 1; }
+# 3. Structural isolation (PLAN-BASEMAP S5.6): the two subsystems share NO code. Routing never imports the
+#    presentation lib; the presentation lib never imports the frozen routing kernel (it reimplements the
+#    grid); and the routing kernel carries no presentation record types. So they can only ever share
+#    coordinates + a snapshot date — never a store, a struct, or a function.
+si=1
+grep -rqE 'use[[:space:]]+basemap' "$here/lib/routing_kernel/src" 2>/dev/null && { echo "  FAIL routing_kernel imports basemap"; si=0; }
+grep -rqE 'use[[:space:]]+routing_kernel' "$here/lib/basemap/src" 2>/dev/null && { echo "  FAIL basemap imports routing_kernel"; si=0; }
+grep -rqE '\b(PTile|area_use|struct (Area|Building|Poi|Label))\b' "$here/lib/routing_kernel/src" 2>/dev/null && { echo "  FAIL presentation types leaked into routing_kernel"; si=0; }
+[ "$si" = 1 ] && echo "  PASS structural isolation (no shared code; routing carries no presentation types)" || ok=0
+
+[ "$ok" = 1 ] && echo "PASS — routing is isolated from the presentation layer, runtime AND structurally (PLAN-BASEMAP S0/S5.6)." || { echo "FAILURES — isolation invariant violated."; exit 1; }
