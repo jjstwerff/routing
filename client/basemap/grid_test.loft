@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S5.1 — verify the parametric grid: exact coord reconstruction (origin + delta), floored
+// cells (correct for negative coords), and — the load-bearing probe — that two distinct cells which
+// COLLIDE under routing's fixed `ty*1e6+tx` packing get DISTINCT keys from the parametric `tkey`.
+//   loft --interpret --path <loft>/ --lib lib client/basemap/grid_test.loft
+
+use basemap::(to_fixed, floordiv, cell_ix, origin, tkey);
+
+// The routing block's fixed packing (routing_kernel/gen-tiles) — reproduced here for the collision contrast.
+fn routing_pack(tx: integer, ty: integer) -> integer { ty * 1000000 + tx }
+
+fn main() {
+  ok = true;
+  cell = 200000;                                  // routing's 2 km cell
+
+  // Check 1 — a real lat/lon maps to a cell, and origin+delta reconstructs the fixed coord EXACTLY.
+  lat = 52.3116616; lon = 6.9241615;              // Oldenzaal
+  fx = to_fixed(lon); fy = to_fixed(lat);
+  tx = cell_ix(fx, cell); ty = cell_ix(fy, cell);
+  ox = origin(tx, cell); oy = origin(ty, cell);
+  dx = fx - ox; dy = fy - oy;
+  println("cell: fx={fx} fy={fy} tx={tx} ty={ty} dx={dx} dy={dy}");
+  if dx < 0 || dx >= cell || dy < 0 || dy >= cell { println("FAIL: delta not in [0,cell)"); ok = false; }
+  if ox + dx != fx || oy + dy != fy { println("FAIL: origin+delta != fixed"); ok = false; }
+
+  // Check 2 — floored division: a coord just west/south of 0 lands in cell -1, not 0.
+  if floordiv(0 - 5, 3) != (0 - 2) { println("FAIL: floordiv(-5,3)"); ok = false; }
+  if cell_ix(0 - 1, cell) != (0 - 1) { println("FAIL: cell_ix just below 0"); ok = false; }
+
+  // Check 3 (the probe) — at a fine cell the routing packing overflows and COLLIDES; ours must not.
+  // At cell=1000, tx can reach 1.8e6 (>1e6), so cell A(tx=1e6,ty=0) and B(tx=0,ty=1) map to the SAME
+  // routing key (0*1e6+1e6 == 1*1e6+0). The parametric tkey keeps them distinct.
+  fine = 1000;
+  rA = routing_pack(1000000, 0); rB = routing_pack(0, 1);
+  kA = tkey(1000000, 0, fine); kB = tkey(0, 1, fine);
+  println("probe: routing A={rA} B={rB} collide={rA == rB} | ours A={kA} B={kB} distinct={kA != kB}");
+  if rA != rB { println("FAIL: routing pack did not collide (probe assumption wrong)"); ok = false; }
+  if kA == kB { println("FAIL: parametric packing COLLIDES at fine cell"); ok = false; }
+
+  if ok { println("S5.1 OK: parametric grid — exact reconstruction, floored cells, collision-free where routing's 1e6 overflows"); }
+  else { println("S5.1 FAIL"); }
+}

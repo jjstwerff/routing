@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S6 — working-set load. Given a viewport bbox, resolve the covering cell keys and load ONLY
+// those cells from a persisted presentation store via store_load_keys (loft#522), then check the loaded
+// features equal a full-file decode restricted to the same cells. Run with LOFT_LOADER_STATS=1 to see
+// bytes fetched vs the whole file (the countable working-set assertion).
+//   LOFT_LOADER_STATS=1 loft --interpret --path <loft>/ --lib lib client/basemap/load_working_set.loft <store>
+//
+// NB: the store must be built at the SAME cell size used here (CELL_P) so the keys line up.
+
+#cwd
+
+use basemap::(PTile, cell_ix, tkey, to_fixed);
+
+CELL_P = 50000;
+
+fn tkeys_for_bbox(slat: float, wlon: float, nlat: float, elon: float, cell: integer) -> vector<integer> {
+  tx0 = cell_ix(to_fixed(wlon), cell); tx1 = cell_ix(to_fixed(elon), cell);
+  ty0 = cell_ix(to_fixed(slat), cell); ty1 = cell_ix(to_fixed(nlat), cell);
+  keys: vector<integer> = [];
+  ty = ty0;
+  while ty <= ty1 {
+    tx = tx0;
+    while tx <= tx1 { keys += [tkey(tx, ty, cell)]; tx += 1; }
+    ty += 1;
+  }
+  keys
+}
+
+fn stats(store: hash<PTile[tkey]>) -> text {
+  nt = 0; na = 0;
+  for t in store { nt += 1; for _a in t.areas { na += 1; } }
+  "tiles={nt} areas={na}"
+}
+
+fn main() {
+  path = arguments()[0] ?? "";
+  if path == "" { println("usage: load_working_set <store>"); return; }
+
+  // A small viewport — a couple of cells out of the whole store (the working-set case).
+  slat = 52.256; wlon = 6.905; nlat = 52.260; elon = 6.909;
+  keys = tkeys_for_bbox(slat, wlon, nlat, elon, CELL_P);
+  println("viewport {slat},{wlon} .. {nlat},{elon} → {len(keys)} covering cells");
+
+  // Working-set partial load: only the covering cells.
+  local: hash<PTile[tkey]> = [];
+  found = store_load_keys(local, path, keys);
+  println("store_load_keys found={found} → local {stats(local)}");
+
+  // Ground truth: whole-file decode restricted to the same cells.
+  full: hash<PTile[tkey]> = [];
+  store_load(full, path);
+  gt = 0; ga = 0;
+  for t in full {
+    hit = false;
+    for k in keys { if t.tkey == (k ?? 0) { hit = true; } }
+    if hit { gt += 1; for _a in t.areas { ga += 1; } }
+  }
+  println("full-decode of the same bbox → tiles={gt} areas={ga}");
+
+  la = 0; lt = 0;
+  for t in local { lt += 1; for _a in t.areas { la += 1; } }
+  if lt == gt && la == ga && la > 0 {
+    println("S6 OK: working-set load == full-decode of the same bbox (bytes: see LOFT_LOADER_STATS)");
+  } else {
+    println("S6 MISMATCH: partial (tiles={lt} areas={la}) vs full-subset (tiles={gt} areas={ga}) — store_load_keys may refuse this schema");
+  }
+}

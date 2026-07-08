@@ -18,8 +18,8 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 [ -x "$loft" ] || { echo "SKIP: loft not found at $loft (set LOFT_BIN)"; exit 2; }
 
-# Build the browser wasm if absent (loft --html + extract).
-[ -f "$here/browser/web_kernel.wasm" ] || LOFT_BIN="$loft" LOFT_ROOT="$loftroot" node "$here/browser/build.mjs" || exit 1
+# Build the browser wasm + terrain areas.txt + buildings.txt if absent (loft --html, loft emit_*).
+{ [ -f "$here/browser/web_kernel.wasm" ] && [ -f "$here/browser/areas.txt" ] && [ -f "$here/browser/buildings.txt" ] && [ -f "$here/browser/places.txt" ] && [ -f "$here/browser/streets.txt" ]; } || LOFT_BIN="$loft" LOFT_ROOT="$loftroot" node "$here/browser/build.mjs" || exit 1
 
 # Native reference route (app_kernel's demo trace == the page's default sketch, so byte-comparable).
 data="lib/routing_kernel/tests/fixtures/real_stretch.json"

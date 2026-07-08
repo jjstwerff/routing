@@ -28,6 +28,34 @@ let ok = true;
 if (m.routeCount < 2) { console.log('FAIL: empty route'); ok = false; }
 if (m.polyline !== refLine) { console.log('FAIL: polyline != native reference'); ok = false; } else console.log(`  polyline byte-identical to native (${m.routeCount} pts)`);
 
+// PLAN-BASEMAP S7: our own terrain fills (the "Terrain (our data)" base) should draw from areas.txt.
+const areasN = await ev('window.__areas ? window.__areas.count : -1');
+if (areasN > 0) console.log(`  terrain: ${areasN} area fills drawn (S7 — our self-contained base)`);
+else console.log('  terrain: none (areas.txt absent — S7 render skipped)');
+const bldN = await ev('window.__buildings ? window.__buildings.count : -1');
+if (bldN > 0) console.log(`  buildings: ${bldN} footprints drawn (S8)`);
+else console.log('  buildings: none (buildings.txt absent — S8 render skipped)');
+const plN = await ev('window.__places ? window.__places.count : -1');
+if (plN > 0) console.log(`  places: ${plN} rank-gated labels (S9)`);
+else console.log('  places: none (places.txt absent — S9 render skipped)');
+const stN = await ev('window.__streets ? window.__streets.count : -1');
+if (stN > 0) console.log(`  streets: ${stN} centerlines (S10 — labels repeat along the line on zoom)`);
+else console.log('  streets: none (streets.txt absent — S10 render skipped)');
+const stamp = await ev('window.__stamp || (document.getElementById("freshness")||{}).textContent || ""');
+if (stamp && /\d{4}-\d\d-\d\d/.test(stamp)) console.log(`  freshness: "${String(stamp).trim()}" (S12)`);
+else console.log('  freshness: no date rendered (S12)');
+const gen = await ev('window.__gen ? JSON.stringify(window.__gen) : ""');
+if (gen) console.log(`  generalization: ${gen} (S13 — buildings ≥z14, small areas drop out zoomed out)`);
+
+// PLAN-BASEMAP S14: on the terrain base at a town zoom, the collision layout must leave NO two labels
+// overlapping. (Then restore OSM base + fit so the later profile/click/offline checks are unaffected.)
+await ev(`(()=>{try{const b=window.__bases;window.__map.removeLayer(b.osm);b.terrain.addTo(window.__map);window.__map.setView([52.304,6.917],16);}catch(e){}})()`);
+await new Promise((r) => setTimeout(r, 1600));
+const lbl = await ev(`(()=>{const rs=[...document.querySelectorAll('.plabel span,.slabel span')].map(e=>e.getBoundingClientRect()).filter(r=>r.width>0);let ov=0;for(let i=0;i<rs.length;i++)for(let j=i+1;j<rs.length;j++){const a=rs[i],b=rs[j];if(!(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom))ov++;}return{labels:rs.length,overlaps:ov};})()`);
+if (lbl && lbl.overlaps === 0) console.log(`  labels: ${lbl.labels} on terrain base, 0 overlaps (S14 collision layout)`);
+else { console.log(`  FAIL: ${lbl ? lbl.overlaps : '?'} label overlaps (S14)`); ok = false; }
+await ev(`(()=>{try{const b=window.__bases;window.__map.removeLayer(b.terrain);b.osm.addTo(window.__map);}catch(e){}})()`);
+
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);
 let mp = null;
@@ -39,12 +67,10 @@ else console.log('  ✓ profile selector re-matched (route changed with profile)
 // Restore the default profile so the offline-reload assertions compare against the cycling_road reference.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='cycling_road';s.dispatchEvent(new Event('change'));})()`);
 
-// Interactivity: clear, then a synthetic click must produce a (different) match state.
+// Interactivity: clear, then a synthetic map click must produce a (different) sketch state.
 await ev('document.getElementById("clear").click(); window.__match=null;');
 const before = await ev('(document.getElementById("status")||{}).textContent');
-await ev(`(()=>{const svg=document.getElementById('map');const r=svg.getBoundingClientRect();
-  const e=new PointerEvent('pointerdown',{clientX:r.left+r.width*0.3,clientY:r.top+r.height*0.5,bubbles:true});
-  svg.dispatchEvent(e);})()`);
+await ev(`window.__map.fire('click',{latlng:{lat:52.255,lng:6.905}})`);
 const after = await ev('window.__match?JSON.stringify(window.__match):(document.getElementById("status")||{}).textContent');
 console.log('  after 1 click:', String(after).slice(0, 80));
 if (before === after) { console.log('FAIL: click did not change state'); ok = false; } else console.log('  interactive click re-ran the matcher');

@@ -3,8 +3,12 @@
 // and the browser wasm so a FULLY-offline reload still loads and runs. The test-set dataset lives
 // outside this worker's /browser/ scope, so the app caches THAT in IndexedDB (see index.html); the
 // two layers together make the whole app work with no network.
-const CACHE = 'routing-shell-v1';
-const SHELL = ['./', './index.html', './web_kernel.wasm'];
+// Bumped to v2: the shell now includes the vendored Leaflet assets (base-map library) so an offline
+// reload still renders the map + our road network. OSM tiles are cross-origin and deliberately NOT
+// cached here (the fetch handler ignores other origins) — offline they just fail and the app falls
+// back to drawing the road network from the cached data.
+const CACHE = 'routing-shell-v2';
+const SHELL = ['./', './index.html', './web_kernel.wasm', './vendor/leaflet/leaflet.js', './vendor/leaflet/leaflet.css'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -39,8 +39,8 @@ USGS **NED/3DEP**, and other national/open elevation data.
 - **[loft](https://github.com/loft-lang/loft)** — the language/toolchain
   (LGPL-3.0-or-later); the vendored `lib/{web,server,imaging}` libraries are from
   loft-libs (LGPL-3.0-or-later) and keep their own headers.
-- **[Leaflet](https://leafletjs.com/)** — map rendering (BSD-2-Clause), vendored
-  under `vendor/`.
+- **[Leaflet](https://leafletjs.com/)** 1.9.4 — interactive map rendering
+  (BSD-2-Clause), vendored under `browser/vendor/leaflet/` (see its `README.md`).
 
 ## This project
 

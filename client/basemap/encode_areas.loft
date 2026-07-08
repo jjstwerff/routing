@@ -1,0 +1,147 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S5.2 — area encoder. Reads the areas fixture, classifies each polygon (area_use → cover),
+// and bins its ring into the PTile of its cell (keyed by the first vertex) at the presentation CELL,
+// building a hash<PTile[tkey]>. Ring coords are stored as i32 deltas from the tile origin (like the
+// routing TStep). Reports counts and checks a known water polygon lands in the cell its coords key to.
+//   loft --interpret --path <loft>/ --lib lib client/basemap/encode_areas.loft <areas.json>
+
+#cwd
+
+use basemap::(Coord, Area, PTile, area_use, to_fixed, cell_ix, origin, tkey);
+
+CELL_P = 50000;    // presentation cell (~500 m) — finer than routing's 200000; S5.4 varies it
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+// NB: classify INLINE from the loop-local element's tags — a loft gotcha is that passing a JSON element
+// into a helper and calling `.field("tags")` on the parameter loses the nested object (scalar fields like
+// "type" survive; nested objects come back empty), so a `cover_of(el)` helper silently returns "".
+
+pub fn build(osm: text, cell: integer) -> hash<PTile[tkey]> {
+  root = json_parse(osm);
+  elements = root.field("elements");
+  idx: hash<PTile[tkey]> = [];
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "way" {
+      geom = el.field("geometry");
+      m = len(geom);
+      if m >= 3 {
+        tags = el.field("tags");
+        cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"));
+        g0 = geom.item(0);
+        tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
+        ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
+        key = tkey(tx, ty, cell);
+        t = idx[key];
+        if t == null {
+          idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] };
+          t = idx[key];
+        }
+        ring: vector<Coord> = [];
+        for j in 0..m {
+          g = geom.item(j);
+          fx = to_fixed(g.field("lon").as_number());
+          fy = to_fixed(g.field("lat").as_number());
+          ring += [Coord { x: (fx - t.ox) as i32? ?? (0 as i32), y: (fy - t.oy) as i32? ?? (0 as i32) }];
+        }
+        t.areas += [Area { cover: cover, ring: ring }];
+      }
+    }
+  }
+  idx
+}
+
+// Build at `cell`, persist to `path`, reload fresh, verify, and confirm the area count is preserved.
+// Returns the tile count on a sound round-trip, else -1. Used by S5.4 to compare two cell sizes.
+fn roundtrip(osm: text, cell: integer, path: text) -> integer {
+  idx = build(osm, cell);
+  nt = 0; na = 0;
+  for t in idx { nt += 1; for _a in t.areas { na += 1; } }
+  ok = store_persist_bind(idx, path);
+  dst: hash<PTile[tkey]> = [];
+  lok = store_load(dst, path);
+  vok = store_verify(dst);
+  nt2 = 0; na2 = 0;
+  for t in dst { nt2 += 1; for _a in t.areas { na2 += 1; } }
+  if ok && lok && vok && nt2 == nt && na2 == na { nt } else { 0 - 1 }
+}
+
+fn main() {
+  data_path = arguments()[0] ?? "";
+  out_path  = arguments()[1] ?? "";        // if given (S5.3): persist the store → reload → verify → recount
+  if data_path == "" { println("usage: encode_areas <areas.json> [out.store]"); return; }
+  osm = file(data_path).content();
+
+  // Independent input count — a PURE count of area ways (classification lives in build(), where reading
+  // the loop-local element's nested tags is reliable; a long-lived scan in main misreads them).
+  root = json_parse(osm);
+  elements = root.field("elements");
+  input = 0;
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "way" && len(el.field("geometry")) >= 3 { input += 1; }
+  }
+
+  idx = build(osm, CELL_P);
+  tiles = 0; binned = 0; water = 0; forest = 0; cell_ok = false;
+  for t in idx {
+    tiles += 1;
+    for a in t.areas {
+      binned += 1;
+      if a.cover == "water" { water += 1; }
+      if a.cover == "forest" { forest += 1; }
+      // Cell round-trip: a stored water polygon's first vertex, reconstructed from tile origin + delta,
+      // must key back to the very tile it lives in — proves the binning and the grid are consistent.
+      if a.cover == "water" && !cell_ok {
+        c0 = a.ring[0] ?? Coord { x: 0 as i32, y: 0 as i32 };
+        fx = t.ox + (c0.x as integer? ?? 0);
+        fy = t.oy + (c0.y as integer? ?? 0);
+        if tkey(cell_ix(fx, CELL_P), cell_ix(fy, CELL_P), CELL_P) == t.tkey { cell_ok = true; }
+      }
+    }
+  }
+  println("tiles={tiles} input_areas={input} binned={binned} water={water} forest={forest} cell={CELL_P}");
+  println("cell round-trip (a stored water vertex re-keys to its own tile) = {cell_ok}");
+
+  if tiles > 0 && binned == input && water > 0 && forest > 0 && cell_ok {
+    println("S5.2 OK: {binned} areas binned into {tiles} cells (none dropped); a water polygon re-keys to its cell");
+  } else {
+    println("S5.2 FAIL");
+  }
+
+  // S5.3 — persist the REAL store to its own file, reload into a fresh store, verify, and recount.
+  if out_path != "" {
+    ok = store_persist_bind(idx, out_path);
+    dst: hash<PTile[tkey]> = [];
+    lok = store_load(dst, out_path);
+    vok = store_verify(dst);
+    tiles2 = 0; areas2 = 0; water2 = 0; forest2 = 0;
+    for t in dst {
+      tiles2 += 1;
+      for a in t.areas { areas2 += 1; if a.cover == "water" { water2 += 1; } if a.cover == "forest" { forest2 += 1; } }
+    }
+    println("persist {ok} load {lok} verify {vok} | reloaded tiles={tiles2} areas={areas2} water={water2} forest={forest2}");
+    if ok && lok && vok && tiles2 == tiles && areas2 == binned && water2 == water && forest2 == forest {
+      println("S5.3 OK: real area store round-trips on disk (verify true, tiles+areas+covers match)");
+    } else {
+      println("S5.3 FAIL");
+    }
+
+    // S5.4 — size-agnostic: round-trip at routing's 2 km cell AND the finer presentation cell. Both must
+    // round-trip soundly, and the finer cell must yield strictly MORE tiles (the mechanism isn't tied to a
+    // size — same areas, distributed over more cells).
+    coarse = roundtrip(osm, 200000, out_path + ".coarse");
+    fine   = roundtrip(osm, CELL_P, out_path + ".fine");
+    println("S5.4 sizes: cell=200000 → tiles={coarse}; cell={CELL_P} → tiles={fine}");
+    if coarse > 0 && fine > 0 && fine > coarse {
+      println("S5.4 OK: store round-trips at both cell sizes; finer cell → more tiles (mechanism is size-agnostic)");
+    } else {
+      println("S5.4 FAIL");
+    }
+  }
+}

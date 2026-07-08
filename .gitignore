@@ -32,3 +32,15 @@ routes/
 
 # Local tile data block (PLAN-TILES) — large binary, regenerate with gen6, never committed
 *.tiles
+
+# PLAN-BASEMAP: the large regenerable Overpass dumps (areas, streets, buildings) are gitignored — keep
+# only a trimmed *.sample.json for the gate. The small `places` fixture is committed whole. Regenerate
+# any of them with tools/basemap/fetch.sh <kind>.
+client/basemap/fixtures/*_areas.json
+client/basemap/fixtures/*_streets.json
+client/basemap/fixtures/*_buildings.json
+!client/basemap/fixtures/*.sample.json
+
+# GitHub Pages build output (loft build → _site) — regenerable, not committed.
+_site/
+.loft/

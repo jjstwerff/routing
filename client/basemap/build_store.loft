@@ -1,0 +1,168 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S5.5 — the full presentation-store builder. Reads the four extracted fixtures (areas,
+// buildings, places, streets) and bins ALL of them into ONE hash<PTile[tkey]> at the presentation cell,
+// then persists → reloads → verifies → round-trips every count. Areas/buildings store footprint rings;
+// place nodes become point Labels (rank-tiered); named streets become Labels with a DP-simplified
+// centerline (option B). Lines/pois are allowed by the schema but need their own fixtures (S5.5b).
+//   loft --interpret --path <loft>/ --lib lib client/basemap/build_store.loft \
+//        <areas.json> <buildings.json> <places.json> <streets.json> [out.store]
+
+#cwd
+
+use basemap::(Coord, Area, Building, Label, PTile, area_use, place_rank, dp_mask,
+              to_fixed, cell_ix, origin, tkey);
+
+// Local atag — a JsonValue does not survive being passed into a LIB (cross-package) function, so the
+// tag reader must live in this file. (Reading scalar/nested fields off a locally-held JsonValue is fine.)
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+CELL_P = 50000;        // presentation cell (~500 m)
+STREET_EPS = 10.0;     // metres — street centerline simplification tolerance
+
+fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_osm: text, cell: integer) -> hash<PTile[tkey]> {
+  idx: hash<PTile[tkey]> = [];
+
+  // --- areas: landcover polygons ---
+  ra = json_parse(areas_osm); ea = ra.field("elements");
+  for i in 0..len(ea) {
+    el = ea.item(i);
+    if atag(el, "type") == "way" {
+      geom = el.field("geometry"); m = len(geom);
+      if m >= 3 {
+        tags = el.field("tags");
+        cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"));
+        g0 = geom.item(0);
+        tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
+        ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
+        key = tkey(tx, ty, cell);
+        t = idx[key];
+        if t == null { idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] }; t = idx[key]; }
+        ring: vector<Coord> = [];
+        for j in 0..m { g = geom.item(j); ring += [Coord { x: (to_fixed(g.field("lon").as_number()) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(g.field("lat").as_number()) - t.oy) as i32? ?? (0 as i32) }]; }
+        t.areas += [Area { cover: cover, ring: ring }];
+      }
+    }
+  }
+
+  // --- buildings: footprint polygons (+ optional name) ---
+  rb = json_parse(buildings_osm); eb = rb.field("elements");
+  for i in 0..len(eb) {
+    el = eb.item(i);
+    if atag(el, "type") == "way" {
+      tags = el.field("tags");
+      if atag(tags, "building") != "" {
+        geom = el.field("geometry"); m = len(geom);
+        if m >= 4 {
+          name = atag(tags, "name");
+          g0 = geom.item(0);
+          tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
+          ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
+          key = tkey(tx, ty, cell);
+          t = idx[key];
+          if t == null { idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] }; t = idx[key]; }
+          ring: vector<Coord> = [];
+          for j in 0..m { g = geom.item(j); ring += [Coord { x: (to_fixed(g.field("lon").as_number()) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(g.field("lat").as_number()) - t.oy) as i32? ?? (0 as i32) }]; }
+          t.buildings += [Building { name: name, ring: ring }];
+        }
+      }
+    }
+  }
+
+  // --- places: point Labels (city/town/village/... by rank) ---
+  rp = json_parse(places_osm); ep = rp.field("elements");
+  for i in 0..len(ep) {
+    el = ep.item(i);
+    if atag(el, "type") == "node" {
+      tags = el.field("tags");
+      kind = atag(tags, "place"); name = atag(tags, "name");
+      if kind != "" && name != "" {
+        rank = place_rank(kind);
+        if rank > 0 {
+          fx = to_fixed(el.field("lon").as_number()); fy = to_fixed(el.field("lat").as_number());
+          tx = cell_ix(fx, cell); ty = cell_ix(fy, cell);
+          key = tkey(tx, ty, cell);
+          t = idx[key];
+          if t == null { idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] }; t = idx[key]; }
+          pt = Coord { x: (fx - t.ox) as i32? ?? (0 as i32), y: (fy - t.oy) as i32? ?? (0 as i32) };
+          t.labels += [Label { name: name, kind: kind, rank: rank, line: [pt] }];
+        }
+      }
+    }
+  }
+
+  // --- streets: name Labels with a DP-simplified centerline (option B) ---
+  d2r = PI / 180.0;
+  rs = json_parse(streets_osm); es = rs.field("elements");
+  for i in 0..len(es) {
+    el = es.item(i);
+    if atag(el, "type") == "way" {
+      tags = el.field("tags");
+      name = atag(tags, "name"); hw = atag(tags, "highway");
+      geom = el.field("geometry"); m = len(geom);
+      if name != "" && hw != "" && m >= 2 {
+        lat0 = geom.item(0).field("lat").as_number();
+        lon0 = geom.item(0).field("lon").as_number();
+        mlon = 111320.0 * cos(lat0 * d2r);
+        xs: vector<float> = []; ys: vector<float> = [];
+        for j in 0..m { g = geom.item(j); xs += [(g.field("lon").as_number() - lon0) * mlon]; ys += [(g.field("lat").as_number() - lat0) * 111320.0]; }
+        keep = dp_mask(xs, ys, STREET_EPS);
+        tx = cell_ix(to_fixed(lon0), cell); ty = cell_ix(to_fixed(lat0), cell);
+        key = tkey(tx, ty, cell);
+        t = idx[key];
+        if t == null { idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] }; t = idx[key]; }
+        line: vector<Coord> = [];
+        for j in 0..m { if keep[j] ?? false { g = geom.item(j); line += [Coord { x: (to_fixed(g.field("lon").as_number()) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(g.field("lat").as_number()) - t.oy) as i32? ?? (0 as i32) }]; } }
+        t.labels += [Label { name: name, kind: "street", rank: 0, line: line }];
+      }
+    }
+  }
+
+  idx
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 4 { println("usage: build_store <areas.json> <buildings.json> <places.json> <streets.json> [out.store]"); return; }
+  out_path = a[4] ?? "";
+
+  areas_txt     = file(a[0] ?? "").content();
+  buildings_txt = file(a[1] ?? "").content();
+  places_txt    = file(a[2] ?? "").content();
+  streets_txt   = file(a[3] ?? "").content();
+  idx = build_store(areas_txt, buildings_txt, places_txt, streets_txt, CELL_P);
+
+  nt = 0; na = 0; nb = 0; nl = 0; named_bld = false; town_label = false;
+  for t in idx {
+    nt += 1;
+    for _ar in t.areas { na += 1; }
+    for b in t.buildings { nb += 1; if b.name == "Elimkerk" { named_bld = true; } }
+    for l in t.labels { nl += 1; if l.name == "Oldenzaal" && l.kind == "town" { town_label = true; } }
+  }
+  println("tiles={nt} areas={na} buildings={nb} labels={nl} | named_building(Elimkerk)={named_bld} town_label(Oldenzaal)={town_label}");
+
+  if out_path != "" {
+    ok = store_persist_bind(idx, out_path);
+    dst: hash<PTile[tkey]> = [];
+    lok = store_load(dst, out_path);
+    vok = store_verify(dst);
+    nt2 = 0; na2 = 0; nb2 = 0; nl2 = 0;
+    for t in dst {
+      nt2 += 1;
+      for _a in t.areas { na2 += 1; }
+      for _b in t.buildings { nb2 += 1; }
+      for _l in t.labels { nl2 += 1; }
+    }
+    println("persist {ok} load {lok} verify {vok} | reloaded tiles={nt2} areas={na2} buildings={nb2} labels={nl2}");
+    if ok && lok && vok && nt2 == nt && na2 == na && nb2 == nb && nl2 == nl && named_bld && town_label {
+      println("S5.5 OK: areas+buildings+labels(places+streets) in one store round-trip; named building + town label survive");
+    } else {
+      println("S5.5 FAIL");
+    }
+  }
+}

@@ -1,0 +1,274 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "osm3s": {
+    "timestamp_osm_base": "2026-07-08T11:33:31Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "node",
+  "id": 46130993,
+  "lat": 52.3116616,
+  "lon": 6.9241615,
+  "tags": {
+    "name": "Oldenzaal",
+    "name:carnaval": "Boeskoolstad",
+    "name:fy": "Oldenseal",
+    "name:nl": "Oldenzaal",
+    "name:ru": "Олдензал",
+    "place": "town",
+    "population": "32006",
+    "population:date": "2017-01-01",
+    "source:population": "CBS",
+    "wikidata": "Q10016",
+    "wikipedia": "nl:Oldenzaal"
+  }
+},
+{
+  "type": "node",
+  "id": 1928883413,
+  "lat": 52.2506045,
+  "lon": 6.9117355,
+  "tags": {
+    "name": "Lonneker",
+    "name:nl": "Lonneker",
+    "name:ru": "Лоннекер",
+    "place": "village",
+    "population": "1915",
+    "population:date": "2017-01-01",
+    "postal_code": "7524",
+    "source:population": "CBS Buurt 2017",
+    "wikidata": "Q2490294"
+  }
+},
+{
+  "type": "node",
+  "id": 2719048862,
+  "lat": 52.2431114,
+  "lon": 6.9115015,
+  "tags": {
+    "name": "'t Bouwhuis",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2719048868,
+  "lat": 52.2472697,
+  "lon": 6.8913646,
+  "tags": {
+    "name": "Zuidkamp",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2821779295,
+  "lat": 52.2566374,
+  "lon": 6.9036480,
+  "tags": {
+    "name": "Roolvink Esch",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2821779296,
+  "lat": 52.2598760,
+  "lon": 6.8971662,
+  "tags": {
+    "name": "Roolvink",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 4988582230,
+  "lat": 52.3042400,
+  "lon": 6.8878060,
+  "tags": {
+    "email": "hethulsbeek@recreatieschaptwente.nl",
+    "facebook": "https://www.facebook.com/hulsbeekoldenzaal",
+    "name": "Recreatiepark Het Hulsbeek",
+    "phone": "+31 541 513 231",
+    "place": "locality",
+    "website": "https://www.hethulsbeek.nl/",
+    "wikidata": "Q2936839",
+    "wikipedia": "nl:Het Hulsbeek"
+  }
+},
+{
+  "type": "node",
+  "id": 6806565607,
+  "lat": 52.2822448,
+  "lon": 6.8964602,
+  "tags": {
+    "name": "BO 1",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 6806569702,
+  "lat": 52.2828766,
+  "lon": 6.8958379,
+  "tags": {
+    "name": "Twee onder één kap",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 6806581260,
+  "lat": 52.2819322,
+  "lon": 6.8967324,
+  "tags": {
+    "name": "CFBT 5",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 6806581261,
+  "lat": 52.2819240,
+  "lon": 6.8966533,
+  "tags": {
+    "name": "CFBT 6",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 6806584686,
+  "lat": 52.2818543,
+  "lon": 6.8963878,
+  "tags": {
+    "name": "Z gebouw",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 7819784838,
+  "lat": 52.2819368,
+  "lon": 6.8961908,
+  "tags": {
+    "name": "1.7",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 7819784839,
+  "lat": 52.2820019,
+  "lon": 6.8961531,
+  "tags": {
+    "name": "1.8",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 7819784840,
+  "lat": 52.2822106,
+  "lon": 6.8960645,
+  "tags": {
+    "name": "1,12",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 7819784841,
+  "lat": 52.2821225,
+  "lon": 6.8961169,
+  "tags": {
+    "name": "1.10",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 7819784854,
+  "lat": 52.2830017,
+  "lon": 6.8969211,
+  "tags": {
+    "name": "3.9",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 8589285173,
+  "lat": 52.2822545,
+  "lon": 6.8969024,
+  "tags": {
+    "name": "H container",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 8589285174,
+  "lat": 52.2820538,
+  "lon": 6.8970087,
+  "tags": {
+    "name": "Piet van de Wiel",
+    "place": "unknown"
+  }
+},
+{
+  "type": "node",
+  "id": 12201140990,
+  "lat": 52.3138642,
+  "lon": 6.9044106,
+  "tags": {
+    "name": "De Thij",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13006953993,
+  "lat": 52.2400145,
+  "lon": 6.8931015,
+  "tags": {
+    "name": "Deppenbroek",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13474376634,
+  "lat": 52.2383670,
+  "lon": 6.8803811,
+  "tags": {
+    "name": "Bolhaar",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 13556422537,
+  "lat": 52.2359348,
+  "lon": 6.8922613,
+  "tags": {
+    "name": "Mekkelholt",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13612972697,
+  "lat": 52.2479161,
+  "lon": 6.8926400,
+  "tags": {
+    "name": "Het Vaneker",
+    "place": "neighbourhood"
+  }
+}
+
+  ]
+}

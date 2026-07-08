@@ -5,7 +5,38 @@ loft    = ">=0.8"
 
 # All loft deps are provided locally via `--lib lib` at build time (see tools/ scripts):
 #   lib/routing_kernel — our pure-loft compute
+#   lib/basemap        — the presentation-layer kernel (grid + classifiers + DP)
 #   lib/server, lib/web — vendored from the registry with a one-line compile fix
-#     (`try_recv`/`next` return `text?`, not `text` — the shipped 0.2.x won't compile under
-#     loft 2026.6.0; see docs/loft-feedback.md). Vendored so the build is self-contained and
-#     needs no registry lockfile entry.
+#     (`try_recv`/`next` return `text?`, not `text`; see docs/loft-feedback.md).
+
+# The project entry for `loft build` shape targets (@PLN100). It's the browser wasm kernel — routing is a
+# multi-program app (server/server.loft is native, client/kernel.loft is wasi), but the build phase keys a
+# single entry off [library]; see docs/loft-build-phase-adoption.md § gaps.
+[library]
+entry = "client/web_kernel.loft"
+
+# --- Build phase (@PLN100): `loft build` produces the GitHub Pages site as fingerprinted assets ---------
+[build]
+default-targets = ["html"]        # also compile-checks the browser wasm kernel
+
+# The single self-contained page (wasm + test set + presentation layers + leaflet, all inlined).
+[[build.asset]]
+name    = "standalone"
+run     = "node browser/build-standalone.mjs"
+inputs  = ["browser/index.html", "browser/build-standalone.mjs", "client/web_kernel.loft",
+           "lib/routing_kernel/src/routing_kernel.loft", "lib/basemap/src/basemap.loft",
+           "client/basemap/emit_areas.loft", "client/basemap/emit_buildings.loft",
+           "client/basemap/emit_places.loft", "client/basemap/emit_streets.loft",
+           "client/basemap/fixtures/real_stretch_areas.sample.json",
+           "client/basemap/fixtures/real_stretch_buildings.sample.json",
+           "client/basemap/fixtures/real_stretch_places.json",
+           "client/basemap/fixtures/real_stretch_streets.sample.json",
+           "browser/vendor/leaflet/leaflet.js", "browser/vendor/leaflet/leaflet.css"]
+outputs = ["browser/standalone.html"]
+
+# Assemble the deployable Pages directory: the standalone file as the site index.
+[[build.asset]]
+name    = "pages-site"
+run     = "sh -c 'mkdir -p _site && cp browser/standalone.html _site/index.html'"
+inputs  = ["browser/standalone.html"]
+outputs = ["_site/index.html"]
