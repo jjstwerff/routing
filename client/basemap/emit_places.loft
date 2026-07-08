@@ -1,0 +1,36 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S9 (render side) — emit place labels for the browser. rank drives font size + the zoom at
+// which the label appears (cities first/largest, hamlets last). One line per place:
+//   <rank>;<name>;<lat>,<lon>
+//   loft --interpret --path <loft>/ --lib lib client/basemap/emit_places.loft <places.json> > browser/places.txt
+
+#cwd
+
+use basemap::(place_rank);
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+fn main() {
+  path = arguments()[0] ?? "";
+  if path == "" { println("usage: emit_places <places.json>"); return; }
+  root = json_parse(file(path).content());
+  elements = root.field("elements");
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "node" {
+      tags = el.field("tags");
+      kind = atag(tags, "place"); name = atag(tags, "name");
+      if kind != "" && name != "" {
+        rank = place_rank(kind);
+        if rank > 0 {
+          println("{rank};{name};{el.field(\"lat\").as_number():2.6},{el.field(\"lon\").as_number():2.6}");
+        }
+      }
+    }
+  }
+}

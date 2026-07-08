@@ -240,6 +240,10 @@ at S5.0 from the probe result.**
   route and **no OSM tiles**; gate reports `buildings: 647 footprints drawn`. S0 green.
 - **S9. Place labels.** Text sized/shown by `rank`. *Check:* town names appear; hamlets hidden when zoomed
   out.
+  **✓ DONE:** `client/basemap/emit_places.loft` → `browser/places.txt` (`rank;name;lat,lon`); the browser
+  draws halo'd text labels sized by rank, and gates visibility by zoom (`RANK_MINZOOM`). Verified headless:
+  at z12 only `Oldenzaal` (town) + `Lonneker` (village) show; at z15 all 12 (incl. hamlets/localities)
+  appear — the exact "hamlets hidden when zoomed out" behaviour, measured (2 → 12 labels). S0 green.
 - **S10. Street labels + repetition.** Name drawn along the centerline, **repeated at intervals when zoomed
   in**. *Check/Probe:* a long street shows **1** label at low zoom and **N>1** at high zoom, following the
   road angle (this is the "multiply the name" behaviour, directly measurable).

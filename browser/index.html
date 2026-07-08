@@ -19,6 +19,10 @@
   .leaflet-container { font: inherit; background: color-mix(in srgb, Canvas 92%, gray); }  /* fallback bg when tiles are absent */
   .foot { margin-top: .5rem; font-size: 12px; opacity: .7; max-width: 960px; }
   #mapnote { color: #b26a00; }
+  /* Place labels (S9): text with a white halo for legibility, centred on the point, no icon box. */
+  .leaflet-div-icon.plabel { background: transparent; border: none; }
+  .plabel span { position: absolute; transform: translate(-50%, -50%); white-space: nowrap; font-weight: 600;
+    color: #3a3a3a; text-shadow: -1px -1px 2px #fff, 1px -1px 2px #fff, -1px 1px 2px #fff, 1px 1px 2px #fff, 0 0 3px #fff; }
 </style>
 </head>
 <body>
@@ -128,6 +132,8 @@ function initMap() {
   map.getPane('terrain').style.zIndex = 250;
   map.createPane('buildings');                 // building footprints above terrain, below the network
   map.getPane('buildings').style.zIndex = 260;
+  map.createPane('labels');                    // place/street labels on top of everything
+  map.getPane('labels').style.zIndex = 640;
   // Two BASE maps (pick one): OSM raster tiles (rich, needs network) or our own terrain (self-contained,
   // works offline — landcover we classify + store ourselves). The road network + route always overlay.
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -145,6 +151,8 @@ function initMap() {
   const bounds = L.latLngBounds(net.length ? net.flat() : DEMO);
   map.fitBounds(bounds, { padding: [20, 20] });
   map.on('click', (e) => { sketch.push([e.latlng.lat, e.latlng.lng]); match(); });
+  map.on('zoomend', updatePlaceVisibility);    // rank-gated place labels appear/vanish with zoom (S9)
+  map.on('baselayerchange', () => setTimeout(updatePlaceVisibility, 0));
   window.__map = map;                          // test hook: gates fire map clicks through this
 }
 
@@ -180,6 +188,40 @@ async function loadBuildings() {
     if (ring.length >= 3) { L.polygon(ring, BLD_STYLE).addTo(areasLayer); n++; }
   }
   window.__buildings = { count: n, bounds: n ? [[miLa, miLo], [maLa, maLo]] : null };
+}
+
+// PLAN-BASEMAP S9: place labels. rank → font size AND the minimum zoom at which the label shows, so towns
+// appear zoomed-out and hamlets only when you zoom in. Labels live on the "Terrain (our data)" base.
+let placeMarkers = [];
+const RANK_MINZOOM = { 6: 0, 5: 9, 4: 11, 3: 12, 2: 13, 1: 14 };      // city→hamlet
+const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
+function updatePlaceVisibility() {
+  const z = map ? map.getZoom() : 0;
+  for (const pm of placeMarkers) {
+    const el = pm.marker.getElement();
+    if (el) el.style.display = z >= (RANK_MINZOOM[pm.rank] ?? 14) ? '' : 'none';
+  }
+}
+async function loadPlaces() {
+  let txt = window.__STANDALONE && window.__STANDALONE.places;
+  if (!txt) txt = await fetch('places.txt').then((r) => (r.ok ? r.text() : '')).catch(() => '');
+  if (!txt) return;
+  let n = 0;
+  for (const line of txt.split('\n')) {
+    const parts = line.split(';');
+    if (parts.length < 3) continue;
+    const rank = +parts[0], name = parts[1], c = parts[2].split(',');
+    if (c.length !== 2) continue;
+    const lat = +c[0], lon = +c[1];
+    if (isNaN(lat) || isNaN(lon)) continue;
+    const icon = L.divIcon({ className: 'plabel', html: `<span style="font-size:${RANK_FONTPX[rank] || 10}px">${name}</span>`, iconSize: [0, 0] });
+    const marker = L.marker([lat, lon], { icon, pane: 'labels', interactive: false });
+    marker.addTo(areasLayer);
+    placeMarkers.push({ marker, rank });
+    n++;
+  }
+  window.__places = { count: n };
+  updatePlaceVisibility();
 }
 
 function redraw(route, summary) {
@@ -245,6 +287,7 @@ if (!window.__STANDALONE && 'serviceWorker' in navigator) navigator.serviceWorke
     initMap();
     await loadAreas();              // draw our own terrain fills under the network (S7)
     await loadBuildings();          // draw our own building footprints on the terrain base (S8)
+    await loadPlaces();             // draw rank-gated place labels (S9)
     sketch = DEMO.slice();          // start with the demo route so the page shows a match immediately
     match();
   } catch (e) {

@@ -35,6 +35,9 @@ else console.log('  terrain: none (areas.txt absent — S7 render skipped)');
 const bldN = await ev('window.__buildings ? window.__buildings.count : -1');
 if (bldN > 0) console.log(`  buildings: ${bldN} footprints drawn (S8)`);
 else console.log('  buildings: none (buildings.txt absent — S8 render skipped)');
+const plN = await ev('window.__places ? window.__places.count : -1');
+if (plN > 0) console.log(`  places: ${plN} rank-gated labels (S9)`);
+else console.log('  places: none (places.txt absent — S9 render skipped)');
 
 // Profile selector: switch to walking_paved on the same sketch — the route must change and re-match.
 await ev(`(()=>{const s=document.getElementById('profile');s.value='walking_paved';s.dispatchEvent(new Event('change'));})()`);

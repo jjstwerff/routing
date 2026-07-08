@@ -41,4 +41,12 @@ console.log('loft emit_buildings → browser/buildings.txt …');
 const bld = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
   join(repo, 'client/basemap/emit_buildings.loft'), bldFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
 writeFileSync(join(here, 'buildings.txt'), bld);
-console.log(`wrote browser/buildings.txt (${(bld.length / 1024 | 0)} KB, ${bld.trim().split('\n').length} buildings) — serve with: node browser/serve.mjs`);
+console.log(`wrote browser/buildings.txt (${(bld.length / 1024 | 0)} KB, ${bld.trim().split('\n').length} buildings)`);
+
+// Place labels (PLAN-BASEMAP S9): rank;name;lat,lon — the browser sizes + zoom-gates them.
+const placesFixture = process.env.PLACES || join(repo, 'client/basemap/fixtures/real_stretch_places.json');
+console.log('loft emit_places → browser/places.txt …');
+const places = execFileSync(loft, ['--interpret', '--path', loftRoot + '/', '--lib', join(repo, 'lib'),
+  join(repo, 'client/basemap/emit_places.loft'), placesFixture], { encoding: 'utf8', env: { ...process.env, LOFT_TIMEOUT: '300' } });
+writeFileSync(join(here, 'places.txt'), places);
+console.log(`wrote browser/places.txt (${places.trim().split('\n').length} places) — serve with: node browser/serve.mjs`);
