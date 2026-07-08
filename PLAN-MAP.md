@@ -45,6 +45,13 @@ render. The renderer reads **only** the base-map layers — never a route or ske
 renderer only ever needs the features **in view** — which is exactly what the working-set store delivers
 (§4). Coverage (whole Enschede) is decoupled from what's loaded (one viewport).
 
+*Second principle — richness is DATA, not code.* The renderer draws a **fixed, tiny set of primitives**
+(filled `Area`, `Building` footprint, stroked `Line`, `Poi` symbol, `Label`). Every feature *type* is a
+**row in a classification catalog** (§4b) mapping OSM tags → `{primitive, class, style, minZoom}`. So "as
+many map features as possible" grows a **table**, while the renderer, the invariant, and the PLAN-EDIT seam
+stay constant. This is why the five-primitive schema was widened up front in PLAN-BASEMAP — so the palette
+can reach afstandmeten-level richness without touching the engine.
+
 ---
 
 ## 2. The invariant (Design Protocol 1) and its single chokepoint
@@ -111,6 +118,27 @@ sketch/route as *another layer* + gestures on this seam; it never reaches into t
 
 ---
 
+## 4b. Feature catalog — the "as many features as possible" engine
+
+Five primitives (already the `PTile` schema, PLAN-BASEMAP): `Area` (fill), `Building` (footprint), `Line`
+(stroke), `Poi` (point symbol), `Label` (text). The **catalog** maps OSM tags → `{primitive, class, style,
+minZoom}`. Target palette — **extend freely; each addition is a row + (if new) one glyph**:
+
+| Primitive | Classes (grow this list) | Render | minZoom band |
+|---|---|---|---|
+| **Area** | water / reservoir / basin · forest / wood · grass / meadow / heath / scrub · farmland / orchard / vineyard / allotments · park / garden / pitch / golf / cemetery · residential · industrial / commercial / retail · wetland / marsh · sand / beach / dune · bare / rock / quarry · **parking** · military | flat fill / class | big (water, forest) low → small (parking, pitch) high |
+| **Building** | any `building=*` (later: tint church / school / civic) | footprint fill + stroke | ≥ z14 |
+| **Line** | river · stream / ditch / drain · canal · railway / tram · hedge / tree_row · wall / fence · cliff / embankment · power line | stroke width / colour / dash per kind | rivers low → streams, hedges high |
+| **Poi** | tree · bench · picnic_table · viewpoint · tower (observation / water) · drinking_water · playground · **parking** · camp_site · ruins · monument / memorial · peak · spring / fountain · shelter · information · gate / barrier · **crossing** (pedestrian / signals) · fire_hydrant | small glyph + white halo | landmarks (tower, viewpoint, peak, camp) mid → street furniture (tree, bench, hydrant) high |
+
+- **Extraction** (`tools/basemap/fetch.sh`): add **node** queries (`out center`) across
+  `natural` / `leisure` / `amenity` / `tourism` / `man_made` / `historic` / `barrier` / `highway=crossing`,
+  and `waterway` / `railway` / `barrier` **ways** for `Line`s — over the whole-Enschede bbox (§4).
+- **Classification** in `lib/basemap`: `area_use` exists; add `line_kind(tags)` and `poi_kind(tags)` +
+  their emitters (the deferred PLAN-BASEMAP **S5.5b** `Line`/`Poi` encoders).
+- **Per-class `minZoom` (S13)** keeps a zoomed-out view legible (towns, forests, water, rivers) and reveals
+  detail (trees, benches, crossings) only when you zoom in — the afstandmeten feel.
+
 ## 5. Steps (ordered, falsifier-first — each has a Build and a Check)
 
 > M0 is the cheapest falsifier: prove `project`/`unproject` and one `render()` on a *known* point before any
@@ -133,11 +161,23 @@ sketch/route as *another layer* + gestures on this seam; it never reaches into t
 - **Check.** The region's terrain renders; polygon count == the emitted area count; visually matches today's
   Leaflet terrain for an overlapping view.
 
-### M3 — Buildings + streets + labels (+ S13/S14)
-- **Build.** Building footprints (≥ z14, S13), street centrelines, place labels (rank-gated, S9) and street
-  labels (repeated along the line, S10), reusing the S13 generalization + S14 collision pass on canvas.
-- **Check.** Buildings appear only ≥ z14; small areas drop when zoomed out; no two labels overlap; street
-  labels repeat as you zoom in.
+### M3 — Generic primitive renderer + catalog v1 (buildings, streets, labels)
+- **Build.** One canvas draw per **primitive** — filled `Area` (by cover), `Building` footprint, stroked
+  `Line`, `Poi` symbol, `Label` — dispatched by the §4b **catalog** (`class → style, minZoom`). v1 catalog =
+  the classes we already classify (areas / buildings / streets / places). Port S13 generalization + S14
+  label collision to canvas.
+- **Check.** Every v1 catalog class renders with its style; buildings ≥ z14; small areas drop when zoomed
+  out; no two labels overlap; street labels repeat as you zoom in.
+
+### M3b — Enrich the catalog: Lines + POIs (streams, crossings, trees, the full palette)
+- **Build.** Extend `fetch.sh` to pull `Line` ways (waterway / railway / barrier) and node **POIs**
+  (natural=tree, amenity=bench/parking/drinking_water, tourism=viewpoint/camp_site, man_made=tower,
+  leisure=playground, historic=ruins/monument, highway=crossing, …); add `line_kind`/`poi_kind` classifiers
+  + emitters (PLAN-BASEMAP S5.5b); add catalog rows + `Poi` glyphs. **Richness = catalog rows, not renderer
+  changes.**
+- **Check.** Streams/rivers stroke as lines; POIs draw as zoom-gated symbols (towers/viewpoints mid-zoom,
+  trees/benches high-zoom); adding one more feature type is a single catalog row (+ one glyph if new), with
+  no change to `render()` or the seam.
 
 ### M4 — Whole-region working set
 - **Build.** Fetch the Enschede bbox (§4), build the `PTile` store, load visible tiles on camera-settle via
