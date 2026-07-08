@@ -9,12 +9,14 @@ mirror the maintainer's agent memory — keep both in sync when one changes.)
 
 ## Working agreements
 
-- **Always push committed work; only open PRs when explicitly asked.** Pushing is a safety net (work
-  isn't lost) and lets the maintainer switch machines/environments and pick the work up elsewhere — so
-  push promptly after committing, and small config/doc changes can go **straight to `main`**. But do
-  **not** open a PR or run a verify-CI-till-green-then-merge loop for everything: only when told in those
-  words (open a PR, merge), or for genuinely PR-worthy work. The PR + CI ceremony is slow and
-  outward-facing; the maintainer decides when it happens.
+- **Always push committed work to its branch; only open PRs when explicitly asked.** Pushing is a safety
+  net (work isn't lost) and lets the maintainer switch machines/environments and pick the work up
+  elsewhere — so push promptly after committing. But do **not** open a PR or run a
+  verify-CI-till-green-then-merge loop for everything: only when told in those words, or for genuinely
+  PR-worthy work.
+- **`main` is protected — never push to it directly.** The repo is public and `main` requires a PR whose
+  `build-test` CI check passes (enforced for admins too); direct pushes/merges are rejected. Do work on a
+  branch, push the branch, and land it via PR when the maintainer says it's ready.
 - End loft commit messages and PR bodies per the repo/CLI conventions already in use.
 
 ## The loft toolchain
