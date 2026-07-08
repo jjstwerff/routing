@@ -18,7 +18,7 @@
 <canvas id="map"></canvas>
 <div id="hud">M0…</div>
 <script type="module">
-import { RouteMap } from './map.mjs';
+import { RouteMap, parseAreas } from './map.mjs';
 
 // Known points around the Enschede region — the M0 render() plots them as dots.
 const CITIES = [
@@ -29,7 +29,7 @@ const CITIES = [
 ];
 
 // Interaction (M1: left-drag pan + wheel zoom) is on by default.
-const map = new RouteMap(document.getElementById('map'), { lat: 52.2215, lon: 6.8937, zoom: 12, points: CITIES });
+const map = new RouteMap(document.getElementById('map'), { lat: 52.2215, lon: 6.8937, zoom: 12, points: [] });
 window.__map = map;                          // gate hook
 
 // In-page self-check (read by the CDP gate) — proves the DOM / DPR / render path, not just the math.
@@ -56,6 +56,29 @@ function updateHud() {
 map.onRender(updateHud);                       // HUD follows every pan/zoom render
 map.render();
 updateHud();
+
+// M2: load the terrain (areas.txt), fit the view to it, render. Fraction of the central 200×200 that
+// is painted (not the Carto land background) is the "terrain rendered" signal the gate reads.
+function terrainFrac() {
+  const W = map.width, H = map.height, dpr = map.dpr;
+  const x = Math.round((W / 2 - 100) * dpr), y = Math.round((H / 2 - 100) * dpr);
+  const w = Math.max(1, Math.round(200 * dpr)), h = Math.max(1, Math.round(200 * dpr));
+  const d = map.ctx.getImageData(x, y, w, h).data;
+  let colored = 0, total = 0;
+  for (let i = 0; i < d.length; i += 4) { total++; if (!(d[i] === 242 && d[i + 1] === 239 && d[i + 2] === 233)) colored++; }
+  return total ? colored / total : 0;
+}
+fetch('areas.txt').then((r) => (r.ok ? r.text() : '')).then((txt) => {
+  const areas = parseAreas(txt);
+  map.areas = areas;
+  if (areas.length) {
+    let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+    for (const a of areas) for (const [la, lo] of a.ring) { miLa = Math.min(miLa, la); maLa = Math.max(maLa, la); miLo = Math.min(miLo, lo); maLo = Math.max(maLo, lo); }
+    map.fitBounds(miLa, miLo, maLa, maLo);
+  }
+  map.render();
+  window.__m2 = { areas: areas.length, frac: terrainFrac() };
+}).catch((e) => { window.__m2 = { areas: 0, frac: 0, error: String(e) }; });
 </script>
 </body>
 </html>

@@ -55,6 +55,29 @@ export function makeView(camera, width, height) {
   };
 }
 
+// --- Catalog v1 (§4b): landcover fill colours, following OpenStreetMap standard (Carto). ------
+export const COVER_COLORS = {
+  water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
+  residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
+};
+const COVER_FALLBACK = '#ebe7e0';
+
+// Parse the areas.txt layer: one polygon per line, `cover;lat,lon;lat,lon;…` (emit_areas.loft).
+export function parseAreas(txt) {
+  const areas = [];
+  for (const line of (txt || '').split('\n')) {
+    const parts = line.split(';');
+    if (parts.length < 4) continue;                 // need a cover + ≥3 vertices
+    const cover = parts[0], ring = [];
+    for (let i = 1; i < parts.length; i++) {
+      const c = parts[i].split(','); const a = +c[0], b = +c[1];
+      if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) ring.push([a, b]);
+    }
+    if (ring.length >= 3) areas.push({ cover, ring });
+  }
+  return areas;
+}
+
 // The camera centre that puts geographic `latlon` under screen point `mouse` (CSS px) at `zoom`.
 // Pan is "hold the grabbed lat/lon under the cursor"; zoom-about-a-point is "hold the cursor's
 // lat/lon fixed while zoom changes" — both are just this, so both share one tested helper (M1).
@@ -71,6 +94,7 @@ export class RouteMap {
     this.ctx = canvas.getContext('2d');
     this.camera = { lat: opts.lat ?? 52.2215, lon: opts.lon ?? 6.8937, zoom: opts.zoom ?? 13 };
     this.points = opts.points || [];          // [{lat,lon,name?}] — M0 test dots
+    this.areas = opts.areas || [];            // [{cover, ring:[[lat,lon],…]}] — M2 terrain
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
     this._raf = 0;
@@ -146,8 +170,10 @@ export class RouteMap {
   render() {
     const ctx = this.ctx, W = this.width, H = this.height;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#e8e8e8';                 // neutral background (Carto land is added at M2)
+    ctx.fillStyle = '#f2efe9';                 // Carto land background
     ctx.fillRect(0, 0, W, H);
+    // M2: terrain fills — back-most layer, one filled path per area, Carto cover colour.
+    for (const a of this.areas) this.drawArea(a);
     // M0 probe: plot the test points as dots (real layers replace this at M2+).
     for (const p of this.points) {
       const s = this.project(p.lat, p.lon);
@@ -161,6 +187,29 @@ export class RouteMap {
     ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy); ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8); ctx.stroke();
     for (const cb of this._renderCbs) cb(ctx, this);
+  }
+
+  // M2: one filled path per area, coloured by Carto cover class.
+  drawArea(area) {
+    const r = area.ring;
+    if (r.length < 3) return;
+    const ctx = this.ctx;
+    ctx.beginPath();
+    for (let i = 0; i < r.length; i++) { const s = this.project(r[i][0], r[i][1]); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
+    ctx.closePath();
+    ctx.fillStyle = COVER_COLORS[area.cover] || COVER_FALLBACK;
+    ctx.fill();
+  }
+
+  // Centre + zoom the camera so a lat/lon box fits the viewport (with a little padding).
+  fitBounds(minLat, minLon, maxLat, maxLon, pad = 1.12) {
+    this.camera.lat = (minLat + maxLat) / 2;
+    this.camera.lon = (minLon + maxLon) / 2;
+    for (let z = MAX_ZOOM; z >= MIN_ZOOM; z -= 0.25) {
+      const a = projectWorld(minLon, maxLat, z), b = projectWorld(maxLon, minLat, z);
+      if (Math.abs(b.x - a.x) * pad <= this.width && Math.abs(b.y - a.y) * pad <= this.height) { this.camera.zoom = z; return; }
+    }
+    this.camera.zoom = MIN_ZOOM;
   }
 
   hitTest(/* x, y */) { return null; }         // stub — PLAN-EDIT fills this in

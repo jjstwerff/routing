@@ -2,6 +2,7 @@
 //
 // Headless-Chromium verifier for PLAN-MAP M0 (browser/map-demo.html over file://): the projection +
 // render + resize invariant on a REAL canvas.  node browser/cdp_verify_map.mjs <dt-host:port> <file-url>
+import { readFileSync } from 'node:fs';
 const [dt, app] = process.argv.slice(2);
 setTimeout(() => { console.log('[hard-timeout]'); process.exit(3); }, 30000);
 
@@ -26,6 +27,19 @@ console.log(`  viewport ${m0.W}×${m0.H} @${m0.dpr}x · centre (${m0.center.x.to
 if (!m0.centerOK) { console.log('FAIL: camera centre does not project to the viewport centre'); ok = false; } else console.log('  ✓ centre projects to viewport centre (real canvas)');
 if (!(m0.roundtripDeg < 1e-6)) { console.log('FAIL: unproject∘project error ' + m0.roundtripDeg); ok = false; } else console.log(`  ✓ round-trip ${m0.roundtripDeg.toExponential(1)}°`);
 if (!m0.rendered) { console.log('FAIL: canvas centre pixel not opaque — render() did not paint'); ok = false; } else console.log('  ✓ render() painted the canvas');
+
+// M2 · terrain: the areas render, count == emitted, and the central region is painted (not the land bg).
+let srcAreas = null;
+try { const t = readFileSync(new URL('./areas.txt', import.meta.url), 'utf8'); srcAreas = t.split('\n').filter((l) => l.split(';').length >= 4).length; } catch {}
+let m2 = null;
+for (let i = 0; i < 40; i++) { const s = await ev('window.__m2?JSON.stringify(window.__m2):""'); if (s) { m2 = JSON.parse(s); break; } await new Promise((r) => setTimeout(r, 250)); }
+if (srcAreas === null) console.log('  ~ M2 skipped: no browser/areas.txt (run `node browser/build.mjs`)');
+else if (!m2) { console.log('FAIL: areas.txt present but window.__m2 never set — file:// fetch failed?'); ok = false; }
+else {
+  console.log(`  terrain: rendered ${m2.areas} areas, emitted ${srcAreas}, central painted ${(m2.frac * 100).toFixed(0)}%`);
+  if (m2.areas !== srcAreas) { console.log(`FAIL: rendered ${m2.areas} areas != ${srcAreas} emitted`); ok = false; } else console.log('  ✓ every emitted area rendered');
+  if (!(m2.frac > 0.3)) { console.log(`FAIL: terrain not painted (central colored fraction ${m2.frac})`); ok = false; } else console.log('  ✓ terrain fills the view (Carto cover colours)');
+}
 
 // M1 · pan: dispatch a real left-drag; the lat/lon grabbed at mousedown must sit under the cursor at
 // mouseup (and zoom must not change).
@@ -56,5 +70,5 @@ const j = JSON.parse(r2 || '{}');
 const rOK = Math.abs(j.x - j.W / 2) < 1e-6 && Math.abs(j.y - j.H / 2) < 1e-6;
 if (!rOK) { console.log('FAIL: resize did not keep the centre centred — ' + r2); ok = false; } else console.log(`  ✓ resize keeps the centre centred (${j.W}×${j.H})`);
 
-console.log(ok ? 'PASS — M0+M1 canvas renderer: projection + render + pan/zoom + resize verified headless.' : 'FAILURES');
+console.log(ok ? 'PASS — M0+M1+M2 canvas renderer: projection + pan/zoom + terrain fills verified headless.' : 'FAILURES');
 process.exit(ok ? 0 : 1);
