@@ -1,0 +1,83 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S1 — "area use" extraction + classification (the presentation layer, SEPARATE from
+// routing). Reads an Overpass JSON dump of landuse/natural/leisure ways and classifies each polygon
+// into a compact AreaUse palette (one fill colour each) — the data that gives the map terrain types.
+// The routing kernel is untouched; the S0 isolation gate proves the matcher is unaffected.
+//
+//   loft --interpret --path <loft>/ client/basemap/areas.loft client/basemap/fixtures/real_stretch_areas.json
+//
+// Regenerate the fixture (gitignored — too big to commit) with the Overpass query in
+// tools/basemap/fetch-areas.sh for the test bbox.
+
+#cwd
+
+// A string tag value, or "" when absent (mirrors routing_kernel's `tag`; JNull.as_text() is "null").
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+// Many OSM landuse/natural/leisure tags collapse to a compact palette — ~11 classes, one fill each.
+// This is the whole S1 mapping; S5 stores it, the renderer colours it. `natural` is most specific, so
+// it wins; then `landuse`; then `leisure` (parks/greens). Unmapped tags fall to "other".
+pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
+  if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
+  if natural == "wood" { return "forest"; }
+  if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
+  if natural == "sand" || natural == "beach" || natural == "dune" { return "sand"; }
+  if natural == "scrub" || natural == "shrubbery" || natural == "heath" || natural == "grassland" { return "grass"; }
+  if natural == "bare_rock" || natural == "scree" || natural == "rock" { return "bare"; }
+
+  if landuse == "forest" { return "forest"; }
+  if landuse == "grass" || landuse == "meadow" || landuse == "village_green" || landuse == "recreation_ground" { return "grass"; }
+  if landuse == "farmland" || landuse == "farmyard" || landuse == "orchard" || landuse == "vineyard" || landuse == "allotments" { return "farmland"; }
+  if landuse == "residential" { return "residential"; }
+  if landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "construction" || landuse == "railway" { return "industrial"; }
+  if landuse == "reservoir" || landuse == "basin" { return "water"; }
+  if landuse == "cemetery" || landuse == "greenfield" { return "park"; }
+
+  if leisure == "park" || leisure == "garden" || leisure == "playground" || leisure == "pitch"
+     || leisure == "sports_centre" || leisure == "golf_course" || leisure == "recreation_ground" { return "park"; }
+
+  "other"
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for a in arguments() { argv += [a]; }
+  data_path = argv[0] ?? "";
+  if data_path == "" { println("usage: areas <areas.json>"); return; }
+
+  root = json_parse(file(data_path).content());
+  elements = root.field("elements");
+
+  uses: vector<text> = ["water", "forest", "grass", "park", "farmland", "residential", "industrial", "sand", "wetland", "bare", "other"];
+  counts: vector<integer> = [];
+  for u in uses { counts += [0]; }
+  total = 0;
+
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "way" {
+      tags = el.field("tags");
+      u = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"));
+      total += 1;
+      for k in 0..len(uses) {
+        if (uses[k] ?? "") == u { counts[k] = (counts[k] ?? 0) + 1; }
+      }
+    }
+  }
+
+  println("areas={total}");
+  w = 0; f = 0;
+  for k in 0..len(uses) {
+    println("  {uses[k] ?? \"\"}={counts[k] ?? 0}");
+    if (uses[k] ?? "") == "water" { w = counts[k] ?? 0; }
+    if (uses[k] ?? "") == "forest" { f = counts[k] ?? 0; }
+  }
+  // S1 check: the mapping classifies real data, and the two headline terrain types are present.
+  if w > 0 && f > 0 { println("S1 OK: {w} water + {f} forest areas classified from {total}"); }
+  else { println("S1 FAIL: missing water or forest"); }
+}

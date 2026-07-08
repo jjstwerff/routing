@@ -32,3 +32,7 @@ routes/
 
 # Local tile data block (PLAN-TILES) — large binary, regenerate with gen6, never committed
 *.tiles
+
+# PLAN-BASEMAP: raw Overpass area/presentation dumps are large + regenerable (tools/basemap/fetch-areas.sh); keep only the small sample.
+client/basemap/fixtures/*.json
+!client/basemap/fixtures/*.sample.json
