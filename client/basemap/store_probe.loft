@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S5.0 — schema round-trip probe (the falsifier, built first). Builds a tiny nested
+// hash<PTile[tkey]>, persists it, reloads into a fresh store, verifies integrity, and counts every nested
+// feature back. This is the load-bearing test that loft's store engine round-trips the presentation
+// schema — a hash of a struct with vectors of structs that each hold heap `text` + a nested vector<Coord>,
+// one level deeper than the routing TTile. If the counts don't match or store_verify is false, the schema
+// must flatten (PLAN-BASEMAP S5 fallback) — decided here, before any encoder is written.
+//   loft --interpret --path <loft>/ client/basemap/store_probe.loft <out.store>
+
+#cwd
+
+struct Coord    { x: i32, y: i32 }
+struct Area     { cover: text, ring: vector<Coord> }
+struct Building { name: text, ring: vector<Coord> }
+struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
+struct PTile    { tkey: integer, ox: integer, oy: integer,
+                  areas: vector<Area>, buildings: vector<Building>, labels: vector<Label> }
+
+fn c(a: integer, b: integer) -> Coord {
+  Coord { x: a as i32? ?? (0 as i32), y: b as i32? ?? (0 as i32) }
+}
+fn ring3(a: integer, b: integer) -> vector<Coord> {
+  [ c(a, b), c(a + 1, b + 2), c(a + 3, b) ]
+}
+
+// A stable text summary of every nested count — equal before and after == a faithful round-trip.
+fn tally(store: hash<PTile[tkey]>) -> text {
+  nt = 0; na = 0; nb = 0; nl = 0; nc = 0;
+  for t in store {
+    nt += 1;
+    for a in t.areas { na += 1; nc += len(a.ring); }
+    for bl in t.buildings { nb += 1; nc += len(bl.ring); }
+    for l in t.labels { nl += 1; nc += len(l.line); }
+  }
+  "tiles={nt} areas={na} buildings={nb} labels={nl} coords={nc}"
+}
+
+fn main() {
+  path = arguments()[0] ?? "";
+  if path == "" { println("usage: store_probe <out.store>"); return; }
+
+  src: hash<PTile[tkey]> = [];
+  src += PTile { tkey: 1, ox: 1000, oy: 2000, areas: [], buildings: [], labels: [] };
+  t = src[1];
+  t.areas += [Area { cover: "water", ring: ring3(1, 1) }];
+  t.areas += [Area { cover: "forest", ring: ring3(5, 5) }];
+  t.buildings += [Building { name: "Elimkerk", ring: ring3(2, 2) }];
+  t.buildings += [Building { name: "", ring: ring3(4, 4) }];
+  t.labels += [Label { name: "Oldenzaal", kind: "town", rank: 5, line: [c(7, 8)] }];
+
+  src += PTile { tkey: 2, ox: 3000, oy: 4000, areas: [], buildings: [], labels: [] };
+  t = src[2];
+  t.areas += [Area { cover: "grass", ring: ring3(9, 9) }];
+  t.labels += [Label { name: "Hoofdstraat", kind: "street", rank: 0, line: ring3(3, 3) }];
+
+  before = tally(src);
+  println("before: {before}");
+
+  ok = store_persist_bind(src, path);
+  println("persist {ok}");
+  if !ok { println("S5.0 FAIL: store_persist_bind returned false"); return; }
+
+  dst: hash<PTile[tkey]> = [];
+  lok = store_load(dst, path);
+  println("load {lok}");
+  if !lok { println("S5.0 FAIL: store_load returned false"); return; }
+
+  vok = store_verify(dst);
+  after = tally(dst);
+  println("verify {vok}");
+  println("after:  {after}");
+
+  if before == after && vok {
+    println("S5.0 OK: nested schema round-trips (persist + load + verify), counts match");
+  } else {
+    println("S5.0 FAIL: schema does NOT round-trip — flatten per PLAN-BASEMAP S5 fallback");
+  }
+}

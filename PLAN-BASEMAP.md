@@ -38,7 +38,7 @@ Its own keyed store, mirroring `hash<TTile[tkey]>`; a cell holds three feature k
 routing block's fixed-point (1e-7°) deltas from the tile origin.
 
 ```
-struct Area     { use: AreaUse, ring: vector<Coord> }          // landcover/landuse polygon (filled)
+struct Area     { cover: AreaUse, ring: vector<Coord> }        // landcover/landuse polygon (filled; `use` is a loft keyword → `cover`)
 struct Building { ring: vector<Coord>, name: text? }            // footprint; name optional (POI buildings)
 struct Label    { name: text, kind: LabelKind, rank: integer,  // place labels + street labels
                   line: vector<Coord> }                         // street: simplified centerline (option B);
@@ -134,7 +134,7 @@ shape and round-trip it — **before** writing any encoder.
 ### Schema (loft) — nested form (tried first)
 ```
 struct Coord    { x: i32, y: i32 }                       // fixed-point (1e-7°) delta from tile origin
-struct Area     { use: text, ring: vector<Coord> }
+struct Area     { cover: text, ring: vector<Coord> }     // `use` is a loft keyword → field named `cover`
 struct Building { name: text, ring: vector<Coord> }      // name "" when absent (defer text? until S5.0 says)
 struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
 struct PTile    { tkey: integer, ox: integer, oy: integer,
@@ -161,6 +161,11 @@ mechanism must, to "still work" at any size/place.
   *Check:* counts in == out, `store_verify` true. *Probe (load-bearing):* this is the falsifier for "the
   engine handles the nesting + heap text." **If it fails, FLATTEN the schema (below) and re-probe — before
   the encoder,** not after.
+  **✓ DONE (`client/basemap/store_probe.loft`):** the falsifier did NOT falsify — the nested schema
+  round-trips byte-faithfully (2 tiles / 3 areas / 2 buildings / 2 labels / 19 coords in == out,
+  `store_verify` true, incl. an empty-string name). **The nested schema stands; the flatten fallback is
+  not needed.** Findings: `use` is a loft keyword → `Area.cover`; `store_persist_bind` also works under
+  `--interpret`, not only native.
 - **S5.1 — parametric grid (`client/basemap/grid.loft`).** `cell_ix` / `origin` / `tkey(CELL)` with
   `MULT` derived from `CELL` + a hemisphere `BIAS`. *Check:* a known lat/lon → expected cell; origin+delta
   reconstructs the coord within 1 unit. *Probe:* at a fine `CELL` (≈100 m) two adjacent cells get distinct
