@@ -1,0 +1,58 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BASEMAP S4 — building footprints (the presentation layer, SEPARATE from routing). Each
+// `building=*` way becomes a footprint ring + optional name. This is the heaviest layer — the
+// Netherlands' near-complete BAG import means thousands of dense footprints per region — which is
+// exactly why they must be loaded per-cell (working set, Phase 2), never whole-block.
+// The routing kernel is untouched; the S0 isolation gate proves the matcher is unaffected.
+//
+//   loft --interpret --path <loft>/ client/basemap/buildings.loft client/basemap/fixtures/real_stretch_buildings.json
+//   regenerate the fixture: tools/basemap/fetch.sh buildings
+
+#cwd
+
+fn atag(obj: JsonValue, name: text) -> text {
+  v = obj.field(name);
+  if v.kind() == "JString" { v.as_text() } else { "" }
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for a in arguments() { argv += [a]; }
+  data_path = argv[0] ?? "";
+  if data_path == "" { println("usage: buildings <buildings.json>"); return; }
+
+  root = json_parse(file(data_path).content());
+  elements = root.field("elements");
+
+  total = 0; named = 0; ring_pts = 0;
+  church_name = "";
+  for i in 0..len(elements) {
+    el = elements.item(i);
+    if atag(el, "type") == "way" {
+      tags = el.field("tags");
+      kind = atag(tags, "building");
+      if kind != "" {
+        geom = el.field("geometry");
+        m = len(geom);
+        if m >= 4 {                      // a closed footprint ring (first == last)
+          total += 1;
+          ring_pts += m;
+          name = atag(tags, "name");
+          if name != "" { named += 1; }
+          if kind == "church" && name != "" && church_name == "" { church_name = name; }
+        }
+      }
+    }
+  }
+
+  println("buildings={total} named={named} ring_pts={ring_pts}");
+  if church_name != "" { println("sample named building: {church_name} (building=church)"); }
+  // S4 check: footprints present and at least one carries a name (e.g. a church).
+  if total > 0 && named > 0 {
+    println("S4 OK: {total} building footprints, {named} named");
+  } else {
+    println("S4 FAIL: no buildings or none named");
+  }
+}
