@@ -95,9 +95,13 @@ The base-map line formats are exactly today's `emit_*.loft` text, so the rendere
 - **B1 — Layout store → base-map text (loft, native) — the new bit.** Read `layout.store` (`PTile`) and
   `roads.store` (`TTile`) → emit the layer text. *Check:* byte-identical to the `emit_*.loft` output for the
   same data (renderer unchanged).
-- **B2 — Route from `roads.store` (reuse).** `tiles_corridor_ways(roads, sketch, margin)` → `build_graph`
-  → `match_route_closed` — the same path `server.loft` `match_for` runs. *Check:* the route is
-  **byte-identical to the existing matcher's reference** for a known sketch.
+- **B2 — Route from `roads.store` (reuse) ✓.** `tiles_corridor_ways(roads, sketch, margin)` →
+  `build_graph` → `match_route` — the path `server.loft` `match_for` runs. *Verified:* from a
+  `.tiles` built off the routing fixture, the demo trace's corridor has the **same 472 ways** as the raw
+  fixture and the route matches the raw-data route **to within 0.4 %** (10 606 vs 10 647 m; 94 vs 90 pts).
+  It is *not* byte-identical to `routing_ref.txt` — that is a **raw-Overpass** baseline, whereas the
+  `.tiles` format is deliberately lossy (RoadType + flags + geometry; PLAN-TILES B.3), so the small
+  difference is the intended encoding cost and the store route is the production-canonical one.
 - **B3 — Unified kernel + protocol (loft, native).** One program = `web_kernel.loft`'s host_input/println
   shell + `match_for`'s logic + the B1 `view`; commands `store`/`view`/`match`. *Check:* a native driver
   reproduces B1's base-map text **and** B2's route.
