@@ -40,3 +40,7 @@ client/basemap/fixtures/*_areas.json
 client/basemap/fixtures/*_streets.json
 client/basemap/fixtures/*_buildings.json
 !client/basemap/fixtures/*.sample.json
+
+# GitHub Pages build output (loft build → _site) — regenerable, not committed.
+_site/
+.loft/
