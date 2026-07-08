@@ -675,3 +675,23 @@ when the vector is dead points at scope construction, not value resolution; that
 vectors fail points at the vector slot's store/DbRef handling specifically. No open tracker issue
 matches (`debug eval`, `debugger rpc`). Routing can't fix loft here (`../loft` is read-only for us) —
 filing/looking is the maintainer's call.
+
+## 2026-07-08 — codegen: "Incorrect loop finish" with many loops in one function
+
+`client/basemap_view.loft` (store → text reader) panicked at runtime, **native and interpret**:
+
+```
+thread 'main' panicked at src/variables/mod.rs:623:9:
+assertion `left == right` failed: Incorrect loop finish
+  left: 18  right: 17
+```
+
+The `main` had ~9 `for` loops (five over the layout `PTile` layers + a nested three-deep walk over the
+roads `TTile` steps). **Each block runs cleanly in isolation** — a minimal `main` with the areas loop,
+another with the labels if/else loop, another with the roads triple-loop all pass; only the combined
+`main` trips it. The `left/right` counts (`18`/`17`) point at loop-scope *bookkeeping* at codegen (an
+off-by-one in the number of loop scopes opened vs. finished in one function body), not value resolution.
+
+**Workaround (in place):** split each layer's emit into its own `fn` (`emit_areas`/`emit_buildings`/…/
+`emit_roads`), so no single function holds more than 2–3 loops. Reproducible; `../loft` is read-only for
+us, so filing/fixing is the maintainer's call.

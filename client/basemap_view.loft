@@ -1,0 +1,97 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BUILD B1 — the store → text "view". Reads the two binary loft stores (layout PTile + roads TTile)
+// and emits the base map as tagged text lines for JS to parse + render. Native for now (store_load);
+// folded into the loft-wasm kernel at B3/B4 (fed store bytes over host_input, this text out over println).
+// Coords are WGS84 (lat,lon), reversed from the tile-local fixed-point deltas (1e-7°) + tile origin.
+//   loft --native --path <loft>/ --lib lib client/basemap_view.loft <layout.store> <roads.store>
+// Line grammar (one feature per line):
+//   A <cover>;lat,lon;…              area (terrain)
+//   B <name>;lat,lon;…               building footprint (name may be empty)
+//   L <kind>;<name>;lat,lon;…        line (stream/rail/barrier)
+//   P <kind>;<name>;lat,lon          poi
+//   N <rank>;<name>;lat,lon          place label
+//   S <name>;lat,lon;…               street-name label (centerline)
+//   R <class>;lat,lon;…              road (drawn + routed; class from the roads store)
+//
+// NB: each layer is emitted by its OWN function — folding all of them into main() trips a loft codegen
+// bug ("Incorrect loop finish" — many loops in one function); see docs/loft-feedback.md.
+
+#cwd
+
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile);
+use routing_kernel::(TTile, TRoad, TStep);
+
+fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
+
+fn class_name(tp: integer) -> text {
+  if tp == 0 { "motorway" } else if tp == 1 { "primary" } else if tp == 2 { "secondary" }
+  else if tp == 3 { "tertiary" } else if tp == 4 { "residential" } else if tp == 5 { "residential" }
+  else if tp == 6 { "service" } else if tp == 7 { "cycle" } else if tp == 8 { "path" }
+  else if tp == 9 { "foot" } else if tp == 10 { "pedestrian" } else if tp == 11 { "foot" }
+  else { "residential" }
+}
+
+fn ring_text(pre: text, ox: integer, oy: integer, ring: vector<Coord>) -> text {
+  line = pre;
+  for c in ring { line += ";{deg(oy + (c.y as integer)):2.6},{deg(ox + (c.x as integer)):2.6}"; }
+  line
+}
+
+fn emit_areas(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for ar in t.areas { println(ring_text("A {ar.cover}", t.ox, t.oy, ar.ring)); n += 1; } } n
+}
+fn emit_buildings(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for b in t.buildings { println(ring_text("B {b.name}", t.ox, t.oy, b.ring)); n += 1; } } n
+}
+fn emit_lines(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for ln in t.lines { println(ring_text("L {ln.kind};{ln.name}", t.ox, t.oy, ln.geom)); n += 1; } } n
+}
+fn emit_pois(layout: hash<PTile[tkey]>) -> integer {
+  n = 0; for t in layout { for p in t.pois { println("P {p.kind};{p.name};{deg(t.oy + (p.at.y as integer)):2.6},{deg(t.ox + (p.at.x as integer)):2.6}"); n += 1; } } n
+}
+fn emit_labels(layout: hash<PTile[tkey]>) -> integer {
+  n = 0;
+  for t in layout {
+    for lb in t.labels {
+      if lb.kind == "street" { println(ring_text("S {lb.name}", t.ox, t.oy, lb.line)); }
+      else { c = lb.line[0] ?? Coord { x: 0 as i32, y: 0 as i32 }; println("N {lb.rank};{lb.name};{deg(t.oy + (c.y as integer)):2.6},{deg(t.ox + (c.x as integer)):2.6}"); }
+      n += 1;
+    }
+  }
+  n
+}
+fn emit_roads(roads: hash<TTile[tkey]>) -> integer {
+  n = 0;
+  for t in roads {
+    si = 0;
+    for r in t.roads {
+      cnt = r.steps as integer;
+      line = "R {class_name(r.tp as integer)}";
+      for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
+      si += cnt; println(line); n += 1;
+    }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: basemap_view <layout.store> <roads.store>"); return; }
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+  na = emit_areas(layout);
+  nb = emit_buildings(layout);
+  nl = emit_lines(layout);
+  npo = emit_pois(layout);
+  nlab = emit_labels(layout);
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[1] ?? "");
+  nr = emit_roads(roads);
+
+  println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr}");
+}
