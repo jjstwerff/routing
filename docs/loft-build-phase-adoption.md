@@ -1,11 +1,18 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Adopting loft's build phase (@PLN100) for routing
 
-**Status:** the **GitHub Pages build is now automated via `loft build`** (implemented + validated against
-loft2's binary — see the last section). The rest of the migration (browser dev build, `loft check` test
-gate) is still design. The feature lives in loft's `tuxedo-pln100-build-phase` branch (6 commits, pushed to
-`loft-lang/loft`) and is **not yet on loft `main`** — so the Pages workflow pins loft to that branch. Reference:
-loft `doc/claude/PACKAGES.md` § "The build phase".
+**Status:** the **GitHub Pages build is now automated via `loft build`** (implemented + validated). @PLN100
+has since been installed — the **installed `/usr/local/bin/loft` now has the build phase**, so `loft build`
+works locally with plain `loft` (validated: `loft build` → `_site/index.html`, incremental). It is **not yet
+on loft `main`** (origin/main is still @PLN98), so the Pages *workflow* still pins loft to the
+`tuxedo-pln100-build-phase` branch. Reference: loft `doc/claude/PACKAGES.md` § "The build phase".
+
+> ⚠ **Install caveat (2026-07-08):** the @PLN100 install refreshed the loft binary + `libloft.rlib` (rustc
+> 1.96.1) but left a **stale `libloft_ffi`** compiled by rustc 1.96.0 in `/usr/local/share/loft/deps`, so
+> **`--native` builds fail `E0514`** (incompatible rustc). Interpret + `--html`/wasm are fine (S0, kernel
+> tests, and this Pages build all pass — the html target never touches native). Fix is a **clean loft
+> re-install** (rebuilds `loft_ffi`); until then routing's *native* path (`make build`, server gate) is
+> blocked, the *browser/Pages* path is not.
 
 ## What @PLN100 gives us
 
