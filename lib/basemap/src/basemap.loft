@@ -38,3 +38,37 @@ pub fn tkey(tx: integer, ty: integer, cell: integer) -> integer {
 pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
   tkey(cell_ix(to_fixed(lon), cell), cell_ix(to_fixed(lat), cell), cell)
 }
+
+// --- The presentation store schema (PLAN-BASEMAP) --------------------------------------------------
+// A parallel store to the routing block, on the same grid MECHANISM (its own cell size). Coords are i32
+// deltas from the tile origin (ox,oy), exactly like the routing TStep. The map matcher never reads this.
+pub struct Coord    { x: i32, y: i32 }
+pub struct Area     { cover: text, ring: vector<Coord> }        // `use` is a loft keyword → `cover`
+pub struct Building { name: text, ring: vector<Coord> }         // name "" when absent
+pub struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
+pub struct PTile    { tkey: integer, ox: integer, oy: integer,
+                      areas: vector<Area>, buildings: vector<Building>, labels: vector<Label> }
+
+// Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
+// specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".
+pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
+  if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
+  if natural == "wood" { return "forest"; }
+  if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
+  if natural == "sand" || natural == "beach" || natural == "dune" { return "sand"; }
+  if natural == "scrub" || natural == "shrubbery" || natural == "heath" || natural == "grassland" { return "grass"; }
+  if natural == "bare_rock" || natural == "scree" || natural == "rock" { return "bare"; }
+
+  if landuse == "forest" { return "forest"; }
+  if landuse == "grass" || landuse == "meadow" || landuse == "village_green" || landuse == "recreation_ground" { return "grass"; }
+  if landuse == "farmland" || landuse == "farmyard" || landuse == "orchard" || landuse == "vineyard" || landuse == "allotments" { return "farmland"; }
+  if landuse == "residential" { return "residential"; }
+  if landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "construction" || landuse == "railway" { return "industrial"; }
+  if landuse == "reservoir" || landuse == "basin" { return "water"; }
+  if landuse == "cemetery" || landuse == "greenfield" { return "park"; }
+
+  if leisure == "park" || leisure == "garden" || leisure == "playground" || leisure == "pitch"
+     || leisure == "sports_centre" || leisure == "golf_course" || leisure == "recreation_ground" { return "park"; }
+
+  "other"
+}

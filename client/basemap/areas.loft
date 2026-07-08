@@ -13,35 +13,12 @@
 
 #cwd
 
+use basemap::(area_use);        // the tag→landcover mapping now lives in the basemap lib (shared with the encoder)
+
 // A string tag value, or "" when absent (mirrors routing_kernel's `tag`; JNull.as_text() is "null").
 fn atag(obj: JsonValue, name: text) -> text {
   v = obj.field(name);
   if v.kind() == "JString" { v.as_text() } else { "" }
-}
-
-// Many OSM landuse/natural/leisure tags collapse to a compact palette — ~11 classes, one fill each.
-// This is the whole S1 mapping; S5 stores it, the renderer colours it. `natural` is most specific, so
-// it wins; then `landuse`; then `leisure` (parks/greens). Unmapped tags fall to "other".
-pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
-  if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
-  if natural == "wood" { return "forest"; }
-  if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
-  if natural == "sand" || natural == "beach" || natural == "dune" { return "sand"; }
-  if natural == "scrub" || natural == "shrubbery" || natural == "heath" || natural == "grassland" { return "grass"; }
-  if natural == "bare_rock" || natural == "scree" || natural == "rock" { return "bare"; }
-
-  if landuse == "forest" { return "forest"; }
-  if landuse == "grass" || landuse == "meadow" || landuse == "village_green" || landuse == "recreation_ground" { return "grass"; }
-  if landuse == "farmland" || landuse == "farmyard" || landuse == "orchard" || landuse == "vineyard" || landuse == "allotments" { return "farmland"; }
-  if landuse == "residential" { return "residential"; }
-  if landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "construction" || landuse == "railway" { return "industrial"; }
-  if landuse == "reservoir" || landuse == "basin" { return "water"; }
-  if landuse == "cemetery" || landuse == "greenfield" { return "park"; }
-
-  if leisure == "park" || leisure == "garden" || leisure == "playground" || leisure == "pitch"
-     || leisure == "sports_centre" || leisure == "golf_course" || leisure == "recreation_ground" { return "park"; }
-
-  "other"
 }
 
 fn main() {
