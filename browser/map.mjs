@@ -13,7 +13,9 @@
 
 const TILE = 256;                         // world-pixel size of one tile at zoom 0
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
+const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
 const clampLat = (lat) => Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
+const clampZoom = (z) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
 
 // --- Pure spherical Web-Mercator: lon/lat ↔ world pixels at a given (fractional) zoom -------
 
@@ -53,6 +55,14 @@ export function makeView(camera, width, height) {
   };
 }
 
+// The camera centre that puts geographic `latlon` under screen point `mouse` (CSS px) at `zoom`.
+// Pan is "hold the grabbed lat/lon under the cursor"; zoom-about-a-point is "hold the cursor's
+// lat/lon fixed while zoom changes" — both are just this, so both share one tested helper (M1).
+export function panCenter(latlon, mouse, zoom, width, height) {
+  const gw = projectWorld(latlon.lon, latlon.lat, zoom);
+  return unprojectWorld(gw.x - mouse.x + width / 2, gw.y - mouse.y + height / 2, zoom);
+}
+
 // --- RouteMap: binds a view to a canvas (HiDPI backing store, resize) + render(). Browser only.
 
 export class RouteMap {
@@ -66,6 +76,7 @@ export class RouteMap {
     this._raf = 0;
     if (typeof window !== 'undefined') window.addEventListener('resize', () => { this.resize(); this.render(); });
     this.resize();
+    if (opts.interactive !== false) this.enableInteraction();
   }
 
   // Size the backing store to CSS-px × devicePixelRatio and draw in CSS px (crisp on HiDPI).
@@ -84,6 +95,46 @@ export class RouteMap {
   view() { return makeView(this.camera, this.width, this.height); }
   project(lat, lon) { return this.view().project(lat, lon); }
   unproject(x, y) { return this.view().unproject(x, y); }
+
+  // --- M1: pan (left-drag) + wheel zoom, both cursor-anchored -----------------------------------
+  // Move the camera so `latlon` sits under screen point `mouse` (keeps the grabbed point pinned).
+  panTo(mouse, latlon) {
+    const ll = panCenter(latlon, mouse, this.camera.zoom, this.width, this.height);
+    this.camera.lat = ll.lat; this.camera.lon = ll.lon;
+  }
+  // Zoom by `dz` about `mouse`: the geographic point under the cursor stays under the cursor.
+  zoomAt(mouse, dz) {
+    const anchor = this.unproject(mouse.x, mouse.y);
+    this.camera.zoom = clampZoom(this.camera.zoom + dz);
+    this.panTo(mouse, anchor);
+  }
+  enableInteraction() {
+    if (typeof window === 'undefined' || this._interactive) return;
+    this._interactive = true;
+    const cv = this.canvas;
+    const posOf = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    this._grab = null;
+    cv.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const m = posOf(e);
+      this._grab = this.unproject(m.x, m.y);       // the lat/lon we grabbed — held under the cursor
+      cv.style.cursor = 'grabbing';
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!this._grab) return;
+      this.panTo(posOf(e), this._grab);
+      this.requestRender();
+    });
+    window.addEventListener('mouseup', () => { if (this._grab) { this._grab = null; cv.style.cursor = 'grab'; } });
+    cv.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const dz = Math.max(-1, Math.min(1, -e.deltaY * 0.005));   // ~0.5 zoom / notch, clamped per event
+      this.zoomAt(posOf(e), dz);
+      this.requestRender();
+    }, { passive: false });
+    cv.style.cursor = 'grab';
+  }
 
   onRender(cb) { this._renderCbs.push(cb); return this; }
   // Coalesce redraw requests to one per frame (used by pan/zoom in M1).

@@ -28,8 +28,8 @@ const CITIES = [
   { lat: 52.2660, lon: 6.7930, name: 'Hengelo' },
 ];
 
+// Interaction (M1: left-drag pan + wheel zoom) is on by default.
 const map = new RouteMap(document.getElementById('map'), { lat: 52.2215, lon: 6.8937, zoom: 12, points: CITIES });
-map.render();
 window.__map = map;                          // gate hook
 
 // In-page self-check (read by the CDP gate) — proves the DOM / DPR / render path, not just the math.
@@ -45,11 +45,17 @@ function selfCheck() {
   try { bg = Array.from(map.ctx.getImageData(Math.round(W / 2 * dpr), Math.round(H / 2 * dpr), 1, 1).data); rendered = bg[3] === 255; } catch (e) {}
   return { W, H, dpr, center: { x: c.x, y: c.y }, centerOK, roundtripDeg, bg, rendered };
 }
-const m0 = selfCheck();
-window.__m0 = m0;
-document.getElementById('hud').textContent =
-  `M0  ${m0.W}×${m0.H} @${m0.dpr}x\ncentre → (${m0.center.x.toFixed(1)},${m0.center.y.toFixed(1)}) ${m0.centerOK ? 'OK' : 'BAD'}\n` +
-  `round-trip ${m0.roundtripDeg.toExponential(1)}°\nrendered ${m0.rendered}`;
+const hud = document.getElementById('hud');
+function updateHud() {
+  const m0 = selfCheck(); window.__m0 = m0;    // keep the gate hook fresh as the camera moves
+  const cam = map.camera;
+  hud.textContent =
+    `drag to pan · wheel to zoom\n${m0.W}×${m0.H} @${m0.dpr}x  z${cam.zoom.toFixed(2)}\n` +
+    `centre ${cam.lat.toFixed(5)}, ${cam.lon.toFixed(5)} ${m0.centerOK ? 'OK' : 'BAD'}\nround-trip ${m0.roundtripDeg.toExponential(1)}°`;
+}
+map.onRender(updateHud);                       // HUD follows every pan/zoom render
+map.render();
+updateHud();
 </script>
 </body>
 </html>

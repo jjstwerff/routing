@@ -6,7 +6,7 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { makeView, projectWorld, unprojectWorld } from './map.mjs';
+import { makeView, projectWorld, unprojectWorld, panCenter } from './map.mjs';
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { fails++; console.error('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };
@@ -62,5 +62,35 @@ console.log('M0 · orientation: east → +x, north → −y');
   ok(north.y < 300 && near(north.x, 400, 1e-6), `+0.01° lat → up    (y=${north.y.toFixed(1)})`);
 }
 
-console.log(fails ? `\nM0 FAIL — ${fails} check(s) failed` : '\nM0 PASS — projection invariant holds');
+console.log('M1 · pan holds the grabbed lat/lon under the cursor');
+{
+  let worst = 0;
+  for (const z of [11, 13.5, 16]) {
+    const v = makeView({ ...ENSCHEDE, zoom: z }, 900, 600);
+    const start = { x: 200, y: 150 }, end = { x: 640, y: 470 };
+    const grab = v.unproject(start.x, start.y);              // grab a point, then "drag" start→end
+    const nc = panCenter(grab, end, z, 900, 600);            // new centre pins grab under `end`
+    const now = makeView({ lat: nc.lat, lon: nc.lon, zoom: z }, 900, 600).unproject(end.x, end.y);
+    worst = Math.max(worst, Math.abs(now.lat - grab.lat), Math.abs(now.lon - grab.lon));
+  }
+  ok(worst < 1e-9, `grabbed point stays under cursor across a drag (worst ${worst.toExponential(2)}°)`);
+}
+
+console.log('M1 · wheel zoom holds the cursor lat/lon fixed while zoom changes');
+{
+  let worst = 0, allZoomed = true;
+  for (const [z, dz] of [[13, 0.5], [13, -0.5], [17, 0.8]]) {
+    const v = makeView({ ...ENSCHEDE, zoom: z }, 800, 600);
+    const cur = { x: 520, y: 240 };
+    const anchor = v.unproject(cur.x, cur.y);
+    const nz = Math.max(2, Math.min(19, z + dz));
+    const nc = panCenter(anchor, cur, nz, 800, 600);         // re-anchor cursor's point at the new zoom
+    const after = makeView({ lat: nc.lat, lon: nc.lon, zoom: nz }, 800, 600).unproject(cur.x, cur.y);
+    worst = Math.max(worst, Math.abs(after.lat - anchor.lat), Math.abs(after.lon - anchor.lon));
+    if (nz === z) allZoomed = false;
+  }
+  ok(worst < 1e-9 && allZoomed, `cursor point fixed across a wheel tick (worst ${worst.toExponential(2)}°)`);
+}
+
+console.log(fails ? `\nM0+M1 FAIL — ${fails} check(s) failed` : '\nM0+M1 PASS — projection + pan/zoom invariants hold');
 process.exit(fails ? 1 : 0);

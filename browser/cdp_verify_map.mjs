@@ -27,6 +27,28 @@ if (!m0.centerOK) { console.log('FAIL: camera centre does not project to the vie
 if (!(m0.roundtripDeg < 1e-6)) { console.log('FAIL: unproject∘project error ' + m0.roundtripDeg); ok = false; } else console.log(`  ✓ round-trip ${m0.roundtripDeg.toExponential(1)}°`);
 if (!m0.rendered) { console.log('FAIL: canvas centre pixel not opaque — render() did not paint'); ok = false; } else console.log('  ✓ render() painted the canvas');
 
+// M1 · pan: dispatch a real left-drag; the lat/lon grabbed at mousedown must sit under the cursor at
+// mouseup (and zoom must not change).
+const pan = JSON.parse(await ev(`(()=>{const map=window.__map,cv=map.canvas;
+  const a={x:200,y:150},b={x:340,y:260};
+  const grab=map.unproject(a.x,a.y), z0=map.camera.zoom;
+  cv.dispatchEvent(new MouseEvent('mousedown',{clientX:a.x,clientY:a.y,button:0,bubbles:true}));
+  window.dispatchEvent(new MouseEvent('mousemove',{clientX:b.x,clientY:b.y,button:0,bubbles:true}));
+  window.dispatchEvent(new MouseEvent('mouseup',{clientX:b.x,clientY:b.y,button:0,bubbles:true}));
+  const now=map.unproject(b.x,b.y);
+  return JSON.stringify({dLat:Math.abs(now.lat-grab.lat),dLon:Math.abs(now.lon-grab.lon),dZoom:Math.abs(map.camera.zoom-z0)});})()`) || '{}');
+if (!(pan.dLat < 1e-9 && pan.dLon < 1e-9 && pan.dZoom === 0)) { console.log('FAIL: pan did not hold the grabbed point under the cursor — ' + JSON.stringify(pan)); ok = false; }
+else console.log(`  ✓ pan holds the grabbed point under the cursor (${pan.dLat.toExponential(1)}°, zoom fixed)`);
+
+// M1 · wheel: dispatch a real wheel tick; the cursor's lat/lon must stay fixed while zoom increases.
+const zm = JSON.parse(await ev(`(()=>{const map=window.__map,cv=map.canvas;
+  const c={x:300,y:220};const anchor=map.unproject(c.x,c.y),z0=map.camera.zoom;
+  cv.dispatchEvent(new WheelEvent('wheel',{clientX:c.x,clientY:c.y,deltaY:-120,bubbles:true,cancelable:true}));
+  const after=map.unproject(c.x,c.y);
+  return JSON.stringify({dLat:Math.abs(after.lat-anchor.lat),dLon:Math.abs(after.lon-anchor.lon),z0,z1:map.camera.zoom});})()`) || '{}');
+if (!(zm.dLat < 1e-9 && zm.dLon < 1e-9 && zm.z1 > zm.z0)) { console.log('FAIL: wheel zoom not cursor-anchored or did not zoom — ' + JSON.stringify(zm)); ok = false; }
+else console.log(`  ✓ wheel zoom cursor-anchored (${zm.dLat.toExponential(1)}°) z ${zm.z0}→${zm.z1.toFixed(2)}`);
+
 // Resize: change the viewport, resize+render, the centre must stay centred.
 await call('Emulation.setDeviceMetricsOverride', { width: 1000, height: 640, deviceScaleFactor: 1, mobile: false });
 const r2 = await ev('(()=>{window.__map.resize();window.__map.render();const c=window.__map.project(window.__map.camera.lat,window.__map.camera.lon);return JSON.stringify({W:window.__map.width,H:window.__map.height,x:c.x,y:c.y});})()');
@@ -34,5 +56,5 @@ const j = JSON.parse(r2 || '{}');
 const rOK = Math.abs(j.x - j.W / 2) < 1e-6 && Math.abs(j.y - j.H / 2) < 1e-6;
 if (!rOK) { console.log('FAIL: resize did not keep the centre centred — ' + r2); ok = false; } else console.log(`  ✓ resize keeps the centre centred (${j.W}×${j.H})`);
 
-console.log(ok ? 'PASS — M0 canvas renderer: projection + render + resize verified headless.' : 'FAILURES');
+console.log(ok ? 'PASS — M0+M1 canvas renderer: projection + render + pan/zoom + resize verified headless.' : 'FAILURES');
 process.exit(ok ? 0 : 1);
