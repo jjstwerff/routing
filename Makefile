@@ -29,10 +29,12 @@
 #   make test-wasm    kernel geodesic parity on wasip2 via wasmtime
 #   make test-client  the headless-Chromium harnesses (routes / elevation / two-tab sync)
 #
-# The loft toolchain is expected as a SIBLING checkout (../loft, built);
-# override with LOFT=/path/to/loft (or LOFT_BIN=..., honored for parity with tools/).
+# Defaults to the installed loft on PATH — it carries a stable, self-contained
+# native runtime (/usr/local/share/loft/deps), so --native builds don't depend on
+# the ../loft dev tree's in-progress target/deps. Override with LOFT_BIN=... to test
+# an unreleased build, e.g. LOFT_BIN=$(CURDIR)/../loft/target/release/loft.
 
-LOFT   ?= $(or $(LOFT_BIN),$(CURDIR)/../loft/target/release/loft)
+LOFT   ?= $(or $(LOFT_BIN),$(shell command -v loft))
 PORT   ?= 18080
 PREFIX ?= $(HOME)/.local
 APPDIR := $(PREFIX)/lib/routing
