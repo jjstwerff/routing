@@ -43,9 +43,20 @@ struct Building { ring: vector<Coord>, name: text? }            // footprint; na
 struct Label    { name: text, kind: LabelKind, rank: integer,  // place labels + street labels
                   line: vector<Coord> }                         // street: simplified centerline (option B);
                                                                 //   place: a single point (line of length 1)
-struct PTile    { tkey: integer, areas: vector<Area>,
+struct PTile    { tkey: integer, ox: integer, oy: integer,      // SAME cell as the routing TTile
+                  areas: vector<Area>,
                   buildings: vector<Building>, labels: vector<Label> }
 ```
+
+**Same tiles as a grid, separate tiles as data.** `PTile` reuses the routing grid *exactly* —
+`CELL = 200000` (2 km cells), `tkey = ty*1e6 + tx`, fixed-point (1e-7°) coords as deltas from `ox,oy` —
+so one `bbox → cell range` resolver serves both a route corridor and a map viewport, and the two datasets
+align cell-for-cell. But `PTile` lives in its **own store file**, never in `TTile`/the routing `.tiles`:
+folding 22 k buildings + 7 k areas into the block the matcher loads would bloat it ~100× and couple the two
+(S0 would fail). The grid constants are **reimplemented** in the presentation code, not extracted from
+`routing_kernel.loft` — extracting them would modify the frozen kernel and trip S0. The two share a
+documented grid *contract*, not shared code; unifying the grid math is a later refactor, outside the
+isolation-preserving basemap work.
 
 - **`AreaUse`** — a compact enum, many OSM tags → ~10 fill colours: `water, forest, grass, park, farmland,
   residential, industrial, sand, wetland, bare`. This is what produces the "terrain types" look.
@@ -89,10 +100,12 @@ for a load-bearing claim (only where one exists). **S0 runs first and re-runs af
   a named building (e.g. a church) carries its `name`.
 
 ### Phase 2 — store format + working-set keying
-- **S5. Presentation store.** Encode Phase-1 features into `hash<PTile[tkey]>` reusing the **routing cell
-  grid**. *Check:* `store_verify` sound; decode round-trips the features. *Probe (over-unification guard):*
-  it is a **separate** store file from the routing block — grep proves the routing block still contains only
-  roads; the two share the grid + snapshot stamp, nothing else.
+- **S5. Presentation store.** Encode Phase-1 features into `hash<PTile[tkey]>` reusing the routing grid
+  *exactly* — same `CELL = 200000`, `tkey = ty*1e6+tx`, fixed-point coords from `ox,oy` — but as its **own
+  store file**, with the grid constants **reimplemented** (not extracted from the frozen kernel). *Check:*
+  `store_verify` sound; decode round-trips the features; a `PTile`'s cell aligns with the routing `TTile` of
+  the same `tkey`. *Probe (over-unification guard):* it is a separate file — grep proves the routing block
+  still contains only roads; the two share the grid contract + snapshot stamp, nothing else.
 - **S6. Working-set load.** Viewport bbox → `tkey` range → `store_load_keys` only those cells (loft#522).
   *Check:* features returned == a full-decode of the same bbox. *Probe:* log **bytes fetched ≪ whole store**
   (the countable working-set assertion), via `LOFT_LOADER_STATS`.
