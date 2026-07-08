@@ -23,9 +23,17 @@ chr=""
 cleanup() { kill "$chr" 2>/dev/null; }
 trap cleanup EXIT
 
-echo "== M0 headless canvas gate (CDP, file://) =="
+echo "== M0..M3b headless canvas gate (CDP, file://) =="
 "$chromium" --headless=new --disable-gpu --no-sandbox --allow-file-access-from-files \
   --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
 chr=$!
 sleep 4
-node "$here/browser/cdp_verify_map.mjs" "127.0.0.1:$dtport" "file://$here/browser/map-demo.html"
+node "$here/browser/cdp_verify_map.mjs" "127.0.0.1:$dtport" "file://$here/browser/map-demo.html" || exit 1
+
+# M4: whole-region tiled working set — only if the tiles are baked (browser/tiles/index.json).
+if [ -f "$here/browser/tiles/index.json" ]; then
+  echo "== M4 headless tiled-working-set gate (CDP, file://) =="
+  node "$here/browser/cdp_verify_tiles.mjs" "127.0.0.1:$dtport" "file://$here/browser/map.html"
+else
+  echo "~ M4 skipped: no browser/tiles/ (run \`node browser/bake_tiles.mjs\` after emitting the whole-region layers)"
+fi

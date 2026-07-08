@@ -9,3 +9,6 @@ streets.txt
 lines.txt
 pois.txt
 stamp.txt
+
+# M4 baked tile pyramid (bake_tiles.mjs) — regenerable from the whole-region dumps, not committed.
+tiles/

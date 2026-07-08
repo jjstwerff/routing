@@ -184,6 +184,7 @@ export class RouteMap {
     this.lines = opts.lines || [];            // [{kind, name, geom}]      — M3b streams/rails/barriers
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
     this._stats = {};                         // per-render draw counts (gate hook)
+    this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
     this._raf = 0;
@@ -208,6 +209,19 @@ export class RouteMap {
   view() { return makeView(this.camera, this.width, this.height); }
   project(lat, lon) { return this.view().project(lat, lon); }
   unproject(x, y) { return this.view().unproject(x, y); }
+
+  // Current viewport lat/lon box (north-up Mercator → axis-aligned). Used by the M4 tile loader.
+  bounds() {
+    const tl = this.unproject(0, 0), br = this.unproject(this.width, this.height);
+    return { minLat: br.lat, maxLat: tl.lat, minLon: tl.lon, maxLon: br.lon };
+  }
+  // Debounced "camera settled" hook — fire after the last pan/zoom so loading doesn't run mid-drag.
+  onMove(cb) { this._moveCbs.push(cb); return this; }
+  _fireMove() {
+    if (typeof setTimeout === 'undefined') return;
+    clearTimeout(this._moveT);
+    this._moveT = setTimeout(() => { for (const cb of this._moveCbs) cb(); }, 120);
+  }
 
   // --- M1: pan (left-drag) + wheel zoom, both cursor-anchored -----------------------------------
   // Move the camera so `latlon` sits under screen point `mouse` (keeps the grabbed point pinned).
@@ -237,14 +251,14 @@ export class RouteMap {
     window.addEventListener('mousemove', (e) => {
       if (!this._grab) return;
       this.panTo(posOf(e), this._grab);
-      this.requestRender();
+      this.requestRender(); this._fireMove();
     });
     window.addEventListener('mouseup', () => { if (this._grab) { this._grab = null; cv.style.cursor = 'grab'; } });
     cv.addEventListener('wheel', (e) => {
       e.preventDefault();
       const dz = Math.max(-1, Math.min(1, -e.deltaY * 0.005));   // ~0.5 zoom / notch, clamped per event
       this.zoomAt(posOf(e), dz);
-      this.requestRender();
+      this.requestRender(); this._fireMove();
     }, { passive: false });
     cv.style.cursor = 'grab';
   }
