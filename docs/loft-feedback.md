@@ -698,6 +698,17 @@ us, so filing/fixing is the maintainer's call.
 
 ## 2026-07-09 — store engine + web lib: loft-wasm needs a byte codec + a binary fetch to read a store in the browser
 
+> **RESOLVED 2026-07-12 — loft shipped both.** The stdlib now has a heap store reader that runs in wasm
+> (`store_load(r, path)`, doc: *"open a snapshot for querying where `store_persist_bind` can't run — a
+> browser / wasm target"*) plus `store_load_url(r, url, sha256)` / `store_load_url_trusted(r, url)`, which
+> fetch a store image over HTTP and decode it, "bytes never touch disk" (+ paged `store_load_key(s)` /
+> `store_load_range`, loft#522). In wasm the fetch is bridged to JS `fetch()` via the asyncify host import,
+> so `store_load_url_trusted` is identical native↔browser. **Both gaps below are gone; no `codec.loft`, no
+> host_input byte-smuggling.** Verified here: `store_load` decodes the real 20.8 MB layout store byte-for-
+> byte under `--native-wasm` (tiles 1089 / buildings 130402), and in **headless chromium** the
+> `web_basemap_kernel.loft` page loads both stores by URL and runs `view <bbox>` + `match` (route
+> byte-identical to native, ways=13077). See PLAN-BUILD B4/B5 and `browser/store-app.*`.
+
 **Context.** Target architecture (PLAN-STORE / PLAN-BUILD): loft builds two binary stores — layout `PTile`
 and roads `TTile` — with `store_persist_bind`, served static on GitHub Pages; the browser fetches them and
 **loft-wasm** decodes them → emits the base-map `view` text + the matched `route` over the
