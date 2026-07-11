@@ -1,0 +1,44 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BUILD B4/B5 — the BROWSER front-end of the base-map kernel (`loft --html`). Same shared
+// `map_kernel` view/match logic as `client/basemap_kernel.loft`, but the browser has no filesystem or
+// argv, so it loads the two stores straight from a URL with `store_load_url_trusted` (the fetch is
+// bridged to JS `fetch()` in wasm) and takes its command over the host_input()/println channel.
+//
+// `loft_start` rebuilds fresh state each call, so re-matching per sketch edit is another call with a new
+// blob; the browser HTTP-caches the store, so the refetch is a decode, not a download. (store_load_url
+// is --html-only — it does NOT compile to --native-wasm/WASI, which is why this is a separate file from
+// the path-loading `basemap_kernel.loft`.)
+//
+// Input framing — one host_input() blob, newline-separated (JS sets globalThis.loftInput before loft_start):
+//   line 0: <layout.store URL>
+//   line 1: <roads.store URL>
+//   line 2: view | match
+//   line 3: <sketch "lat,lon;lat,lon;…">   (match only)
+//   line 4: <profile e.g. cycling_road>    (match only)
+// Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println.
+
+use map_kernel::(do_view, do_match, parse_sketch);
+use basemap::(PTile);
+use routing_kernel::(TTile);
+
+fn main() {
+  lines = host_input().split('\n');
+  layout_url = lines[0] ?? "";
+  roads_url  = lines[1] ?? "";
+  cmd        = lines[2] ?? "view";
+  sketch     = lines[3] ?? "";
+  profile    = lines[4] ?? "cycling_road";
+
+  roads: hash<TTile[tkey]> = [];
+  if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
+
+  if cmd == "match" {
+    do_match(roads, parse_sketch(sketch), profile);
+  } else {
+    layout: hash<PTile[tkey]> = [];
+    if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
+    do_view(layout, roads);
+  }
+}
