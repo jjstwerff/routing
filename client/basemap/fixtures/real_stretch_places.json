@@ -1,12 +1,37 @@
 {
   "version": 0.6,
-  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "generator": "Overpass API 0.7.62.4 2390de5a",
   "osm3s": {
-    "timestamp_osm_base": "2026-07-08T11:33:31Z",
+    "timestamp_osm_base": "2026-07-08T20:44:59Z",
     "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
   },
   "elements": [
 
+{
+  "type": "node",
+  "id": 45582591,
+  "lat": 52.1787594,
+  "lon": 6.8663004,
+  "tags": {
+    "name": "Broekheurne",
+    "place": "hamlet",
+    "postal_code": "7544",
+    "source": "AND",
+    "wikidata": "Q4716576"
+  }
+},
+{
+  "type": "node",
+  "id": 45933999,
+  "lat": 52.2627518,
+  "lon": 6.8406436,
+  "tags": {
+    "name": "Driene",
+    "place": "locality",
+    "postal_code": "7522",
+    "source": "AND"
+  }
+},
 {
   "type": "node",
   "id": 46130993,
@@ -28,6 +53,21 @@
 },
 {
   "type": "node",
+  "id": 1583408418,
+  "lat": 52.2241384,
+  "lon": 6.9770173,
+  "tags": {
+    "name": "Glane-Beekhoek",
+    "place": "hamlet",
+    "population": "65",
+    "source": "AND",
+    "website": "https://www.plaatsengids.nl/glane-beekhoek",
+    "wikidata": "Q3108507",
+    "wikipedia": "nl:Glane-Beekhoek"
+  }
+},
+{
+  "type": "node",
   "id": 1928883413,
   "lat": 52.2506045,
   "lon": 6.9117355,
@@ -45,6 +85,114 @@
 },
 {
   "type": "node",
+  "id": 2329319879,
+  "lat": 52.2630616,
+  "lon": 6.8532666,
+  "tags": {
+    "name": "De Wildernis",
+    "operator": "Landschap Overijssel",
+    "place": "locality",
+    "website": "https://www.landschapoverijssel.nl/"
+  }
+},
+{
+  "type": "node",
+  "id": 2377183784,
+  "lat": 52.2155505,
+  "lon": 6.9701111,
+  "tags": {
+    "name": "Glanerbrug",
+    "name:de": "Glanerbrücke",
+    "name:nl": "Glanerbrug",
+    "name:ru": "Гланербрюг",
+    "place": "village",
+    "wikidata": "Q1007176"
+  }
+},
+{
+  "type": "node",
+  "id": 2428525842,
+  "lat": 52.2031730,
+  "lon": 6.8331587,
+  "tags": {
+    "name": "Usselo",
+    "name:nl": "Usselo",
+    "name:ru": "Уссело",
+    "place": "village",
+    "population": "275",
+    "population:date": "2017-01-01",
+    "source:population": "CBS Buurt 2017",
+    "wikidata": "Q2403198"
+  }
+},
+{
+  "type": "node",
+  "id": 2716239066,
+  "lat": 52.1841171,
+  "lon": 6.9509758,
+  "tags": {
+    "name": "Aamsveen",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2716239069,
+  "lat": 52.1763779,
+  "lon": 6.9524724,
+  "tags": {
+    "name": "Hündfelder Moor",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2719016736,
+  "lat": 52.1797352,
+  "lon": 6.9141880,
+  "tags": {
+    "name": "Knalhutte",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2719016740,
+  "lat": 52.1758763,
+  "lon": 6.8757976,
+  "tags": {
+    "name": "Landgoed Groot Brunink",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2719016745,
+  "lat": 52.1800376,
+  "lon": 6.8940237,
+  "tags": {
+    "name": "Landgoed Smalenbroek",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2719016748,
+  "lat": 52.1783540,
+  "lon": 6.8380042,
+  "tags": {
+    "email": "hetrutbeek@recreatieschaptwente.nl",
+    "facebook": "https://www.facebook.com/hetrutbeek",
+    "name": "Recreatiepark Het Rutbeek",
+    "phone": "+31 53 428 2411",
+    "place": "locality",
+    "website": "https://www.hetrutbeek.nl/",
+    "wikidata": "Q2050876",
+    "wikipedia": "nl:Recreatiepark Het Rutbeek"
+  }
+},
+{
+  "type": "node",
   "id": 2719048862,
   "lat": 52.2431114,
   "lon": 6.9115015,
@@ -55,11 +203,219 @@
 },
 {
   "type": "node",
+  "id": 2719048864,
+  "lat": 52.2330542,
+  "lon": 6.9379186,
+  "tags": {
+    "name": "Landgoed de Hoge Boekel",
+    "place": "locality",
+    "wikidata": "Q2402514",
+    "wikipedia": "nl:De Hooge Boekel"
+  }
+},
+{
+  "type": "node",
   "id": 2719048868,
   "lat": 52.2472697,
   "lon": 6.8913646,
   "tags": {
     "name": "Zuidkamp",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542490,
+  "lat": 52.2275723,
+  "lon": 6.9434367,
+  "tags": {
+    "name": "Boekeler Veld",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542491,
+  "lat": 52.2436294,
+  "lon": 6.9691044,
+  "tags": {
+    "name": "'t Schipper",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542492,
+  "lat": 52.2393722,
+  "lon": 6.9611179,
+  "tags": {
+    "name": "Bonekamp",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542495,
+  "lat": 52.2540734,
+  "lon": 6.9380541,
+  "tags": {
+    "name": "Achterhoek",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542499,
+  "lat": 52.2342487,
+  "lon": 6.9605643,
+  "tags": {
+    "name": "Het Hooge Veld",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542503,
+  "lat": 52.2536334,
+  "lon": 6.9624708,
+  "tags": {
+    "name": "Penninkskotten",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542506,
+  "lat": 52.2516695,
+  "lon": 6.9529253,
+  "tags": {
+    "name": "Kuipershoek",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2721542507,
+  "lat": 52.2467838,
+  "lon": 6.9637829,
+  "tags": {
+    "name": "Linder Maten",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2725429088,
+  "lat": 52.2242160,
+  "lon": 6.8217723,
+  "tags": {
+    "name": "Landgoed het Stroot",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2763861483,
+  "lat": 52.2095315,
+  "lon": 6.9434542,
+  "tags": {
+    "name": "Derkingsmaten",
+    "note:en": "Field name",
+    "note:nl": "Uit veldnamenregister",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2772189150,
+  "lat": 52.2387646,
+  "lon": 6.8339467,
+  "tags": {
+    "name": "Go Planet",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2777981252,
+  "lat": 52.2313190,
+  "lon": 6.8787005,
+  "tags": {
+    "name": "Het Roessingh",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2777995486,
+  "lat": 52.2236997,
+  "lon": 6.8818737,
+  "tags": {
+    "name": "Schuttersveld",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2790796086,
+  "lat": 52.1840244,
+  "lon": 6.8275652,
+  "tags": {
+    "name": "Usselerveld",
+    "place": "locality",
+    "source": "http://overijssel1880-1930.blogspot.nl/2009/12/gids-van-enschede-en-omgeving-de_8327.html"
+  }
+},
+{
+  "type": "node",
+  "id": 2790796087,
+  "lat": 52.1858155,
+  "lon": 6.9197683,
+  "tags": {
+    "name": "Allemans Veld",
+    "place": "locality",
+    "source": "http://overijssel1880-1930.blogspot.nl/2009/12/gids-van-enschede-en-omgeving-de_8327.html"
+  }
+},
+{
+  "type": "node",
+  "id": 2790796088,
+  "lat": 52.1898128,
+  "lon": 6.8268785,
+  "tags": {
+    "name": "De Voshaar",
+    "place": "locality",
+    "source": "http://overijssel1880-1930.blogspot.nl/2009/12/gids-van-enschede-en-omgeving-de_8327.html"
+  }
+},
+{
+  "type": "node",
+  "id": 2790796090,
+  "lat": 52.1943634,
+  "lon": 6.9419786,
+  "tags": {
+    "name": "Hölterhof",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2790796092,
+  "lat": 52.1899890,
+  "lon": 6.9156275,
+  "tags": {
+    "name": "'t Horster",
+    "place": "locality",
+    "source": "http://overijssel1880-1930.blogspot.nl/2009/12/gids-van-enschede-en-omgeving-de_8327.html"
+  }
+},
+{
+  "type": "node",
+  "id": 2794396092,
+  "lat": 52.1955877,
+  "lon": 6.8633563,
+  "tags": {
+    "name": "Helmerzijde",
     "place": "locality"
   }
 },
@@ -85,6 +441,351 @@
 },
 {
   "type": "node",
+  "id": 2822712644,
+  "lat": 52.1990384,
+  "lon": 6.9576332,
+  "tags": {
+    "name": "Goolkate",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2822718699,
+  "lat": 52.2120116,
+  "lon": 6.9323160,
+  "tags": {
+    "name": "Sloebosch",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760101,
+  "lat": 52.1751704,
+  "lon": 6.9027641,
+  "tags": {
+    "heritage:website": "https://monumentenregister.cultureelerfgoed.nl/complexen/387932",
+    "name": "Erve Berenbroek",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760103,
+  "lat": 52.1962604,
+  "lon": 6.9002771,
+  "tags": {
+    "name": "Verwoold",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760104,
+  "lat": 52.2014942,
+  "lon": 6.9106841,
+  "tags": {
+    "name": "Groot Holzik",
+    "note:NL": "Toponiem:Es",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760105,
+  "lat": 52.1953272,
+  "lon": 6.8222162,
+  "tags": {
+    "name": "Het Broek",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760107,
+  "lat": 52.1855923,
+  "lon": 6.8655371,
+  "tags": {
+    "name": "Het Haverkate",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 2822760111,
+  "lat": 52.1947346,
+  "lon": 6.9323810,
+  "tags": {
+    "name": "Huttenpeters Kamp",
+    "place": "locality",
+    "source": "http://www.enschede-stad.nl/overig/kaarten/Enschede1920.jpg"
+  }
+},
+{
+  "type": "node",
+  "id": 2832281264,
+  "lat": 52.2088157,
+  "lon": 6.8893988,
+  "tags": {
+    "name": "Zuiderval",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832324356,
+  "lat": 52.2110665,
+  "lon": 6.9621373,
+  "tags": {
+    "name": "Eilermarke",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832325385,
+  "lat": 52.2127708,
+  "lon": 6.9492144,
+  "tags": {
+    "name": "Eekmaat oost",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832325386,
+  "lat": 52.2149089,
+  "lon": 6.9419000,
+  "tags": {
+    "name": "Eekmaat west",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832325387,
+  "lat": 52.2128627,
+  "lon": 6.9437725,
+  "tags": {
+    "name": "Aquadrille",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832325712,
+  "lat": 52.2184190,
+  "lon": 6.9438210,
+  "tags": {
+    "name": "Dolphia",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2832325740,
+  "lat": 52.2181150,
+  "lon": 6.9624330,
+  "tags": {
+    "name": "Voskamp",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 2845227570,
+  "lat": 52.3008411,
+  "lon": 6.8368748,
+  "tags": {
+    "name": "Deurningen",
+    "name:carnaval": "Nettelkörnkesnust",
+    "name:nl": "Deurningen",
+    "name:ru": "Дёрнинген",
+    "place": "village",
+    "population": "1018",
+    "population:date": "2017-01-01",
+    "source:population": "https://noaberkracht.incijfers.nl/jive",
+    "wikidata": "Q2189037",
+    "wikipedia": "nl:Deurningen"
+  }
+},
+{
+  "type": "node",
+  "id": 3021001831,
+  "lat": 52.2043457,
+  "lon": 6.9149330,
+  "tags": {
+    "name": "Honhof",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3034577393,
+  "lat": 52.2049181,
+  "lon": 6.8471863,
+  "tags": {
+    "name": "'t Mors",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3034585067,
+  "lat": 52.2042025,
+  "lon": 6.8231661,
+  "tags": {
+    "name": "De Zwede",
+    "note": "Historical hamlet name",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3050373627,
+  "lat": 52.2202863,
+  "lon": 6.8233371,
+  "tags": {
+    "name": "Wilgenkamp",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3050373628,
+  "lat": 52.2211147,
+  "lon": 6.8320790,
+  "tags": {
+    "name": "Posjan",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3050373630,
+  "lat": 52.2237466,
+  "lon": 6.8303049,
+  "tags": {
+    "name": "'n Brook",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3760168507,
+  "lat": 52.1792643,
+  "lon": 6.9341000,
+  "tags": {
+    "name": "Hofman",
+    "place": "isolated_dwelling"
+  }
+},
+{
+  "type": "node",
+  "id": 3760168508,
+  "lat": 52.1801814,
+  "lon": 6.9410201,
+  "tags": {
+    "name": "Schukkink",
+    "place": "locality",
+    "source": "topotijdreis.nl (Kadaster)"
+  }
+},
+{
+  "type": "node",
+  "id": 3760194150,
+  "lat": 52.1706179,
+  "lon": 6.9001907,
+  "tags": {
+    "name": "Duivengoor",
+    "place": "isolated_dwelling"
+  }
+},
+{
+  "type": "node",
+  "id": 3760194151,
+  "lat": 52.1792360,
+  "lon": 6.9080962,
+  "tags": {
+    "name": "Berenbroekse landen",
+    "place": "locality",
+    "source": "topotijdreis.nl (Kadaster)"
+  }
+},
+{
+  "type": "node",
+  "id": 3760199154,
+  "lat": 52.1812254,
+  "lon": 6.8738329,
+  "tags": {
+    "name": "Groot Bruninkshoek",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 3760218404,
+  "lat": 52.1924364,
+  "lon": 6.9164540,
+  "tags": {
+    "name": "Horstkamp",
+    "place": "isolated_dwelling"
+  }
+},
+{
+  "type": "node",
+  "id": 3760233616,
+  "lat": 52.1857012,
+  "lon": 6.9117086,
+  "tags": {
+    "name": "Horster",
+    "place": "isolated_dwelling"
+  }
+},
+{
+  "type": "node",
+  "id": 3836540471,
+  "lat": 52.2209855,
+  "lon": 6.8940537,
+  "tags": {
+    "alt_name:de": "Enscheid",
+    "ele": "42",
+    "name": "Enschede",
+    "name:ar": "أنسخديه",
+    "name:carnaval": "Krekkelstad",
+    "name:de": "Enschede",
+    "name:fa": "انسخده",
+    "name:fy": "Ynskedee",
+    "name:ko": "엔스헤더",
+    "name:la": "Enscheda",
+    "name:ml": "എൻസ്കഡെ",
+    "name:nds": "Eanske",
+    "name:nl": "Enschede",
+    "name:pnb": "انشیدے",
+    "name:ru": "Энсхеде",
+    "name:sr": "Енсхеде",
+    "name:uk": "Енсхеде",
+    "name:ur": "انسخدئے",
+    "name:zh-Hans": "恩斯赫德",
+    "name:zh-Hant": "恩斯赫德",
+    "place": "city",
+    "population": "151041",
+    "population:date": "2023-01-01",
+    "population:note": "Inwonertal gemeente inclusief Glanerbrug, exclusief wijk Landelijk gebied en kernen.",
+    "source:population": "https://www.kennispunttwente.nl/cijfers-trends",
+    "website": "https://www.enschede.nl",
+    "wikidata": "Q10002",
+    "wikipedia": "nl:Enschede"
+  }
+},
+{
+  "type": "node",
   "id": 4988582230,
   "lat": 52.3042400,
   "lon": 6.8878060,
@@ -97,6 +798,16 @@
     "website": "https://www.hethulsbeek.nl/",
     "wikidata": "Q2936839",
     "wikipedia": "nl:Het Hulsbeek"
+  }
+},
+{
+  "type": "node",
+  "id": 6074524615,
+  "lat": 52.2490770,
+  "lon": 6.9443839,
+  "tags": {
+    "name": "Landgoed \"de Elsbeek\"",
+    "place": "locality"
   }
 },
 {
@@ -221,6 +932,89 @@
 },
 {
   "type": "node",
+  "id": 9410193281,
+  "lat": 52.1709126,
+  "lon": 6.9171201,
+  "tags": {
+    "name": "Brook",
+    "place": "hamlet"
+  }
+},
+{
+  "type": "node",
+  "id": 9831152713,
+  "lat": 52.1800964,
+  "lon": 6.9646395,
+  "tags": {
+    "locality": "ALKIS_Lage",
+    "name": "De Brande",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
+  "id": 9937276443,
+  "lat": 52.2052713,
+  "lon": 6.9709151,
+  "tags": {
+    "name": "Oikos",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 9937285223,
+  "lat": 52.2245114,
+  "lon": 6.9502697,
+  "tags": {
+    "name": "Euregio Bedrijvenpark",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 10072756495,
+  "lat": 52.1760772,
+  "lon": 6.9653897,
+  "tags": {
+    "name": "Amtsvenn",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 10076416266,
+  "lat": 52.2109944,
+  "lon": 6.8618879,
+  "tags": {
+    "name": "Stadsveld-Zuid",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 10873181267,
+  "lat": 52.2861810,
+  "lon": 6.8321536,
+  "tags": {
+    "name": "Hasseler Es",
+    "place": "quarter",
+    "source": "CBS-WijkBuurt; localknowledge",
+    "source:date": "2023-02-10"
+  }
+},
+{
+  "type": "node",
+  "id": 11425238573,
+  "lat": 52.2064232,
+  "lon": 6.8410706,
+  "tags": {
+    "name": "Usseler Es",
+    "place": "locality"
+  }
+},
+{
+  "type": "node",
   "id": 12201140990,
   "lat": 52.3138642,
   "lon": 6.9044106,
@@ -231,11 +1025,51 @@
 },
 {
   "type": "node",
+  "id": 12203919530,
+  "lat": 52.3192950,
+  "lon": 6.9347288,
+  "tags": {
+    "name": "De Meijbree",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 12205920581,
+  "lat": 52.2288657,
+  "lon": 6.8606696,
+  "tags": {
+    "name": "Twekkelerveld",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
   "id": 13006953993,
   "lat": 52.2400145,
   "lon": 6.8931015,
   "tags": {
     "name": "Deppenbroek",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13114350318,
+  "lat": 52.2315344,
+  "lon": 6.8961069,
+  "tags": {
+    "name": "Roombeek",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13389237409,
+  "lat": 52.2058381,
+  "lon": 6.8783634,
+  "tags": {
+    "name": "Boswinkel",
     "place": "quarter"
   }
 },
@@ -256,6 +1090,46 @@
   "lon": 6.8922613,
   "tags": {
     "name": "Mekkelholt",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13564379265,
+  "lat": 52.1826357,
+  "lon": 6.8742120,
+  "tags": {
+    "name": "Het Brunink",
+    "place": "neighbourhood"
+  }
+},
+{
+  "type": "node",
+  "id": 13564386696,
+  "lat": 52.1936942,
+  "lon": 6.8545809,
+  "tags": {
+    "name": "Helmerhoek",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13564386697,
+  "lat": 52.1930217,
+  "lon": 6.8778920,
+  "tags": {
+    "name": "Wesselerbrink",
+    "place": "quarter"
+  }
+},
+{
+  "type": "node",
+  "id": 13564386698,
+  "lat": 52.1931894,
+  "lon": 6.8985558,
+  "tags": {
+    "name": "Stroinkslanden",
     "place": "quarter"
   }
 },

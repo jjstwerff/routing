@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 // PLAN-BASEMAP S8 (render side) — emit building footprints for the browser to draw as filled blocks.
-// One line per building: <lat>,<lon>;<lat>,<lon>;...  (WGS84 ring, ready for Leaflet L.polygon).
+// One line per building: <name>;<lat>,<lon>;<lat>,<lon>;...  (name may be empty; WGS84 ring).
 //   loft --interpret --path <loft>/ --lib lib client/basemap/emit_buildings.loft <buildings.json> > browser/buildings.txt
 
 #cwd
@@ -24,11 +24,10 @@ fn main() {
       if atag(tags, "building") != "" {
         geom = el.field("geometry"); m = len(geom);
         if m >= 4 {
-          line = "";
+          line = atag(tags, "name");            // building name (may be empty), then the ring
           for j in 0..m {
             g = geom.item(j);
-            if j > 0 { line += ";"; }
-            line += "{g.field("lat").as_number():2.6},{g.field("lon").as_number():2.6}";
+            line += ";{g.field("lat").as_number():2.6},{g.field("lon").as_number():2.6}";
           }
           println(line);
         }

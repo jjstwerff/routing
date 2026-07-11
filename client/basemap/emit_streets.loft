@@ -9,14 +9,14 @@
 
 #cwd
 
-use basemap::(dp_mask);
+use basemap::(dp_mask, road_class);
 
 fn atag(obj: JsonValue, name: text) -> text {
   v = obj.field(name);
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
-STREET_EPS = 12.0;   // metres — centerline simplification tolerance
+STREET_EPS = 3.0;    // metres — keep curve detail so roads read as rounded, not faceted
 
 fn main() {
   path = arguments()[0] ?? "";
@@ -28,16 +28,18 @@ fn main() {
     el = elements.item(i);
     if atag(el, "type") == "way" {
       tags = el.field("tags");
-      name = atag(tags, "name"); hw = atag(tags, "highway");
+      cls = road_class(atag(tags, "highway"));
+      name = atag(tags, "name"); ref = atag(tags, "ref");
+      label = if name != "" { name } else { ref };   // motorways (A1) carry a ref, not a name
       geom = el.field("geometry"); m = len(geom);
-      if name != "" && hw != "" && m >= 2 {
+      if cls != "" && m >= 2 {
         lat0 = geom.item(0).field("lat").as_number();
         lon0 = geom.item(0).field("lon").as_number();
         mlon = 111320.0 * cos(lat0 * d2r);
         xs: vector<float> = []; ys: vector<float> = [];
         for j in 0..m { g = geom.item(j); xs += [(g.field("lon").as_number() - lon0) * mlon]; ys += [(g.field("lat").as_number() - lat0) * 111320.0]; }
         keep = dp_mask(xs, ys, STREET_EPS);
-        line = name;
+        line = "{cls};{label}";
         for j in 0..m {
           if keep[j] ?? false {
             g = geom.item(j);
