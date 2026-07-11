@@ -156,7 +156,8 @@ pub fn seg_dist2(px: float, py: float, ax: float, ay: float, bx: float, by: floa
   l2 = dx * dx + dy * dy;
   t = 0.0;
   if l2 > 0.0 {
-    t = ((px - ax) * dx + (py - ay) * dy) / l2;
+    // `/` is fallible under @PLN25 (÷0 → null); the l2>0 guard means it never is, so `?? 0.0` discharges it.
+    t = (((px - ax) * dx + (py - ay) * dy) / l2) ?? 0.0;
     if t < 0.0 { t = 0.0; }
     if t > 1.0 { t = 1.0; }
   }

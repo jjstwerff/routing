@@ -40,14 +40,16 @@ pub fn geodesic_ll(lat1: float, lon1: float, lat2: float, lon2: float) -> float 
   for _it in 0..20 {
     sl = sin(lam);
     cl = cos(lam);
-    sins = sqrt((cu2 * sl) * (cu2 * sl) + (cu1 * su2 - su1 * cu2 * cl) * (cu1 * su2 - su1 * cu2 * cl));
+    // sqrt and ÷-by-a-variable are fallible under @PLN25 (→ float?); every site here is guarded so the
+    // null never occurs (sqrt of a sum of squares, ÷ inside an `x != 0` / `x > 0` test) — `?? 0.0` discharges it.
+    sins = sqrt((cu2 * sl) * (cu2 * sl) + (cu1 * su2 - su1 * cu2 * cl) * (cu1 * su2 - su1 * cu2 * cl)) ?? 0.0;
     if sins == 0.0 { return 0.0; }   // coincident on the auxiliary sphere
     coss = su1 * su2 + cu1 * cu2 * cl;
     sigma = atan2(sins, coss);
-    sina = cu1 * cu2 * sl / sins;
+    sina = cu1 * cu2 * sl / sins ?? 0.0;
     cos2a = 1.0 - sina * sina;
     cos2sm = 0.0;
-    if cos2a != 0.0 { cos2sm = coss - 2.0 * su1 * su2 / cos2a; }   // 0 along the equator
+    if cos2a != 0.0 { cos2sm = coss - (2.0 * su1 * su2 / cos2a ?? 0.0); }   // 0 along the equator
     cc = WGS84_F / 16.0 * cos2a * (4.0 + WGS84_F * (4.0 - 3.0 * cos2a));
     prev = lam;
     lam = ll + (1.0 - cc) * WGS84_F * sina
@@ -253,7 +255,7 @@ pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, marg
     if p.lon < mnlon { mnlon = p.lon; } if p.lon > mxlon { mxlon = p.lon; }
   }
   dlat = margin / 111320.0;
-  dlon = margin / (111320.0 * cos(((mnlat + mxlat) / 2.0) * PI / 180.0));
+  dlon = margin / (111320.0 * cos(((mnlat + mxlat) / 2.0) * PI / 180.0)) ?? 0.0;   // cos(lat)≠0 at real lats
   gx0 = round((mnlon - dlon) * TILE_UNIT) as integer; gx1 = round((mxlon + dlon) * TILE_UNIT) as integer;
   gy0 = round((mnlat - dlat) * TILE_UNIT) as integer; gy1 = round((mxlat + dlat) * TILE_UNIT) as integer;
   tx0 = gx0 / TILE_CELL - 1; tx1 = gx1 / TILE_CELL + 1;
@@ -524,8 +526,8 @@ fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
       }
     }
     if best < 0 { break; }
-    if first_d < 0.0 { first_d = sqrt(bestd); }
-    if sqrt(bestd) > first_d + ANCHOR_BAND_M { break; }
+    if first_d < 0.0 { first_d = sqrt(bestd) ?? 0.0; }
+    if (sqrt(bestd) ?? 0.0) > first_d + ANCHOR_BAND_M { break; }
     out += [best];
     taken[best] = true;
   }
@@ -1112,7 +1114,7 @@ pub fn match_quality(st: MatchState, trace: vector<GeoPoint>, mr: MatchResult) -
   dmax = 0.0; dsum = 0.0; np = 0;
   for p in mr.pts { d = point_polyline_m(p, trace); if d > dmax { dmax = d; } dsum = dsum + d; np = np + 1; }
   dmean = 0.0;
-  if np > 0 { dmean = dsum / (np as float); }
+  if np > 0 { dmean = dsum / (np as float) ?? 0.0; }
   bm = 0.0;
   bi = 0;
   while bi + 1 < len(mr.bseg) { bm = bm + geodesic_m(mr.bseg[bi], mr.bseg[bi + 1]); bi = bi + 2; }
@@ -1574,7 +1576,7 @@ pub fn elev_profile(pts: vector<GeoPoint>, tiles: vector<TileHeights>, zoom: int
       seg_len = geodesic_m(pts[seg - 1], pts[seg]);
     }
     f = 0.0;
-    if seg_len > 0.0 { f = (dt - seg_start_d) / seg_len; }
+    if seg_len > 0.0 { f = (dt - seg_start_d) / seg_len ?? 0.0; }
     if f > 1.0 { f = 1.0; }
     a = pts[seg - 1];
     b = pts[seg];
