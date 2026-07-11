@@ -32,4 +32,21 @@ cpSync(join(here, 'tiles'), join(site, 'tiles'), { recursive: true });
 // The binary loft stores (layout + roads) — served static so the browser (loft-wasm, PLAN-BUILD) can fetch
 // and read them. Regenerable via build_store.loft / gen-tiles.loft; committed under browser/stores/.
 if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 'stores'), { recursive: true });
-console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/tiles/ + _site/stores/`);
+
+// 4. The PLAN-BUILD standalone store app: inline map.mjs + store-kernel.mjs + store-app.mjs into
+// _site/store-app.html (one module script — no external .mjs, no Pages MIME surprises) + copy the kernel
+// wasm. It fetches the stores (copied above) + the wasm by relative URL and reads them with loft-wasm.
+let storeApp = '';
+if (existsSync(join(here, 'store-app.html'))) {
+  const storeKernelMjs = stripExport(readFileSync(join(here, 'store-kernel.mjs'), 'utf8'));
+  const storeAppMjs = stripExport(readFileSync(join(here, 'store-app.mjs'), 'utf8'))
+    .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/map\.mjs';\s*$/m, '')
+    .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-kernel\.mjs';\s*$/m, '');
+  const storeHtml = readFileSync(join(here, 'store-app.html'), 'utf8')
+    .replace(/<script type="module" src="\.\/store-app\.mjs"><\/script>/,
+      `<script type="module">\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
+  writeFileSync(join(site, 'store-app.html'), storeHtml);
+  if (existsSync(join(here, 'store-kernel.wasm'))) cpSync(join(here, 'store-kernel.wasm'), join(site, 'store-kernel.wasm'));
+  storeApp = ' + _site/store-app.html + _site/store-kernel.wasm';
+}
+console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/tiles/ + _site/stores/${storeApp}`);
