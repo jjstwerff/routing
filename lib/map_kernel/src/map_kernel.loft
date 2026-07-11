@@ -42,7 +42,7 @@ fn world_box() -> FBox { FBox { mnla: -900000000, mnlo: -1800000000, mxla: 90000
 fn parse_fbox(spec: text) -> FBox {
   p = spec.split(',');
   if len(p) != 4 { return world_box(); }
-  a = (p[0] ?? "") as float?; b = (p[1] ?? "") as float?; c = (p[2] ?? "") as float?; d = (p[3] ?? "") as float?;
+  a = p[0] as float?; b = p[1] as float?; c = p[2] as float?; d = p[3] as float?;
   if a == null || b == null || c == null || d == null { return world_box(); }
   FBox { mnla: to_fixed(a ?? 0.0), mnlo: to_fixed(b ?? 0.0), mxla: to_fixed(c ?? 0.0), mxlo: to_fixed(d ?? 0.0) }
 }
