@@ -15,11 +15,12 @@
 //   line 0: <layout.store URL>
 //   line 1: <roads.store URL>
 //   line 2: view | match
-//   line 3: <sketch "lat,lon;lat,lon;…">   (match only)
+//   line 3: view → <bbox "mnla,mnlo,mxla,mxlo"> (empty = whole region);  match → <sketch "lat,lon;…">
 //   line 4: <profile e.g. cycling_road>    (match only)
-// Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println.
+// Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
+// for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view, do_match, parse_sketch);
+use map_kernel::(do_view_bbox, do_match, parse_sketch);
 use basemap::(PTile);
 use routing_kernel::(TTile);
 
@@ -28,17 +29,17 @@ fn main() {
   layout_url = lines[0] ?? "";
   roads_url  = lines[1] ?? "";
   cmd        = lines[2] ?? "view";
-  sketch     = lines[3] ?? "";
+  arg3       = lines[3] ?? "";                    // bbox (view) or sketch (match)
   profile    = lines[4] ?? "cycling_road";
 
   roads: hash<TTile[tkey]> = [];
   if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
 
   if cmd == "match" {
-    do_match(roads, parse_sketch(sketch), profile);
+    do_match(roads, parse_sketch(arg3), profile);
   } else {
     layout: hash<PTile[tkey]> = [];
     if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
-    do_view(layout, roads);
+    do_view_bbox(layout, roads, arg3);
   }
 }

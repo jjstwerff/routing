@@ -5,18 +5,20 @@
 // FILE PATH (`store_load`, works on --interpret / --native / --native-wasm) and runs the shared
 // `map_kernel` view/match logic. The browser front-end is `client/web_basemap_kernel.loft` (same logic,
 // but `store_load_url` + a host_input command blob, since the browser has no filesystem or argv).
-//   loft --native --path <loft>/ --lib lib client/basemap_kernel.loft <layout.store> <roads.store> [view|match] [sketch] [profile]
+//   loft --native --path <loft>/ --lib lib client/basemap_kernel.loft <layout.store> <roads.store> \
+//        [view [mnla,mnlo,mxla,mxlo] | match <sketch> <profile>]
+// view with a bbox emits only the overlapping features (a viewport); no bbox emits the whole region.
 
 #cwd
 
-use map_kernel::(do_view, do_match, parse_sketch);
+use map_kernel::(do_view_bbox, do_match, parse_sketch);
 use basemap::(PTile);
 use routing_kernel::(TTile);
 
 fn main() {
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
-  if len(a) < 2 { println("usage: basemap_kernel <layout.store> <roads.store> [view|match] [sketch] [profile]"); return; }
+  if len(a) < 2 { println("usage: basemap_kernel <layout.store> <roads.store> [view [bbox] | match <sketch> <profile>]"); return; }
   cmd = a[2] ?? "view";
   roads: hash<TTile[tkey]> = [];
   store_load(roads, a[1] ?? "");                 // roads store needed by both commands
@@ -25,6 +27,6 @@ fn main() {
   } else {
     layout: hash<PTile[tkey]> = [];
     store_load(layout, a[0] ?? "");              // layout only for view
-    do_view(layout, roads);
+    do_view_bbox(layout, roads, a[3] ?? "");     // a[3] = "mnla,mnlo,mxla,mxlo" (empty → whole region)
   }
 }
