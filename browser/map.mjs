@@ -227,6 +227,7 @@ export class RouteMap {
     this.places = opts.places || [];          // [{rank, name, at}]        — M3 place labels
     this.lines = opts.lines || [];            // [{kind, name, geom}]      — M3b streams/rails/barriers
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
+    this.route = opts.route || [];            // [[lat,lon], …]            — the matched route (read-only)
     this._stats = {};                         // per-render draw counts (gate hook)
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
@@ -243,6 +244,23 @@ export class RouteMap {
     this.areas = v.areas; this.buildings = v.buildings; this.lines = v.lines; this.pois = v.pois;
     this.places = v.places; this.streets = v.streets; this.streetLabels = v.streetLabels;
     return this;
+  }
+
+  // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
+  // never the line). `pts` is [[lat,lon], …]. Call render() after.
+  setRoute(pts) { this.route = pts || []; return this; }
+
+  // Parse the kernel's `match` output (a ROUTE line + a SUMMARY line), set the route, return the SUMMARY.
+  loadMatch(text) {
+    const route = []; let summary = '';
+    for (const line of (text || '').split('\n')) {
+      if (line.startsWith('ROUTE')) {
+        const p = line.split(';');
+        for (let i = 1; i < p.length; i++) { const c = p[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) route.push([a, b]); }
+      } else if (line.startsWith('SUMMARY')) summary = line;
+    }
+    this.setRoute(route);
+    return summary;
   }
 
   // Size the backing store to CSS-px × devicePixelRatio and draw in CSS px (crisp on HiDPI).
@@ -334,8 +352,9 @@ export class RouteMap {
     const bN = this.drawBuildings();
     const sN = this.drawStreets();
     const poiN = this.drawPois();              // point glyphs, above roads
+    const rtN = this.drawRoute();              // matched route, above the base map
     const lab = this.layoutLabels();
-    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
+    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     // M0 probe: optional test dots (empty once real layers are loaded).
     for (const p of this.points) {
       const s = this.project(p.lat, p.lon);
@@ -446,6 +465,18 @@ export class RouteMap {
     return true;
   }
   drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
+
+  // Draw the matched route as a white halo + blue core, above the base map. Returns the point count drawn.
+  drawRoute() {
+    if (!this.route || this.route.length < 2) return 0;
+    const px = this._projLine(this.route);
+    if (!this._inView(px)) return 0;
+    const ctx = this.ctx;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
+    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+    return this.route.length;
+  }
 
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
   // labels along the centreline, repeated, skipping any candidate overlapping an already-placed label.
