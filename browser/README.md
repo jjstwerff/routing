@@ -1,54 +1,47 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
-# Browser base-map app (PLAN-MAP)
+# Browser store app (PLAN-BUILD)
 
-A **no-server, no-Leaflet, no-wasm** base-map viewer for the Enschede region, rendered on our **own HTML5
-canvas**. It presents our own vector data — terrain, buildings, streets, place/street labels, water &
-barrier lines, and POIs — styled to the OpenStreetMap standard (Carto) palette. Left-drag to pan, mouse
-wheel to zoom. (Route drawing / matching is deferred to **PLAN-EDIT**, which will ride this renderer's seam.)
+The **standalone, no-server** base-map + routing app for the Enschede region. It fetches the two loft
+stores, runs the **loft-wasm kernel** for the visible viewport and the matched route, and renders on our
+**own HTML5 canvas** — terrain, buildings, roads (by class), water/barrier lines, POIs, place/street
+labels, styled to the OpenStreetMap Carto palette, plus the matched route. Left-drag to pan, wheel to zoom;
+click to lay a rough sketch — from the second point it re-matches and draws the route (read-only). JS does
+pixels, loft does the map/route (DESIGN §2). Supersedes PLAN-MAP's M4/M5 JS-baked text tiles.
 
 ## Pieces
 
-- **`map.mjs`** — the renderer (no dependencies): spherical Web-Mercator `project`/`unproject`, a `Camera`,
-  a full-bleed HiDPI `<canvas>`, `render()` drawing z-order Area → Building → Line → Poi → Label with per-zoom
-  generalization (S13) + collision-aware labels (S14), pan/wheel interaction, per-kind Carto styles
-  (`COVER_COLORS`/`LINE_STYLES`/`POI_STYLES`), and the seam PLAN-EDIT builds on
-  (`project`/`unproject`/`camera`/`onRender`/`hitTest`).
-- **`tiles.mjs`** — the working set: on camera-settle, loads only the tiles overlapping the viewport from
-  `tiles/`, evicts off-screen ones, and assembles the loaded features into the renderer (deduped). Data held
-  tracks the **viewport, not the region**.
-- **`index.html`** — the full-bleed app (RouteMap + TileLoader).
-- **`bake_tiles.mjs`** — buckets the whole-region layer text (`*.txt`, emitted by `client/basemap/emit_*.loft`)
-  into a static tile pyramid `tiles/<ty>_<tx>.json` + `index.json` (0.01° grid; features spanning cells are
-  written to each; the client dedups by identical line).
-- **`build-site.mjs`** — bakes the tiles and inlines `map.mjs`+`tiles.mjs` into a single `_site/index.html`
-  (+ `tiles/`) for GitHub Pages (avoids `.mjs` MIME concerns; fewer requests).
-- **`map-demo.html`** — the M0–M3b test harness over the committed crop samples (see the gate).
-
-## Data pipeline
-
-```
-tools/basemap/fetch.sh <kind>   (Overpass → client/basemap/fixtures/real_stretch_<kind>.json)
-client/basemap/emit_<kind>.loft (classify + DP-simplify → browser/<kind>.txt)   [needs loft]
-browser/bake_tiles.mjs          (browser/*.txt → browser/tiles/)                [node only]
-```
-The layer `*.txt` are committed (the deploy source); the tile pyramid is regenerated (node) at build time.
-The loft `PTile` store (PLAN-BASEMAP S6) remains the canonical working-set format for a future
-wasm/HTTP-Range reader (see PLAN-MAP §7).
+- **`map.mjs`** — the renderer (no dependencies): Web-Mercator `project`/`unproject`, a camera, a HiDPI
+  `<canvas>`, `render()` drawing Area → Building → road → Line → Poi → route → Label with per-zoom
+  generalization + collision-aware labels, pan/wheel interaction, per-kind Carto styles. `parseView`
+  demuxes the kernel's tagged `view` stream into the layers; `loadView`/`loadMatch`/`drawRoute` wire it up.
+- **`store-app.mjs`** — the app: on load/pan runs `view <bbox>` for the viewport (a generous pad ⇒ small
+  pans re-draw cached layers, not re-decode); on click runs `match` and draws the route.
+- **`store-kernel.mjs`** — the host driver: loads the kernel wasm and exposes `runKernel(blob) → Promise<text>`,
+  reusing the `loft --html` `AsyncifyCtrl` + `loft_io` imports so `store_load_url`'s fetch bridges to JS
+  `fetch()`. `loft_start` rebuilds state each call → every view/match is one request.
+- **`index.html`** — the full-bleed app (a `<canvas>` + `store-app.mjs`).
+- **`store-kernel.wasm`** — the loft-wasm base-map kernel (`client/web_basemap_kernel.loft` → `loft --html`,
+  the embedded wasm extracted). Committed as the deploy artifact; regenerate with `build-store-kernel.mjs`.
+- **`stores/`** — the two binary loft stores (`enschede.layout.store` = `PTile`; `enschede.roads.store` =
+  `TTile`), served static so the app can fetch + read them. Regenerate via `build_store.loft` / `gen-tiles.loft`.
+- **`build-site.mjs`** — inlines `map.mjs` + `store-kernel.mjs` + `store-app.mjs` into one `_site/index.html`
+  (avoids `.mjs` MIME concerns) and copies the wasm + stores.
+- **`map.test.mjs`** — the pure projection / pan-zoom invariant (node, DOM-free).
 
 ## Run
 
 ```sh
-node browser/bake_tiles.mjs     # browser/*.txt → browser/tiles/
-node browser/serve.mjs          # static server on :8099
-# open http://127.0.0.1:8099/browser/index.html
+node browser/build-store-kernel.mjs   # regenerate store-kernel.wasm (needs loft)
+node browser/serve.mjs                # static server on :8099 (correct .wasm MIME)
+# open http://127.0.0.1:8099/browser/   (root → the app)
 ```
 
 ## Test (headless)
 
-`tools/map_render_gate.sh` runs the pure projection invariant (`map.test.mjs`, node) then a headless-Chromium
-gate: `cdp_verify_map.mjs` proves M0–M3b (projection, pan/zoom, terrain, buildings/streets/labels, lines,
-POIs) against `map-demo.html`, and — if `browser/tiles/` is baked — `cdp_verify_tiles.mjs` proves M4 (the
-whole-region tiled working set) against `index.html`. Requires `chromium` + `node`.
+`tools/map_render_gate.sh` runs the projection invariant (`map.test.mjs`, node), builds `_site`, then a
+headless-Chromium gate (`cdp_verify_store.mjs`): `view <bbox>` renders the region on load and a `match`
+draws the route — the app served over HTTP (it fetches its stores by URL). Requires `chromium`, `node`,
+`python3`, and `browser/store-kernel.wasm`.
 
 ## Deploy (GitHub Pages)
 
