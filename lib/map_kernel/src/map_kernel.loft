@@ -1,0 +1,160 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-BUILD — the shared base-map kernel logic, target-independent (no store loading, so it compiles
+// on every backend incl. --native-wasm). Both front-ends reuse it: `client/basemap_kernel.loft` loads
+// the stores from a path (`store_load`, native/WASI) and `client/web_basemap_kernel.loft` loads them
+// from a URL (`store_load_url`, --html); each then calls `do_view` / `do_view_bbox` / `do_match` here.
+//   view [<mnla,mnlo,mxla,mxlo>]  → base map (A cover;… · B name;… · L kind;name;… · P kind;name;lat,lon
+//                                   · N rank;name;lat,lon · S name;… street label · R class;… road).
+//                                   With a bbox, only features overlapping it are emitted (viewport view):
+//                                   whole-region view is ~230k lines and blocks a browser, so the page
+//                                   requests the visible bbox — the emit volume, not the store, is the cost.
+//   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
+
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep,
+                     tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m);
+
+fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
+
+fn class_name(tp: integer) -> text {
+  if tp == 0 { "motorway" } else if tp == 1 { "primary" } else if tp == 2 { "secondary" }
+  else if tp == 3 { "tertiary" } else if tp == 4 { "residential" } else if tp == 5 { "residential" }
+  else if tp == 6 { "service" } else if tp == 7 { "cycle" } else if tp == 8 { "path" }
+  else if tp == 9 { "foot" } else if tp == 10 { "pedestrian" } else if tp == 11 { "foot" }
+  else { "residential" }
+}
+
+fn ring_text(pre: text, ox: integer, oy: integer, ring: vector<Coord>) -> text {
+  line = pre;
+  for c in ring { line += ";{deg(oy + (c.y as integer)):2.6},{deg(ox + (c.x as integer)):2.6}"; }
+  line
+}
+
+// --- viewport bbox (fixed-point deg*1e7) --------------------------------------------------------------
+// A query box in the same fixed-point space as the tile coords (oy+c.y = lat, ox+c.x = lon), so the
+// overlap test is integer arithmetic. An empty/invalid spec yields a world box (everything passes).
+struct FBox { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer }
+
+fn world_box() -> FBox { FBox { mnla: -900000000, mnlo: -1800000000, mxla: 900000000, mxlo: 1800000000 } }
+
+fn parse_fbox(spec: text) -> FBox {
+  p = spec.split(',');
+  if len(p) != 4 { return world_box(); }
+  a = p[0] as float?; b = p[1] as float?; c = p[2] as float?; d = p[3] as float?;
+  if a == null || b == null || c == null || d == null { return world_box(); }
+  FBox { mnla: to_fixed(a ?? 0.0), mnlo: to_fixed(b ?? 0.0), mxla: to_fixed(c ?? 0.0), mxlo: to_fixed(d ?? 0.0) }
+}
+
+// A ring/geometry (in tile-relative Coords) overlaps the box iff its fixed-point bbox intersects it.
+fn ring_hits(ox: integer, oy: integer, ring: vector<Coord>, box: FBox) -> boolean {
+  if len(ring) == 0 { return false; }
+  first = true; rmnla = 0; rmxla = 0; rmnlo = 0; rmxlo = 0;
+  for c in ring {
+    la = oy + (c.y as integer); lo = ox + (c.x as integer);
+    if first { rmnla = la; rmxla = la; rmnlo = lo; rmxlo = lo; first = false; }
+    else { if la < rmnla { rmnla = la; } if la > rmxla { rmxla = la; }
+           if lo < rmnlo { rmnlo = lo; } if lo > rmxlo { rmxlo = lo; } }
+  }
+  rmxla >= box.mnla && rmnla <= box.mxla && rmxlo >= box.mnlo && rmnlo <= box.mxlo
+}
+
+fn pt_hits(ox: integer, oy: integer, at: Coord, box: FBox) -> boolean {
+  la = oy + (at.y as integer); lo = ox + (at.x as integer);
+  la >= box.mnla && la <= box.mxla && lo >= box.mnlo && lo <= box.mxlo
+}
+
+// --- view: each layer in its own function (a single function with all loops trips a loft codegen bug) ---
+fn emit_areas(layout: hash<PTile[tkey]>, box: FBox) -> integer {
+  n = 0; for t in layout { for ar in t.areas { if ring_hits(t.ox, t.oy, ar.ring, box) { println(ring_text("A {ar.cover}", t.ox, t.oy, ar.ring)); n += 1; } } } n
+}
+fn emit_buildings(layout: hash<PTile[tkey]>, box: FBox) -> integer {
+  n = 0; for t in layout { for b in t.buildings { if ring_hits(t.ox, t.oy, b.ring, box) { println(ring_text("B {b.name}", t.ox, t.oy, b.ring)); n += 1; } } } n
+}
+fn emit_lines(layout: hash<PTile[tkey]>, box: FBox) -> integer {
+  n = 0; for t in layout { for ln in t.lines { if ring_hits(t.ox, t.oy, ln.geom, box) { println(ring_text("L {ln.kind};{ln.name}", t.ox, t.oy, ln.geom)); n += 1; } } } n
+}
+fn emit_pois(layout: hash<PTile[tkey]>, box: FBox) -> integer {
+  n = 0; for t in layout { for p in t.pois { if pt_hits(t.ox, t.oy, p.at, box) { println("P {p.kind};{p.name};{deg(t.oy + (p.at.y as integer)):2.6},{deg(t.ox + (p.at.x as integer)):2.6}"); n += 1; } } } n
+}
+fn emit_labels(layout: hash<PTile[tkey]>, box: FBox) -> integer {
+  n = 0;
+  for t in layout {
+    for lb in t.labels {
+      if lb.kind == "street" {
+        if ring_hits(t.ox, t.oy, lb.line, box) { println(ring_text("S {lb.name}", t.ox, t.oy, lb.line)); n += 1; }
+      } else {
+        c = lb.line[0] ?? Coord { x: 0 as i32, y: 0 as i32 };
+        if pt_hits(t.ox, t.oy, c, box) { println("N {lb.rank};{lb.name};{deg(t.oy + (c.y as integer)):2.6},{deg(t.ox + (c.x as integer)):2.6}"); n += 1; }
+      }
+    }
+  }
+  n
+}
+fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
+  n = 0;
+  for t in roads {
+    si = 0;
+    for r in t.roads {
+      cnt = r.steps as integer;
+      first = true; rmnla = 0; rmxla = 0; rmnlo = 0; rmxlo = 0;
+      for k in 0..cnt {
+        s = t.steps[si + k];
+        if s != null {
+          la = t.oy + (s.y as integer); lo = t.ox + (s.x as integer);
+          if first { rmnla = la; rmxla = la; rmnlo = lo; rmxlo = lo; first = false; }
+          else { if la < rmnla { rmnla = la; } if la > rmxla { rmxla = la; }
+                 if lo < rmnlo { rmnlo = lo; } if lo > rmxlo { rmxlo = lo; } }
+        }
+      }
+      hit = !first && rmxla >= box.mnla && rmnla <= box.mxla && rmxlo >= box.mnlo && rmnlo <= box.mxlo;
+      if hit {
+        line = "R {class_name(r.tp as integer)}";
+        for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
+        println(line); n += 1;
+      }
+      si += cnt;
+    }
+  }
+  n
+}
+
+// Emit the base map for a loaded layout + roads store, restricted to `box` (a viewport). Text → println.
+fn emit_view(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, box: FBox) {
+  na = emit_areas(layout, box); nb = emit_buildings(layout, box); nl = emit_lines(layout, box);
+  npo = emit_pois(layout, box); nlab = emit_labels(layout, box); nr = emit_roads(roads, box);
+  println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr}");
+}
+
+// Whole-region view (every feature).
+pub fn do_view(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>) {
+  emit_view(layout, roads, world_box());
+}
+
+// Viewport view: only features overlapping `bbox` ("mnla,mnlo,mxla,mxlo"; empty → whole region).
+pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: text) {
+  emit_view(layout, roads, parse_fbox(bbox));
+}
+
+// Parse a rough sketch "lat,lon;lat,lon;…" into GeoPoints (bad tokens skipped).
+pub fn parse_sketch(spec: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for tok in spec.split(';') {
+    xy = tok.split(',');
+    if len(xy) == 2 { pts += [GeoPoint { lat: xy[0] as float ?? 0.0, lon: xy[1] as float ?? 0.0 }]; }
+  }
+  pts
+}
+
+// Map-match the rough sketch to the actual route over roads.store (server.loft's match_for path).
+// Emits `ROUTE lat,lon;…` then a `SUMMARY` line.
+pub fn do_match(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
+  if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
+  ways = tiles_corridor_ways(roads, trace, corridor_margin(trace));
+  route = match_route(build_graph(ways), trace, profile);
+  line = "ROUTE";
+  for p in route { line += ";{p.lat:2.6},{p.lon:2.6}"; }
+  println(line);
+  println("SUMMARY ways={len(ways)} route_pts={len(route)} len={path_length_m(route):1.1}m profile={profile}");
+}

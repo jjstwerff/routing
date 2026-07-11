@@ -1,52 +1,49 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# PLAN-MAP M0 gate — headless proof that browser/map.mjs renders on a REAL canvas: the camera centre
-# projects to the viewport centre, unproject∘project round-trips, render() paints, and a resize keeps
-# the centre centred. Loads browser/map-demo.html over file:// with --allow-file-access-from-files so
-# the ES-module import (`import {RouteMap} from './map.mjs'`) resolves without a server.
+# PLAN-BUILD gate — headless proof that the standalone store app renders and routes in a real browser:
+#   1. map.test.mjs — the projection / pan-zoom invariant (pure math, no browser).
+#   2. build-site.mjs — assemble the deployable _site (inlines the app).
+#   3. drive _site/index.html in headless Chromium: `view <bbox>` renders the region on load, and a `match`
+#      draws the matched route. The app fetches its stores by URL, so _site is served over HTTP (same origin).
 #
 # NOTE: snap-confined Chromium cannot start inside a restrictive command sandbox (run outside it).
-# Requires: node, chromium.
+# Requires: node, python3, chromium, and browser/store-kernel.wasm (build: node browser/build-store-kernel.mjs).
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
 dtport="${DTPORT:-9233}"
+httpport="${HTTPPORT:-8137}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
+command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 
-# Pure-math check first (no browser needed) — the projection invariant.
+# 1. Projection invariant (no browser needed).
 node "$here/browser/map.test.mjs" || exit 1
 
-# Build the deployable site (bakes browser/tiles/ + inlines _site/index.html) if the layers are present.
-if [ -f "$here/browser/areas.txt" ]; then node "$here/browser/build-site.mjs" || exit 1; fi
+# 2. Build the deployable site (inlines map.mjs + store-kernel.mjs + store-app.mjs → _site/index.html).
+node "$here/browser/build-site.mjs" || exit 1
+[ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 
+# 3. Serve _site + drive it in headless Chromium.
 rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-chr=""; rc=0
-cleanup() { kill "$chr" 2>/dev/null; }
+srv=""; chr=""; rc=0
+cleanup() { kill "$chr" "$srv" 2>/dev/null; }
 trap cleanup EXIT
-
-echo "== M0..M3b headless canvas gate (CDP, file://) =="
-"$chromium" --headless=new --disable-gpu --no-sandbox --allow-file-access-from-files \
+python3 -m http.server "$httpport" --directory "$here/_site" >/dev/null 2>&1 &
+srv=$!
+"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
   --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
 chr=$!
 sleep 4
-node "$here/browser/cdp_verify_map.mjs" "127.0.0.1:$dtport" "file://$here/browser/map-demo.html" || rc=1
 
-# M4: whole-region tiled working set (dev app: map.html + browser/tiles/).
-if [ -f "$here/browser/tiles/index.json" ]; then
-  echo "== M4 tiled-working-set gate (index.html) =="
-  node "$here/browser/cdp_verify_tiles.mjs" "127.0.0.1:$dtport" "file://$here/browser/index.html" || rc=1
+echo "== PLAN-BUILD store-app gate (view <bbox> + match, headless HTTP) =="
+node "$here/browser/cdp_verify_store.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" || rc=1
+
+# 4. The deployed artifact must be self-contained (all modules inlined — no external .mjs to trip Pages MIME).
+if grep -qE 'src="\./[A-Za-z0-9_-]+\.mjs"' "$here/_site/index.html"; then
+  echo "  FAIL: _site/index.html references an external .mjs (not inlined)"; rc=1
 else
-  echo "~ M4 skipped: no browser/tiles/ (needs the whole-region layers)"
-fi
-
-# M5: the DEPLOYED artifact (_site/index.html — inlined, Leaflet-free) must run + be Leaflet-free.
-if [ -f "$here/_site/index.html" ]; then
-  echo "== M5 deployed-artifact gate (_site/index.html) =="
-  node "$here/browser/cdp_verify_tiles.mjs" "127.0.0.1:$dtport" "file://$here/_site/index.html" || rc=1
-  # No Leaflet USAGE: its `L.` API global (non-letter before capital L, so "URL." doesn't match) or a
-  # vendored leaflet.js/.css asset. A descriptive comment mentioning Leaflet is fine — we're checking deps.
-  if grep -qE "[^A-Za-z]L\.[A-Za-z]" "$here/_site/index.html" || grep -qiE "leaflet\.(js|css)|vendor/leaflet" "$here/_site/index.html"; then echo "  FAIL: _site/index.html still uses Leaflet"; rc=1; else echo "  ✓ _site/index.html is Leaflet-free"; fi
+  echo "  ✓ _site/index.html is self-contained (modules inlined)"
 fi
 exit $rc

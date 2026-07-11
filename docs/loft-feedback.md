@@ -675,3 +675,68 @@ when the vector is dead points at scope construction, not value resolution; that
 vectors fail points at the vector slot's store/DbRef handling specifically. No open tracker issue
 matches (`debug eval`, `debugger rpc`). Routing can't fix loft here (`../loft` is read-only for us) —
 filing/looking is the maintainer's call.
+
+## 2026-07-08 — codegen: "Incorrect loop finish" with many loops in one function
+
+`client/basemap_view.loft` (store → text reader) panicked at runtime, **native and interpret**:
+
+```
+thread 'main' panicked at src/variables/mod.rs:623:9:
+assertion `left == right` failed: Incorrect loop finish
+  left: 18  right: 17
+```
+
+The `main` had ~9 `for` loops (five over the layout `PTile` layers + a nested three-deep walk over the
+roads `TTile` steps). **Each block runs cleanly in isolation** — a minimal `main` with the areas loop,
+another with the labels if/else loop, another with the roads triple-loop all pass; only the combined
+`main` trips it. The `left/right` counts (`18`/`17`) point at loop-scope *bookkeeping* at codegen (an
+off-by-one in the number of loop scopes opened vs. finished in one function body), not value resolution.
+
+**Workaround (in place):** split each layer's emit into its own `fn` (`emit_areas`/`emit_buildings`/…/
+`emit_roads`), so no single function holds more than 2–3 loops. Reproducible; `../loft` is read-only for
+us, so filing/fixing is the maintainer's call.
+
+## 2026-07-09 — store engine + web lib: loft-wasm needs a byte codec + a binary fetch to read a store in the browser
+
+> **RESOLVED 2026-07-12 — loft shipped both.** The stdlib now has a heap store reader that runs in wasm
+> (`store_load(r, path)`, doc: *"open a snapshot for querying where `store_persist_bind` can't run — a
+> browser / wasm target"*) plus `store_load_url(r, url, sha256)` / `store_load_url_trusted(r, url)`, which
+> fetch a store image over HTTP and decode it, "bytes never touch disk" (+ paged `store_load_key(s)` /
+> `store_load_range`, loft#522). In wasm the fetch is bridged to JS `fetch()` via the asyncify host import,
+> so `store_load_url_trusted` is identical native↔browser. **Both gaps below are gone; no `codec.loft`, no
+> host_input byte-smuggling.** Verified here: `store_load` decodes the real 20.8 MB layout store byte-for-
+> byte under `--native-wasm` (tiles 1089 / buildings 130402), and in **headless chromium** the
+> `web_basemap_kernel.loft` page loads both stores by URL and runs `view <bbox>` + `match` (route
+> byte-identical to native, ways=13077). See PLAN-BUILD B4/B5 and `browser/store-app.*`.
+
+**Context.** Target architecture (PLAN-STORE / PLAN-BUILD): loft builds two binary stores — layout `PTile`
+and roads `TTile` — with `store_persist_bind`, served static on GitHub Pages; the browser fetches them and
+**loft-wasm** decodes them → emits the base-map `view` text + the matched `route` over the
+`host_input`/`println` bridge → JS renders. B4 (compile `client/basemap_kernel.loft` with `loft --html`,
+read the store in-browser) hits two gaps.
+
+**Gap 1 — no wasm store reader (the codec).** `store_persist_bind`/`store_load` are the **mmap** store
+(native). PLAN-APP §3 already says it: *"no mmap in wasm, so the tile format is read by explicit decode, not
+`store_persist_bind`."* No such decoder exists (`codec.loft`, referenced in PLAN-BROWSER 8.3, is unbuilt).
+`store_load` *compiles* under `loft --html` but is the mmap reader and can't load a store in wasm.
+**Need:** a byte (de)serialization for `hash<T[key]>` that runs in wasm — encode native, decode in wasm →
+the same `hash<TTile[tkey]>` / `hash<PTile[tkey]>`. Shared native+wasm so the round-trip is byte-verifiable
+(PLAN-BROWSER 8.3 gate: loaded-store match == direct-ways match).
+
+**Gap 2 — no wasm binary fetch.** `lib/web` in wasm gives only **text** HTTP: `http_get(url) -> {status,
+body: text}` (its own comment: "mangles binary bodies like PNG"); the binary-safe `http_get_file(url,path)`
+is `#native` (writes a file — no browser FS). So there is no wasm-safe way to pull binary store bytes into
+loft. **Need:** a wasm binary GET returning bytes into loft (a byte buffer / `vector<u8>`), ideally with
+**HTTP Range** so the later partial-read path works (PLAN-APP §3 step 2 / loft-libs-net #517). (`host_input`
+can carry the bytes instead — JS fetches + feeds — but the codec of Gap 1 is still required to decode them.)
+
+**What "works here" looks like.** loft-wasm: (fetch or receive) store bytes → **codec decode** →
+`hash<TTile>`/`hash<PTile>` → the existing `view` (`basemap_kernel` `emit_*`) + `match`
+(`tiles_corridor_ways` → `build_graph` → `match_route`), text out over `println`. Until then routing uses a
+**text interim**: native loft projects the stores → view + roads text at build time, served on Pages;
+loft-wasm matches from the roads text via `host_input` (the proven `web_kernel` path).
+
+**Evidence.** `basemap_kernel.loft` (B3, native) verified `view` + `match` from the two stores; `loft --html`
+compiled a `store_load` probe (399 KB html / 298 KB wasm) — but that's the mmap reader; `lib/web`'s wasm HTTP
+is text-only. `../loft` is read-only for us — the codec + binary fetch are the maintainer's to build ("we'll
+build something that works here").

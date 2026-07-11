@@ -3,6 +3,9 @@ tiles/
 # stray generated artifacts (not part of the canvas app)
 *.wasm
 stamp.txt
+# …except the store-app kernel wasm: it IS the deploy artifact (build-site.mjs is node-only, so it can't
+# regenerate it), committed like browser/stores/*.store. Regenerate with `node browser/build-store-kernel.mjs`.
+!store-kernel.wasm
 
 # The whole-region layer text (browser/*.txt) IS committed — it is the deploy source that build-site.mjs
 # bakes into tiles/. Regenerate it from the Overpass dumps with client/basemap/emit_*.loft (needs loft).

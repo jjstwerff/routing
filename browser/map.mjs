@@ -62,16 +62,34 @@ export const COVER_COLORS = {
 };
 const COVER_FALLBACK = '#ebe7e0';
 
-// Buildings + roads (Carto). Roads are drawn as a casing + white core (two passes).
+// Buildings (Carto).
 const BUILDING_FILL = '#d9c7b0', BUILDING_STROKE = '#b6a488';
-const ROAD_CASING = '#c9c4bd', ROAD_CORE = '#ffffff';
 const BUILDINGS_MINZOOM = 14;                       // footprints only when zoomed in (S13)
-const STREET_MINZOOM = 13, STREET_SPACING_PX = 190; // street labels repeat every ~190 px (S10)
-const STREET_FONTPX = 11;
+const BUILDING_LABEL_MINZOOM = 16;                  // named buildings get a label only when zoomed right in
+
+// Road classes (Carto-ish): core colour, casing colour, a base width scaled by zoom, dash for paths, and
+// the min zoom the class appears at (motorways always; footpaths only up close). One row per class.
+const ROAD_STYLES = {
+  motorway:    { core: '#e892a2', casing: '#c37b8f', w: 3.2, minZoom: 8 },
+  trunk:       { core: '#f9b29c', casing: '#d18f78', w: 3.0, minZoom: 9 },
+  primary:     { core: '#fcd6a4', casing: '#d1a86a', w: 2.6, minZoom: 10 },
+  secondary:   { core: '#f7fabf', casing: '#c9cf7a', w: 2.2, minZoom: 11 },
+  tertiary:    { core: '#ffffff', casing: '#c9c4bd', w: 1.9, minZoom: 12 },
+  residential: { core: '#ffffff', casing: '#c9c4bd', w: 1.6, minZoom: 13 },
+  pedestrian:  { core: '#ededf0', casing: '#c9c4bd', w: 1.4, minZoom: 14 },
+  cycle:       { core: '#7a7ad9', casing: null, w: 1.0, dash: [4, 3], minZoom: 14 },
+  path:        { core: '#a06b4c', casing: null, w: 0.9, dash: [3, 3], minZoom: 15 },
+  foot:        { core: '#a06b4c', casing: null, w: 0.9, dash: [2, 3], minZoom: 15 },
+  track:       { core: '#a58b5a', casing: null, w: 1.0, dash: [5, 3], minZoom: 14 },
+};
+// Draw order (back → front): minor/paths first, motorways on top.
+const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
+const roadScale = (z) => (z >= 17 ? 1.9 : z >= 15 ? 1.4 : z >= 13 ? 1.0 : z >= 11 ? 0.7 : 0.5);
+// Street labels (S10): repeat every ~420 px — far sparser than before (one name, not ten in a row).
+const STREET_MINZOOM = 13, STREET_SPACING_PX = 420, STREET_FONTPX = 11;
 // Place labels (S9): rank → the min zoom it appears at, and its font size (city → hamlet).
 const RANK_MINZOOM = { 6: 0, 5: 9, 4: 11, 3: 12, 2: 13, 1: 14 };
 const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
-const roadWidth = (z) => (z >= 16 ? 4.5 : z >= 14 ? 3 : z >= 12 ? 2 : 1.4);
 
 // S13 generalization: big areas (forest, water) survive to low zoom; tiny patches only appear zoomed in.
 function areaMinZoom(ring) {
@@ -96,22 +114,23 @@ export function parseAreas(txt) {                   // `cover;lat,lon;…`
   }
   return areas;
 }
-export function parseBuildings(txt) {               // `lat,lon;lat,lon;…` (ring, no prefix)
+export function parseBuildings(txt) {               // `name;lat,lon;lat,lon;…` (name may be empty)
   const out = [];
   for (const line of (txt || '').split('\n')) {
-    const ring = [];
-    for (const p of line.split(';')) { const c = p.split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) ring.push([a, b]); }
-    if (ring.length >= 3) out.push({ ring });
+    const parts = line.split(';'); if (parts.length < 4) continue;
+    const name = parts[0], ring = [];
+    for (let i = 1; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) ring.push([a, b]); }
+    if (ring.length >= 3) out.push({ name, ring });
   }
   return out;
 }
-export function parseStreets(txt) {                 // `name;lat,lon;lat,lon;…`
+export function parseStreets(txt) {                 // `class;label;lat,lon;lat,lon;…` (label may be empty)
   const out = [];
   for (const line of (txt || '').split('\n')) {
-    const parts = line.split(';'); if (parts.length < 3) continue;
-    const name = parts[0], geom = [];
-    for (let i = 1; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) geom.push([a, b]); }
-    if (geom.length >= 2) out.push({ name, line: geom });
+    const parts = line.split(';'); if (parts.length < 4) continue;
+    const cls = parts[0], label = parts[1], geom = [];
+    for (let i = 2; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) geom.push([a, b]); }
+    if (geom.length >= 2) out.push({ cls, label, line: geom });
   }
   return out;
 }
@@ -142,6 +161,30 @@ export function parsePois(txt) {                    // `kind;name;lat,lon`
     if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) out.push({ kind, name, at: [a, b] });
   }
   return out;
+}
+
+// parseView(text): demultiplex the kernel's tag-prefixed `view` stream (one println line per feature,
+// tagged A/B/L/P/N/S/R) into the renderer's per-layer arrays. A/B/L/P/N strip the "X " tag and reuse the
+// per-file parser above (the formats are identical). Roads (R class;geom) and street labels (S name;
+// centerline) demux SEPARATELY — the roads store carries no names (they live in the layout store as label
+// features), so roads go to `streets` (drawn by class) and names to `streetLabels` (placed along a line).
+export function parseView(txt) {
+  const bucket = { A: [], B: [], L: [], P: [], N: [] }; const R = [], S = [];
+  for (const line of (txt || '').split('\n')) {
+    if (line[1] !== ' ') continue;                       // skip blanks + the "# view:" summary
+    const tag = line[0], rest = line.slice(2);
+    if (bucket[tag]) bucket[tag].push(rest); else if (tag === 'R') R.push(rest); else if (tag === 'S') S.push(rest);
+  }
+  const geom = (parts, start) => { const g = []; for (let i = start; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) g.push([a, b]); } return g; };
+  const streets = [];
+  for (const s of R) { const p = s.split(';'); if (p.length < 3) continue; const line = geom(p, 1); if (line.length >= 2) streets.push({ cls: p[0], line }); }
+  const streetLabels = [];
+  for (const s of S) { const p = s.split(';'); if (p.length < 3) continue; const line = geom(p, 1); if (p[0] && line.length >= 2) streetLabels.push({ label: p[0], line }); }
+  return {
+    areas: parseAreas(bucket.A.join('\n')), buildings: parseBuildings(bucket.B.join('\n')),
+    lines: parseLines(bucket.L.join('\n')), pois: parsePois(bucket.P.join('\n')), places: parsePlaces(bucket.N.join('\n')),
+    streets, streetLabels,
+  };
 }
 
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
@@ -179,10 +222,12 @@ export class RouteMap {
     this.points = opts.points || [];          // [{lat,lon,name?}] — M0 test dots
     this.areas = opts.areas || [];            // [{cover, ring, minZoom}] — M2 terrain
     this.buildings = opts.buildings || [];    // [{ring}]                  — M3 footprints
-    this.streets = opts.streets || [];        // [{name, line}]            — M3 roads + labels
+    this.streets = opts.streets || [];        // [{cls, line}]             — M3 roads (drawn by class)
+    this.streetLabels = opts.streetLabels || []; // [{label, line}]        — street-name labels (S, from layout store)
     this.places = opts.places || [];          // [{rank, name, at}]        — M3 place labels
     this.lines = opts.lines || [];            // [{kind, name, geom}]      — M3b streams/rails/barriers
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
+    this.route = opts.route || [];            // [[lat,lon], …]            — the matched route (read-only)
     this._stats = {};                         // per-render draw counts (gate hook)
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
@@ -191,6 +236,31 @@ export class RouteMap {
     if (typeof window !== 'undefined') window.addEventListener('resize', () => { this.resize(); this.render(); });
     this.resize();
     if (opts.interactive !== false) this.enableInteraction();
+  }
+
+  // Replace all base-map layers from the kernel's `view` text (parseView demux). Call render() after.
+  loadView(text) {
+    const v = parseView(text);
+    this.areas = v.areas; this.buildings = v.buildings; this.lines = v.lines; this.pois = v.pois;
+    this.places = v.places; this.streets = v.streets; this.streetLabels = v.streetLabels;
+    return this;
+  }
+
+  // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
+  // never the line). `pts` is [[lat,lon], …]. Call render() after.
+  setRoute(pts) { this.route = pts || []; return this; }
+
+  // Parse the kernel's `match` output (a ROUTE line + a SUMMARY line), set the route, return the SUMMARY.
+  loadMatch(text) {
+    const route = []; let summary = '';
+    for (const line of (text || '').split('\n')) {
+      if (line.startsWith('ROUTE')) {
+        const p = line.split(';');
+        for (let i = 1; i < p.length; i++) { const c = p[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) route.push([a, b]); }
+      } else if (line.startsWith('SUMMARY')) summary = line;
+    }
+    this.setRoute(route);
+    return summary;
   }
 
   // Size the backing store to CSS-px × devicePixelRatio and draw in CSS px (crisp on HiDPI).
@@ -279,12 +349,12 @@ export class RouteMap {
     let areasN = 0;
     for (const a of this.areas) if (z >= a.minZoom) { this.drawArea(a); areasN++; }
     const lnN = this.drawLines();              // streams / rails / barriers, above terrain
-    let bN = 0;
-    if (z >= BUILDINGS_MINZOOM) for (const b of this.buildings) { const px = this._projLine(b.ring); if (px.length >= 3 && this._inView(px, 20)) { this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); bN++; } }
+    const bN = this.drawBuildings();
     const sN = this.drawStreets();
     const poiN = this.drawPois();              // point glyphs, above roads
+    const rtN = this.drawRoute();              // matched route, above the base map
     const lab = this.layoutLabels();
-    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels };
+    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     // M0 probe: optional test dots (empty once real layers are loaded).
     for (const p of this.points) {
       const s = this.project(p.lat, p.lon);
@@ -317,18 +387,49 @@ export class RouteMap {
     if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 0.6; ctx.stroke(); }
   }
 
-  // M3: roads — casing then white core (two passes), Carto style. Returns the count drawn (in view).
   _projLine(g) { const px = new Array(g.length); for (let i = 0; i < g.length; i++) px[i] = this.project(g[i][0], g[i][1]); return px; }
   _inView(px, pad = 60) { for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
   _strokePx(px) { const ctx = this.ctx; ctx.beginPath(); for (let i = 0; i < px.length; i++) { if (i === 0) ctx.moveTo(px[i].x, px[i].y); else ctx.lineTo(px[i].x, px[i].y); } ctx.stroke(); }
+
+  // M3/S13 + B5: fill building footprints (only from z14, S13) and collect named ones for a label at ≥z16.
+  // Returns the count drawn in view; the label candidates are consumed by layoutLabels().
+  drawBuildings() {
+    this._buildingLabels = [];
+    if (this.camera.zoom < BUILDINGS_MINZOOM) return 0;
+    const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM; let n = 0;
+    for (const b of this.buildings) {
+      const px = this._projLine(b.ring);
+      if (px.length < 3 || !this._inView(px, 20)) continue;
+      this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); n++;
+      if (wantLabels && b.name) {
+        let cx = 0, cy = 0; for (const p of px) { cx += p.x; cy += p.y; }        // ring centroid ≈ label anchor
+        this._buildingLabels.push({ name: b.name, x: cx / px.length, y: cy / px.length });
+      }
+    }
+    return n;
+  }
+
+  // M3 + B5: roads by class — Carto casing + core, drawn back-to-front (minor→motorway) so higher classes
+  // overlap lower ones cleanly. Each class carries its own colour, base width, dash and min-zoom (paths
+  // only appear zoomed in). Returns the count drawn in view; stashes them for the label pass.
   drawStreets() {
     if (!this.streets.length) return 0;
-    const ctx = this.ctx, w = roadWidth(this.camera.zoom);
+    const ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    const vis = [];
-    for (const st of this.streets) { const px = this._projLine(st.line); if (px.length >= 2 && this._inView(px)) vis.push({ st, px }); }
-    ctx.strokeStyle = ROAD_CASING; ctx.lineWidth = w + 2; for (const v of vis) this._strokePx(v.px);   // casing
-    ctx.strokeStyle = ROAD_CORE;   ctx.lineWidth = w;     for (const v of vis) this._strokePx(v.px);   // core
+    // Project + cull once, bucket by class, dropping any class not shown at this zoom.
+    const byClass = {}, vis = [];
+    for (const st of this.streets) {
+      const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
+      const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
+      const entry = { st, px }; (byClass[st.cls] || (byClass[st.cls] = [])).push(entry); vis.push(entry);
+    }
+    for (const cls of ROAD_ORDER) {
+      const bucket = byClass[cls]; if (!bucket) continue;
+      const style = ROAD_STYLES[cls], w = Math.max(0.5, style.w * scale);
+      if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = w + 2; for (const v of bucket) this._strokePx(v.px); }   // casing
+      ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = w; for (const v of bucket) this._strokePx(v.px);                // core
+    }
+    ctx.setLineDash([]);
     this._visStreets = vis;                                                                             // reused by labels
     return vis.length;
   }
@@ -365,6 +466,18 @@ export class RouteMap {
   }
   drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
 
+  // Draw the matched route as a white halo + blue core, above the base map. Returns the point count drawn.
+  drawRoute() {
+    if (!this.route || this.route.length < 2) return 0;
+    const px = this._projLine(this.route);
+    if (!this._inView(px)) return 0;
+    const ctx = this.ctx;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
+    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+    return this.route.length;
+  }
+
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
   // labels along the centreline, repeated, skipping any candidate overlapping an already-placed label.
   layoutLabels() {
@@ -386,16 +499,23 @@ export class RouteMap {
       placeLabels++;
     }
     const streetLabels = z >= STREET_MINZOOM ? this._streetLabels(fits) : 0;
-    return { placeLabels, streetLabels };
+    const buildingLabels = this._buildingLabelPass(fits);
+    return { placeLabels, streetLabels, buildingLabels };
   }
   _streetLabels(fits) {
     const ctx = this.ctx, font = `${STREET_FONTPX}px system-ui, sans-serif`; let n = 0;
     ctx.font = font;
-    for (const { st, px } of (this._visStreets || [])) {
+    // Candidates: dedicated street-label features (S, from the store) when present, else labels carried on
+    // the drawn streets (legacy per-file `class;label;geom`). Each is {label, px} projected to screen.
+    const cands = (this.streetLabels && this.streetLabels.length)
+      ? this.streetLabels.map((s) => ({ label: s.label, px: this._projLine(s.line) }))
+      : (this._visStreets || []).map((v) => ({ label: v.st.label, px: v.px }));
+    for (const { label, px } of cands) {
+      if (!label || px.length < 2 || !this._inView(px)) continue;   // unnamed / off-screen → no label
       const seg = []; let total = 0;
       for (let i = 1; i < px.length; i++) { const d = Math.hypot(px[i].x - px[i - 1].x, px[i].y - px[i - 1].y); seg.push(d); total += d; }
       if (total < 70) continue;
-      const w0 = ctx.measureText(st.name).width + 4;
+      const w0 = ctx.measureText(label).width + 4;
       const count = Math.max(1, Math.round(total / STREET_SPACING_PX)), step = total / (count + 1);
       for (let k = 1; k <= count; k++) {
         const target = step * k; let acc = 0, i = 1;
@@ -408,9 +528,20 @@ export class RouteMap {
         const aw = Math.abs(w0 * Math.cos(ang)) + Math.abs(STREET_FONTPX * Math.sin(ang));   // rotated AABB
         const ah = Math.abs(w0 * Math.sin(ang)) + Math.abs(STREET_FONTPX * Math.cos(ang));
         if (!fits(cx, cy, aw, ah)) continue;
-        this._rotLabel(st.name, cx, cy, ang, font, '#555');
+        this._rotLabel(label, cx, cy, ang, font, '#555');
         n++;
       }
+    }
+    return n;
+  }
+  // B5: a horizontal label centred on each named building (≥z16), yielding to place/street labels via `fits`.
+  _buildingLabelPass(fits) {
+    const cands = this._buildingLabels || []; if (!cands.length) return 0;
+    const ctx = this.ctx, font = `500 10px system-ui, sans-serif`; ctx.font = font; let n = 0;
+    for (const c of cands) {
+      if (!fits(c.x, c.y, ctx.measureText(c.name).width + 6, 12)) continue;
+      this._label(c.name, c.x, c.y, font, '#6a6a6a');
+      n++;
     }
     return n;
   }

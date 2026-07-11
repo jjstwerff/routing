@@ -202,6 +202,6 @@ test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/app_headless_test.sh
 
-# The canvas base-map app (PLAN-MAP): pure projection invariant + headless-Chromium render/pan/zoom/tiles.
+# The standalone store app (PLAN-BUILD): projection invariant + headless-Chromium view/match over _site.
 test-map:
 	@./tools/map_render_gate.sh
