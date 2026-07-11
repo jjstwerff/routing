@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-BASEMAP — the presentation layer (terrain, buildings, names)
 
+> **Status (2026-07-12):** the classifiers and the `PTile` store schema here are **live** — PLAN-BUILD's
+> `layout.store` carries them and the loft-wasm kernel emits the `view` text from them. The **`emit_*.loft`
+> → `browser/*.txt` → JS tile pyramid** pipeline is **retired** (see [PLAN-BUILD](PLAN-BUILD.md)); the browser
+> reads the store directly.
+
 A **second, separate** dataset that gives the map terrain types, building footprints, and names — so it
 reads like a real map instead of a bare road network — **without touching the routing routines**. It is a
 sibling to the routing block: same cell grid, same coordinate encoding, completely separate store.

@@ -1,6 +1,11 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-EDIT — restore the rough-layer editing primitives
 
+> **Status (2026-07-12):** the app is now the **standalone store app** ([PLAN-BUILD](PLAN-BUILD.md), the plan
+> of record) — `browser/index.html` is the store-app front end, not the retired tiles app this doc predates.
+> These editing primitives are still to build (PLAN-BUILD B6); they ride the same `map.mjs` seam, on the store
+> app's rough sketch (the `match` re-issue is already wired — click adds a point and re-matches).
+
 **Goal.** Bring the single-file loft-native browser app (`browser/index.html`) back to the **original
 interaction design** (DESIGN.md §1): the rough sketch is edited with a **small, sharp primitive set** —
 *place · drag · insert · remove · multi-delete · undo* — and re-matches on every edit. The loft-native
