@@ -740,3 +740,65 @@ loft-wasm matches from the roads text via `host_input` (the proven `web_kernel` 
 compiled a `store_load` probe (399 KB html / 298 KB wasm) — but that's the mmap reader; `lib/web`'s wasm HTTP
 is text-only. `../loft` is read-only for us — the codec + binary fetch are the maintainer's to build ("we'll
 build something that works here").
+
+## 2026-07-15 — loft 2026.7.1 resolution: `use <submodule>;` no longer reaches a package submodule from a test file
+
+**Context.** loft `2026.7.1` (installed 2026-07-15; it ships @PLN106 `--native-android` and the @PLN107
+dead-store lint DEFAULT-ON — `LOFT_NO_DEAD_STORES` opts out — both validated here while cutting
+`graphics 0.4.2`) tightened library/submodule resolution.
+
+**What we found (verified, both backends).** In `loft-libs-graphics` the package entry is `src/graphics.loft`,
+with sibling submodules `src/{math,mesh,scene,render,glb}.loft`. Two resolution facts now disagree:
+
+- **From inside the package it still works.** `src/graphics.loft` itself does `use math; use mesh; use scene;
+  use glb;` and compiles fine — so every `use graphics;` consumer is green (verified: `ssh_home` +
+  `tests/canvas.loft` pass 30/30 on `--interpret` and `--native`).
+- **From a sibling test file it no longer works.** A module test that does `use math;` to exercise the
+  submodule directly fails to resolve the submodule's own `pub` functions:
+  ```
+  Error: Unknown function vec3        at tests/math.loft:7:34
+  Error: Unknown function dot3        at tests/math.loft:25:31
+  Error: Unknown function normalize3  at tests/math.loft:41:29
+  FAIL  tests/math.loft  (parse errors)
+  ```
+  And the qualified form does not reach it either:
+  ```
+  Error: Name 'math' not found in library   at tests/math.loft:6:3    (with `use graphics::math;`)
+  ```
+
+**Impact.** graphics' four module-level tests — `tests/{math,mesh,scene,scene_glb}.loft` — all fail
+(`5 failed; 34 passed`); only the `use graphics;` tests (canvas, text_height, kerning, font_ascent,
+input_events) pass. **Pre-existing** — it fails identically on the committed `0.4.1` HEAD, i.e. it is the
+toolchain upgrade, not the lib. `graphics 0.4.2` shipped with these four tests red on purpose (orthogonal to
+the warning cleanup; called out in the release commit).
+
+**The asymmetry is the bug.** A package submodule is importable by bare name *from within the package* but not
+*from a sibling test dir*, and there is **no qualified form** that reaches it (`graphics::math` → "not found").
+So a package submodule is currently **un-unit-testable in isolation**. Either the test-context submodule
+resolution regressed, or bare-submodule import is being retired — in which case the entry's own `use math;`
+should break the same way (it does not — that is the asymmetry), and there needs to be a sanctioned way to
+reach `math::vec3` from a test (a working `use graphics::math;`, or a `pub use` re-export). `../loft` is
+read-only for us — filing/fixing is the maintainer's call.
+
+## 2026-07-15 — @PLN25 DN1 diagnostic: the nullable-return warning anchors at the *next* function, not the culprit
+
+Under DN1, storing a `τ?` (from a fallible `/`, `sqrt`, or a parse) into a non-null return warns:
+```
+warning: a nullable `integer?` is stored into element 0 of the return value of the
+non-null type `integer` — it becomes null there; discharge with `?? <default>` …
+```
+The rule itself is landing cleanly and is ergonomically bearable — a single `?? <default>` at the return site
+discharges it (matches the C80 spreadsheet model). **But the source span points at the wrong function** —
+consistently the *declaration line of the function AFTER* the one that actually returns the nullable value.
+Two independent instances, same session:
+
+| culprit (returns a fallible expr into a non-null type) | warning anchored at |
+|---|---|
+| `ssh_home` `grid_cols_rows` → `(integer, integer)` from a guarded `win_w / cell_w` (`main.loft:120`) | `default_font_size` (`main.loft:129`, the *next* fn) |
+| `graphics` `length3` → `sqrt(sum-of-squares)` = `float?` (`math.loft:67`) | `normalize3` (`math.loft:71`, the *next* fn — which is already `??`-discharged) |
+
+So the caret sends you to a function that is *fine* (often already discharged), and you locate the real site by
+elimination (which fn returns a fallible expression into a non-null type). Minor but repeatable — the span
+should anchor on the offending `return`/tail expression, or at least on the culprit function's own header. It
+slightly raises the DN1 discharge cost: the first look lands on the wrong line. Both sites were fixed here with
+`?? 0` / `?? 0.0`; `../loft` is read-only for us — reported for the maintainer.
