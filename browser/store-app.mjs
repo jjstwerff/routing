@@ -82,6 +82,27 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // Does the session's graph grow without bound as the user moves to NEW areas? server.loft replaces
+  // tile corridors for exactly this reason ("RSS and latency blow up"). Match several sketches in
+  // different places and watch wasm memory: replace ⇒ flat, accumulate ⇒ climbing.
+  async panSketches() {
+    const areas = [
+      [[52.2412,6.8834],[52.2694,6.9164]],
+      [[52.1800,6.8300],[52.2000,6.8600]],
+      [[52.3100,6.9800],[52.3300,7.0100]],
+      [[52.2200,6.7900],[52.2400,6.8200]],
+      [[52.3500,6.8800],[52.3700,6.9100]],
+    ];
+    const rows = [];
+    for (const [i, pts] of areas.entries()) {
+      const t0 = performance.now();
+      const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
+      const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+      const m = text.match(/ways=(\d+)/);
+      rows.push({ i, ms: Math.round(performance.now() - t0), wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1), ways: m ? +m[1] : -1 });
+    }
+    return rows;
+  },
   // C0 — WARM UP TO THE WORKING SET, then measure. wasm memory grows 48 -> 136 MB over a session's
   // first few matches, and each memory.grow can copy the whole linear memory, so those runs cost ~2x
   // steady state. That is a real property of the app (a user's first clicks ARE the slowest), not

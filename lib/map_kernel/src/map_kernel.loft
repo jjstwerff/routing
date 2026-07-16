@@ -198,16 +198,22 @@ fn covered(s: MatchSession, pts: vector<GeoPoint>, margin: float) -> boolean {
   true
 }
 
-// Match `trace`, reusing the session's graph when the sketch is already covered. Corridors ACCUMULATE:
-// a miss adds its ways to the session and rebuilds once, so revisiting anywhere edited earlier this
-// session stays warm.
+// Match `trace`, reusing the session's graph when the sketch is already covered.
+//
+// A miss REPLACES the corridor — it does not accumulate. This is server.loft's policy verbatim, and its
+// reason is load-bearing: "The tile block is complete for the corridor, so use it AS THE graph — no
+// accumulation. … Accumulating tile corridors instead would grow the graph without bound as the user
+// pans (each miss rebuilding an ever-bigger build_graph — RSS and latency blow up), so tiles replace."
+// Re-reading a tile corridor is local and cheap; an unbounded graph is neither. (Overpass corridors DO
+// accumulate in server.loft, because a re-fetch is a ~12 s network round-trip — this kernel has no
+// Overpass path, so that branch does not apply here.)
 pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   margin = corridor_margin(trace);
   if !covered(s, trace, margin) {
-    s.cways += tiles_corridor_ways(roads, trace, margin);
+    s.cways = tiles_corridor_ways(roads, trace, margin);
     s.cg = build_graph(s.cways);
-    s.covs += [Corridor { pts: trace, margin: margin }];
+    s.covs = [Corridor { pts: trace, margin: margin }];
     s.built = true;
   }
   emit_route(match_route(s.cg, trace, profile), len(s.cways), profile);
