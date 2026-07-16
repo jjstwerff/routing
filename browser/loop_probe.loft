@@ -1,0 +1,28 @@
+// PLAN-PERF §0 step 2 — the probe that gates steps 4-8.
+//
+// QUESTION: can a `--html` kernel own the loop — gather commands via host_input(), yield the frame
+// between them — and KEEP STATE across commands? If yes, the store kernel can hold the decoded stores,
+// the Graph and the MatchState across clicks (steps 6-8). If no, those four steps are fiction.
+//
+// `count` is the state under test: it must survive from one command to the next, which it can only do
+// if main() never returns (loft owns the loop) — loft_start rebuilding fresh Stores per call is
+// exactly what a returning main() suffers.
+use web::frame_yield;
+
+fn main() {
+  count = 0;
+  polls = 0;
+  while true {
+    cmd = host_input();
+    if cmd == "" {
+      // Gather-until-enough: no command yet — hand the frame back and poll again. The load-bearing
+      // rule (BROWSER_INTEROP.md) is that "blocking" must yield, never hard-spin.
+      polls = polls + 1;
+      frame_yield();
+    } else {
+      count = count + 1;
+      println("echo={cmd} count={count} polls={polls}");
+      if cmd == "quit" { return; }
+    }
+  }
+}

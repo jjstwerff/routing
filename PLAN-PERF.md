@@ -26,8 +26,8 @@ Rules that make these steps safe, and that every row below obeys:
 
 | # | file(s) | change | verify | behaviour |
 |---|---|---|---|---|
-| **1** | `browser/cdp_profile.mjs` | Label the existing match probe `match_cold_full`; add a `match_warm` row (2nd click, one point added). | a warm number exists at all | none (test-only) |
-| **2** | `scratch/loop_probe.loft` (+ tiny driver) | **Probe:** `main()` loops on `host_input()`, `frame_yield()`s, keeps a counter, echoes. Drive 3 commands. | counter persists **and** rAF keeps firing | none — **gates 4–8** |
+| **1** ✅ | `browser/cdp_profile.mjs`, `browser/store-app.mjs` | Label the existing match probe `matchColdFull`; add `matchWarm` (2nd click, one point added). | **DONE** — warm/cold = **0.91×**: adding one point costs 91% of a full rebuild. That equality is the bug, stated as a number. | none (test-only) |
+| **2** ✅ | `browser/loop_probe.loft`, `browser/cdp_loop_probe.mjs`, `tools/loop_probe.sh` | **Probe:** `main()` loops on `host_input()`, `frame_yield()`s, keeps a counter, echoes. | **PASSED** — see §2a | none — **gated 4–8; they are GO** |
 | **3** | `scratch/read_probe.mjs` | **Probe:** fetch `enschede.layout.store`; `readLoftValue` over the `ArrayBuffer`; read one known PTile. | reconstructs the kernel's `cover`+ring | none — **gates 9–12** |
 | **4** | `client/web_basemap_kernel.loft` | Wrap the existing body in `loop { cmd = host_input(); if cmd == "" { return; } … }`. Still one command per `loft_start`. | all gates green; profiler unchanged | **none** (structure only) |
 | **5** | `browser/store-kernel.mjs` | Drive the loop: keep `loft_start` running, `loftPush` each command, resolve per output. | 2 commands in one `loft_start` → 2 outputs | none (app still sends 1) |
@@ -111,6 +111,31 @@ Store load, split per command — the structural fact §4 turns on:
 The kernel runs synchronously on the UI thread, so the cost lands as one un-interruptible block: **the
 phone is dead for 4.2 s.** Lag and cost are different problems — *cheaper work still freezes; the same
 work on a worker does not.* Both need fixing, and obeying §1 shrinks what is left to move off-thread.
+
+### 2a. Step 2's verdict — loft CAN own the loop (steps 4–8 are GO)
+
+`tools/loop_probe.sh` — a `--html` kernel whose `main()` loops on `host_input()` and `frame_yield()`s
+between commands, driven with four commands in a real headless browser:
+
+```
+echo=alpha   count=1 polls=0
+echo=bravo   count=2 polls=149
+echo=charlie count=3 polls=222
+echo=quit    count=4 polls=294
+```
+
+| question | answer |
+|---|---|
+| does state persist across commands? | **YES** — `count` 1→2→3→4. `main()` never returns, so `loft_start` never re-enters and never rebuilds the Stores. |
+| does the frame keep painting while loft waits? | **YES** — 145 rAF frames during ~2.4 s of polling. |
+| is it yielding or hard-spinning? | **yielding** — `polls` climbs ~60–70 per 1.2 s wait ≈ **one poll per frame**, exactly the gather-until-enough contract. |
+
+**Cost to the shim: exactly one import.** The probe's wasm requires `loft_io` (`loft_host_print`,
+`loft_host_input_len`, `loft_host_input_copy` — `store-kernel.mjs` already provides all three) plus
+**`loft_web: ws_yield`**, which it does not. Exports are identical to the store kernel (`memory`,
+`loft_start`, `asyncify_*`), so `ws_yield` suspends through the AsyncifyCtrl that already exists for the
+fetch. Note `frame_yield` moves the build to loft's **full engine shell** (273 KB page / 174 KB wasm vs
+the minimal engine-less one) — a size cost to measure at step 5, not a blocker.
 
 ### Two premises this falsified
 
