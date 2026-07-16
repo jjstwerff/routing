@@ -1089,8 +1089,12 @@ and the inline-literal form both still return the fallback's fields when taken, 
 All 8 cells of the const boundary matrix from the entry above now pass, including the two that forced
 routing's rollback: `s.v += [x]` on a `const` collection field is accepted (append is contents, not a
 rebind), and the RHS-read false positive is gone (`vec[i] = … + s.field` where the struct carries a const
-field). **Routing can restore the reverted `const` on `GEdge`, `SubPath`, `EdgeCosts`, `TTile.roads/steps`,
-`PTile`'s geometry vectors and `Image.data`** — tracked as a follow-up here.
+field). **Routing's reverted `const` is now restored** — on `GEdge`, `SubPath`, `EdgeCosts`,
+`TTile.roads/steps`, `PTile`'s geometry vectors and `Image.data`, plus `TileHeights.heights`,
+`Server.handle` and `WebSocket.ws_id`, which the original sweep had left out for the same `+=` reason.
+34 of routing's 40 lib structs are now fully const; the remaining 6 are genuine (`Graph` rebinds
+`adj_head`/`adj_to`/`adj_edge` wholesale in `build_adj`; `Heap`/`Scratch` are mutable-by-design).
+Value-identical on both backends; all four gates green.
 
 ### ⚠️ f1 (index-fit carry) — the fix is correct, but a regression hides its effect
 

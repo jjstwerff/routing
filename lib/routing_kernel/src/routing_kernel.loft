@@ -238,9 +238,10 @@ TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
 pub struct TStep { const x: i32, const y: i32, const h: i32 }
 pub struct TRoad { const tp: u8, const flags: u8, const steps: u8 }
-// roads/steps are NOT const: they are grown per-tile by tools/gen-tiles.loft via `t.roads += […]`, and
-// `+=` is a compound assign — a whole-value REBIND, which `const` freezes (see EdgeCosts below).
-pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, roads: vector<TRoad>, steps: vector<TStep> }
+// All fields const: tkey/ox/oy/oh are set at construction, and roads/steps are only ever GROWN
+// (`t.roads += […]` in tools/gen-tiles.loft), never rebound — an append is a contents mutation, which
+// const permits on a collection field.
+pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, const roads: vector<TRoad>, const steps: vector<TStep> }
 
 // RoadType code → a representative OSM highway value, so the existing tag-based cost model works
 // unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
@@ -341,19 +342,16 @@ ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate j
 
 struct CoordIdx { const coord: text, const idx: integer }
 struct GNode { const lat: float, const lon: float }
-// NOT const, though a GEdge is set-once at build and never mutated: `to[pa] = e.b` (build_adj) and
-// `cm[c] = … + e.length` (match_quality) READ a field on the RHS of a vector element-store, and loft
-// @PLN40 rejects that with "cannot reassign const field" — a false positive (a read reassigns nothing)
-// that trips on ANY field read of a struct carrying ANY const field. See docs/loft-feedback.md
-// (2026-07-16). Restore `const` here once that is fixed.
+// All fields const: a GEdge is built once by build_graph and never mutated afterwards — the search
+// only ever reads it.
 struct GEdge {
-  a: integer, b: integer, length: float,
-  hw: text, surface: text, tracktype: text,
-  bicycle: text, access: text,
-  oneway: text, onewaybike: text,   // direction restriction (a→b is the way's digitised sense)
-  svc: text,                        // service= subtag (driveway/alley/parking_aisle)
-  cycleway: text, cyclestreet: text, // on-road cycle infrastructure (lane/track) / fietsstraat
-  name: text,                        // road identity (for same-road out-and-back detection)
+  const a: integer, const b: integer, const length: float,
+  const hw: text, const surface: text, const tracktype: text,
+  const bicycle: text, const access: text,
+  const oneway: text, const onewaybike: text,   // direction restriction (a→b is the way's digitised sense)
+  const svc: text,                        // service= subtag (driveway/alley/parking_aisle)
+  const cycleway: text, const cyclestreet: text, // on-road cycle infrastructure (lane/track) / fietsstraat
+  const name: text,                        // road identity (for same-road out-and-back detection)
 }
 pub struct Graph {
   index: hash<CoordIdx[coord]>,   // "lat,lon" → node idx (dedup)
@@ -895,11 +893,9 @@ pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, co
 // Per-edge cost pieces, precomputed ONCE per match (segment-independent — depend only on tags+profile):
 // base tag penalty, deviation weight, legality surcharge, forward/backward direction legality. This is
 // what makes the hot search loop cheap (array reads, not ~40 string compares per edge relaxation).
-// NOT const: the 5 parallel arrays are grown in precompute_edges via `ec.pen += […]`, and `+=` is a
-// compound assign — i.e. a whole-value REBIND, which `const` freezes (LOFT.md § Fields: const freezes
-// the binding, not the contents; `t.v[0] = x` is allowed, `t.v = […]` is not). So a `+=`-grown
-// collection field cannot be const.
-struct EdgeCosts { pen: vector<float>, dw: vector<float>, sur: vector<float>, afwd: vector<boolean>, abwd: vector<boolean> }
+// All fields const: the 5 parallel arrays are filled once in precompute_edges (`ec.pen += […]`, an
+// append, which const permits on a collection field) and then only read by index in the search loop.
+struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur: vector<float>, const afwd: vector<boolean>, const abwd: vector<boolean> }
 
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
   ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
@@ -1020,10 +1016,8 @@ fn nearest_node1(g: Graph, p: GeoPoint) -> integer {
 // final stitched route isn't (remove_spurs folds joints), so quality can't be re-derived from it.
 // pen_m = Σ edge_length · ec.pen (the matcher's own per-metre suitability penalty). class_m: metres per
 // road_class bucket. A bridged stretch carries zeros (its gap is counted as bridged length downstream).
-// NOT const, though a SubPath is set-once and never mutated: `cm[c] = (cm[c] ?? 0.0) + (s.class_m[c] ?? 0.0)`
-// (match-quality aggregation) reads a field on the RHS of a vector element-store — the same @PLN40 false
-// positive that blocks GEdge above. See docs/loft-feedback.md (2026-07-16).
-struct SubPath { pts: vector<GeoPoint>, bridged: boolean, len_m: float, pen_m: float, class_m: vector<float> }
+// All fields const: a SubPath is built once per stretch by Pass 2 and only read afterwards.
+struct SubPath { const pts: vector<GeoPoint>, const bridged: boolean, const len_m: float, const pen_m: float, const class_m: vector<float> }
 pub struct MatchState {
   const trace: vector<GeoPoint>,    // raw drawn trace this state was built for (for diffing the next edit)
   const ctrace: vector<GeoPoint>,   // the trace actually matched (a loop has the start appended)
@@ -1506,7 +1500,7 @@ ELEV_TILE_PX = 256;   // terrarium tile edge in pixels
 pub struct TileHeights {
   const tx: integer,           // slippy tile column at the profile's zoom
   const ty: integer,           // slippy tile row
-  heights: vector<float>,
+  const heights: vector<float>,   // filled once at decode, then read-only
 }
 
 // One profile sample: `d` metres along the route, `e` metres elevation.

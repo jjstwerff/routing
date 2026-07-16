@@ -23,7 +23,7 @@ pub struct Image {
   const name: text,
   const width: integer,
   const height: integer,
-  data: vector<Pixel>   // NOT const: grown via `img.data += [Pixel{…}]`, and `+=` is a rebind, which const freezes
+  const data: vector<Pixel>   // grown via `img.data += [Pixel{…}]` — an append, which const permits
 }
 
 // Native function: decode a PNG file into an Image struct.

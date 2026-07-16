@@ -16,11 +16,11 @@
 // --- Types (must come before all functions) ---
 
 pub struct Server {
-  handle: integer
+  const handle: integer   // Rust-side server slot, set at construction
 }
 
 pub struct WebSocket {
-  ws_id: integer
+  const ws_id: integer   // Rust-side connection slot, set at construction
 }
 
 pub struct Request {
