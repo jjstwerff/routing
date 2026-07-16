@@ -30,11 +30,20 @@ mirror the maintainer's agent memory — keep both in sync when one changes.)
   is inconsistent. (2026-07-08: it held two `loft_ffi` rlibs and every routing `--native`/server build
   failed with rustc `found crates (loft_ffi and loft_ffi) with colliding StableCrateId`, exposed by loft
   #498's FFI-crate split; the installed loft built the same sources fine.)
-- **`../loft` is another agent's workspace.** It rebuilds `target/release/loft` frequently. Treat it as
-  **read-only**: never build, edit, `cargo build`, delete from its `target/`, or reinstall from it.
-- The loft binary is a **moving target.** When *every* loft run fails oddly (even hello-world), probe a
-  trivial program first — and outside the Claude Code command sandbox — before believing any specific
-  failure. (Past example: a build panicked at startup only inside the sandbox.)
+- **`../loft` AND `../loft2` are other agents' workspaces** — each has its own agent, and both rebuild
+  `target/release/loft` frequently. Treat both as **read-only**: never build, edit, `cargo build`, delete
+  from their `target/`, or reinstall from them. Reading their git log / plan docs is fine and often the
+  fastest way to learn what landed and how a routing finding was triaged.
+- The loft binary is a **moving target — including mid-session.** When *every* loft run fails oddly (even
+  hello-world), probe a trivial program first — and outside the Claude Code command sandbox — before
+  believing any specific failure. (Past example: a build panicked at startup only inside the sandbox.)
+  It is not just the sibling trees that move: **`/usr/local/bin/loft` gets reinstalled under you.**
+  (2026-07-16: three distinct binaries existed within one session — `loft2` 16:50, installed 16:58,
+  `loft` 17:47 — and both the installed binary and `../loft`'s dev build changed *while work was in
+  flight*; a matrix probed at 16:00 described a binary that no longer existed by 17:00.) So: **anchor a
+  finding to the binary you will report it against** — probe with `--version` + `ls -la` on the binary,
+  and if it matters, re-run the probe on the *installed* loft before writing it down. A conclusion drawn
+  from `../loft/target/release/loft` can be stale within the hour.
 
 ## loft's formal-definition goal
 
