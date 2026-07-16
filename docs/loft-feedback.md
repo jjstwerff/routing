@@ -802,3 +802,47 @@ elimination (which fn returns a fallible expression into a non-null type). Minor
 should anchor on the offending `return`/tail expression, or at least on the culprit function's own header. It
 slightly raises the DN1 discharge cost: the first look lands on the wrong line. Both sites were fixed here with
 `?? 0` / `?? 0.0`; `../loft` is read-only for us — reported for the maintainer.
+
+## 2026-07-16 — `loft --native`: a `#native` package's symbols "not registered" though its `loft_register!` is correct (P269)
+
+**Context.** `ssh_home` Step 4 wires the published `ssh 0.1.0` lib (`loft-libs-net`, russh FFI) into a live
+transport test. It works end-to-end under `--interpret` (see below), but **fails to compile under
+`loft --native`**:
+
+```
+error: loft --native: native fn `n_ssh_recv` (#native "n_ssh_recv") has no implementation in any registered
+       native crate; either run via --interpret or wire the symbol in a #native package or
+       src/codegen_runtime.rs (P269)
+```
+— the same for `n_byte_at` and the other `n_ssh_*` (5 errors total).
+
+**The registration is correct.** The ssh native crate's build.rs runs
+`loft_ffi_build::generate_register_from_loft_with_bridges("../src")`, and the generated
+`OUT_DIR/loft_register_gen.rs` is complete and well-formed — all nine functions plus their bridges:
+```
+loft_ffi::loft_register! { n_byte_at, n_ssh_close, n_ssh_connect, n_ssh_is_open, n_ssh_login,
+                           n_ssh_open_shell, n_ssh_recv, n_ssh_resize, n_ssh_send, }
+loft_ffi::loft_register_bridges! { "n_byte_at" => n_byte_at__loft_bridge, … }
+```
+(pulled into `native/src/lib.rs` via `include!(concat!(env!("OUT_DIR"), "/loft_register_gen.rs"))`).
+
+**The contrast that localises it.** In the SAME project, `graphics 0.4.2` — whose native crate declares an
+equivalent `loft_register!` / `loft_register_bridges!` (hand-written in `lib.rs` rather than `include!`d) —
+**links fine under `--native`** (all the `vttest*` model tests run `--native`). And the ssh lib itself was
+*"interpret + native + live-sshd all green"* under an **earlier** loft. So this is a **loft 2026.7.1 `--native`
+regression** in discovering / linking a `#native` package's registration, **not** an ssh-lib or ssh_home
+defect — the generated registration is byte-correct. The one visible difference to probe: graphics registers
+directly in `lib.rs`; ssh registers via `include!(OUT_DIR/loft_register_gen.rs)` — if `--native`'s crate/symbol
+discovery no longer sees an `include!`d `loft_register!`, that would explain the asymmetry (the interpreter
+cdylib path finds it either way; only the `--native` rlib-link path regressed).
+
+**What works (so the transport itself is proven).** Under `--interpret`, the full live smoke against a
+throwaway paramiko sshd (real bash PTY) passes: connect, password auth **and** rejection, a real shell,
+`echo LOFT_OK` round-trip, a **binary** round-trip (raw `ESC` 0x1B survives the FFI, checked via `byte_at`),
+and resize propagation (`stty size` reports the resized dims).
+
+**Impact / ask.** `ssh_home` is a `--native` app, so this blocks its Step 5 integration. `../loft` is
+read-only for us. Likely fixes for the maintainer: restore `--native` discovery of an `include!`d
+`loft_register!`, or (ssh-lib side) hand-write the register block into `lib.rs` like graphics + republish
+`ssh 0.1.1` rebuilt under 2026.7.1 — but that only helps if the root cause is the `include!`, which is the
+maintainer's to confirm.
