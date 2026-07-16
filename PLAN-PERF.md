@@ -7,6 +7,54 @@ supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks i
 **Target device is a phone.** Judge every number in the 4× column; the desktop column is only there to
 show how badly a desktop profile flatters us.
 
+**§0 is the executable step list.** The rest of the document is the evidence and reasoning behind it;
+if you only want to *do* the work, §0 is the whole thing.
+
+---
+
+## 0. The step list
+
+Rules that make these steps safe, and that every row below obeys:
+
+1. **One commit, one observable.** A step changes behaviour **or** structure — never both.
+2. **All four gates stay green at every commit** (`make test`, `test-native`, `test-wasm`, `test-map`).
+3. **Additive before subtractive.** New path lands *beside* the old one and is proved equal; only then
+   does the old one go.
+4. **Revert is one `git revert`.** No step leaves the tree needing a follow-up to be correct.
+5. **Every step names the number it should move.** If the number doesn't move, the model is wrong —
+   stop and re-measure rather than continue (`tools/map_profile.sh` after each).
+
+| # | file(s) | change | verify | behaviour |
+|---|---|---|---|---|
+| **1** | `browser/cdp_profile.mjs` | Label the existing match probe `match_cold_full`; add a `match_warm` row (2nd click, one point added). | a warm number exists at all | none (test-only) |
+| **2** | `scratch/loop_probe.loft` (+ tiny driver) | **Probe:** `main()` loops on `host_input()`, `frame_yield()`s, keeps a counter, echoes. Drive 3 commands. | counter persists **and** rAF keeps firing | none — **gates 4–8** |
+| **3** | `scratch/read_probe.mjs` | **Probe:** fetch `enschede.layout.store`; `readLoftValue` over the `ArrayBuffer`; read one known PTile. | reconstructs the kernel's `cover`+ring | none — **gates 9–12** |
+| **4** | `client/web_basemap_kernel.loft` | Wrap the existing body in `loop { cmd = host_input(); if cmd == "" { return; } … }`. Still one command per `loft_start`. | all gates green; profiler unchanged | **none** (structure only) |
+| **5** | `browser/store-kernel.mjs` | Drive the loop: keep `loft_start` running, `loftPush` each command, resolve per output. | 2 commands in one `loft_start` → 2 outputs | none (app still sends 1) |
+| **6** | `client/web_basemap_kernel.loft` | Move the two `store_load_url_trusted` calls **above** the loop. | 2nd command −355 ms (view) / −14 ms (match) | **perf only** |
+| **7** | `client/web_basemap_kernel.loft` | Hold the corridor `Graph` across commands; rebuild only when the corridor changes. | 2nd match −~41% (`build_graph` gone) | **perf only** |
+| **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
+| **9** | `browser/build-site.mjs` | Bake the layout `LayoutDesc` JSON at build time. | descriptor present in `_site` | none |
+| **10** | `browser/map.mjs` | Read **areas only** from the fetched buffer, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
+| **11** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
+| **12** | ×4 | Repeat 10–11 per kind (buildings, lines, labels, pois). | counts identical per kind | one kind per commit |
+| **13** | `client/web_basemap_kernel.loft` | Drop the layout store from the kernel entirely. | kernel loads roads only (14 ms) | **perf only** |
+| **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
+| **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
+| **16** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
+| **17** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
+| **18** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
+| **19** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
+
+**Steps 2 and 3 are probes and come first**: each is an afternoon and each gates a block (2 → steps
+4–8; 3 → steps 9–12). If a probe fails, that block is fiction and the fallback is named in its phase.
+
+**Step 19 is the only row in this table that can return a worse route.** Everything else is subtraction
+or a pure representation change. That is not an accident — it is why the ladder is last.
+
+**Stop-and-think rows:** 6, 7, 8, 16 each predict a specific drop. A step whose number does not move
+means the model is wrong; re-measure before taking the next one.
+
 ---
 
 ## 1. The one invariant
