@@ -77,6 +77,7 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // separately, so the bottleneck is ATTRIBUTED — wasm-side (store decode + text serialize) vs JS-side
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
 window.__perfHooks = {
+  kernelStats: () => (kernel.stats ? kernel.stats() : null),
   async timedView() {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;

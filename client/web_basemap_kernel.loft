@@ -27,6 +27,12 @@
 use map_kernel::(do_view_bbox, do_match, parse_sketch);
 use basemap::(PTile);
 use routing_kernel::(TTile);
+use web::frame_yield;
+
+// End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
+// "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
+// every map line carries a type prefix (A/B/L/P/N/S/R) and the summaries are `# view:` / `SUMMARY`.
+EOR = "#EOR";
 
 // The command loop. Today JS pushes exactly one blob per `loft_start`, so this runs a single pass and
 // then returns on the empty read — byte-identical behaviour to the one-shot form it replaces. It is a
@@ -40,24 +46,38 @@ use routing_kernel::(TTile);
 fn main() {
   while true {
     blob = host_input();
-    if blob == "" { return; }                     // no (further) command this call — step 5 makes this wait instead
-
-    lines = blob.split('\n');
-    layout_url = lines[0] ?? "";
-    roads_url  = lines[1] ?? "";
-    cmd        = lines[2] ?? "view";
-    arg3       = lines[3] ?? "";                  // bbox (view) or sketch (match)
-    profile    = lines[4] ?? "cycling_road";
-
-    roads: hash<TTile[tkey]> = [];
-    if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
-
-    if cmd == "match" {
-      do_match(roads, parse_sketch(arg3), profile);
+    if blob == "" {
+      // Gather-until-enough: no command queued. Hand the frame back and poll again — the load-bearing
+      // rule is that "blocking" yields, never hard-spins, so the page keeps painting while we wait
+      // (BROWSER_INTEROP.md; tools/loop_probe.sh proves the shape). `main` therefore never returns,
+      // which is the whole point: loft_start cannot rebuild the stores it never re-enters.
+      frame_yield();
     } else {
-      layout: hash<PTile[tkey]> = [];
-      if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
-      do_view_bbox(layout, roads, arg3);
+      lines = blob.split('\n');
+      layout_url = lines[0] ?? "";
+      roads_url  = lines[1] ?? "";
+      cmd        = lines[2] ?? "view";
+      arg3       = lines[3] ?? "";                // bbox (view) or sketch (match)
+      profile    = lines[4] ?? "cycling_road";
+
+      roads: hash<TTile[tkey]> = [];
+      if store_load_url_trusted(roads, roads_url) {
+        if cmd == "match" {
+          do_match(roads, parse_sketch(arg3), profile);
+        } else {
+          layout: hash<PTile[tkey]> = [];
+          if store_load_url_trusted(layout, layout_url) {
+            do_view_bbox(layout, roads, arg3);
+          } else {
+            println("ERR layout store_load_url failed: {layout_url}");
+          }
+        }
+      } else {
+        println("ERR roads store_load_url failed: {roads_url}");
+      }
+      // Terminate the response on EVERY path, errors included — a host waiting on this marker must
+      // never be left hanging by a failed load.
+      println(EOR);
     }
   }
 }

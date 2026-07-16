@@ -59,6 +59,7 @@ const probe = `(async () => {
   out.matchCold = []; out.matchWarm = [];
   for (let i = 0; i < 2; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
   if (K.matchWarm) for (let i = 0; i < 2; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
+  out.stats = K.kernelStats ? K.kernelStats() : null;
   out.block = [];
   if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
   return out;
@@ -102,6 +103,12 @@ if (globalThis.__db) {
   console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
   console.log('  match_cold_full: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
+}
+if (res.stats) {
+  const ok = res.stats.starts === 1;
+  console.log('\n=== SESSION (PLAN-PERF step 5: loft owns the loop) ===');
+  console.log('  loft_start entered ' + res.stats.starts + 'x for ' + res.stats.commands + ' commands  ' +
+              (ok ? '✅ one session' : '❌ NOT a session — state cannot survive'));
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');
