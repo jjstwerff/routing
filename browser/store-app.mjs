@@ -82,6 +82,46 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // C0 — WARM UP TO THE WORKING SET, then measure. wasm memory grows 48 -> 136 MB over a session's
+  // first few matches, and each memory.grow can copy the whole linear memory, so those runs cost ~2x
+  // steady state. That is a real property of the app (a user's first clicks ARE the slowest), not
+  // noise — so it is reported separately rather than averaged into the number everything is judged on.
+  // Returns the warmup runs; measurement starts once wasmBytes stops changing.
+  async warmup(kind, maxRuns) {
+    const rows = []; let prev = -1;
+    for (let i = 0; i < maxRuns; i++) {
+      const t0 = performance.now();
+      await this.run(kind);
+      const b = kernel.stats().wasmBytes;
+      rows.push({ ms: performance.now() - t0, wasmMB: +(b / 1048576).toFixed(1), grew: b !== prev });
+      if (b === prev && i >= 1) break;    // two runs at the same size = plateau reached
+      prev = b;
+    }
+    return rows;
+  },
+  run(kind) {
+    if (kind === 'match') {
+      return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+    }
+    const b = viewportBox(0.6);
+    return kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+  },
+  // C0 — is cost growing with session history? Run the SAME command N times and report wasm memory and
+  // duration for each, so growth is attributed rather than averaged away.
+  async repeat(kind, n) {
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      if (kind === 'match') {
+        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+      } else {
+        const b = viewportBox(0.6);
+        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+      }
+      rows.push({ i, ms: performance.now() - t0, wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1) });
+    }
+    return rows;
+  },
   async timedView() {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;

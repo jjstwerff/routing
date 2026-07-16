@@ -117,5 +117,7 @@ export async function createKernel(wasmUrl) {
   // loft_start must be entered EXACTLY ONCE for a session, no matter how many commands run through it.
   // If it ever exceeds 1, loft is no longer owning the loop and the store/Graph/MatchState a session
   // holds (steps 6-8) would be silently rebuilt. tools/map_profile.sh asserts it.
-  return { runKernel, stats: () => ({ starts, commands, storeLoads }) };
+  // wasm linear memory, in bytes. The session holds state now, so a per-command climb here is a LEAK,
+  // not noise — and it would explain cost growing with session history (PLAN-PERF §5 C0).
+  return { runKernel, stats: () => ({ starts, commands, storeLoads, wasmBytes: mem.buffer.byteLength }) };
 }

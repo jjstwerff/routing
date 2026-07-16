@@ -44,21 +44,24 @@ if (!st?.ready) { console.log('  FAIL: app never became ready', JSON.stringify(s
 
 // Re-run the view with the phases timed individually. Uses the app's own module bindings via the
 // hooks it exports; falls back to re-invoking runKernel directly.
+const N = Number(process.env.PROFILE_RUNS || 6);
 const probe = `(async () => {
   const K = window.__perfHooks;
   if (!K) return { __err: 'no __perfHooks — app not instrumented' };
   const out = { runs: [] };
-  for (let i = 0; i < 3; i++) {
-    const r = await K.timedView();
-    out.runs.push(r);
-  }
+  // C0: repeat the SAME command in ONE session. Comparing across different probe orders / commands /
+  // session states is what produced the 2-3x "variance" — like-for-like repetition is ~1.1x.
+  for (let i = 0; i < ${N}; i++) out.runs.push(await K.timedView());
   out.decodeBoth = []; out.decodeRoads = [];
   if (K.timedDecodeBoth)  for (let i = 0; i < 3; i++) out.decodeBoth.push(await K.timedDecodeBoth());
   if (K.timedDecodeRoads) for (let i = 0; i < 3; i++) out.decodeRoads.push(await K.timedDecodeRoads());
+  // C0: reach the working-set plateau BEFORE measuring; report what the growth cost.
+  out.warmView = K.warmup ? await K.warmup('view', 6) : null;
+  out.warmMatch = K.warmup ? await K.warmup('match', 8) : null;
   const SKETCH = [[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]];
   out.matchCold = []; out.matchWarm = [];
-  for (let i = 0; i < 2; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
-  if (K.matchWarm) for (let i = 0; i < 2; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
+  for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
+  if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.block = [];
@@ -70,6 +73,10 @@ if (res?.__err) { console.log('  ERR:', res.__err); process.exit(1); }
 
 const med = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 const fmt = (n) => String(Math.round(n)).padStart(6);
+// C0: a number without its spread is not a measurement. `x.y` is max/min — anything past ~1.3x means
+// the runs are not like-for-like and the median is not comparable to anything.
+const spread = (xs) => { const lo = Math.min(...xs), hi = Math.max(...xs); return lo > 0 ? (hi / lo).toFixed(1) + 'x' : '-'; };
+const row = (name, xs) => console.log(`  ${name.padEnd(10)} ${fmt(med(xs))}   ${String(Math.round(Math.min(...xs))).padStart(5)}–${String(Math.round(Math.max(...xs))).padEnd(6)} ${spread(xs)}`);
 console.log('\n########## CPU throttle: ' + RATE + 'x ' + (RATE > 1 ? '(≈ phone class)' : '(desktop)') + ' ##########');
 if (res.decodeBoth?.length) {
   const db = med(res.decodeBoth.map((r) => r.kernel));
@@ -81,13 +88,9 @@ if (res.decodeBoth?.length) {
   console.log('  → the store load is now visible ONLY as cold-vs-warm below, not here.');
   globalThis.__db = db; globalThis.__dr = dr;
 }
-console.log('\n=== VIEW phases — run 1 (COLD: pays the store load) vs later (WARM: session reuse) ===');
-console.log('                cold    warm');
-for (const k of ['kernel', 'parse', 'render', 'total']) {
-  const c = res.runs[0][k];
-  const w = res.runs.length > 1 ? med(res.runs.slice(1).map((r) => r[k])) : null;
-  console.log(`  ${k.padEnd(10)} ${fmt(c)}  ${w === null ? '     -' : fmt(w)}`);
-}
+console.log('\n=== VIEW — same command x' + res.runs.length + ' in one session (ms) ===');
+console.log('             median   min–max   spread');
+for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.runs.map((r) => r[k]));
 if (res.appFirstViewMs) {
   const w = med(res.runs.map((r) => r.total));
   console.log('\n  app FIRST view (the only truly cold one — pays the session store load): ' + fmt(res.appFirstViewMs) + 'ms');
@@ -95,12 +98,23 @@ if (res.appFirstViewMs) {
   console.log('  → store load paid ONCE at startup: ' + fmt(res.appFirstViewMs - w) + 'ms never paid again');
 }
 console.log('  text bytes  ' + fmt(med(res.runs.map((r) => r.bytes))) + '   lines ' + fmt(med(res.runs.map((r) => r.lines))));
-console.log('\n=== MATCH phases (median, ms) — COLD FULL vs WARM (one point added) ===');
-console.log('              cold_full   warm');
-for (const k of ['kernel', 'parse', 'render', 'total']) {
-  const c = med(res.matchCold.map((r) => r[k]));
-  const w = res.matchWarm?.length ? med(res.matchWarm.map((r) => r[k])) : null;
-  console.log(`  ${k.padEnd(10)} ${fmt(c)}  ${w === null ? '     -' : fmt(w)}`);
+if (res.warmMatch) {
+  console.log('\n=== C0 · WORKING-SET WARMUP (match) — the cost of growing wasm memory ===');
+  console.log('   run     ms   wasmMB  grew?');
+  for (const [i, r] of res.warmMatch.entries())
+    console.log(`   ${String(i).padStart(3)} ${String(Math.round(r.ms)).padStart(6)}   ${String(r.wasmMB).padStart(6)}  ${r.grew ? 'yes' : 'no (plateau)'}`);
+  console.log('   → a session\'s FIRST matches are the slowest: each memory.grow can copy the whole');
+  console.log('     linear memory. Real user cost, not noise — measurement below starts after this.');
+}
+console.log('\n  raw match_cold kernel per run: ' + res.matchCold.map((r) => Math.round(r.kernel)).join(', '));
+console.log('  raw match_warm kernel per run: ' + (res.matchWarm || []).map((r) => Math.round(r.kernel)).join(', '));
+console.log('\n=== MATCH COLD FULL — same command x' + res.matchCold.length + ' (ms) ===');
+console.log('             median   min–max   spread');
+for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchCold.map((r) => r[k]));
+if (res.matchWarm?.length) {
+  console.log('\n=== MATCH WARM (one point added) — x' + res.matchWarm.length + ' (ms) ===');
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchWarm.map((r) => r[k]));
 }
 if (res.matchWarm?.length) {
   const c = med(res.matchCold.map((r) => r.kernel)), w = med(res.matchWarm.map((r) => r.kernel));
@@ -124,6 +138,7 @@ if (res.stats) {
   console.log('  store fetches: ' + sl + ' for ' + res.stats.commands + ' commands  ' +
               (sl <= 2 ? '✅ each store loaded ONCE (step 6)' : '❌ ' + sl + ' loads — the session is re-decoding'));
   console.log('    (pre-step-6 this was 2 per command: every click re-decoded a 20MB image)');
+  if (res.stats.wasmBytes) console.log('  wasm memory: ' + (res.stats.wasmBytes / 1048576).toFixed(1) + ' MB working set');
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');
