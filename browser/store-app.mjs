@@ -122,18 +122,37 @@ window.__perfHooks = {
     await new Promise((r) => setTimeout(r, 50));
     return { kind, total, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
-  async timedMatch(pts) {
-    const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
-    const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
-    const t1 = performance.now();
-    map.loadMatch(text);
-    const t2 = performance.now();
-    map.render();
-    const t3 = performance.now();
-    return { kernel: t1 - t0, parse: t2 - t1, render: t3 - t2, total: t3 - t0, bytes: text.length };
+  // A COLD FULL match: a fresh sketch, matched from scratch. This is the OUTLIER — a first click, or a
+  // sketch leaving the built corridor. Named for what it is: an earlier profiler called this "match" and
+  // so measured the outlier as if it were the common case.
+  async matchColdFull(pts) {
+    return timeMatch(pts);
+  },
+  // A WARM match: the interaction users actually perform — one more point on an existing sketch. Only
+  // the edited window changed, so it SHOULD cost ~one window (server.loft lands 40–68 ms via
+  // covered() + match_incremental). Today the app re-matches the whole sketch from scratch, so this is
+  // expected to ≈ matchColdFull — that equality IS the bug (PLAN-PERF §1), and it is the number
+  // steps 6–8 must move.
+  async matchWarm(pts) {
+    await timeMatch(pts);                                  // click 1..n — establish the sketch
+    const extra = pts[pts.length - 1];
+    const grown = [...pts, [extra[0] + 0.004, extra[1] + 0.004]];   // click n+1 — add ONE point
+    return timeMatch(grown);                               // time only the incremental edit
   },
 };
+
+// Shared body for the two match probes above.
+async function timeMatch(pts) {
+  const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
+  const t0 = performance.now();
+  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+  const t1 = performance.now();
+  map.loadMatch(text);
+  const t2 = performance.now();
+  map.render();
+  const t3 = performance.now();
+  return { kernel: t1 - t0, parse: t2 - t1, render: t3 - t2, total: t3 - t0, bytes: text.length, pts: pts.length };
+}
 
 // Test hook: drive a match programmatically (headless gate), given [[lat,lon],…].
 window.__match = async (pts) => {

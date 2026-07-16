@@ -55,10 +55,10 @@ const probe = `(async () => {
   out.decodeBoth = []; out.decodeRoads = [];
   if (K.timedDecodeBoth)  for (let i = 0; i < 3; i++) out.decodeBoth.push(await K.timedDecodeBoth());
   if (K.timedDecodeRoads) for (let i = 0; i < 3; i++) out.decodeRoads.push(await K.timedDecodeRoads());
-  out.matchRuns = [];
-  for (let i = 0; i < 2; i++) {
-    out.matchRuns.push(await K.timedMatch([[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]]));
-  }
+  const SKETCH = [[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]];
+  out.matchCold = []; out.matchWarm = [];
+  for (let i = 0; i < 2; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
+  if (K.matchWarm) for (let i = 0; i < 2; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.block = [];
   if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
   return out;
@@ -83,17 +83,25 @@ for (const k of ['kernel', 'parse', 'render', 'total']) {
   console.log(`  ${k.padEnd(10)} ${fmt(med(res.runs.map((r) => r[k])))}`);
 }
 console.log('  text bytes  ' + fmt(med(res.runs.map((r) => r.bytes))) + '   lines ' + fmt(med(res.runs.map((r) => r.lines))));
-console.log('\n=== MATCH phases (median of ' + res.matchRuns.length + ' runs, ms) ===');
+console.log('\n=== MATCH phases (median, ms) — COLD FULL vs WARM (one point added) ===');
+console.log('              cold_full   warm');
 for (const k of ['kernel', 'parse', 'render', 'total']) {
-  console.log(`  ${k.padEnd(10)} ${fmt(med(res.matchRuns.map((r) => r[k])))}`);
+  const c = med(res.matchCold.map((r) => r[k]));
+  const w = res.matchWarm?.length ? med(res.matchWarm.map((r) => r[k])) : null;
+  console.log(`  ${k.padEnd(10)} ${fmt(c)}  ${w === null ? '     -' : fmt(w)}`);
 }
-console.log('  text bytes  ' + fmt(med(res.matchRuns.map((r) => r.bytes))));
+if (res.matchWarm?.length) {
+  const c = med(res.matchCold.map((r) => r.kernel)), w = med(res.matchWarm.map((r) => r.kernel));
+  console.log('  ratio warm/cold  ' + (w / c).toFixed(2) + 'x');
+  console.log('  → warm ≈ cold means the app re-matches the WHOLE sketch when one point changed');
+  console.log('    (PLAN-PERF §1). server.loft does this incrementally in 40-68ms. Steps 6-8 move it.');
+}
 if (globalThis.__db) {
   const db = globalThis.__db, dr = globalThis.__dr;
-  const vk = med(res.runs.map((r) => r.kernel)), mk = med(res.matchRuns.map((r) => r.kernel));
+  const vk = med(res.runs.map((r) => r.kernel)), mk = med(res.matchCold.map((r) => r.kernel));
   console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
-  console.log('  match: decode(roads)' + fmt(dr) + ' + compute   ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
+  console.log('  match_cold_full: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');
