@@ -6,12 +6,16 @@
 // argv, so it loads the two stores straight from a URL with `store_load_url_trusted` (the fetch is
 // bridged to JS `fetch()` in wasm) and takes its command over the host_input()/println channel.
 //
-// `loft_start` rebuilds fresh state each call, so re-matching per sketch edit is another call with a new
-// blob; the browser HTTP-caches the store, so the refetch is a decode, not a download. (store_load_url
-// is --html-only — it does NOT compile to --native-wasm/WASI, which is why this is a separate file from
-// the path-loading `basemap_kernel.loft`.)
+// `main` is a COMMAND LOOP, reading one blob per pass. Today JS still pushes one blob per `loft_start`,
+// so it runs a single pass and returns — but the loop is the seam the session work goes through
+// (PLAN-PERF §0 steps 5–8): a `main` that never returns is a `loft_start` that never rebuilds the
+// stores, so the decoded stores, the Graph and the MatchState survive across clicks instead of being
+// rebuilt for each. `tools/loop_probe.sh` proves loft can hold that state and still yield the frame.
+// (store_load_url is --html-only — it does NOT compile to --native-wasm/WASI, which is why this is a
+// separate file from the path-loading `basemap_kernel.loft`.)
 //
-// Input framing — one host_input() blob, newline-separated (JS sets globalThis.loftInput before loft_start):
+// Input framing — one host_input() blob per command, newline-separated (JS sets globalThis.loftInput
+// before loft_start; step 5 adds loftPush for subsequent commands):
 //   line 0: <layout.store URL>
 //   line 1: <roads.store URL>
 //   line 2: view | match
@@ -24,22 +28,36 @@ use map_kernel::(do_view_bbox, do_match, parse_sketch);
 use basemap::(PTile);
 use routing_kernel::(TTile);
 
+// The command loop. Today JS pushes exactly one blob per `loft_start`, so this runs a single pass and
+// then returns on the empty read — byte-identical behaviour to the one-shot form it replaces. It is a
+// loop because the loads and the state they produce are about to be hoisted ABOVE it (PLAN-PERF §0
+// steps 6–8): once `main` no longer returns between commands, `loft_start` cannot rebuild the stores,
+// and the Graph/MatchState survive from one click to the next. Structure first, behaviour later.
+//
+// No `frame_yield()` here yet: yielding pulls in the `loft_web.ws_yield` host import, which the page's
+// shim does not provide until it drives the loop (step 5). Until then the empty read means "JS is done
+// with this call", not "wait for more".
 fn main() {
-  lines = host_input().split('\n');
-  layout_url = lines[0] ?? "";
-  roads_url  = lines[1] ?? "";
-  cmd        = lines[2] ?? "view";
-  arg3       = lines[3] ?? "";                    // bbox (view) or sketch (match)
-  profile    = lines[4] ?? "cycling_road";
+  while true {
+    blob = host_input();
+    if blob == "" { return; }                     // no (further) command this call — step 5 makes this wait instead
 
-  roads: hash<TTile[tkey]> = [];
-  if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
+    lines = blob.split('\n');
+    layout_url = lines[0] ?? "";
+    roads_url  = lines[1] ?? "";
+    cmd        = lines[2] ?? "view";
+    arg3       = lines[3] ?? "";                  // bbox (view) or sketch (match)
+    profile    = lines[4] ?? "cycling_road";
 
-  if cmd == "match" {
-    do_match(roads, parse_sketch(arg3), profile);
-  } else {
-    layout: hash<PTile[tkey]> = [];
-    if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
-    do_view_bbox(layout, roads, arg3);
+    roads: hash<TTile[tkey]> = [];
+    if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
+
+    if cmd == "match" {
+      do_match(roads, parse_sketch(arg3), profile);
+    } else {
+      layout: hash<PTile[tkey]> = [];
+      if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
+      do_view_bbox(layout, roads, arg3);
+    }
   }
 }
