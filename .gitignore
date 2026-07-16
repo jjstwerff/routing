@@ -46,3 +46,6 @@ client/basemap/fixtures/*_pois.json
 # GitHub Pages build output (loft build → _site) — regenerable, not committed.
 _site/
 .loft/
+
+# imaging round-trip test artefacts — each run re-creates them (lib/imaging/tests/15-regression.loft).
+lib/imaging/tests/_tmp_*.png
