@@ -12,6 +12,17 @@ pub struct GeoPoint {
   const lon: float,
 }
 
+// Discharge sentinel for an UNREACHABLE `v[i]` null. Indexing is fallible under @PLN25, so `pts[i]`
+// types `GeoPoint?` even where the index is provably in range; passing one to a `GeoPoint` parameter
+// warns, and `?? point_none()` discharges it. EVERY use below sits behind a bound the surrounding code
+// establishes (a loop condition, an early return, a len() check), so point_none() is never actually
+// taken — it exists to name that fact, not to stand in for a real coordinate. Do NOT use it as a
+// fallback for an index that CAN be out of range: (0,0) is a real place (the Gulf of Guinea), so a
+// wrong bound would silently route through it rather than fail. Guard such a read with `if p { … }`.
+// A fn, not a constant: a top-level struct CONSTANT as a `??` fallback miscompiles under --native
+// (rustc E0308 "expected DbRef, found ()") while passing on the interpreter — see docs/loft-feedback.md.
+fn point_none() -> GeoPoint { GeoPoint { lat: 0.0, lon: 0.0 } }
+
 // WGS84 ellipsoid — the ellipsoidal length upgrade (DESIGN §5, deferred from step 7; replaces the
 // spherical haversine, which ran ~0.65 m short per km at 52°N). The client's geo.js implements
 // the SAME Vincenty inverse, so the instant JS length and the loft length still agree.
@@ -122,9 +133,11 @@ pub fn bounds(pts: vector<GeoPoint>, margin_m: float) -> BBox {
     if p.lon < min_lon { min_lon = p.lon; }
     if p.lon > max_lon { max_lon = p.lon; }
   }
-  d_lat = margin_m / 111320.0;                                  // ~metres per degree latitude
+  d_lat = margin_m / 111320.0;                                  // ~metres per degree latitude (÷ constant: not fallible)
   mid = (min_lat + max_lat) / 2.0;
-  d_lon = margin_m / (111320.0 * cos(mid * PI / 180.0));        // longitude shrinks with latitude
+  // ÷-by-a-variable is fallible under @PLN25 (→ float?); cos(mid) ≠ 0 at any real latitude (|lat| < 90),
+  // so the null never occurs and `?? 0.0` discharges it, value unchanged.
+  d_lon = margin_m / (111320.0 * cos(mid * PI / 180.0)) ?? 0.0; // longitude shrinks with latitude
   BBox {
     min_lat: min_lat - d_lat, min_lon: min_lon - d_lon,
     max_lat: max_lat + d_lat, max_lon: max_lon + d_lon,
@@ -168,7 +181,9 @@ CORRIDOR_MAX_M = 200.0;   // cap: bounds the fetch; a very coarse long route is 
 pub fn corridor_margin(pts: vector<GeoPoint>) -> float {
   nseg = len(pts) - 1;
   if nseg < 1 { return CORRIDOR_MIN_M; }
-  m = (path_length_m(pts) / (nseg as float)) * CORRIDOR_SEG_FRAC;
+  // ÷ is fallible under @PLN25 (→ float?); the `nseg < 1` return above makes nseg ≥ 1, so the null
+  // never occurs and `?? 0.0` discharges it, value unchanged.
+  m = (path_length_m(pts) / (nseg as float) ?? 0.0) * CORRIDOR_SEG_FRAC;
   if m < CORRIDOR_MIN_M { m = CORRIDOR_MIN_M; }
   if m > CORRIDOR_MAX_M { m = CORRIDOR_MAX_M; }
   m
@@ -433,7 +448,9 @@ fn point_seg_dt(plat: float, plon: float, alat: float, alon: float, blat: float,
   dy = by - ay;
   l2 = dx * dx + dy * dy;
   if l2 == 0.0 { return SegDT { d: sqrt(ax * ax + ay * ay), t: 0.0 }; }
-  t = -(ax * dx + ay * dy) / l2;
+  // ÷ is fallible under @PLN25 (→ float?); the `l2 == 0.0` return above makes l2 ≠ 0, so the null never
+  // occurs and `?? 0.0` discharges it. Left nullable, `t` would poison cx/cy into sqrt below.
+  t = -(ax * dx + ay * dy) / l2 ?? 0.0;
   if t < 0.0 { t = 0.0; }
   if t > 1.0 { t = 1.0; }
   cx = ax + t * dx;
@@ -454,7 +471,7 @@ fn seg_dev_kx(plat: float, plon: float, alat: float, alon: float, blat: float, b
   bx = (blon - plon) * kx; by = (blat - plat) * ky;
   dx = bx - ax; dy = by - ay; l2 = dx * dx + dy * dy;
   if l2 == 0.0 { return sqrt(ax * ax + ay * ay); }
-  t = -(ax * dx + ay * dy) / l2;
+  t = -(ax * dx + ay * dy) / l2 ?? 0.0;   // ÷ fallible under @PLN25; l2 ≠ 0 here (guarded above)
   if t < 0.0 { t = 0.0; }
   if t > 1.0 { t = 1.0; }
   cx = ax + t * dx; cy = ay + t * dy;
@@ -819,8 +836,10 @@ fn remove_spurs(pts: vector<GeoPoint>, names: vector<text>) -> vector<GeoPoint> 
       pal = true;
       half = (sz - hit) / 2;
       for k in 1..(half + 1) {
-        l = out[hit + k];
-        r = out[sz - k];
+        // k ≤ half = (sz-hit)/2 and hit < sz, so hit+k and sz-k both land in [hit, sz-1] — in range,
+        // point_none() never taken.
+        l = out[hit + k] ?? point_none();
+        r = out[sz - k] ?? point_none();
         ln = onm[hit + k] ?? "";
         rn = onm[sz - k] ?? "";
         dn = ln != "" && rn != "" && ln != rn;
@@ -1020,13 +1039,15 @@ pub struct MatchState {
 // the route PAST it (A→C, with A/C its neighbours) at the node closest to the drawn point.
 fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer) -> integer {
   m = len(ct);
-  if i <= 0 || i >= m - 1 { return nearest_node1(g, ct[i]); }
-  a = nearest_node1(g, ct[i - 1]);
+  // Callers walk i over 0..len(ct), so ct[i] is in range on both sides of this guard and ct[i-1] is
+  // reached only when i > 0 — point_none() is never taken.
+  if i <= 0 || i >= m - 1 { return nearest_node1(g, ct[i] ?? point_none()); }
+  a = nearest_node1(g, ct[i - 1] ?? point_none());
   ctgt = nearest_nodes(g, ct[i + 1].lat, ct[i + 1].lon);
   win: vector<GeoPoint> = [ct[i - 1], ct[i], ct[i + 1]];
   path = dijkstra_win(g, a, ctgt, win, ec, sc, gen);
-  bp = closest_node_on_path(g, path, ct[i]);
-  if bp < 0 { bp = nearest_node1(g, ct[i]); }
+  bp = closest_node_on_path(g, path, ct[i] ?? point_none());
+  if bp < 0 { bp = nearest_node1(g, ct[i] ?? point_none()); }
   bp
 }
 
@@ -1131,7 +1152,8 @@ pub fn match_quality(st: MatchState, trace: vector<GeoPoint>, mr: MatchResult) -
   if np > 0 { dmean = dsum / (np as float) ?? 0.0; }
   bm = 0.0;
   bi = 0;
-  while bi + 1 < len(mr.bseg) { bm = bm + geodesic_m(mr.bseg[bi], mr.bseg[bi + 1]); bi = bi + 2; }
+  // bi + 1 < len(bseg) bounds both reads, so point_none() is never taken.
+  while bi + 1 < len(mr.bseg) { bm = bm + geodesic_m(mr.bseg[bi] ?? point_none(), mr.bseg[bi + 1] ?? point_none()); bi = bi + 2; }
   MatchQuality { dev_max: dmax, dev_mean: dmean, bridged_m: bm, len_m: lenm, pen_m: penm, class_m: cm }
 }
 
@@ -1160,7 +1182,8 @@ fn point_eq(a: GeoPoint, b: GeoPoint) -> boolean { a.lat == b.lat && a.lon == b.
 fn common_prefix(a: vector<GeoPoint>, b: vector<GeoPoint>) -> integer {
   n = len(a); if len(b) < n { n = len(b); }
   i = 0;
-  while i < n && point_eq(a[i], b[i]) { i = i + 1; }
+  // i < n = min(len(a), len(b)), so both reads are in range and point_none() is never taken.
+  while i < n && point_eq(a[i] ?? point_none(), b[i] ?? point_none()) { i = i + 1; }
   i
 }
 // Count of identical trailing points shared by two traces, not overlapping the prefix `p`.
@@ -1168,7 +1191,9 @@ fn common_suffix(a: vector<GeoPoint>, b: vector<GeoPoint>, p: integer) -> intege
   la = len(a); lb = len(b);
   maxs = la - p; if lb - p < maxs { maxs = lb - p; }
   i = 0;
-  while i < maxs && point_eq(a[la - 1 - i], b[lb - 1 - i]) { i = i + 1; }
+  // i < maxs = min(la, lb) - p, so la-1-i ≥ p ≥ 0 and lb-1-i ≥ p ≥ 0: both reads are in range and
+  // point_none() is never taken.
+  while i < maxs && point_eq(a[la - 1 - i] ?? point_none(), b[lb - 1 - i] ?? point_none()) { i = i + 1; }
   i
 }
 
@@ -1263,7 +1288,8 @@ pub fn is_loop(trace: vector<GeoPoint>) -> boolean {
   n = len(trace);
   if n < 3 { return false; }
   avg = path_length_m(trace) / ((n - 1) as float);
-  avg > 0.0 && geodesic_m(trace[0], trace[n - 1]) < avg
+  // n ≥ 3 (guarded above), so trace[0] and trace[n-1] are in range — point_none() is never taken.
+  avg > 0.0 && geodesic_m(trace[0] ?? point_none(), trace[n - 1] ?? point_none()) < avg
 }
 
 // The matched route (+ bridge count), closed when the sketch reads as a loop. A loop appends the START
@@ -1309,20 +1335,26 @@ pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> te
     ei = -1;
     if a >= 0 && b >= 0 { ei = dbg_find_edge(g, a, b); }
     if ei >= 0 {
+      // `ei >= 0` is load-bearing, NOT redundant with the `if e` below: a NEGATIVE index reads from the
+      // END of the vector (g.edges[-1] is the last edge), it does not yield null — so dropping this test
+      // would silently report the wrong edge for the no-direct-edge case. `if e` then discharges the
+      // in-range read for edge_surcharge/dev_weight, which take a non-null GEdge; it never fails here.
       e = g.edges[ei];
-      mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
-      mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
-      dev = point_trace_m(mlat, mlon, trace);
-      pen = way_penalty(profile, e.hw, e.surface, e.tracktype);
-      if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
-      sur = edge_surcharge(profile, e);
-      cpm = 1.0 + dev_weight(profile, e) * dev + pen;
-      if cpm < 0.1 { cpm = 0.1; }
-      cpm = cpm + sur;
-      total = total + cpm * e.length;
-      tier = "-   ";
-      if sur >= ILLEGAL_PER_M { tier = "ILL "; } else if sur > 0.0 { tier = "walk"; }
-      out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {e.hw} / {dash(e.svc)} / {dash(e.access)} / {dash(e.oneway)} / {dash(e.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
+      if e {
+        mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
+        mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
+        dev = point_trace_m(mlat, mlon, trace);
+        pen = way_penalty(profile, e.hw, e.surface, e.tracktype);
+        if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
+        sur = edge_surcharge(profile, e);
+        cpm = 1.0 + dev_weight(profile, e) * dev + pen;
+        if cpm < 0.1 { cpm = 0.1; }
+        cpm = cpm + sur;
+        total = total + cpm * e.length;
+        tier = "-   ";
+        if sur >= ILLEGAL_PER_M { tier = "ILL "; } else if sur > 0.0 { tier = "walk"; }
+        out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {e.hw} / {dash(e.svc)} / {dash(e.access)} / {dash(e.oneway)} / {dash(e.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
+      }
     } else {
       out = out + "{d0:6.0}  {seglen:4.0}       -      -    -          -   (jump — no direct edge)\n";
     }
@@ -1451,7 +1483,8 @@ pub fn clean_track(points: vector<GeoPoint>, epsilon_m: float, min_sep_m: float)
     if len(collapsed) == 0 {
       collapsed += [points[i]];
     } else {
-      last = collapsed[len(collapsed) - 1];
+      // len(collapsed) > 0 in this branch, so the last read is in range — point_none() is never taken.
+      last = collapsed[len(collapsed) - 1] ?? point_none();
       if geodesic_m(last, points[i]) >= min_sep_m { collapsed += [points[i]]; }
     }
   }
@@ -1493,7 +1526,11 @@ pub fn tile_xf(lon: float, zoom: integer) -> float {
 // Fractional slippy-map tile row for a latitude (y grows SOUTH — Web-Mercator).
 pub fn tile_yf(lat: float, zoom: integer) -> float {
   lr = lat * PI / 180.0;
-  (1.0 - ln(tan(lr) + 1.0 / cos(lr)) / PI) / 2.0 * pow(2.0, zoom as float)
+  // ÷-by-a-variable and ln are fallible under @PLN25 (÷0 / ln of ≤0 → null). At any real latitude
+  // (|lat| < 90) cos(lr) > 0, and sec + tan(lr) > 0 there too, so neither null occurs — `?? 0.0`
+  // discharges both, value unchanged.
+  sec = 1.0 / cos(lr) ?? 0.0;
+  (1.0 - (ln(tan(lr) + sec) ?? 0.0) / PI) / 2.0 * pow(2.0, zoom as float)
 }
 
 // The "z/x/y" key of the tile containing (lat, lon).
@@ -1587,7 +1624,9 @@ pub fn elev_profile(pts: vector<GeoPoint>, tiles: vector<TileHeights>, zoom: int
     while seg_start_d + seg_len < dt && seg < len(pts) - 1 {
       seg_start_d += seg_len;
       seg += 1;
-      seg_len = geodesic_m(pts[seg - 1], pts[seg]);
+      // seg < len(pts)-1 before the increment, so seg ≤ len(pts)-1 here and both reads are in range —
+      // point_none() is never taken.
+      seg_len = geodesic_m(pts[seg - 1] ?? point_none(), pts[seg] ?? point_none());
     }
     f = 0.0;
     if seg_len > 0.0 { f = (dt - seg_start_d) / seg_len ?? 0.0; }

@@ -2,6 +2,12 @@
 //   loft --tests lib/routing_kernel/tests/roundtrip.loft --lib lib
 use routing_kernel::(GeoPoint, Way, build_graph, match_route_closed, is_loop, geodesic_m);
 
+// Discharge sentinel for an in-range `v[i]` (indexing types GeoPoint? under @PLN25). Every use below
+// is preceded by an assert that bounds the index, so nowhere() is never taken — if a route ever came
+// back short, that assert reports it rather than this silently standing in for a real point.
+// A fn, not a constant: a struct constant as a `??` fallback miscompiles under --native (E0308).
+fn nowhere() -> GeoPoint { GeoPoint { lat: 0.0, lon: 0.0 } }
+
 // The geometric decision: start/finish closer than the AVERAGE gap between drawn points ⇒ a loop.
 // Self-scaling — no ratio, no absolute-metre threshold; it tracks how coarsely the user drew.
 fn test_is_loop() {
@@ -51,7 +57,8 @@ fn test_closure_toggles() {
   ];
   closed = match_route_closed(g, closed_trace, "walking_paved");
   clast = len(closed) - 1;
-  ret = geodesic_m(closed[clast], closed[0]);
+  assert(clast >= 1, "closed loop has at least 2 points, got {len(closed)}");
+  ret = geodesic_m(closed[clast] ?? nowhere(), closed[0] ?? nowhere());
   assert(ret < 60.0, "closed loop returns near the start ({ret:1.0} m)");
   assert(has_lat(closed, 52.000) && has_lat(closed, 52.001), "loop uses both the top and bottom streets");
 }
@@ -77,9 +84,13 @@ fn test_imprecise_loop_closure() {
   assert(is_loop(trace), "imprecise near-closure reads as a loop");
   r = match_route_closed(g, trace, "cycling_road");
   last = len(r) - 1;
-  assert(geodesic_m(r[0], r[last]) < 5.0, "route closes cleanly at the start ({geodesic_m(r[0], r[last]):1.0} m)");
+  assert(last >= 1, "closed route has at least 2 points, got {len(r)}");
+  r0 = r[0] ?? nowhere();
+  rlast = r[last] ?? nowhere();
+  gap = geodesic_m(r0, rlast);
+  assert(gap < 5.0, "route closes cleanly at the start ({gap:1.0} m)");
   c0 = GeoPoint { lat: 52.000, lon: 5.000 };
-  assert(geodesic_m(r[0], c0) < 5.0 && geodesic_m(r[last], c0) < 5.0, "both endpoints snap to the corner, absorbing the tap imprecision");
+  assert(geodesic_m(r0, c0) < 5.0 && geodesic_m(rlast, c0) < 5.0, "both endpoints snap to the corner, absorbing the tap imprecision");
 }
 
 fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
