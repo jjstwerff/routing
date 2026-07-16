@@ -43,7 +43,7 @@ export async function createKernel(wasmUrl) {
   const enc = new TextEncoder(), dec = new TextDecoder();
   const inQ = [];
   const ctrl = { ac: null, httpBytes: null };
-  let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0;
+  let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
 
   // Resolve the in-flight command once its terminator lands. Checked whenever loft suspends (it prints
@@ -69,6 +69,7 @@ export async function createKernel(wasmUrl) {
       loft_host_http_get: (ptr, len) => {
         if (ctrl.ac && ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return ctrl.httpBytes ? ctrl.httpBytes.length : 0xFFFFFFFF; }
         const url = dec.decode(new Uint8Array(mem.buffer, ptr, len));
+        storeLoads++;              // counted on the UNWIND pass only — the rewind above returns early
         ctrl.httpBytes = null;
         const back = (b) => { ctrl.httpBytes = b; wake('fetch'); };
         fetch(url).then(async (res) => back(res.ok ? new Uint8Array(await res.arrayBuffer()) : null))
@@ -108,9 +109,13 @@ export async function createKernel(wasmUrl) {
       else wake('yield');                                                                // idle → hand it the command now, don't wait a frame
     });
   }
+  // `storeLoads` counts actual store fetches. It is the variance-immune proof of the session: no matter
+  // how many commands run, a session loads each store ONCE (2 total: layout + roads). Timing cannot show
+  // this — the run-to-run spread is larger than the load itself (PLAN-PERF §5 C0) — but a count can.
+  //
   // `starts` is the load-bearing invariant of this driver, so it is observable rather than argued:
   // loft_start must be entered EXACTLY ONCE for a session, no matter how many commands run through it.
   // If it ever exceeds 1, loft is no longer owning the loop and the store/Graph/MatchState a session
   // holds (steps 6-8) would be silently rebuilt. tools/map_profile.sh asserts it.
-  return { runKernel, stats: () => ({ starts, commands }) };
+  return { runKernel, stats: () => ({ starts, commands, storeLoads }) };
 }

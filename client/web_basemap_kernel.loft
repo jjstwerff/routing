@@ -44,13 +44,23 @@ EOR = "#EOR";
 // shim does not provide until it drives the loop (step 5). Until then the empty read means "JS is done
 // with this call", not "wait for more".
 fn main() {
+  // SESSION STATE — declared above the loop, so it outlives the command that filled it. Inside the
+  // loop these declarations would re-initialise to `[]` on every pass, which is the stateless app in
+  // miniature. `main` never returns, so loft_start never re-enters and never rebuilds them.
+  roads: hash<TTile[tkey]> = [];
+  layout: hash<PTile[tkey]> = [];
+  // Which URL each store currently holds ("" = empty). The URLs arrive IN the command, so the loads
+  // cannot literally precede the loop — this is the equivalent: load on first use, reuse after, and
+  // reload only if the command names a different region. Re-validating a static 20 MB image on every
+  // pan was ~341 ms of the 1121 ms pan (PLAN-PERF §2).
+  roads_at  = "";
+  layout_at = "";
   while true {
     blob = host_input();
     if blob == "" {
       // Gather-until-enough: no command queued. Hand the frame back and poll again — the load-bearing
       // rule is that "blocking" yields, never hard-spins, so the page keeps painting while we wait
-      // (BROWSER_INTEROP.md; tools/loop_probe.sh proves the shape). `main` therefore never returns,
-      // which is the whole point: loft_start cannot rebuild the stores it never re-enters.
+      // (BROWSER_INTEROP.md; tools/loop_probe.sh proves the shape).
       frame_yield();
     } else {
       lines = blob.split('\n');
@@ -60,20 +70,31 @@ fn main() {
       arg3       = lines[3] ?? "";                // bbox (view) or sketch (match)
       profile    = lines[4] ?? "cycling_road";
 
-      roads: hash<TTile[tkey]> = [];
-      if store_load_url_trusted(roads, roads_url) {
+      ok = true;
+      if roads_url != roads_at {
+        if store_load_url_trusted(roads, roads_url) {
+          roads_at = roads_url;
+        } else {
+          println("ERR roads store_load_url failed: {roads_url}");
+          roads_at = "";                          // failed load leaves the store unusable — don't cache it
+          ok = false;
+        }
+      }
+      if ok {
         if cmd == "match" {
           do_match(roads, parse_sketch(arg3), profile);
         } else {
-          layout: hash<PTile[tkey]> = [];
-          if store_load_url_trusted(layout, layout_url) {
-            do_view_bbox(layout, roads, arg3);
-          } else {
-            println("ERR layout store_load_url failed: {layout_url}");
+          if layout_url != layout_at {
+            if store_load_url_trusted(layout, layout_url) {
+              layout_at = layout_url;
+            } else {
+              println("ERR layout store_load_url failed: {layout_url}");
+              layout_at = "";
+              ok = false;
+            }
           }
+          if ok { do_view_bbox(layout, roads, arg3); }
         }
-      } else {
-        println("ERR roads store_load_url failed: {roads_url}");
       }
       // Terminate the response on EVERY path, errors included — a host waiting on this marker must
       // never be left hanging by a failed load.

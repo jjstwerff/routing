@@ -60,6 +60,7 @@ const probe = `(async () => {
   for (let i = 0; i < 2; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
   if (K.matchWarm) for (let i = 0; i < 2; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.stats = K.kernelStats ? K.kernelStats() : null;
+  out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.block = [];
   if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
   return out;
@@ -73,15 +74,25 @@ console.log('\n########## CPU throttle: ' + RATE + 'x ' + (RATE > 1 ? '(≈ phon
 if (res.decodeBoth?.length) {
   const db = med(res.decodeBoth.map((r) => r.kernel));
   const dr = med(res.decodeRoads.map((r) => r.kernel));
-  console.log('\n=== STORE DECODE per kernel call (degenerate arg ⇒ command work ≈ 0), ms ===');
-  console.log('  layout+roads (what `view` loads) ' + fmt(db));
-  console.log('  roads only   (what `match` loads)' + fmt(dr));
-  console.log('  ⇒ layout store alone            ' + fmt(db - dr) + '   (20MB, VIEW-ONLY — match never loads it)');
+  console.log('\n=== degenerate-arg probes (ms) — NOTE: no longer a decode measurement ===');
+  console.log('  empty-bbox view  ' + fmt(db) + '   = the full-region tile scan (1089 tiles, ring_hits over ~230k');
+  console.log('                        features) emitting nothing — the session already holds the store.');
+  console.log('  degenerate match ' + fmt(dr) + '   = a cached roads store + ~no compute.');
+  console.log('  → the store load is now visible ONLY as cold-vs-warm below, not here.');
   globalThis.__db = db; globalThis.__dr = dr;
 }
-console.log('\n=== VIEW phases (median of ' + res.runs.length + ' runs, ms) ===');
+console.log('\n=== VIEW phases — run 1 (COLD: pays the store load) vs later (WARM: session reuse) ===');
+console.log('                cold    warm');
 for (const k of ['kernel', 'parse', 'render', 'total']) {
-  console.log(`  ${k.padEnd(10)} ${fmt(med(res.runs.map((r) => r[k])))}`);
+  const c = res.runs[0][k];
+  const w = res.runs.length > 1 ? med(res.runs.slice(1).map((r) => r[k])) : null;
+  console.log(`  ${k.padEnd(10)} ${fmt(c)}  ${w === null ? '     -' : fmt(w)}`);
+}
+if (res.appFirstViewMs) {
+  const w = med(res.runs.map((r) => r.total));
+  console.log('\n  app FIRST view (the only truly cold one — pays the session store load): ' + fmt(res.appFirstViewMs) + 'ms');
+  console.log('  every later view (session reuses the store):                            ' + fmt(w) + 'ms');
+  console.log('  → store load paid ONCE at startup: ' + fmt(res.appFirstViewMs - w) + 'ms never paid again');
 }
 console.log('  text bytes  ' + fmt(med(res.runs.map((r) => r.bytes))) + '   lines ' + fmt(med(res.runs.map((r) => r.lines))));
 console.log('\n=== MATCH phases (median, ms) — COLD FULL vs WARM (one point added) ===');
@@ -109,6 +120,10 @@ if (res.stats) {
   console.log('\n=== SESSION (PLAN-PERF step 5: loft owns the loop) ===');
   console.log('  loft_start entered ' + res.stats.starts + 'x for ' + res.stats.commands + ' commands  ' +
               (ok ? '✅ one session' : '❌ NOT a session — state cannot survive'));
+  const sl = res.stats.storeLoads;
+  console.log('  store fetches: ' + sl + ' for ' + res.stats.commands + ' commands  ' +
+              (sl <= 2 ? '✅ each store loaded ONCE (step 6)' : '❌ ' + sl + ' loads — the session is re-decoding'));
+  console.log('    (pre-step-6 this was 2 per command: every click re-decoded a 20MB image)');
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');

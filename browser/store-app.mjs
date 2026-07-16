@@ -45,7 +45,11 @@ async function ensureView() {
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
-  window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum };
+  // The app's OWN first view is the only genuinely cold one — it pays the session's store load. Every
+  // __perfHooks.timedView after it is warm, so the profiler cannot see the load unless we record it here.
+  const ms = performance.now() - t0;
+  window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum,
+                        firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms };
   busy = false;
   if (again) { again = false; ensureView(); }
 }
