@@ -862,3 +862,92 @@ maintainer's to confirm.
 > `loft install ssh@0.1.0 --refresh`, **`loft --native tools/ssh_smoke.loft` now PASSES the full smoke** —
 > auth accept+reject, shell, binary ESC round-trip, resize — so ssh_home Step 5 is unblocked. No P269. Whole
 > issue closed.
+
+---
+
+## 2026-07-16 — `@PLN40` const fields: a const field READ on the RHS of an element-store is rejected as a "reassignment"
+
+**Context.** `@PLN40` (const struct fields, `4067eb52`, now the HEAD of loft `origin/main`) landed today, and
+routing swept `const` across its six vendored libraries to dogfood it. The sweep does not compile — and the
+two failures below are why the sweep had to be **substantially rolled back** (see *Impact*).
+
+**Defect 1 — a READ is flagged as a reassignment (false positive).** Reading a struct field on the
+right-hand side of a **vector element-store** is rejected, though a read reassigns nothing:
+
+```loft
+struct E { const length: float }
+fn main() {
+  e = E { length: 4.0 };
+  cm = [0.0];
+  cm[0] = (cm[0] ?? 0.0) + e.length;   // error: cannot reassign const field 'length' of struct 'E'
+}
+```
+
+The identical expression on the RHS of a **plain** assign (`x = x + e.length`) is fine. So the trigger is
+the *element-store target*, not the read.
+
+**Defect 2 — the trigger is the STRUCT, not the field (this is the severe one).** The field actually read
+does not need to be const. Any struct carrying **≥1 const field** cannot have **ANY** of its fields read on
+the RHS of an element-store:
+
+```loft
+struct E { const zzz_first: integer, bbb_second: float }   // only zzz_first is const
+…
+cm[0] = (cm[0] ?? 0.0) + e.bbb_second;   // reads the NON-const field
+// error: cannot reassign const field 'zzz_first' of struct 'E'
+```
+
+Note the diagnostic names **`zzz_first`** — a field the statement never mentions. It appears to report the
+struct's **first** const field rather than the one referenced, which sends you looking at the wrong line
+(in routing it named `GEdge.a` while pointing at a column holding `e.b`).
+
+**Boundary matrix** (loft `origin/main` `4067eb52`; identical on `--interpret` and `--native`):
+
+| shape | verdict |
+|---|---|
+| `s.v += [x]` where `const v: vector<T>` | rejected — see the spec question below |
+| `s.v[0] = x` where `const v: vector<T>` | ok (matches LOFT.md: contents allowed) |
+| `vec[s.cf] = x` — const read as **index on the LHS** | ok |
+| `vec[i] = … + s.cf` — const read on the **RHS** | **REJECTED — defect 1** |
+| `x = x + s.cf` — same read, **plain** assign | ok |
+| `vec[i] = … + s.NONCONST` where the struct has any const field | **REJECTED — defect 2** |
+| `t = s.cf;` then `vec[i] = … + t` | ok — **workaround** (hoist to a local) |
+| *control:* same code, struct has **zero** const fields | ok — proves `const` is the trigger |
+
+The control is the point: adding a single `const` anywhere in a struct breaks every element-store that
+reads that struct, including reads of its non-const fields.
+
+**Spec question (not a bug) — is `+=` on a const collection field a rebind?** LOFT.md § Fields says const
+"freezes the field *binding*, not its contents: `const v: vector<T>` rejects `t.v = […]` but still allows
+`t.v[0] = x`." `+=` is a compound assign, so it is a rebind and is rejected. That is self-consistent, but it
+means **any `+=`-grown collection field can never be const** — which in routing is most of them
+(`EdgeCosts`'s 5 parallel arrays, `PTile`'s 5 geometry vectors, `TTile.roads/steps`, `Image.data`). If
+"append" is meant to be a contents mutation rather than a rebind, that is a language-definition decision
+worth making explicitly; today the ergonomics push `const` off exactly the set-once-then-grown fields where
+it would document the most.
+
+**Impact here.** Routing's sweep keeps `const` only on pure value structs (`GeoPoint`, `BBox`, `Coord`,
+`Way`, `Request`, `HttpResponse`, `WsEvent`, …). Rolled back to plain fields:
+- `GEdge` — set-once at build, never mutated, but `to[pa] = e.b` (`build_adj`) and `cm[c] = … + e.length`
+  (`match_quality`) trip defect 2. This is the hot path; the workaround (hoisting each read to a local)
+  would add noise to the inner loop to satisfy a false positive, so the struct stays plain.
+- `SubPath` — same shape via `cm[c] = (cm[c] ?? 0.0) + (s.class_m[c] ?? 0.0)`.
+- `EdgeCosts` / `PTile.areas…` / `TTile.roads/steps` / `Image.data` — the `+=` spec question above.
+
+Both are marked in-source with a pointer back here, so the `const` can be restored once defect 2 is fixed.
+
+**Verified.** With defects 1–2 worked around, the full routing suite is green on `origin/main`'s loft —
+kernel 39 tests (geodesic/corridor/gpx/import/loop/matcher/profiles/roundtrip/elevation) plus imaging/web,
+on **both** `--interpret` and `--native`.
+
+**Toolchain note.** The installed `/usr/local/bin/loft` was **reinstalled at 16:58 local while this was
+being written** and now carries `@PLN40`; the earlier build (09:56 UTC, predating the 11:57 UTC merge)
+rejected `const` outright with "const struct fields are not yet supported (planned — @PLAN33)". Every cell
+of the matrix above was **re-probed on the fresh installed binary and reproduces identically** — so this is
+a live defect, not an artifact of a stale toolchain. (Worth noting for the next reader: loft is a moving
+target here, and a matrix probed against one binary can be invalidated by a reinstall mid-session.)
+
+**Ask.** Fix defect 2 (and with it defect 1): a field **read** should never be treated as a write,
+whatever the enclosing statement's assignment target is; and the diagnostic should name the field actually
+referenced, not the struct's first const field. Until then `const` is unusable on any struct that feeds a
+vector element-store, which in array-of-struct code (the whole routing kernel) is most of them.
