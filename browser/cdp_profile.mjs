@@ -4,8 +4,13 @@
 // Phase profiler for the standalone store app — the measurement PLAN-PERF's design rests on.
 // Times each phase of `view` and `match` separately, so the bottleneck is attributed rather than
 // assumed: wasm-side (store decode + serialize) vs JS-side (text parse) vs render.
-//   node browser/cdp_profile.mjs <devtools host:port> <app url>
-const [dt, app] = process.argv.slice(2);
+//
+// PHONE IS THE TARGET DEVICE, and a desktop profile flatters us — worse, it can flatter the phases
+// UNEQUALLY, so the ranking itself may not survive. `rate` applies CDP CPU throttling (4–6x ≈ a
+// mid-range phone) so the design is judged on the device it ships to.
+//   node browser/cdp_profile.mjs <devtools host:port> <app url> [cpuThrottleRate]
+const [dt, app, rateArg] = process.argv.slice(2);
+const RATE = Number(rateArg || 1);
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 180000);
 
 const list = await (await fetch(`http://${dt}/json/list`)).json();
@@ -20,6 +25,7 @@ ws.addEventListener('message', (e) => {
 });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
+if (RATE > 1) await call('Emulation.setCPUThrottlingRate', { rate: RATE });
 const ev = async (x) => {
   const r = await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true });
   if (r.result?.exceptionDetails) return { __err: JSON.stringify(r.result.exceptionDetails).slice(0, 300) };
@@ -60,6 +66,7 @@ if (res?.__err) { console.log('  ERR:', res.__err); process.exit(1); }
 
 const med = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
 const fmt = (n) => String(Math.round(n)).padStart(6);
+console.log('\n########## CPU throttle: ' + RATE + 'x ' + (RATE > 1 ? '(≈ phone class)' : '(desktop)') + ' ##########');
 if (res.decodeBoth?.length) {
   const db = med(res.decodeBoth.map((r) => r.kernel));
   const dr = med(res.decodeRoads.map((r) => r.kernel));

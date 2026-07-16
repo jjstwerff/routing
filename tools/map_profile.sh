@@ -30,6 +30,6 @@ chr=$!
 sleep 4
 
 echo "== store-app phase profile =="
-node "$here/browser/cdp_profile.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html"
+node "$here/browser/cdp_profile.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" "${CPU_THROTTLE:-1}"
 rc=$?
 exit $rc

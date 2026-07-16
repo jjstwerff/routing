@@ -14,22 +14,39 @@ measurement is a guess with a table.
 ## 0. The measured baseline
 
 `tools/map_profile.sh` — headless Chromium, `_site` over HTTP, enschede stores (20 MB layout + 3.5 MB
-roads), viewport at zoom 16, medians. The decode probes use a degenerate argument (empty bbox /
-two identical points) so the command's own work is ≈0 and what remains is the store load.
+roads), viewport at zoom 16, medians. The decode probes use a degenerate argument (empty bbox / two
+identical points) so the command's own work is ≈0 and what remains is the store load.
 
-| store load (per kernel call) | ms | loaded by |
-|---|---|---|
-| roads only | **5** | `match` **and** `view` |
-| **layout alone** | **85** | **`view` ONLY — `match` never loads it** |
-| layout + roads | 90 | `view` |
+**The phone column is the one that matters.** `CPU_THROTTLE=4 tools/map_profile.sh` applies CDP CPU
+throttling ≈ a mid-range phone — the device this app is *for*.
 
-| phase | `view` (total 287 ms) | `match` (total ~1040–3100 ms, see §5) |
-|---|---|---|
-| store load | 90 ms (31%) | 5 ms (<1%) |
-| kernel serialize / compute | 124 ms (43%) | **~1000–3100 ms (99%)** |
-| JS text parse | 37 ms (13%) | 0 ms |
-| canvas render | 22 ms (8%) | 28 ms |
-| text emitted | 4.2 MB / 29k lines | 4 KB |
+| phase | `view` desktop | **`view` phone (4×)** | `match` desktop | **`match` phone (4×)** |
+|---|---|---|---|---|
+| store load | 90 (31%) | **355** | 5 (<1%) | **14** |
+| kernel serialize / compute | 124 (43%) | **544** | ~1035 (99%) | **4370** |
+| JS text parse | 37 (13%) | **157** | 0 | 2 |
+| canvas render | 22 (8%) | **76** | 28 | 95 |
+| **total** | **287 ms** | **1121 ms** | **~1040 ms** | **4481 ms** |
+| text emitted | 4.2 MB / 29k lines | same | 4 KB | same |
+
+Store load, split per command (the structural fact §1 turns on):
+
+| store load (per kernel call) | desktop | phone (4×) | loaded by |
+|---|---|---|---|
+| roads only | 5 | 14 | `match` **and** `view` |
+| **layout alone** | **85** | **341** | **`view` ONLY — `match` never loads it** |
+
+**A click costs 4.5 seconds on a phone. A pan costs 1.1 s.** That is the problem this doc exists for;
+the desktop numbers made it look like a nice-to-have.
+
+**A speculation this falsified (mine).** I expected the text path to degrade *disproportionately* on a
+phone — 29k lines split into millions of short-lived strings is allocation/GC-heavy, and mobile GC and
+memory bandwidth are weaker than mobile compute. It doesn't: parse scaled **4.2×**, serialize 4.4×,
+compute 4.2×, render 3.5× — everything moves together, so **the ranking does not reorder** and the
+design below stands unchanged. *Caveat:* CDP throttling scales CPU only; it does not model memory
+bandwidth, cache size, or a real GC. So this **weakens** the "text is disproportionately bad on mobile"
+argument without fully killing it — a real-device run (§7) is the only thing that settles it, and no
+phase below depends on that claim.
 
 ### Two premises this falsified
 
@@ -226,10 +243,24 @@ A (view: loft out of the path)  →  C (the match ladder)
 is currently arithmetic rather than evidence (§4a), and C's acceptance cannot be read off a number that
 moves 3× (§5). Measure, then move.
 
-| interaction | today (cold) | after A | after A+C |
-|---|---|---|---|
-| `view` | 287 ms | **~30 ms** | ~30 ms |
-| `match` | ~1040–3100 ms | ~1035–3095 ms | **~300 ms** (pending C2) |
+**Judge every row on the phone column.** A pan should feel instant (<100 ms) and a click should beat
+~1 s; those are the budgets, and today's phone numbers (1121 / 4481 ms) miss both by 10×+.
+
+| interaction | today **phone** | after A | after A+C | budget |
+|---|---|---|---|---|
+| `view` (pan) | **1121 ms** | **~150 ms** (render 76 + bbox filter) | ~150 ms | <100 ms — A gets close; render is then the floor |
+| `match` (click) | **4481 ms** | ~4400 ms | **~1300 ms** (pending C2) | <1 s — **C alone does not reach it** |
+
+Two consequences worth stating plainly rather than burying:
+
+1. **A very nearly finishes `view`.** Deleting loft from the view path takes a pan from 1121 → ~150 ms,
+   after which *render* (76 ms) is the floor and there is nothing left worth optimising.
+2. **C alone does not finish `match`.** PLAN-MATCH's 3× takes a click from 4481 → ~1300 ms — better,
+   still over budget on the target device. So the phone constraint says: C is necessary and **not
+   sufficient**, and the next lever after it is not more corridor-tuning but **warm/incremental
+   matching** (tier 0 — `covered()` + `match_incremental`, already ~40–68 ms on desktop) applying to
+   more clicks, i.e. making the *cold* match rare instead of merely cheaper. That is a design question
+   this doc opens and does not answer — deliberately, because C2's corpus data is what should decide it.
 
 *(Warm columns deliberately absent: B0 has to produce them. Filling them in by subtraction is exactly
 the move this doc is trying not to make.)*
@@ -242,8 +273,18 @@ rather than logging it.
 
 ## 7. Residual — what this design cannot see
 
-One viewport, one route, one machine, headless, warm HTTP cache. Not covered: **cold fetch** (the 85 ms
-is validation of a *cached* store; first load adds download), **a phone's CPU** (the target device —
-everything scales up and the ranking could reorder), **memory growth** (C0's 3× match spread suggests
-the session's history already affects cost), and **zoomed-out viewports** (where the emit re-inflates
-and A's win grows). Known-unknowns, not discovered ones — the axis list the next measurement varies.
+One viewport, one route, one machine, headless, warm HTTP cache. Still not covered:
+
+- **A real phone.** CDP throttling scales CPU only — not memory bandwidth, cache size, or GC. It is the
+  best instrument available here and it says the ranking holds (§0), but a real device is the only thing
+  that settles whether the text path degrades *disproportionately*. Cheap next step: run `_site` against
+  a phone over `chrome://inspect` and re-run the same hooks.
+- **Memory.** The phone's real constraint may be RAM, not CPU: a 20 MB layout store + wasm heap on a
+  device that will evict the tab. **A's biggest un-costed win may be memory, not time** — if JS reads the
+  store, loft never allocates the 20 MB at all. Nothing here measures RSS; it should.
+- **Cold fetch.** The 85/341 ms is validation of an HTTP-*cached* store; a first visit adds download.
+- **Session history.** §5's 3× match spread suggests earlier work affects later cost — on a phone, with
+  less headroom, likely worse.
+- **Zoomed-out viewports**, where the emit re-inflates and A's win grows.
+
+Known-unknowns, not discovered ones — the axis list the next measurement varies.
