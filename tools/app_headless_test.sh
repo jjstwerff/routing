@@ -15,7 +15,13 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"      # routing repo root
-loftroot="${LOFT_ROOT:-$here/../loft}"
+# The dir containing default/ (the stdlib the --native-wasm build compiles against). Default to the
+# INSTALLED loft's stdlib, NOT ../loft: that sibling tree is another agent's live workspace, and a
+# mid-edit default/01_code.loft there fails this gate with errors that have nothing to do with routing
+# (seen 2026-07-16: "Unknown function sum at ../loft/default/01_code.loft:1495"). Override with
+# LOFT_ROOT only to test an unreleased stdlib on purpose.
+loftroot="${LOFT_ROOT:-$(dirname "$(dirname "$(command -v loft 2>/dev/null || echo /usr/local/bin/loft)")")/share/loft}"
+[ -d "$loftroot/default" ] || loftroot="$here/../loft"   # fallback: a source checkout
 loft="${LOFT_BIN:-$loftroot/target/release/loft}"
 lib="$here/lib"
 client="$here/client/app_kernel.loft"
