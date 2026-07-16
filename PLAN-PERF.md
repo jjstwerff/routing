@@ -70,6 +70,59 @@ bytes JS fetches ARE the records. **JS can read them.**
 
 ---
 
+## 0a. Lag is not slowness — the main thread is FROZEN
+
+The measurement that reorders everything below. `__perfHooks.frameBlocking` drives `requestAnimationFrame`
+across a kernel call and counts the frames that actually landed (4× throttle):
+
+| call | duration | frames landed | longest frozen gap |
+|---|---|---|---|
+| `view` | 925 ms | **6 of ~55 expected** | **779 ms** |
+| `match` | 4225 ms | **3 of ~253 expected** | **4212 ms** |
+
+**During a match the phone is dead for 4.2 seconds.** Not "slow" — frozen: no pan, no zoom, no repaint,
+no response to touch. The kernel runs synchronously on the UI thread, so the whole cost lands as one
+un-interruptible block.
+
+This splits the problem in two, and **they are not the same problem**:
+
+| | what it is | what fixes it | what does NOT fix it |
+|---|---|---|---|
+| **Lag** (responsiveness) | the main thread cannot paint | get the work **off** the thread | making the work cheaper |
+| **Cost** (throughput) | the work takes 4.2 s of CPU | A / C below | moving it to a worker |
+
+**A/B/C only address cost.** Even at their ideal end state a 1300 ms match still freezes the phone for
+1.3 s — an app that "performs well on paper" and still feels broken. Conversely, a 4.2 s match on a
+worker with a live 60 fps UI feels like *loading*, which users accept, rather than *hanging*, which they
+do not.
+
+**So responsiveness is Phase 0 and comes before every cost phase.** It is also the cheapest thing in this
+document: it changes no algorithm, risks no route, and buys the largest perceptual win.
+
+### Phase 0 — never block a frame
+
+**Invariant:** *no user-visible frame waits on the kernel; the main thread only ever renders prepared data.*
+
+**Re-assertion sites: 1** — the single `runKernel` call site. Omission is loud (the app freezes; the
+frameBlocking probe reports it as a number).
+
+| step | change | verify |
+|---|---|---|
+| 0.1 | Move the loft-wasm kernel into a **Web Worker**; `runKernel` becomes postMessage/await. The `--html` kernel talks over `host_input()`/`println` already — a channel a worker can host; the store fetch is `fetch()`, which workers have. | `frameBlocking`: match lands ~all 253 frames, longest gap ≈16 ms. Total time unchanged — that is the point. |
+| 0.2 | While a match is in flight, the UI stays live: keep panning/zooming, show progress, allow cancel-on-new-click (supersede the in-flight request). | a click during a match does not queue behind it |
+| 0.3 | **Render budget.** `render` is 76 ms/frame on a phone ⇒ ~13 fps *even with no kernel call* — panning is laggy on its own. Redraw from pre-projected typed arrays; cache per-tile rasters and blit on pan. | pan holds <16 ms/frame with the data loaded |
+
+**Predicted:** *no change to any total in §0* — and pan goes from 13 fps to 60, and a click stops freezing
+the device. **Falsification probe:** if the wasm kernel cannot run in a worker (an `--html` shim
+assumption, an asyncify/fetch constraint), 0.1 is dead as written and the fallback is chunking the kernel
+call so it yields — much worse, and worth knowing on day one. **Probe it before anything else in this
+doc.**
+
+> 0.3 is the reason Phase A's end state is "~150 ms" rather than "~76 ms": with the kernel gone from the
+> view path, *render* becomes the frame budget's only remaining problem.
+
+---
+
 ## 1. The decomposition — the two stores have different consumers
 
 This is the structural fact the whole design turns on, and it was invisible until the decode was
@@ -231,36 +284,53 @@ before C3. Do not ship a gate tuned to a number nobody measured.
 ## 6. Order and predicted end state
 
 ```
-B0 warm measurement + C0 reproducible match   ← the numbers everything else is judged against
+0.1 worker probe (can the kernel run off-thread?)   ← decides the whole responsiveness story
         ↓
-A1 probe: can JS read the fetched image?      ← decides A's size (10× vs 1.8×)
+PHASE 0: worker + render budget   ← STOPS THE LAG. No algorithm changes, no route risk.
+        ↓
+B0 warm + C0 reproducible match   ← the numbers every cost phase is judged against
+        ↓
+A1 probe: can JS read the fetched image?            ← decides A's size (10× vs 1.8×)
         ↓
 A (view: loft out of the path)  →  C (the match ladder)
         ↘ B(i) checksum-at-write only if A1 kills A;  B1 warm-session stands regardless
 ```
 
-**B0 and C0 come first** — not because they change anything, but because every other row of this table
-is currently arithmetic rather than evidence (§4a), and C's acceptance cannot be read off a number that
+**Phase 0 first, and it is not a compromise — it is the answer to "why does it lag".** It changes no
+total in §0 and yet is the single largest improvement in how the app *feels*: a frozen 4.2 s device
+becomes a live one with a route loading. Cost phases cannot deliver that at any speed short of ~16 ms.
+
+**Then B0 and C0** — not because they change anything, but because every other row of this table is
+currently arithmetic rather than evidence (§4a), and C's acceptance cannot be read off a number that
 moves 3× (§5). Measure, then move.
 
 **Judge every row on the phone column.** A pan should feel instant (<100 ms) and a click should beat
 ~1 s; those are the budgets, and today's phone numbers (1121 / 4481 ms) miss both by 10×+.
 
-| interaction | today **phone** | after A | after A+C | budget |
+Two axes, because they are two different problems (§0a). **Frozen** is what the user calls lag:
+
+| interaction | today **phone** | after **Phase 0** | after 0+A | after 0+A+C |
 |---|---|---|---|---|
-| `view` (pan) | **1121 ms** | **~150 ms** (render 76 + bbox filter) | ~150 ms | <100 ms — A gets close; render is then the floor |
-| `match` (click) | **4481 ms** | ~4400 ms | **~1300 ms** (pending C2) | <1 s — **C alone does not reach it** |
+| `view` (pan) — *time* | 1121 ms | 1121 ms | **~150 ms** | ~150 ms |
+| `view` — **frozen** | **779 ms** | **~0** | ~0 | ~0 |
+| `match` (click) — *time* | 4481 ms | 4481 ms | ~4400 ms | **~1300 ms** |
+| `match` — **frozen** | **4212 ms** | **~0** | ~0 | ~0 |
+| pan frame rate | ~13 fps | **60 fps** (0.3) | 60 fps | 60 fps |
 
-Two consequences worth stating plainly rather than burying:
+Read the *frozen* rows first. **Phase 0 moves no total and fixes the lag**; A and C move the totals and
+fix none of it. Both are needed — for different reasons, in that order.
 
-1. **A very nearly finishes `view`.** Deleting loft from the view path takes a pan from 1121 → ~150 ms,
-   after which *render* (76 ms) is the floor and there is nothing left worth optimising.
-2. **C alone does not finish `match`.** PLAN-MATCH's 3× takes a click from 4481 → ~1300 ms — better,
-   still over budget on the target device. So the phone constraint says: C is necessary and **not
-   sufficient**, and the next lever after it is not more corridor-tuning but **warm/incremental
-   matching** (tier 0 — `covered()` + `match_incremental`, already ~40–68 ms on desktop) applying to
-   more clicks, i.e. making the *cold* match rare instead of merely cheaper. That is a design question
-   this doc opens and does not answer — deliberately, because C2's corpus data is what should decide it.
+Three consequences, stated rather than buried:
+
+1. **Phase 0 is the answer to the question "why does it lag".** Nothing in A/B/C addresses it.
+2. **A very nearly finishes `view`.** 1121 → ~150 ms, after which *render* (76 ms) is the floor — which
+   is why 0.3 (the render budget) matters even once loft is gone from the view path.
+3. **C alone does not finish `match`.** PLAN-MATCH's 3× gives 4481 → ~1300 ms — under Phase 0 that is a
+   live UI with a route arriving in 1.3 s, which is *acceptable*; without Phase 0 it is a 1.3 s freeze,
+   which is not. If a *fast* click is wanted rather than a *non-blocking* one, the next lever is not more
+   corridor-tuning but making the **cold match rare** — warm/incremental matching (tier 0 is already
+   ~40–68 ms desktop) covering more clicks, plus speculative prefetch of the corridor while the user is
+   still drawing. This doc opens that and deliberately does not answer it; C2's corpus data should decide.
 
 *(Warm columns deliberately absent: B0 has to produce them. Filling them in by subtraction is exactly
 the move this doc is trying not to make.)*

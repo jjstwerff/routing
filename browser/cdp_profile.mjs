@@ -59,6 +59,8 @@ const probe = `(async () => {
   for (let i = 0; i < 2; i++) {
     out.matchRuns.push(await K.timedMatch([[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]]));
   }
+  out.block = [];
+  if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
   return out;
 })()`;
 const res = await ev(probe);
@@ -92,6 +94,15 @@ if (globalThis.__db) {
   console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
   console.log('  match: decode(roads)' + fmt(dr) + ' + compute   ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
+}
+if (res.block?.length) {
+  console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');
+  for (const b of res.block) {
+    console.log('  ' + b.kind.padEnd(6) + ' call ' + fmt(b.total) + 'ms · frames landed ' + String(b.frames).padStart(4) +
+                ' of ~' + String(b.expectedFrames).padStart(4) + ' expected · longest frozen gap ' + fmt(b.longestGap) + 'ms');
+  }
+  console.log('  (a responsive app lands ~all expected frames with ~16ms gaps;');
+  console.log('   a blocked one lands almost none and shows one gap ≈ the whole call)');
 }
 console.log('');
 process.exit(0);

@@ -103,6 +103,25 @@ window.__perfHooks = {
     const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n0.0,0.0;0.0,0.0\n${PROFILE}`);
     return { kernel: performance.now() - t0, bytes: text.length };
   },
+  // Is the MAIN THREAD blocked while the kernel runs? Lag is not slowness — it is a frozen frame.
+  // Drive rAF across a kernel call: count the frames that actually landed and the longest gap between
+  // them. A responsive app keeps ~16ms gaps; a blocked one shows one gap ≈ the whole call.
+  async frameBlocking(kind) {
+    const gaps = []; let last = performance.now(), stop = false;
+    const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    const t0 = performance.now();
+    if (kind === 'match') {
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+    } else {
+      const b = viewportBox(0.6);
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+    }
+    const total = performance.now() - t0;
+    stop = true;
+    await new Promise((r) => setTimeout(r, 50));
+    return { kind, total, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
+  },
   async timedMatch(pts) {
     const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
     const t0 = performance.now();
