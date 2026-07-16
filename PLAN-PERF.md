@@ -77,32 +77,57 @@ JS can read the records. **loft does the ROUTE; JS does the MAP.**
 
 ---
 
-## 3. Phase S — the session (the bug)
+## 3. Phase S — stop using loft's REJECTED model (the bug)
 
-**Do first. This is not an optimisation; it is restoring a fast path the app already had.**
+**The root cause of every number in §2 is one architectural choice, and loft's own docs already reject
+it.** `BROWSER_INTEROP.md` § *Rejected alternatives*:
 
-**Invariant:** *a kernel session holds what does not change — decoded stores, the built graph, the
-MatchState — and each command does work proportional to the diff.*
+> **Export loft `pub fn`s as wasm exports + a JS→loft call ABI** (the *"JS renders, loft computes"*
+> compute-core model)… **Set aside because this model does not need them: loft owns the loop and the
+> synchronicity lives inside the library via the yield.**
 
-**Re-assertion sites: 1** — the kernel's command loop. Omission is loud (a stale/empty session draws
-nothing or re-matches everything, and the profiler reports it).
+That is precisely what `browser/store-kernel.mjs` does — `runKernel(blob)` per request, one `loft_start`
+per click, *"fresh Stores each call"*. **The app is built on the alternative loft rejected**, and both
+symptoms fall straight out of it: no session (⇒ a full match per click) and a synchronous call on the UI
+thread (⇒ a frozen frame).
 
-| step | change | verify |
-|---|---|---|
-| S1 | Kernel becomes a **session**: load stores on first command, reuse after. | 2nd+ call drops ≈355 ms (view) / ≈14 ms (match) |
-| S2 | Session holds the corridor `Graph` + `MatchState`. Port `covered()` + `match_incremental` from `server/server.loft` — **it exists; do not rewrite it.** | a click that adds one point re-matches only the edited window |
-| S3 | Client sends the **diff** (add/move/remove point), not the whole sketch. | command blob is O(1) per click |
-| S4 | `view` re-emits only the newly-exposed cells, not the whole viewport. | a small pan costs ≈ the new strip |
+**The intended model is shipped and proven.** § *"Pretend to be synchronous" — the gather-until-enough
+contract*: loft owns the loop; a function gathers inbound bytes across as many frames as it takes and
+returns the finished unit; the yielding is invisible to the caller. *"This is **already proven** — the
+zero-trust `ztclient` transport does exactly it: `poll_for` loops `try_recv()` and calls `frame_yield()`
+each pass."* `frame_yield()` ships in `web` (`loft-libs-net/web/src/web.loft:407`).
 
-**Predicted (phone):** click **4481 → ~200 ms** (40–68 ms × 4), pan past the box → the new strip only.
-**Falsification probe:** the server's 40–68 ms is a *desktop, native* number over a tile block. Before
-building S3/S4, port S2 alone and measure one warm click on the phone profile. If a warm incremental
-click is not ≈10–20× cheaper than a cold full match **on this data**, the premise is wrong and the win
-is smaller — find out with S2 before designing the diff protocol around it.
+It gives **both** things this document needs, from one change:
 
-**Risk:** the session is now state, and state goes stale (a moved point that invalidates a cached
-window). `server/server.loft` already solved this — `covered()` is exactly that guard. Port its logic;
-do not invent a second one.
+| problem | how the loop model solves it |
+|---|---|
+| no session ⇒ full match per click | `main()` never returns, so stores / graph / MatchState live in its locals across commands. `loft_start` cannot reset what it never re-enters. |
+| frozen frame | *"The single load-bearing rule: 'blocking' must mean yield-and-accumulate, never a hard spin"* — `frame_yield()` hands the frame back, so **the engine keeps rendering and taking input while loft waits**. |
+
+**Invariant:** *loft owns the loop; state lives across commands; every wait yields the frame.*
+
+**Re-assertion sites: 1** — the kernel's gather loop. Omission is loud (a hard spin freezes the page —
+exactly issue #450's repro, which the yield contract exists to prevent).
+
+| step | change | verify | revert |
+|---|---|---|---|
+| **S0** | **Probe, no product change.** ~20-line `--html` loft: `main()` loops, `frame_yield()`s, keeps a counter, echoes each command. Drive it with 3 commands. | counter persists across commands **and** rAF keeps firing during the wait | delete the probe |
+| S1 | Kernel `main()` becomes the gather loop; stores loaded once into its locals. No algorithm change. | 2nd command drops ≈355 ms (view) / ≈14 ms (match); `frameBlocking` shows frames landing | one commit |
+| S2 | Hold the corridor `Graph` across commands (built once). Still a full match. | 2nd match skips `build_graph` (~41% per PLAN-MATCH's split) | one commit |
+| S3 | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft` — **it exists; do not rewrite it.** | **parity gate: incremental route == full-match route, byte-identical**; a one-point click ~10–20× cheaper | one commit |
+| S4 | `view` re-emits only newly-exposed cells. | a small pan costs ≈ the new strip | one commit |
+
+**S0 is the whole risk.** If a `--html` kernel cannot own the loop and yield (an asyncify constraint, a
+`web`-lib dependency the store kernel does not have), S1–S4 are all fiction and the fallback is an
+upstream ask. It is ~20 lines and it gates four phases. **Run it first.**
+
+**Predicted (phone):** click **4481 → ~200 ms**, and the frozen gap → ~0 *without a Web Worker*.
+**Falsification probe for the size:** the server's 40–68 ms is a *desktop, native* number over a tile
+block. Land S3 alone and measure one warm click on the phone profile before designing S4 around it.
+
+**Risk:** state goes stale (a moved point invalidating a cached window). `server/server.loft` already
+solved this — `covered()` **is** that guard. Port its logic; do not invent a second one. The parity gate
+in S3 is what proves the port.
 
 ---
 
@@ -153,22 +178,28 @@ probably a **cheap** checksum (CRC32/xxhash) stamped at write.
 
 ---
 
-## 6. Phase R — never block a frame
+## 6. Phase R — the render budget
 
-**Invariant:** *no user-visible frame waits on the kernel; the main thread only renders prepared data.*
+> **A Web Worker was here, and it was wrong.** An earlier draft proposed moving the kernel to a worker to
+> unfreeze the page. That is loft's *rejected* model wearing a thread: it solves the freeze by routing
+> around the yield contract instead of using it. **S's gather loop already unfreezes the page** —
+> `frame_yield()` hands the frame back, *"so the engine keeps rendering and taking input while the library
+> waits."* Deleted rather than demoted, because keeping it would have had us build a worker to fix a
+> problem loft solved. *(It flips only if a wait genuinely cannot yield — e.g. a single un-splittable
+> compute longer than a frame. Then the fix is to yield **inside** the compute, not to move it.)*
+
+What is left is real and independent of loft: **`render` is 76 ms/frame on a phone ⇒ ~13 fps panning
+with no kernel call at all.** Panning is laggy on its own.
+
+**Invariant:** *a frame redraws only what the camera changed.*
 
 | step | change | verify |
 |---|---|---|
-| R1 | Kernel → **Web Worker**; `runKernel` becomes postMessage/await. The `--html` shim already talks over `host_input()`/`println`, a channel a worker can host; store fetch is `fetch()`, which workers have. | `frameBlocking`: match lands ~all frames, longest gap ≈16 ms. Totals unchanged — that is the point. |
-| R2 | UI stays live during a match; a new click supersedes the in-flight one. | a click during a match does not queue behind it |
-| R3 | **Render budget:** 76 ms/frame ⇒ ~13 fps panning *with no kernel call at all*. Redraw from pre-projected typed arrays; cache per-tile rasters and blit on pan. | pan holds <16 ms/frame |
+| R1 | Pre-project geometry into typed arrays once per view, not per frame. | render drops; pan frame time falls |
+| R2 | Cache per-tile rasters; blit on pan, re-raster only newly-exposed tiles. | pan holds <16 ms/frame |
 
-**Falsification probe:** if the wasm kernel cannot run in a worker (an `--html` shim assumption, an
-asyncify constraint), R1 is dead as written and the fallback (chunking the call so it yields) is much
-worse. Probe it on day one.
-
-**Ordering note:** S shrinks the work so far that R1 matters mainly for the *rare* cold match — but R3
-is independent of everything else, because 13 fps panning is lag the kernel never touches.
+Same invariant as §1 — *work ∝ change* — applied to the frame. R is independent of S/A/C and can land
+any time.
 
 ---
 
@@ -219,29 +250,34 @@ the gate cannot accept it and the win is smaller than 3×. Publish that fraction
 ## 8. Order and end state
 
 ```
-S2 probe: is a warm incremental click really ~10–20× cheaper on THIS data?
+S0 probe (~20 lines): can a --html kernel own the loop + frame_yield and keep state?
+        ↓                                   ← gates S1–S4. If it fails, everything below S changes.
+S1 loop + stores  →  S2 hold Graph  →  S3 hold MatchState (parity gate)  →  S4 view diff
+        ↓                                   ← THE BUG: the app uses loft's REJECTED one-shot model
+A1 probe: can JS read the fetched image?   →   A1–A5 — loft out of the view path
         ↓
-S — the session: stores + graph + MatchState; click = diff, not rebuild   ← THE BUG
-        ↓
-A1 probe: can JS read the fetched image?   →   A — loft out of the view path
-        ↓
-R3 (render budget, independent)  ·  R1 (worker — for the rare cold match)
+R1–R2 (render budget — independent of loft, can land any time)
         ↓
 C0 (trust the number)  →  C4 (persist the graph — route-neutral)  →  C1–C3 (the ladder)
-        ↓                                        the outlier gets a budget too: ≤ ~500 ms
+                                             the outlier gets a budget too: ≤ ~500 ms
 ```
+
+Every step is one commit, independently verifiable and revertible; each keeps all four gates green.
+Two probes (S0, A1) come first because each gates a whole phase and each is an afternoon.
 
 | interaction | today **phone** | after S | after S+A | after S+A+R |
 |---|---|---|---|---|
 | **click** (add/move a point) — *time* | **4481 ms** | **~200 ms** | ~200 ms | ~200 ms |
-| **click** — *frozen* | **4212 ms** | ~200 ms | ~200 ms | **~0** |
+| **click** — *frozen* | **4212 ms** | **~0** (frame_yield) | ~0 | ~0 |
 | **pan** (past the box) — *time* | 1121 ms | new strip only | **~150 ms** | ~150 ms |
-| **pan** — *frozen* | 779 ms | — | — | **~0** |
-| **pan** frame rate | ~13 fps | 13 fps | 13 fps | **60 fps** (R3) |
+| **pan** — *frozen* | 779 ms | **~0** (frame_yield) | ~0 | ~0 |
+| **pan** frame rate | ~13 fps | 13 fps | 13 fps | **60 fps** (R) |
 | **cold full match** (rare, but still needs a budget) | **4481 ms** | 4481 ms | 4481 ms | **~500 ms** (C4 + ladder) |
 
-**S is the whole game.** It takes a click from 4.5 s to ~200 ms by not doing the work — and it does so by
-*restoring code the server already runs*, not by inventing anything.
+**S is the whole game**, and it unfreezes the page as a side effect: it takes a click from 4.5 s to
+~200 ms by not doing the work, and the frame_yield contract keeps the UI live meanwhile. It invents
+nothing — it adopts loft's intended model (proven by `ztclient`) and ports the incremental matcher the
+server already runs.
 
 **Re-run `tools/map_profile.sh` after every step**, and fix its labelling first: it currently reports a
 cold full match as "match", i.e. it measures the outlier as if it were the common case. Add a warm/
