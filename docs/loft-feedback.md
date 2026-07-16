@@ -1065,3 +1065,75 @@ gates green: `make test` (ALL OFFLINE GATES PASS), `make test-native` (NATIVE KE
 Value-parity checked directly against the pre-change kernel over 30 high-precision values (bounds /
 corridor_margin / tile_xf / tile_yf / tile_key incl. extreme latitudes / path_length_m / is_loop /
 clean_track / douglas_peucker / retrace_m): **byte-identical** old-vs-new on interpret AND native.
+
+---
+
+## 2026-07-16 (18:54 build) — REGRESSION: the "nullable → non-null PARAMETER" warning no longer fires
+
+Re-tested routing against the freshly installed loft (18:54, built from `loft2` `tuxedo-work` @ `8118ab16`),
+which carries the fixes for all three findings above. Two of the three land well; the third is defeated by
+a separate regression in the same build.
+
+### ✅ f2 (struct-valued constant) — fixed, and the diagnostic is exemplary
+
+```
+error: a struct-valued constant ('NOWHERE') is not supported — a record cannot be materialised at each
+use site (it reads `null` on --interpret and fails to compile on --native).  Wrap it in a zero-argument
+function instead: `fn nowhere() -> P { … }`, then call `nowhere()`
+```
+It names the failure on BOTH backends and prescribes exactly the workaround routing shipped. The fn form
+and the inline-literal form both still return the fallback's fields when taken, on interpret and native.
+
+### ✅ @PLN40 const model — fully fixed (`4f810080`)
+
+All 8 cells of the const boundary matrix from the entry above now pass, including the two that forced
+routing's rollback: `s.v += [x]` on a `const` collection field is accepted (append is contents, not a
+rebind), and the RHS-read false positive is gone (`vec[i] = … + s.field` where the struct carries a const
+field). **Routing can restore the reverted `const` on `GEdge`, `SubPath`, `EdgeCosts`, `TTile.roads/steps`,
+`PTile`'s geometry vectors and `Image.data`** — tracked as a follow-up here.
+
+### ⚠️ f1 (index-fit carry) — the fix is correct, but a regression hides its effect
+
+The fix itself works: their guard case errors as designed, because the nullable propagates into a local
+whose type would change.
+```loft
+fn f(v: vector<integer>, w: vector<integer>) -> integer { s = 0; for i in 0..len(v) { s = s + w[i]; } s }
+// error: Variable 's' cannot change type from integer to integer?   ← the fix, working
+```
+But routing's ORIGINAL repro (`sound.loft`) is **still completely silent** — 0 warnings, `s = null` at
+runtime — because it routes the nullable through a **non-null parameter** instead of a type-changing local:
+```loft
+fn f(v: vector<integer>, w: vector<integer>) -> integer { s = 0; for i in 0..len(v) { s = s + take(w[i]); } s }
+// take(a: integer) returns integer, so `s` never changes type — and NOTHING is reported.
+```
+
+### The regression: the parameter class of the null-flow warning is gone
+
+Not an indexing issue — it is the whole warning class. Same `float?` source (`1.0 / n`, no `v[i]` anywhere),
+three destinations:
+
+| destination | 16:58 build | 18:54 build |
+|---|---|---|
+| non-null **return value** | warns | **warns** ✓ |
+| non-null **field** | warns | **warns** ✓ |
+| non-null **parameter** | warns | **SILENT** ✗ |
+
+```loft
+fn takes(a: float) -> float { a }
+fn par(n: float) -> float { x = 1.0 / n; takes(x) }   // float? -> non-null param: NO warning
+```
+Confirmed identical on the installed 18:54 binary and on `loft2/target/release/loft`. This is a regression,
+not a softening we asked for: the 16:58 build warned on exactly this shape — routing's own kernel reported
+`a nullable float? is stored into parameter 1 of 'sqrt'` and `... parameter 2 of 'geodesic_m'`. Measured on
+the SAME unmodified pre-fix kernel source: **26 warnings on 16:58 → 5 on 18:54**, and all 21 that vanished
+are the `parameter N of F` class; the 5 survivors are exactly the `field` (3) and `return value` (2) ones.
+
+**Why this matters for "stable".** Passing `v[i]` (or any fallible-arithmetic result) straight to a function
+is the most common shape in real loft code — it was 21 of routing's 26 sites. With that class silent, the
+f1 fix cannot be observed through a call, and an out-of-bounds read silently yields `null` with no
+diagnostic on either backend. It also means a consumer that discharges to zero warnings today (as routing
+now does) is no longer evidence of much: routing's 0 would be 0 either way.
+
+Suggested guard, since this class had no regression test: the three-destination probe above (return /
+field / parameter from one `float?` source) as a warning-count test — it is four lines and would have
+caught this.
