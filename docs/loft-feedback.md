@@ -951,3 +951,88 @@ target here, and a matrix probed against one binary can be invalidated by a rein
 whatever the enclosing statement's assignment target is; and the diagnostic should name the field actually
 referenced, not the struct's first const field. Until then `const` is unusable on any struct that feeds a
 vector element-store, which in array-of-struct code (the whole routing kernel) is most of them.
+
+---
+
+## 2026-07-16 — the null-flow lint (@PLN102/DN1): inverted polarity, plus two hazards found discharging it
+
+Discharging routing's 26 null-flow warnings surfaced three separate things. The discharge itself went
+fine — the idiom from `4f66f60` (`?? <default>` at a site the surrounding code already bounds, with the
+bound written down) scaled to all 26, and every value is byte-identical before/after on interpret and
+native. These are what the exercise *found*.
+
+### 1. The lint warns on correct code and stays silent on the broken case (for-range bound-carry)
+
+`v[i]` bound-carry (@PLN102 D1) suppresses the warning whenever `i` is a **for-range variable**, without
+checking that the vector indexed is the one the range came from. Identical bug, opposite diagnosis:
+
+```loft
+v: vector<P> = [ … 3 elements … ];
+w: vector<P> = [ … 1 element  … ];      // SHORTER
+for i in 0..len(v) { s = s + take(w[i]); }   // 0 warnings — runtime: s = null
+i = 0;
+while i < len(v) { s = s + take(w[i]); i = i + 1; }   // 1 warning — runtime: s = null
+```
+
+Both silently produce `s = null`. Only the `while` form is flagged. Meanwhile every site the lint DID
+flag in routing's kernel was provably in range (a loop condition, an early return, a `len()` check).
+
+So the polarity is inverted where it matters: false positives on correct code, a false negative on the
+genuine out-of-bounds read — and, worse, the shortest way to silence a warning is to rewrite the `while`
+as a `for`, which removes the diagnostic while *preserving* the bug. We deliberately did **not** do that
+in routing; the discharges name their bound instead. Worth deciding whether bound-carry should require
+the indexed vector to be the range's source (`for i in 0..len(v)` carries only for `v[i]`, not `w[i]`).
+
+Coverage probed (all with `for i in 0..…`): `v[i]` ✓ carried, `v[i-1]`/`v[i+1]` under `0..len(v)-1` ✓,
+`v[2*i]`/`v[2*i+1]` under `0..len(v)/2` ✓, `for i in 0..n` with a local `n` ✓ (carries regardless of
+what `n` is), reverse `v[len(v)-1-i]` ✗ (warns).
+
+### 2. A struct CONSTANT as a `??` fallback miscompiles under `--native` (interpret/native divergence)
+
+```loft
+struct P { lat: float, lon: float }
+NOWHERE = P { lat: 0.0, lon: 0.0 };     // top-level struct constant
+…
+take(v[0] ?? NOWHERE)
+```
+`--interpret` runs it. `--native` fails to compile: `error[E0308]: 'if' and 'else' have incompatible
+types … expected 'DbRef', found '()'`. An **inline struct literal** (`?? P { lat: 0.0, lon: 0.0 }`) and a
+**zero-arg fn** (`?? point_none()`) both compile and run identically on both backends.
+
+This bit exactly once: the interpreter suite was green while `make test`/`make test-native` failed with 17
+E0308s. routing now spells the sentinel as `fn point_none() -> GeoPoint`, noted in-source. Repro is 7
+lines; the divergence (interpret accepts, native rejects) is the interesting half.
+
+### 3. `v[-1]` returns the LAST element — but the scalar-index contract says "null if out of bounds"
+
+```loft
+v: vector<P> = [P{lat:1.0,…}, P{lat:9.0,…}];
+n = -1;
+x = v[n];      // x.lat == 9.0  — the LAST element, NOT null
+m = 99;
+y = v[m];      // null, as documented
+```
+
+LOFT.md § Vectors documents scalar indexing as `v[i] // index (null if out of bounds)`, and `-1` is out
+of bounds under any reading of that. Negative-counts-from-the-end is documented (@P384, INCONSISTENCIES
+§ 28) **only for slices** — `v[2..-1]`, `v[-2..]` — not for scalar `v[i]`. So the index silently adopts
+the slice convention, asymmetrically: **high** OOB → null, **negative** OOB → wraps to a real element.
+
+The hazard is that this defeats the guard the lint itself recommends. `x = v[i]; if x { … }` reads as
+"skip the out-of-range case", and it does — for `i >= len`, not for `i < 0`, where it happily hands you
+the wrong element. Found it while trying to simplify `if ei >= 0 { e = g.edges[ei]; … }` (ei is -1 for
+"no edge") down to a null guard: that refactor looks obviously equivalent and is silently wrong —
+`g.edges[-1]` is the last edge, so the report would have attributed a real edge to a non-existent one.
+The `ei >= 0` test is kept, with a comment saying why it is not redundant.
+
+Whichever way this is meant to resolve — index wraps like slices, or index is null-if-OOB as documented —
+scalar and slice indexing currently disagree and only one of them is written down.
+
+### Verified
+
+Kernel null-flow warnings 26 → 0, and 0 across the whole tree (kernel/imaging/web suites). All three
+gates green: `make test` (ALL OFFLINE GATES PASS), `make test-native` (NATIVE KERNEL SUITE PASSES),
+`make test-wasm` (interpret == native == native-wasm byte-identical; geodesic 1113.194907792064 m).
+Value-parity checked directly against the pre-change kernel over 30 high-precision values (bounds /
+corridor_margin / tile_xf / tile_yf / tile_key incl. extreme latitudes / path_length_m / is_loop /
+clean_track / douglas_peucker / retrace_m): **byte-identical** old-vs-new on interpret AND native.
