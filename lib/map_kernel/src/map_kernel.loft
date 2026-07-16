@@ -13,9 +13,9 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph,
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState,
                      tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m,
-                     point_polyline_m);
+                     point_polyline_m, match_state_new, match_incremental, match_state_result);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
 
@@ -176,10 +176,10 @@ fn emit_route(route: vector<GeoPoint>, nways: integer, profile: text) {
 // have. Keep the two in step — the server is the reference implementation.
 
 struct Corridor { pts: vector<GeoPoint>, margin: float }
-pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, built: boolean }
+pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, mstate: MatchState, built: boolean }
 
 pub fn session_new() -> MatchSession {
-  MatchSession { cways: [], cg: build_graph([]), covs: [], built: false }
+  MatchSession { cways: [], cg: build_graph([]), covs: [], mstate: match_state_new(), built: false }
 }
 
 // True when EVERY point lies well inside SOME corridor this session already built — so the accumulated
@@ -207,6 +207,14 @@ fn covered(s: MatchSession, pts: vector<GeoPoint>, margin: float) -> boolean {
 // Re-reading a tile corridor is local and cheap; an unbounded graph is neither. (Overpass corridors DO
 // accumulate in server.loft, because a re-fetch is a ~12 s network round-trip — this kernel has no
 // Overpass path, so that branch does not apply here.)
+// INCREMENTAL (PLAN-PERF §0 step 8): `match_incremental` diffs `trace` against the cached MatchState and
+// recomputes only the edited window — a moved point re-searches a handful of stretches, not the whole
+// route. On a miss the corridor is rebuilt and the state re-seeded from scratch (a fresh graph invalidates
+// every anchor), which is exactly what server.loft does: `match_incremental(match_state_new(), g, …)`.
+//
+// This is the one step here that could silently change what the user gets, so the gate is equality, not
+// speed: match_state_result(cg, match_incremental(…)) must equal match_route(cg, trace) byte-for-byte.
+// tools/match_parity.sh asserts it.
 pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   margin = corridor_margin(trace);
@@ -214,7 +222,9 @@ pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector
     s.cways = tiles_corridor_ways(roads, trace, margin);
     s.cg = build_graph(s.cways);
     s.covs = [Corridor { pts: trace, margin: margin }];
+    s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;
   }
-  emit_route(match_route(s.cg, trace, profile), len(s.cways), profile);
+  s.mstate = match_incremental(s.mstate, s.cg, trace, profile);
+  emit_route(match_state_result(s.cg, s.mstate).pts, len(s.cways), profile);
 }
