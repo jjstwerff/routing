@@ -846,3 +846,13 @@ read-only for us. Likely fixes for the maintainer: restore `--native` discovery 
 `loft_register!`, or (ssh-lib side) hand-write the register block into `lib.rs` like graphics + republish
 `ssh 0.1.1` rebuilt under 2026.7.1 — but that only helps if the root cause is the `include!`, which is the
 maintainer's to confirm.
+
+> **ROOT-CAUSED + FIXED upstream 2026-07-16 (my `include!` guess was wrong).** The loft agent hit the same
+> failure and fixed it on `../loft` `tuxedo-consumer-nullflow-fixes` (commit `917da317`, not yet merged): a
+> **`loft install <dir>` copied only `src/*.loft` + `loft.toml` and DROPPED the `#native` crate (`native/`)**,
+> so the `n_*` symbols were undefined at `--native`/`--native-android` link time — a local-vs-registry
+> asymmetry (`loft package`/the registry path already carried `native/`). `install_package` now recursively
+> copies `native/` (excluding `target/`+dot-dirs), and it's **verified end-to-end specifically with `ssh`
+> (russh/ring FFI): local-installed `ssh` now cross-compiles + links via `--native-android`**. So this is a
+> toolchain/packaging bug, not `include!` discovery. **Action here:** once that branch lands and `loft` is
+> reinstalled, re-run `loft --native tools/ssh_smoke.loft` — it should pass and unblock ssh_home Step 5.
