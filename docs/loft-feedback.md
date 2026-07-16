@@ -980,8 +980,14 @@ flag in routing's kernel was provably in range (a loop condition, an early retur
 So the polarity is inverted where it matters: false positives on correct code, a false negative on the
 genuine out-of-bounds read — and, worse, the shortest way to silence a warning is to rewrite the `while`
 as a `for`, which removes the diagnostic while *preserving* the bug. We deliberately did **not** do that
-in routing; the discharges name their bound instead. Worth deciding whether bound-carry should require
-the indexed vector to be the range's source (`for i in 0..len(v)` carries only for `v[i]`, not `w[i]`).
+in routing; the discharges name their bound instead.
+
+> **Root cause located by the maintainer's triage (2026-07-16):** `Parser::index_provably_fit`,
+> `src/parser/fields.rs:774` — the `Value::Var` arm returns `true` for *any* `is_active_loop_var`, with no
+> check that the loop's range source is the vector being indexed. The neighbouring `if idx < len(vec)`
+> guard path already does it correctly, pairing the index var with the vector's `VecKey` via
+> `self.index_bounded`; the loop-var path needs the same pairing. Confirms the guess in this entry's last
+> line — the carry should hold only when the range's source *is* the indexed vector.
 
 Coverage probed (all with `for i in 0..…`): `v[i]` ✓ carried, `v[i-1]`/`v[i+1]` under `0..len(v)-1` ✓,
 `v[2*i]`/`v[2*i+1]` under `0..len(v)/2` ✓, `for i in 0..n` with a local `n` ✓ (carries regardless of
@@ -995,13 +1001,25 @@ NOWHERE = P { lat: 0.0, lon: 0.0 };     // top-level struct constant
 …
 take(v[0] ?? NOWHERE)
 ```
-`--interpret` runs it. `--native` fails to compile: `error[E0308]: 'if' and 'else' have incompatible
-types … expected 'DbRef', found '()'`. An **inline struct literal** (`?? P { lat: 0.0, lon: 0.0 }`) and a
-**zero-arg fn** (`?? point_none()`) both compile and run identically on both backends.
+`--native` fails to compile: `error[E0308]: 'if' and 'else' have incompatible types … expected 'DbRef',
+found '()'`. An **inline struct literal** (`?? P { lat: 0.0, lon: 0.0 }`) and a **zero-arg fn**
+(`?? point_none()`) both compile and run identically on both backends.
+
+> **Correction (2026-07-16, after the maintainer's triage — my first write-up understated this).** I
+> reported the interpreter as merely *accepting* the form. It does worse: **the fallback never
+> materialises and the expression evaluates to `null`.** My probe only ever exercised the non-null path
+> (`v[0] ?? CONST`), so I never saw it. With the fallback actually taken:
+> ```loft
+> NOWHERE = P { lat: 42.0, lon: 99.0 };
+> miss = v[5] ?? NOWHERE;      // --interpret: miss is NULL, not 42.0
+> ```
+> So both backends are broken and only native is loud: interpret yields a **silent wrong value** while the
+> suite goes green; native fails the build. That inverts the severity — this is the more dangerous half,
+> not the divergence. Verified the shipped fix is unaffected: `?? point_none()` and `?? P{…}` both return
+> the fallback's fields when taken, on interpret AND native.
 
 This bit exactly once: the interpreter suite was green while `make test`/`make test-native` failed with 17
-E0308s. routing now spells the sentinel as `fn point_none() -> GeoPoint`, noted in-source. Repro is 7
-lines; the divergence (interpret accepts, native rejects) is the interesting half.
+E0308s. routing now spells the sentinel as `fn point_none() -> GeoPoint`, noted in-source. Repro is 7 lines.
 
 ### 3. `v[-1]` returns the LAST element — but the scalar-index contract says "null if out of bounds"
 
@@ -1025,8 +1043,19 @@ the wrong element. Found it while trying to simplify `if ei >= 0 { e = g.edges[e
 `g.edges[-1]` is the last edge, so the report would have attributed a real edge to a non-existent one.
 The `ei >= 0` test is kept, with a comment saying why it is not redundant.
 
-Whichever way this is meant to resolve — index wraps like slices, or index is null-if-OOB as documented —
-scalar and slice indexing currently disagree and only one of them is written down.
+> **Resolved by the maintainer's triage (2026-07-16): INTENTIONAL, a doc gap — not a bug.** Scalar
+> negative indexing is the deliberate Python-style last-element idiom, backend-identical, mirroring the
+> negative *slice* bounds at LOFT.md:1269 (@P384). The full contract, which I verified independently on
+> both backends (`v = [10,20,30]`):
+>
+> | index | `v[0]` | `v[2]` | `v[3]` | `v[-1]` | `v[-3]` | `v[-4]` |
+> |---|---|---|---|---|---|---|
+> | result | 10 | 30 | **null** | **30** | **10** | **null** |
+>
+> i.e. `i ∈ [0,len)` → element · `i ≥ len` → null · `i ∈ [-len,-1]` → element from the end · `i < -len` →
+> null. So the ask is documentation only: LOFT.md § Vectors says `v[i] // index (null if out of bounds)`,
+> which describes just the first two columns. The footgun below stands regardless of intent — `if v[i] {…}`
+> does not guard a negative index — so the routing comment at the `ei >= 0` site stays either way.
 
 ### Verified
 
