@@ -13,8 +13,9 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep,
-                     tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m);
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph,
+                     tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m,
+                     point_polyline_m);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
 
@@ -148,13 +149,66 @@ pub fn parse_sketch(spec: text) -> vector<GeoPoint> {
 }
 
 // Map-match the rough sketch to the actual route over roads.store (server.loft's match_for path).
-// Emits `ROUTE lat,lon;…` then a `SUMMARY` line.
+// Emits `ROUTE lat,lon;…` then a `SUMMARY` line. One-shot: builds the corridor and graph every call.
+// A long-lived front-end should use `do_match_session` instead — see below.
 pub fn do_match(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   ways = tiles_corridor_ways(roads, trace, corridor_margin(trace));
   route = match_route(build_graph(ways), trace, profile);
+  emit_route(route, len(ways), profile);
+}
+
+fn emit_route(route: vector<GeoPoint>, nways: integer, profile: text) {
   line = "ROUTE";
   for p in route { line += ";{p.lat:2.6},{p.lon:2.6}"; }
   println(line);
-  println("SUMMARY ways={len(ways)} route_pts={len(route)} len={path_length_m(route):1.1}m profile={profile}");
+  println("SUMMARY ways={nways} route_pts={len(route)} len={path_length_m(route):1.1}m profile={profile}");
+}
+
+// --- session-scoped matching (PLAN-PERF §0 step 7) ----------------------------------------------------
+// The corridor ways and the graph built from them are the SAME for every click that stays inside the
+// area already fetched — so a session holds them instead of rebuilding per click. `build_graph` is ~41%
+// of a cold match (PLAN-MATCH's table splits 886 ms as build 367 + search 519), and it was being paid
+// on every single point the user added.
+//
+// This is `server/server.loft`'s cache, ported rather than reinvented: `covs` records each corridor's
+// footprint and `covered()` asks whether every point of the new sketch lies well inside one we already
+// have. Keep the two in step — the server is the reference implementation.
+
+struct Corridor { pts: vector<GeoPoint>, margin: float }
+pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, built: boolean }
+
+pub fn session_new() -> MatchSession {
+  MatchSession { cways: [], cg: build_graph([]), covs: [], built: false }
+}
+
+// True when EVERY point lies well inside SOME corridor this session already built — so the accumulated
+// graph already holds the ways it needs and nothing must be rebuilt. The 0.85 / 1.05 factors are the
+// server's: require the point comfortably inside (not at the fringe, where the corridor's own ways run
+// out) and the new margin no wider than the one that was fetched.
+fn covered(s: MatchSession, pts: vector<GeoPoint>, margin: float) -> boolean {
+  if !s.built || len(s.cways) == 0 || len(s.covs) == 0 { return false; }
+  for p in pts {
+    ok = false;
+    for c in s.covs {
+      if margin <= c.margin * 1.05 && point_polyline_m(p, c.pts) <= c.margin * 0.85 { ok = true; break; }
+    }
+    if !ok { return false; }
+  }
+  true
+}
+
+// Match `trace`, reusing the session's graph when the sketch is already covered. Corridors ACCUMULATE:
+// a miss adds its ways to the session and rebuilds once, so revisiting anywhere edited earlier this
+// session stays warm.
+pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
+  if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
+  margin = corridor_margin(trace);
+  if !covered(s, trace, margin) {
+    s.cways += tiles_corridor_ways(roads, trace, margin);
+    s.cg = build_graph(s.cways);
+    s.covs += [Corridor { pts: trace, margin: margin }];
+    s.built = true;
+  }
+  emit_route(match_route(s.cg, trace, profile), len(s.cways), profile);
 }

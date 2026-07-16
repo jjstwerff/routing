@@ -62,6 +62,8 @@ const probe = `(async () => {
   out.matchCold = []; out.matchWarm = [];
   for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
+  out.matchExtend = [];
+  if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.block = [];
@@ -111,14 +113,19 @@ console.log('  raw match_warm kernel per run: ' + (res.matchWarm || []).map((r) 
 console.log('\n=== MATCH COLD FULL — same command x' + res.matchCold.length + ' (ms) ===');
 console.log('             median   min–max   spread');
 for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchCold.map((r) => r[k]));
+if (res.matchExtend?.length) {
+  console.log('\n=== MATCH EXTEND (+1 point, ~500m — outside the corridor, cannot be warm) — x' + res.matchExtend.length + ' (ms) ===');
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'total']) row(k, res.matchExtend.map((r) => r[k]));
+}
 if (res.matchWarm?.length) {
-  console.log('\n=== MATCH WARM (one point added) — x' + res.matchWarm.length + ' (ms) ===');
+  console.log('\n=== MATCH WARM (one point MOVED ~20m — inside the corridor) — x' + res.matchWarm.length + ' (ms) ===');
   console.log('             median   min–max   spread');
   for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchWarm.map((r) => r[k]));
 }
 if (res.matchWarm?.length) {
   const c = med(res.matchCold.map((r) => r.kernel)), w = med(res.matchWarm.map((r) => r.kernel));
-  console.log('  ratio warm/cold  ' + (w / c).toFixed(2) + 'x');
+  console.log('\n  ratio warm/cold  ' + (w / c).toFixed(2) + 'x   (step 7 reuses the graph: build_graph ≈41% of a match)');
   console.log('  → warm ≈ cold means the app re-matches the WHOLE sketch when one point changed');
   console.log('    (PLAN-PERF §1). server.loft does this incrementally in 40-68ms. Steps 6-8 move it.');
 }

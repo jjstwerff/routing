@@ -178,11 +178,20 @@ window.__perfHooks = {
   // covered() + match_incremental). Today the app re-matches the whole sketch from scratch, so this is
   // expected to ≈ matchColdFull — that equality IS the bug (PLAN-PERF §1), and it is the number
   // steps 6–8 must move.
+  // MOVE an existing point ~20m. This is the edit that SHOULD be warm: the nudged point stays inside
+  // the corridor already fetched, so covered() holds and the session's graph is reused.
   async matchWarm(pts) {
-    await timeMatch(pts);                                  // click 1..n — establish the sketch
-    const extra = pts[pts.length - 1];
-    const grown = [...pts, [extra[0] + 0.004, extra[1] + 0.004]];   // click n+1 — add ONE point
-    return timeMatch(grown);                               // time only the incremental edit
+    await timeMatch(pts);                                  // establish the sketch (cold)
+    const moved = pts.map((p, i) => (i === pts.length - 1 ? [p[0] + 0.0002, p[1] + 0.0002] : p));
+    return timeMatch(moved);
+  },
+  // EXTEND the sketch by ~500m. This one CANNOT be warm by construction: the new point is outside every
+  // corridor fetched so far, so its ways must be read and the graph rebuilt. Measured separately so the
+  // two interactions are not conflated — "add a point" and "move a point" have different floors.
+  async matchExtend(pts) {
+    await timeMatch(pts);
+    const last = pts[pts.length - 1];
+    return timeMatch([...pts, [last[0] + 0.004, last[1] + 0.004]]);
   },
 };
 

@@ -24,7 +24,7 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_match, parse_sketch);
+use map_kernel::(do_view_bbox, do_match_session, session_new, parse_sketch);
 use basemap::(PTile);
 use routing_kernel::(TTile);
 use web::frame_yield;
@@ -55,6 +55,10 @@ fn main() {
   // pan was ~341 ms of the 1121 ms pan (PLAN-PERF §2).
   roads_at  = "";
   layout_at = "";
+  // The corridor ways + the graph built from them, held across commands: identical for every click that
+  // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
+  // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
+  sess = session_new();
   while true {
     blob = host_input();
     if blob == "" {
@@ -74,6 +78,7 @@ fn main() {
       if roads_url != roads_at {
         if store_load_url_trusted(roads, roads_url) {
           roads_at = roads_url;
+          sess = session_new();                   // different region ⇒ the cached corridor/graph is stale
         } else {
           println("ERR roads store_load_url failed: {roads_url}");
           roads_at = "";                          // failed load leaves the store unusable — don't cache it
@@ -82,7 +87,7 @@ fn main() {
       }
       if ok {
         if cmd == "match" {
-          do_match(roads, parse_sketch(arg3), profile);
+          do_match_session(sess, roads, parse_sketch(arg3), profile);
         } else {
           if layout_url != layout_at {
             if store_load_url_trusted(layout, layout_url) {
