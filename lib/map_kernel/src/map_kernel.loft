@@ -35,7 +35,7 @@ fn ring_text(pre: text, ox: integer, oy: integer, ring: vector<Coord>) -> text {
 // --- viewport bbox (fixed-point deg*1e7) --------------------------------------------------------------
 // A query box in the same fixed-point space as the tile coords (oy+c.y = lat, ox+c.x = lon), so the
 // overlap test is integer arithmetic. An empty/invalid spec yields a world box (everything passes).
-struct FBox { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer }
+struct FBox { const mnla: integer, const mnlo: integer, const mxla: integer, const mxlo: integer }
 
 fn world_box() -> FBox { FBox { mnla: -900000000, mnlo: -1800000000, mxla: 900000000, mxlo: 1800000000 } }
 

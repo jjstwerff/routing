@@ -8,8 +8,8 @@
 
 // A rough or matched point. lat/lon in degrees (WGS84).
 pub struct GeoPoint {
-  lat: float,
-  lon: float,
+  const lat: float,
+  const lon: float,
 }
 
 // WGS84 ellipsoid — the ellipsoidal length upgrade (DESIGN §5, deferred from step 7; replaces the
@@ -86,26 +86,26 @@ pub fn path_length_m(pts: vector<GeoPoint>) -> float {
 // it stays target-agnostic.
 
 pub struct BBox {
-  min_lat: float,
-  min_lon: float,
-  max_lat: float,
-  max_lon: float,
+  const min_lat: float,
+  const min_lon: float,
+  const max_lat: float,
+  const max_lon: float,
 }
 
 // One OSM way from the corridor: its activity-relevant tags + its geometry.
 pub struct Way {
-  highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
-  surface:   text,   // `surface=` or "" when absent
-  tracktype: text,   // `tracktype=` or ""
-  bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
-  access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
-  oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
-  onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
-  svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
-  cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
-  cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
-  name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
-  coords:    vector<GeoPoint>,
+  const highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
+  const surface:   text,   // `surface=` or "" when absent
+  const tracktype: text,   // `tracktype=` or ""
+  const bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
+  const access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
+  const oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
+  const onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
+  const svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
+  const cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
+  const cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
+  const name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
+  const coords:    vector<GeoPoint>,
 }
 
 // Bounding box of the rough points, expanded by `margin_m` metres on every side. (A true narrow
@@ -221,9 +221,11 @@ pub fn parse_ways(response: text) -> vector<Way> {
 TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
-pub struct TStep { x: i32, y: i32, h: i32 }
-pub struct TRoad { tp: u8, flags: u8, steps: u8 }
-pub struct TTile { tkey: integer, ox: integer, oy: integer, oh: integer, roads: vector<TRoad>, steps: vector<TStep> }
+pub struct TStep { const x: i32, const y: i32, const h: i32 }
+pub struct TRoad { const tp: u8, const flags: u8, const steps: u8 }
+// roads/steps are NOT const: they are grown per-tile by tools/gen-tiles.loft via `t.roads += […]`, and
+// `+=` is a compound assign — a whole-value REBIND, which `const` freezes (see EdgeCosts below).
+pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, roads: vector<TRoad>, steps: vector<TStep> }
 
 // RoadType code → a representative OSM highway value, so the existing tag-based cost model works
 // unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
@@ -322,8 +324,13 @@ ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate j
                       // because taps are IMPRECISE (fat-fingered) — the band must reach the ways
                       // actually on the drawn line, not just the ones nearest a mis-tap.
 
-struct CoordIdx { coord: text, idx: integer }
-struct GNode { lat: float, lon: float }
+struct CoordIdx { const coord: text, const idx: integer }
+struct GNode { const lat: float, const lon: float }
+// NOT const, though a GEdge is set-once at build and never mutated: `to[pa] = e.b` (build_adj) and
+// `cm[c] = … + e.length` (match_quality) READ a field on the RHS of a vector element-store, and loft
+// @PLN40 rejects that with "cannot reassign const field" — a false positive (a read reassigns nothing)
+// that trips on ANY field read of a struct carrying ANY const field. See docs/loft-feedback.md
+// (2026-07-16). Restore `const` here once that is fixed.
 struct GEdge {
   a: integer, b: integer, length: float,
   hw: text, surface: text, tracktype: text,
@@ -414,7 +421,7 @@ fn build_adj(g: Graph) {
 
 // Distance (m) from p to segment a-b AND the clamped projection parameter t∈[0,1], via a local
 // equirectangular projection around p (accurate at corridor scale). p sits at the origin.
-struct SegDT { d: float, t: float }
+struct SegDT { const d: float, const t: float }
 fn point_seg_dt(plat: float, plon: float, alat: float, alon: float, blat: float, blon: float) -> SegDT {
   kx = 111320.0 * cos(plat * PI / 180.0);   // metres per degree longitude at this latitude
   ky = 111320.0;                             // metres per degree latitude
@@ -471,7 +478,7 @@ fn point_trace_m(plat: float, plon: float, trace: vector<GeoPoint>) -> float {
 // line (0 at start … total at finish, using cumulative lengths `cum`), seg_m = length of the line
 // segment it projected onto (its local resolution, for the relative looseness band). This is what
 // lets the matcher enforce forward progress (s must not decrease) instead of anchoring at points.
-struct Proj { d: float, s: float, seg_m: float }
+struct Proj { const d: float, const s: float, const seg_m: float }
 fn project(plat: float, plon: float, line: vector<GeoPoint>, cum: vector<float>) -> Proj {
   bd = BIG; bs = 0.0; bseg = 0.0;
   for i in 1..len(line) {
@@ -733,7 +740,7 @@ fn heap_push(h: Heap, c: float, nd: integer) {
   }
 }
 
-struct Popped { cost: float, node: integer, ok: boolean }
+struct Popped { const cost: float, const node: integer, const ok: boolean }
 fn heap_pop(h: Heap) -> Popped {
   if h.size == 0 { return Popped { cost: 0.0, node: -1, ok: false }; }
   rc = h.cost[0] ?? 0.0;
@@ -846,7 +853,7 @@ fn push_pt(out: &vector<GeoPoint>, p: GeoPoint) {
 // pts = the matched polyline. bridges = how many gaps were bridged. bseg = a FLAT list of the bridge
 // segments' endpoints (a0,b0,a1,b1,…): each consecutive pair is a straight gap crossing (drawn along
 // the sketch, not a real way), which the client renders as a DOTTED line so it never looks like a road.
-pub struct MatchResult { pts: vector<GeoPoint>, bridges: integer, bseg: vector<GeoPoint> }
+pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, const bseg: vector<GeoPoint> }
 
 // ===================================================================================================
 // THE map-matcher (DESIGN §5) — a two-pass scheme that treats the drawn points as NOISY SAMPLES of a
@@ -869,6 +876,10 @@ pub struct MatchResult { pts: vector<GeoPoint>, bridges: integer, bseg: vector<G
 // Per-edge cost pieces, precomputed ONCE per match (segment-independent — depend only on tags+profile):
 // base tag penalty, deviation weight, legality surcharge, forward/backward direction legality. This is
 // what makes the hot search loop cheap (array reads, not ~40 string compares per edge relaxation).
+// NOT const: the 5 parallel arrays are grown in precompute_edges via `ec.pen += […]`, and `+=` is a
+// compound assign — i.e. a whole-value REBIND, which `const` freezes (LOFT.md § Fields: const freezes
+// the binding, not the contents; `t.v[0] = x` is allowed, `t.v = […]` is not). So a `+=`-grown
+// collection field cannot be const.
 struct EdgeCosts { pen: vector<float>, dw: vector<float>, sur: vector<float>, afwd: vector<boolean>, abwd: vector<boolean> }
 
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
@@ -990,16 +1001,19 @@ fn nearest_node1(g: Graph, p: GeoPoint) -> integer {
 // final stitched route isn't (remove_spurs folds joints), so quality can't be re-derived from it.
 // pen_m = Σ edge_length · ec.pen (the matcher's own per-metre suitability penalty). class_m: metres per
 // road_class bucket. A bridged stretch carries zeros (its gap is counted as bridged length downstream).
+// NOT const, though a SubPath is set-once and never mutated: `cm[c] = (cm[c] ?? 0.0) + (s.class_m[c] ?? 0.0)`
+// (match-quality aggregation) reads a field on the RHS of a vector element-store — the same @PLN40 false
+// positive that blocks GEdge above. See docs/loft-feedback.md (2026-07-16).
 struct SubPath { pts: vector<GeoPoint>, bridged: boolean, len_m: float, pen_m: float, class_m: vector<float> }
 pub struct MatchState {
-  trace: vector<GeoPoint>,    // raw drawn trace this state was built for (for diffing the next edit)
-  ctrace: vector<GeoPoint>,   // the trace actually matched (a loop has the start appended)
-  profile: text,
-  looped: boolean,
-  anchors: vector<integer>,   // one node index per ctrace point (Pass 1)
-  subs: vector<SubPath>,      // one matched sub-path per stretch (Pass 2); len = len(ctrace) - 1
-  ec: EdgeCosts,              // per-edge cost pieces — valid while the graph + profile are unchanged
-  built: boolean,
+  const trace: vector<GeoPoint>,    // raw drawn trace this state was built for (for diffing the next edit)
+  const ctrace: vector<GeoPoint>,   // the trace actually matched (a loop has the start appended)
+  const profile: text,
+  const looped: boolean,
+  const anchors: vector<integer>,   // one node index per ctrace point (Pass 1)
+  const subs: vector<SubPath>,      // one matched sub-path per stretch (Pass 2); len = len(ctrace) - 1
+  const ec: EdgeCosts,              // per-edge cost pieces — valid while the graph + profile are unchanged
+  const built: boolean,
 }
 
 // Pass-1 anchor for ctrace index i: an endpoint snaps to its nearest node; an interior point snaps onto
@@ -1085,7 +1099,7 @@ fn stitch(g: Graph, st: MatchState) -> MatchResult {
 //   pen_m     — Σ way_penalty × edge_length: the suitability-penalty-weighted length. pen_m/len_m is
 //               the per-metre "how unsuitable were the ways I was forced onto" tell (the §3 PEN_TOL gate).
 //   class_m   — metres per road-class bucket (see road_class): the human-legible "bigger streets" view.
-pub struct MatchQuality { dev_max: float, dev_mean: float, bridged_m: float, len_m: float, pen_m: float, class_m: vector<float> }
+pub struct MatchQuality { const dev_max: float, const dev_mean: float, const bridged_m: float, const len_m: float, const pen_m: float, const class_m: vector<float> }
 
 // Road-class buckets for the metres-per-class mix. Coarse on purpose — the human question is "was I put
 // on a big road?", not the exact OSM value. 0 arterial · 1 through · 2 local · 3 cycleway · 4 foot/path · 5 other.
@@ -1457,18 +1471,18 @@ ELEV_TILE_PX = 256;   // terrarium tile edge in pixels
 // text — a constructed-text argument to a `float?`-returning fn zeroes the result under --native
 // (loft codegen bug, minimal repro in docs/loft-feedback.md; text keys stay in the fetch API).
 pub struct TileHeights {
-  tx: integer,           // slippy tile column at the profile's zoom
-  ty: integer,           // slippy tile row
+  const tx: integer,           // slippy tile column at the profile's zoom
+  const ty: integer,           // slippy tile row
   heights: vector<float>,
 }
 
 // One profile sample: `d` metres along the route, `e` metres elevation.
-pub struct ElevSample { d: float, e: float }
+pub struct ElevSample { const d: float, const e: float }
 
 pub struct ElevProfile {
-  up: float,             // total ascent (m)
-  down: float,           // total descent (m)
-  samples: vector<ElevSample>,
+  const up: float,             // total ascent (m)
+  const down: float,           // total descent (m)
+  const samples: vector<ElevSample>,
 }
 
 // Fractional slippy-map tile column for a longitude (tile = floor, pixel = fraction · 256).

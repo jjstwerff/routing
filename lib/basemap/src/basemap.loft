@@ -46,13 +46,17 @@ pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
 // loft keyword). Area/Building are polygons; Line is a stroked line (streams/ditches/rivers, railways);
 // Label is text; Poi is a point icon (trees, benches, viewpoints, towers, ruins — and stream crossings:
 // fords, stepping-stones, footbridges). The map matcher reads none of it.
-pub struct Coord    { x: i32, y: i32 }
-pub struct Area     { cover: text, ring: vector<Coord> }        // filled polygon (landcover + parking/camp/ruin/playground)
-pub struct Building { name: text, ring: vector<Coord> }         // footprint polygon
-pub struct Line     { kind: text, name: text, geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
-pub struct Label    { name: text, kind: text, rank: integer, line: vector<Coord> }
-pub struct Poi      { kind: text, name: text, at: Coord }       // point icon (tree/bench/viewpoint/tower/ruin/crossing)
-pub struct PTile    { tkey: integer, ox: integer, oy: integer,
+pub struct Coord    { const x: i32, const y: i32 }
+pub struct Area     { const cover: text, const ring: vector<Coord> }        // filled polygon (landcover + parking/camp/ruin/playground)
+pub struct Building { const name: text, const ring: vector<Coord> }         // footprint polygon
+pub struct Line     { const kind: text, const name: text, const geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
+pub struct Label    { const name: text, const kind: text, const rank: integer, const line: vector<Coord> }
+pub struct Poi      { const kind: text, const name: text, const at: Coord }       // point icon (tree/bench/viewpoint/tower/ruin/crossing)
+// The 5 geometry vectors are NOT const: they are grown per-tile via `t.areas += [Area{…}]` etc.
+// (client/basemap/build_store.loft, encode_areas.loft, store_probe.loft). `+=` is a compound assign —
+// a whole-value REBIND — and `const` freezes the binding, so a `+=`-grown field cannot be const
+// (LOFT.md § Fields: `t.v[0] = x` is allowed, `t.v = […]` is not). tkey/ox/oy are set-once → const.
+pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
                       areas: vector<Area>, buildings: vector<Building>,
                       lines: vector<Line>, labels: vector<Label>, pois: vector<Poi> }
 

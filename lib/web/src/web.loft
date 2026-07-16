@@ -6,8 +6,8 @@
 
 // The result of an HTTP request.
 pub struct HttpResponse {
-  status: integer,
-  body: text
+  const status: integer,
+  const body: text
 }
 
 // Returns true when the status code is in the 200-299 range.
@@ -120,7 +120,7 @@ pub fn http_delete_h(url: text, headers: vector<text>) -> HttpResponse {
 // style.
 
 pub struct WsHandler {
-  id: integer            // Rust-side connection slot
+  const id: integer            // Rust-side connection slot
 }
 
 // --- Internal natives (lifecycle primitives) ---
@@ -299,12 +299,12 @@ pub fn byte_at(idx: integer, t: text) -> integer;
 //   }
 
 pub struct WsGroupEvent {
-  handle: integer,
-  message: text
+  const handle: integer,
+  const message: text
 }
 
 pub struct WsGroup {
-  _dummy: integer   // no state on loft side; Rust owns the list
+  const _dummy: integer   // no state on loft side; Rust owns the list
 }
 
 fn ws_group_clear_native();
