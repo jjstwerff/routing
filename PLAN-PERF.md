@@ -28,17 +28,17 @@ Rules that make these steps safe, and that every row below obeys:
 |---|---|---|---|---|
 | **1** ✅ | `browser/cdp_profile.mjs`, `browser/store-app.mjs` | Label the existing match probe `matchColdFull`; add `matchWarm` (2nd click, one point added). | **DONE** — warm/cold = **0.91×**: adding one point costs 91% of a full rebuild. That equality is the bug, stated as a number. | none (test-only) |
 | **2** ✅ | `browser/loop_probe.loft`, `browser/cdp_loop_probe.mjs`, `tools/loop_probe.sh` | **Probe:** `main()` loops on `host_input()`, `frame_yield()`s, keeps a counter, echoes. | **PASSED** — see §2a | none — **gated 4–8; they are GO** |
-| **3** | `scratch/read_probe.mjs` | **Probe:** fetch `enschede.layout.store`; `readLoftValue` over the `ArrayBuffer`; read one known PTile. | reconstructs the kernel's `cover`+ring | none — **gates 9–12** |
+| **3** ✅ | `browser/read_probe.loft`, `tools/read_probe.sh` | **Probe:** is the store FILE the record image? Deliver a PTile; look for its bytes in the file. | **PASSED** — see §2b | none — **gated 9–13; GO, via `expose`** |
 | **4** | `client/web_basemap_kernel.loft` | Wrap the existing body in `loop { cmd = host_input(); if cmd == "" { return; } … }`. Still one command per `loft_start`. | all gates green; profiler unchanged | **none** (structure only) |
 | **5** | `browser/store-kernel.mjs` | Drive the loop: keep `loft_start` running, `loftPush` each command, resolve per output. | 2 commands in one `loft_start` → 2 outputs | none (app still sends 1) |
 | **6** | `client/web_basemap_kernel.loft` | Move the two `store_load_url_trusted` calls **above** the loop. | 2nd command −355 ms (view) / −14 ms (match) | **perf only** |
 | **7** | `client/web_basemap_kernel.loft` | Hold the corridor `Graph` across commands; rebuild only when the corridor changes. | 2nd match −~41% (`build_graph` gone) | **perf only** |
 | **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
-| **9** | `browser/build-site.mjs` | Bake the layout `LayoutDesc` JSON at build time. | descriptor present in `_site` | none |
-| **10** | `browser/map.mjs` | Read **areas only** from the fetched buffer, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
-| **11** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
-| **12** | ×4 | Repeat 10–11 per kind (buildings, lines, labels, pois). | counts identical per kind | one kind per commit |
-| **13** | `client/web_basemap_kernel.loft` | Drop the layout store from the kernel entirely. | kernel loads roads only (14 ms) | **perf only** |
+| **9** | `client/web_basemap_kernel.loft` | `expose(1, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame). | JS receives descriptor + storeBase/rec/pos | none |
+| **10** | `browser/store-kernel.mjs` | Implement the `loft_host_deliver` import; wire `readLoftValue` (`doc/loft-deliver.js`). | one PTile read in JS == the kernel's text for that tile | none |
+| **11** | `browser/map.mjs` | Read **areas only** via `readLoftValue`, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
+| **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
+| **13** | ×4 + kernel | Repeat 11–12 per kind (buildings, lines, labels, pois); then delete the layout text emit. | counts identical per kind; serialize → ~0 | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
@@ -111,6 +111,39 @@ Store load, split per command — the structural fact §4 turns on:
 The kernel runs synchronously on the UI thread, so the cost lands as one un-interruptible block: **the
 phone is dead for 4.2 s.** Lag and cost are different problems — *cheaper work still freezes; the same
 work on a worker does not.* Both need fixing, and obeying §1 shrinks what is left to move off-thread.
+
+### 2b. Step 3's verdict — the store FILE *is* the record image (steps 9–13 GO, via `expose`)
+
+`tools/read_probe.sh` delivers one PTile from a `store_load`ed layout image and looks for its bytes in
+the file:
+
+| check | result |
+|---|---|
+| PTile record present in the file **verbatim** | ✅ @ `0x0055af88`, 8-byte aligned (rec 701937) |
+| fields read straight from the file bytes | `tkey=2047327105 ox=68600000 oy=521600000` — **identical** to loft's own output |
+| `addr(rec,pos) = storeBase + rec*8 + pos` | works with **storeBase = 0** on the raw file |
+| documented text interning (len at `id*8+4`, bytes at `id*8+8`) | **exact match** — "Buurserstraat" at string id 539252 |
+| header magic | `"Sto1"` |
+
+**HANDOFF's no-codec bet holds all the way to JS**: `store_load` *adopts* the image, it does not decode
+into some other shape.
+
+**But the root is not discoverable from the file alone — so use `expose`, not standalone parsing.**
+`readLoftValue(mem, storeBase, desc, typeId, rec, pos)` is *handed* its entry point; it does not find
+one, and the `"Sto1"` header/root layout is **not documented** in `doc/claude/`. Reverse-engineering it
+to read the file with no loft at all would be fragile and needs an upstream ask. Unnecessary: loft
+already ships the documented long-lived variant —
+
+> `expose(tag, value)` — **LONG-LIVED: pins the value's store; read it each frame**
+
+So the kernel `store_load`s the layout **once per session** (step 6) and `expose`s the root; JS then
+reads PTiles **zero-copy from wasm memory** for the rest of the session. A warm pan pays **no load, no
+serialize, no parse** — the same end state as standalone file reading, using only shipped, documented
+API. The 341 ms load becomes a one-time startup cost instead of a per-pan one, which is what §1's
+invariant asks for anyway.
+
+*(The standalone-file path stays a live option — the bytes are provably right — and flips to attractive
+if loft ever documents the header, or if startup load must be zero too.)*
 
 ### 2a. Step 2's verdict — loft CAN own the loop (steps 4–8 are GO)
 
