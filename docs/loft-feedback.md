@@ -856,3 +856,9 @@ maintainer's to confirm.
 > (russh/ring FFI): local-installed `ssh` now cross-compiles + links via `--native-android`**. So this is a
 > toolchain/packaging bug, not `include!` discovery. **Action here:** once that branch lands and `loft` is
 > reinstalled, re-run `loft --native tools/ssh_smoke.loft` — it should pass and unblock ssh_home Step 5.
+>
+> **✅ VERIFIED RESOLVED 2026-07-16.** The local `loft` was rebuilt (still `2026.7.1`, binary+runtime dated
+> 2026-07-16 11:56) carrying this fix (and the `@PLN102` domain lattice — `LOFT_NO_MATH_DOMAIN`). After a fresh
+> `loft install ssh@0.1.0 --refresh`, **`loft --native tools/ssh_smoke.loft` now PASSES the full smoke** —
+> auth accept+reject, shell, binary ESC round-trip, resize — so ssh_home Step 5 is unblocked. No P269. Whole
+> issue closed.
