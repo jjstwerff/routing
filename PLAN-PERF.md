@@ -2,359 +2,259 @@
 # PLAN-PERF — making the standalone app fully performant
 
 **Status:** design. Nothing here is implemented. **Plan of record for app performance.** It does not
-supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it, ranks it against the other costs,
-and phases the app's work around the numbers.
+supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against everything else.
 
-**The rule this doc follows:** every phase is justified by a measurement from `tools/map_profile.sh`,
-and every phase names the probe that could prove it wrong. A performance design not attributed to a
-measurement is a guess with a table.
+**Target device is a phone.** Judge every number in the 4× column; the desktop column is only there to
+show how badly a desktop profile flatters us.
 
 ---
 
-## 0. The measured baseline
+## 1. The one invariant
 
-`tools/map_profile.sh` — headless Chromium, `_site` over HTTP, enschede stores (20 MB layout + 3.5 MB
-roads), viewport at zoom 16, medians. The decode probes use a degenerate argument (empty bbox / two
-identical points) so the command's own work is ≈0 and what remains is the store load.
+> **Every interaction does work proportional to what CHANGED — never proportional to the size of the
+> data. Never do everything again; build from what you have.**
 
-**The phone column is the one that matters.** `CPU_THROTTLE=4 tools/map_profile.sh` applies CDP CPU
-throttling ≈ a mid-range phone — the device this app is *for*.
+Every number in §2 is a violation of it. That is the whole design: there is no clever algorithm here,
+there is a stateless app repeatedly rebuilding a world that did not change.
 
-| phase | `view` desktop | **`view` phone (4×)** | `match` desktop | **`match` phone (4×)** |
+The app **already knows how to obey it** — `server/server.loft` does: `covered()` + `match_incremental`
+*"diffs `pts` against the cached MatchState and recomputes only the edited window"*, and lands a warm
+edit in **40–68 ms**. The browser app **regressed that** when it went stateless: `runKernel` is a pure
+function of its command string, so every click re-loads the stores, rebuilds the graph, and re-matches
+the whole sketch from scratch.
+
+**So the headline cost is not slow code. It is a full match on every click, when the sketch changed by
+one point.**
+
+---
+
+## 2. The measured baseline — and what each number violates
+
+`tools/map_profile.sh` (headless Chromium, `_site` over HTTP, enschede stores: 20 MB layout + 3.5 MB
+roads, zoom 16, medians). `CPU_THROTTLE=4` ≈ a mid-range phone.
+
+| what | desktop | **phone (4×)** | what changed | what it should cost | violation |
+|---|---|---|---|---|---|
+| **match** — full, per click | ~1040 ms | **4481 ms** | one point | one edited window (~40–68 ms warm on the server) | **rebuilds the whole match** |
+| ├ store load (roads) | 5 | 14 | nothing | 0 | reloads a loaded store |
+| └ compute | ~1035 | **4370** | one point | the edited window | full corridor + `build_graph` + full search |
+| **view** — per pan past the box | 287 ms | **1121 ms** | the newly-exposed strip | that strip | re-emits the whole viewport |
+| ├ store load (layout 341 + roads 14) | 90 | **355** | nothing | 0 | re-validates a static 20 MB file |
+| ├ serialize | 124 | **544** | — | 0 (JS can read records) | formats coords into strings JS re-parses |
+| ├ JS parse | 37 | **157** | — | 0 | undoes the line above |
+| └ render | 22 | **76** | the camera | a blit | redraws every feature per frame |
+
+Store load, split per command — the structural fact §4 turns on:
+
+| store | size | `view` | `match` | phone load |
 |---|---|---|---|---|
-| store load | 90 (31%) | **355** | 5 (<1%) | **14** |
-| kernel serialize / compute | 124 (43%) | **544** | ~1035 (99%) | **4370** |
-| JS text parse | 37 (13%) | **157** | 0 | 2 |
-| canvas render | 22 (8%) | **76** | 28 | 95 |
-| **total** | **287 ms** | **1121 ms** | **~1040 ms** | **4481 ms** |
-| text emitted | 4.2 MB / 29k lines | same | 4 KB | same |
+| **layout** | 20 MB | ✅ | ❌ **never** | **341 ms** |
+| **roads** | 3.5 MB | ✅ | ✅ | 14 ms |
 
-Store load, split per command (the structural fact §1 turns on):
+### And the app is FROZEN while it happens
 
-| store load (per kernel call) | desktop | phone (4×) | loaded by |
-|---|---|---|---|
-| roads only | 5 | 14 | `match` **and** `view` |
-| **layout alone** | **85** | **341** | **`view` ONLY — `match` never loads it** |
-
-**A click costs 4.5 seconds on a phone. A pan costs 1.1 s.** That is the problem this doc exists for;
-the desktop numbers made it look like a nice-to-have.
-
-**A speculation this falsified (mine).** I expected the text path to degrade *disproportionately* on a
-phone — 29k lines split into millions of short-lived strings is allocation/GC-heavy, and mobile GC and
-memory bandwidth are weaker than mobile compute. It doesn't: parse scaled **4.2×**, serialize 4.4×,
-compute 4.2×, render 3.5× — everything moves together, so **the ranking does not reorder** and the
-design below stands unchanged. *Caveat:* CDP throttling scales CPU only; it does not model memory
-bandwidth, cache size, or a real GC. So this **weakens** the "text is disproportionately bad on mobile"
-argument without fully killing it — a real-device run (§7) is the only thing that settles it, and no
-phase below depends on that claim.
-
-### Two premises this falsified
-
-**1. "The text bridge is the front-end bottleneck" — stale.** `docs/loft-binary-bridge.md` asks loft for
-a zero-copy bridge because `view` serializes *"~230k features to text … JS re-parses with `parseFloat`
-over millions of coordinate strings."* loft **shipped** it (@PLN105 `deliver`/`expose`, verified working
-here on both backends). But JS parse is **37 ms of 287** — 13%, and `match` emits **4 KB**, so a bridge
-saves match *nothing*. The premise was true when `view` emitted the whole region; commit `199e7c7`
-(viewport-scoped `view`) already fixed it. **The bridge's justification was removed by a different
-change before the bridge arrived.**
-
-**2. "loft must be in the view path" — false, and this is the big one.** `view` does no computing. Read
-`map_kernel.loft`: it is `ring_hits()` (an integer bbox compare) plus `ring_text()` formatting every
-coordinate as `"{lat:2.6},{lon:2.6}"`. The 124 ms is **formatting numbers into strings that JS
-immediately turns back into numbers**. Meanwhile the 85 ms is loft **structurally re-validating a
-static 20 MB file we ship ourselves — on every redraw**.
-
-The store was designed for exactly this: *"a store file is its own serialization"* (HANDOFF's no-codec
-bet). `store_load_url_trusted` **adopts the image**; it does not decode into some other shape. So the
-bytes JS fetches ARE the records. **JS can read them.**
-
----
-
-## 0a. Lag is not slowness — the main thread is FROZEN
-
-The measurement that reorders everything below. `__perfHooks.frameBlocking` drives `requestAnimationFrame`
-across a kernel call and counts the frames that actually landed (4× throttle):
+`__perfHooks.frameBlocking` drives rAF across a kernel call and counts landed frames (4×):
 
 | call | duration | frames landed | longest frozen gap |
 |---|---|---|---|
-| `view` | 925 ms | **6 of ~55 expected** | **779 ms** |
-| `match` | 4225 ms | **3 of ~253 expected** | **4212 ms** |
+| `view` | 925 ms | **6 of ~55** | **779 ms** |
+| `match` | 4225 ms | **3 of ~253** | **4212 ms** |
 
-**During a match the phone is dead for 4.2 seconds.** Not "slow" — frozen: no pan, no zoom, no repaint,
-no response to touch. The kernel runs synchronously on the UI thread, so the whole cost lands as one
-un-interruptible block.
+The kernel runs synchronously on the UI thread, so the cost lands as one un-interruptible block: **the
+phone is dead for 4.2 s.** Lag and cost are different problems — *cheaper work still freezes; the same
+work on a worker does not.* Both need fixing, and obeying §1 shrinks what is left to move off-thread.
 
-This splits the problem in two, and **they are not the same problem**:
+### Two premises this falsified
 
-| | what it is | what fixes it | what does NOT fix it |
-|---|---|---|---|
-| **Lag** (responsiveness) | the main thread cannot paint | get the work **off** the thread | making the work cheaper |
-| **Cost** (throughput) | the work takes 4.2 s of CPU | A / C below | moving it to a worker |
+**"The text bridge is the front-end bottleneck"** (`docs/loft-binary-bridge.md`, which asked loft for
+@PLN105 `deliver`, and loft shipped it): JS parse is **157 ms of 1121** and `match` emits **4 KB**, so the
+bridge saves a click *nothing*. The premise was true when `view` emitted the whole region; `199e7c7`
+(viewport-scoped view) already fixed it.
 
-**A/B/C only address cost.** Even at their ideal end state a 1300 ms match still freezes the phone for
-1.3 s — an app that "performs well on paper" and still feels broken. Conversely, a 4.2 s match on a
-worker with a live 60 fps UI feels like *loading*, which users accept, rather than *hanging*, which they
-do not.
+**"loft must be in the view path":** `view` does no computing — it is `ring_hits()` (an integer bbox
+compare) plus `ring_text()` formatting. The store is its own serialization (HANDOFF's no-codec bet), so
+JS can read the records. **loft does the ROUTE; JS does the MAP.**
 
-**So responsiveness is Phase 0 and comes before every cost phase.** It is also the cheapest thing in this
-document: it changes no algorithm, risks no route, and buys the largest perceptual win.
+---
 
-### Phase 0 — never block a frame
+## 3. Phase S — the session (the bug)
 
-**Invariant:** *no user-visible frame waits on the kernel; the main thread only ever renders prepared data.*
+**Do first. This is not an optimisation; it is restoring a fast path the app already had.**
 
-**Re-assertion sites: 1** — the single `runKernel` call site. Omission is loud (the app freezes; the
-frameBlocking probe reports it as a number).
+**Invariant:** *a kernel session holds what does not change — decoded stores, the built graph, the
+MatchState — and each command does work proportional to the diff.*
+
+**Re-assertion sites: 1** — the kernel's command loop. Omission is loud (a stale/empty session draws
+nothing or re-matches everything, and the profiler reports it).
 
 | step | change | verify |
 |---|---|---|
-| 0.1 | Move the loft-wasm kernel into a **Web Worker**; `runKernel` becomes postMessage/await. The `--html` kernel talks over `host_input()`/`println` already — a channel a worker can host; the store fetch is `fetch()`, which workers have. | `frameBlocking`: match lands ~all 253 frames, longest gap ≈16 ms. Total time unchanged — that is the point. |
-| 0.2 | While a match is in flight, the UI stays live: keep panning/zooming, show progress, allow cancel-on-new-click (supersede the in-flight request). | a click during a match does not queue behind it |
-| 0.3 | **Render budget.** `render` is 76 ms/frame on a phone ⇒ ~13 fps *even with no kernel call* — panning is laggy on its own. Redraw from pre-projected typed arrays; cache per-tile rasters and blit on pan. | pan holds <16 ms/frame with the data loaded |
+| S1 | Kernel becomes a **session**: load stores on first command, reuse after. | 2nd+ call drops ≈355 ms (view) / ≈14 ms (match) |
+| S2 | Session holds the corridor `Graph` + `MatchState`. Port `covered()` + `match_incremental` from `server/server.loft` — **it exists; do not rewrite it.** | a click that adds one point re-matches only the edited window |
+| S3 | Client sends the **diff** (add/move/remove point), not the whole sketch. | command blob is O(1) per click |
+| S4 | `view` re-emits only the newly-exposed cells, not the whole viewport. | a small pan costs ≈ the new strip |
 
-**Predicted:** *no change to any total in §0* — and pan goes from 13 fps to 60, and a click stops freezing
-the device. **Falsification probe:** if the wasm kernel cannot run in a worker (an `--html` shim
-assumption, an asyncify/fetch constraint), 0.1 is dead as written and the fallback is chunking the kernel
-call so it yields — much worse, and worth knowing on day one. **Probe it before anything else in this
-doc.**
+**Predicted (phone):** click **4481 → ~200 ms** (40–68 ms × 4), pan past the box → the new strip only.
+**Falsification probe:** the server's 40–68 ms is a *desktop, native* number over a tile block. Before
+building S3/S4, port S2 alone and measure one warm click on the phone profile. If a warm incremental
+click is not ≈10–20× cheaper than a cold full match **on this data**, the premise is wrong and the win
+is smaller — find out with S2 before designing the diff protocol around it.
 
-> 0.3 is the reason Phase A's end state is "~150 ms" rather than "~76 ms": with the kernel gone from the
-> view path, *render* becomes the frame budget's only remaining problem.
-
----
-
-## 1. The decomposition — the two stores have different consumers
-
-This is the structural fact the whole design turns on, and it was invisible until the decode was
-measured per-command:
-
-| store | size | `view` | `match` | verdict |
-|---|---|---|---|---|
-| **layout** (areas, buildings, lines, labels, pois) | 20 MB | ✅ | ❌ never | **pure data access → JS reads it directly. loft has no role.** |
-| **roads** (TTile/TRoad/TStep) | 3.5 MB | ✅ (the R layer) | ✅ | loft needs it for Dijkstra; 5 ms to load, so it is not a cost |
-
-So the app is not "loft does the map, JS does pixels". It is:
-
-> **loft does the ROUTE. JS does the MAP.** Matching is real computation and belongs in loft. The base
-> map is a bbox filter over records — it belongs where the pixels are.
+**Risk:** the session is now state, and state goes stale (a moved point that invalidates a cached
+window). `server/server.loft` already solved this — `covered()` is exactly that guard. Port its logic;
+do not invent a second one.
 
 ---
 
-## 2. Three families, not one invariant
-
-One unifying rule ("never redo work") would be false here. These are three different problems, and only
-one of them can be *wrong*:
-
-| # | family | invariant | can it return a worse route? |
-|---|---|---|---|
-| **A** | **view path** | *The layout store is read, never decoded-then-re-encoded: JS reads the records; nothing serializes them to text.* | No — pure representation. Safe by construction. |
-| **B** | **match cost** | *Cost is proportional to the graph actually needed, and the accuracy floor is never lowered.* (PLAN-MATCH §2) | **YES** — it trades against accuracy. Needs the §3 gate. |
-| **C** | **validation lifetime** | *A static asset is validated at most once per session, never per redraw.* | No — pure subtraction. |
-
-A and C are deletion; B is a quality-gated trade. That asymmetry is why B carries a gate and A/C do not.
-
----
-
-## 3. Phase A — get loft out of the view path (246 ms of 287 ms)
-
-**Do first: the largest win, and it cannot return a wrong answer.**
+## 4. Phase A — get loft out of the view path (~900 ms of 1121)
 
 **Invariant:** *JS reads the layout records; nothing serializes them to text.*
 
+The layout store is **view-only** (match never loads it) and view is a bbox filter, not computation. So
+loft has no role: JS fetches the image and reads the records.
+
 **Re-assertion sites:** 1 per feature kind (areas / buildings / lines / labels / pois = 5). Omission is
-**loud** — a kind that is not read is a kind that does not draw. `N × silence = 0`.
+**loud** — a kind not read is a kind not drawn.
 
 | step | change | verify |
 |---|---|---|
-| A0 | *(done)* `tools/map_profile.sh` + `__perfHooks` — the attribution instrument | the numbers in §0 reproduce |
-| A1 | **Probe the enabling claim** (below) — can JS read the fetched image with a baked descriptor? | one PTile's `cover` + ring read in JS == the kernel's text for that tile |
-| A2 | Bake the layout descriptor at build time (`LayoutDesc::to_json`, memoized per type — it is static). | descriptor emitted; JS loads it |
-| A3 | JS reads ONE kind (areas) from the fetched buffer; kernel text path still runs; compare. | JS-read areas == text-parsed areas, feature-for-feature |
+| A1 | **Probe the enabling claim** (below). | one PTile read in JS == the kernel's text for that tile |
+| A2 | Bake the layout descriptor at build time (`LayoutDesc::to_json` — static per type). | descriptor emitted; JS loads it |
+| A3 | JS reads ONE kind (areas) from the fetched buffer; kernel text path still runs; compare. | JS-read == text-parsed, feature-for-feature |
 | A4 | Remaining 4 kinds; delete the text emit per kind as each is proven. | `# view:` counts identical; parse → 0 |
-| A5 | Drop the layout store from the kernel command entirely. | kernel only ever loads roads (5 ms) |
+| A5 | Drop the layout store from the kernel command entirely. | kernel only ever loads roads (14 ms) |
 
-**Predicted:** view 287 → **~30 ms** (render + a bbox filter over typed arrays). **Falsification probe
-(A1 — run this before anything else):**
-
-> Fetch `enschede.layout.store` in JS, hand `readLoftValue` (`doc/loft-deliver.js`) the fetched
-> `ArrayBuffer` as its memory with the right `storeBase`, and read one known PTile. If it reconstructs
-> the same `cover`/ring the kernel prints for that tile, the whole phase is real. **If the file image is
-> NOT the in-memory image** — if `store_load` relocates, interns, or fixes up on adopt — then A is
-> dead as written and the fallback is @PLN105 `deliver` (which reads the *adopted* image and still costs
-> the 85 ms), worth ~160 ms instead of ~246 ms.
-
-That single probe is the difference between a 10× view and a 1.8× view. **Run it first.**
+**Predicted (phone):** view 1121 → **~150 ms**, then render (76 ms) is the floor — hence §6's render work.
+**Falsification probe (A1 — run before anything in this phase):** fetch `enschede.layout.store` in JS,
+hand `readLoftValue` (`doc/loft-deliver.js`) the fetched `ArrayBuffer` with the right `storeBase`, read
+one known PTile. If it reconstructs the kernel's `cover`/ring, the phase is real. **If `store_load`
+relocates/interns on adopt, A is dead as written** and the fallback is @PLN105 `deliver` (which reads the
+*adopted* image and still pays the 341 ms) — worth ~700 ms instead of ~900 ms. One probe, 10× vs 1.8×.
 
 **Risk:** JS then owns the layout format, so a store-format change (cf. loft#513) breaks the renderer
-silently. Mitigate by keeping the kernel's text emit as a **test-only** path and gating
-`JS-read == kernel-text` in `make test-map` — the parity gate *is* the format guard.
+silently. Keep the kernel's text emit as a **test-only** path and gate `JS-read == kernel-text` in
+`make test-map` — the parity gate IS the format guard.
+
+**Note:** A also deletes loft's 20 MB allocation — on a phone the binding constraint may be **RAM, not
+CPU**. Nothing here measures RSS; it should.
 
 ---
 
-## 4. Phase B — validate at WRITE; load once; warm thereafter (85 ms × every redraw)
+## 5. Phase B — validate at WRITE, not per redraw
 
-**Independent of A, and mostly subsumed by it — but the *warm* half is not, and it is the point.**
+Mostly subsumed by S1 + A, kept because the ask is upstream and worth filing properly.
 
-Two separate wastes are tangled here:
+`store_load_url_trusted` skips the SHA pin but is *"still structurally validated"* — 341 ms re-deriving
+at **read** time a property the **generator** knew. The integrity fact belongs where the bytes are
+written: `tools/gen-tiles.loft` / the store builders stamp a checksum; the reader verifies it once.
+loft has the shape (`store_load_url(r, url, sha256)`); it lacks **"checksum-verified ⇒ skip the
+structural walk"**. *Measure before filing:* SHA-256 over 20 MB may not beat a 341 ms walk — the ask is
+probably a **cheap** checksum (CRC32/xxhash) stamped at write.
 
-**(i) Read-time structural validation.** `store_load_url_trusted` skips the SHA pin but is *"still
-structurally validated"*, so an 85 ms walk re-derives at **read** time a property the **generator**
-already knew. That is backwards. The integrity fact belongs where the bytes are produced:
-`tools/gen-tiles.loft` / the store builders should **stamp a checksum when they write the file**, and a
-reader should verify that stamp — once — instead of re-walking 20 MB of structure. loft already has the
-shape (`store_load_url(r, url, sha256)` takes a pinned hash); what it lacks is **"checksum-verified ⇒
-skip the structural walk"**. That is a small, well-formed upstream ask, and routing is the consumer that
-motivates it. (Cost check before asking: SHA-256 over 20 MB is not obviously cheaper than the 85 ms walk
-— so the ask may be *a cheap checksum* (CRC32/xxhash) stamped at write, not SHA. **Measure both before
-filing.**)
+---
 
-**(ii) Re-loading per interaction.** Even a free validation would not excuse re-loading a static asset on
-every pan and every click.
+## 6. Phase R — never block a frame
 
-**Invariant:** *integrity is established where the bytes are WRITTEN; a reader verifies a stamped value
-at most once per session, and a warm interaction pays nothing.*
-
-**Re-assertion sites: 1** — the kernel's command loop is the only place that loads. Omission is loud
-(an empty store draws nothing).
+**Invariant:** *no user-visible frame waits on the kernel; the main thread only renders prepared data.*
 
 | step | change | verify |
 |---|---|---|
-| B0 | **Measure a warm run** (see §4a) — today there is no warm number at all. | warm view/match reported separately from cold |
-| B1 | Kernel keeps a session: load on first command, reuse after; the command blob drops the URLs. | profiler: warm view kernel ≈ 124 ms (serialize only), warm match ≈ compute only |
-| B2 | Generator stamps a checksum at write; reader verifies it once. Upstream ask if "verified ⇒ skip structural walk" is needed. | cold load drops below 85 ms; a corrupted byte is still rejected |
-| B3 | Invalidate on URL change (a different region ⇒ reload). | different store URLs re-load; no stale features |
+| R1 | Kernel → **Web Worker**; `runKernel` becomes postMessage/await. The `--html` shim already talks over `host_input()`/`println`, a channel a worker can host; store fetch is `fetch()`, which workers have. | `frameBlocking`: match lands ~all frames, longest gap ≈16 ms. Totals unchanged — that is the point. |
+| R2 | UI stays live during a match; a new click supersedes the in-flight one. | a click during a match does not queue behind it |
+| R3 | **Render budget:** 76 ms/frame ⇒ ~13 fps panning *with no kernel call at all*. Redraw from pre-projected typed arrays; cache per-tile rasters and blit on pan. | pan holds <16 ms/frame |
 
-**Predicted:** view 287 → ~200 ms *without* A; match's load is only 5 ms so it barely moves. **If A
-lands, B's remaining value is the roads store's 5 ms — nearly nothing.** So **A supersedes B(i)** for the
-layout; B0/B1's *warm* discipline stands regardless, because it is what makes every later number
-readable.
+**Falsification probe:** if the wasm kernel cannot run in a worker (an `--html` shim assumption, an
+asyncify constraint), R1 is dead as written and the fallback (chunking the call so it yields) is much
+worse. Probe it on day one.
 
-**Risk:** a long-lived store pins wasm memory. Measure RSS; if 20 MB cannot be held, hold roads only —
-which is what A leaves anyway.
+**Ordering note:** S shrinks the work so far that R1 matters mainly for the *rare* cold match — but R3
+is independent of everything else, because 13 fps panning is lag the kernel never touches.
 
 ---
 
-## 4a. The instrument gap — every number in §0 is a COLD run
+## 7. Phase C — the match ladder (the rare cold match)
 
-`runKernel` re-loads both stores on every call, so **there is currently no warm measurement of anything**
-— and warm is the state the app is in for every interaction after the first. §0's table therefore
-answers "what does a cold call cost", when the user-facing question is "what does a *redraw* cost".
+`PLAN-MATCH` §2–§5, unchanged; its step 0 (quality instrumentation) is already done (`match_quality()`).
 
-The attribution in §0 lets us *predict* the warm numbers by subtraction — warm view ≈ 124 ms serialize,
-warm match ≈ compute — but a subtraction is a hypothesis, not a measurement. The two can differ: a warm
-store may sit in a different cache state, and §5's 3× match spread already hints that session history
-affects cost.
+**Rare is not an excuse for slow.** S makes the cold full match the *outlier* — a first click, or a
+sketch leaving the built corridor — but a user still hits it on every fresh area, and 4.5 s is not
+acceptable there either. The outlier needs a budget too: **≤ ~500 ms on a phone.** Two levers get it
+there, and they compose:
 
-**So B0 is a prerequisite for judging A and C, not a nicety.** Concretely: extend `__perfHooks` with a
-session-mode kernel (load once, then N view/match commands) and report cold-first vs warm-subsequent
-separately. Until that exists, every "predicted" column in this doc is arithmetic, not evidence.
+| lever | what it removes | size |
+|---|---|---|
+| **C1–C3** — the cell-tube ladder | ways in the corridor (20,472 → 6,945) | ~3× on both build and search |
+| **C4** — persist the BUILT graph (`PLAN-TILES` §268) | `build_graph` entirely | **~41%** of a cold match |
 
----
+That 41% is not a guess — PLAN-MATCH's own table splits the 886 ms cold match as **build 367 + search
+519**. The graph is derived data with a static input (the tile block), so building it per match is the
+same §1 violation as everything else in §2: *work proportional to the data, not to the change.* Building
+it at **generation** time and loading it is the write-time move Phase B makes for integrity.
 
-## 5. Phase C — the match ladder (the ~1000–3100 ms)
+Composed: tube (~3×) on a search that no longer pays build ⇒ **4370 → ~500 ms**, without touching the
+accuracy floor. **C4 does not need the §3 gate** — it changes no route, only where the graph comes from —
+so it is safe to do *before* C3, and it is the better first step.
 
-**The real prize, and the only phase that can be wrong.** This is `PLAN-MATCH` §2–§5; that plan already
-specifies the ladder, the §3 quality gate and the phasing, and does not need re-designing here. What
-this doc adds: its step 0 (quality instrumentation) is **already done** (`match_quality()` emits the §7
-numbers), and the app-level measurement confirms its premise — match compute is ~99% of a click's cost.
-
-**⚠ First, fix the measurement.** Match kernel time was **1123 / 1017 / 3132 ms** across three profiler
-runs of the *same* route. A 3× spread means the number is not yet trustworthy, and PLAN-MATCH's
-acceptance ("drops toward ~300 ms") cannot be judged against a figure that moves 3×. **C0: make match
-timing reproducible** (fixed route, warm/cold stated, N runs + spread reported, GC/memory-pressure
-controlled) *before* tuning anything against it. Suspect first: the profiler runs match after 3 views +
-2 decode probes, so wasm memory is already grown/fragmented — the earlier 1017 ms run had less
-preceding work. This is a real finding about the *app*, not just the harness: if match cost depends on
-what the session did before it, users will feel that.
+**⚠ C0 first — the number is not trustworthy.** Match kernel time was **1123 / 1017 / 3132 ms** across
+runs of the *same* route. A 3× spread cannot judge "drops toward ~300 ms". Suspect session history (wasm
+memory grown/fragmented by preceding views). That is itself a finding: if cost depends on what the
+session did before, users feel it.
 
 | step | change | verify |
 |---|---|---|
-| C0 | Reproducible match timing (see above). | spread across N runs < 10% |
-| C1 | Cell-tube corridor selection beside today's bbox; **both** available, bbox still default. | tube returns a subset; way-count drops; no behaviour change (inert) |
-| C2 | Offline corpus compare: cheap vs fat tier on the §7 quality numbers. | table of (deviation, penalty share, class mix) per tier — the data that tunes the gate |
-| C3 | Wire the §3 gate + escalation; fat corridor stays the floor. | where the gate accepts, quality tracks the fat tier (PLAN-MATCH §8) |
+| C0 | Reproducible match timing (fixed route, warm/cold stated, N runs + spread). | spread < 10% |
+| **C4** | **Persist the built graph** (PLAN-TILES §268): build at generation, load it. Route-neutral ⇒ no gate needed ⇒ do it FIRST. | identical route; cold match drops ~41% |
+| C1 | Cell-tube corridor beside today's bbox; both available, bbox default (inert). | way-count drops; no behaviour change |
+| C2 | Offline corpus compare: cheap vs fat tier on the §7 quality numbers. | the data that tunes the gate |
+| C3 | Wire the §3 gate + escalation; fat corridor stays the floor. | where the gate accepts, quality tracks fat |
 
-**Falsification probe (C2 *is* the probe):** PLAN-MATCH's own table shows the cheap tube returning a
-*different, worse* route with **0 bridges**. If C2 shows quality diverging on a material fraction of the
-corpus, the gate cannot be tuned to accept it and **the win is smaller than 3×**. Publish that fraction
-before C3. Do not ship a gate tuned to a number nobody measured.
+**Falsification probe (C2 is the probe):** PLAN-MATCH's own table shows the cheap tube returning a
+*different, worse* route with **0 bridges**. If quality diverges on a material fraction of the corpus,
+the gate cannot accept it and the win is smaller than 3×. Publish that fraction before C3.
+
+**C3 is the only step in this document that can return a worse route.** Everything else is subtraction.
 
 ---
 
-## 6. Order and predicted end state
+## 8. Order and end state
 
 ```
-0.1 worker probe (can the kernel run off-thread?)   ← decides the whole responsiveness story
+S2 probe: is a warm incremental click really ~10–20× cheaper on THIS data?
         ↓
-PHASE 0: worker + render budget   ← STOPS THE LAG. No algorithm changes, no route risk.
+S — the session: stores + graph + MatchState; click = diff, not rebuild   ← THE BUG
         ↓
-B0 warm + C0 reproducible match   ← the numbers every cost phase is judged against
+A1 probe: can JS read the fetched image?   →   A — loft out of the view path
         ↓
-A1 probe: can JS read the fetched image?            ← decides A's size (10× vs 1.8×)
+R3 (render budget, independent)  ·  R1 (worker — for the rare cold match)
         ↓
-A (view: loft out of the path)  →  C (the match ladder)
-        ↘ B(i) checksum-at-write only if A1 kills A;  B1 warm-session stands regardless
+C0 (trust the number)  →  C4 (persist the graph — route-neutral)  →  C1–C3 (the ladder)
+        ↓                                        the outlier gets a budget too: ≤ ~500 ms
 ```
 
-**Phase 0 first, and it is not a compromise — it is the answer to "why does it lag".** It changes no
-total in §0 and yet is the single largest improvement in how the app *feels*: a frozen 4.2 s device
-becomes a live one with a route loading. Cost phases cannot deliver that at any speed short of ~16 ms.
-
-**Then B0 and C0** — not because they change anything, but because every other row of this table is
-currently arithmetic rather than evidence (§4a), and C's acceptance cannot be read off a number that
-moves 3× (§5). Measure, then move.
-
-**Judge every row on the phone column.** A pan should feel instant (<100 ms) and a click should beat
-~1 s; those are the budgets, and today's phone numbers (1121 / 4481 ms) miss both by 10×+.
-
-Two axes, because they are two different problems (§0a). **Frozen** is what the user calls lag:
-
-| interaction | today **phone** | after **Phase 0** | after 0+A | after 0+A+C |
+| interaction | today **phone** | after S | after S+A | after S+A+R |
 |---|---|---|---|---|
-| `view` (pan) — *time* | 1121 ms | 1121 ms | **~150 ms** | ~150 ms |
-| `view` — **frozen** | **779 ms** | **~0** | ~0 | ~0 |
-| `match` (click) — *time* | 4481 ms | 4481 ms | ~4400 ms | **~1300 ms** |
-| `match` — **frozen** | **4212 ms** | **~0** | ~0 | ~0 |
-| pan frame rate | ~13 fps | **60 fps** (0.3) | 60 fps | 60 fps |
+| **click** (add/move a point) — *time* | **4481 ms** | **~200 ms** | ~200 ms | ~200 ms |
+| **click** — *frozen* | **4212 ms** | ~200 ms | ~200 ms | **~0** |
+| **pan** (past the box) — *time* | 1121 ms | new strip only | **~150 ms** | ~150 ms |
+| **pan** — *frozen* | 779 ms | — | — | **~0** |
+| **pan** frame rate | ~13 fps | 13 fps | 13 fps | **60 fps** (R3) |
+| **cold full match** (rare, but still needs a budget) | **4481 ms** | 4481 ms | 4481 ms | **~500 ms** (C4 + ladder) |
 
-Read the *frozen* rows first. **Phase 0 moves no total and fixes the lag**; A and C move the totals and
-fix none of it. Both are needed — for different reasons, in that order.
+**S is the whole game.** It takes a click from 4.5 s to ~200 ms by not doing the work — and it does so by
+*restoring code the server already runs*, not by inventing anything.
 
-Three consequences, stated rather than buried:
-
-1. **Phase 0 is the answer to the question "why does it lag".** Nothing in A/B/C addresses it.
-2. **A very nearly finishes `view`.** 1121 → ~150 ms, after which *render* (76 ms) is the floor — which
-   is why 0.3 (the render budget) matters even once loft is gone from the view path.
-3. **C alone does not finish `match`.** PLAN-MATCH's 3× gives 4481 → ~1300 ms — under Phase 0 that is a
-   live UI with a route arriving in 1.3 s, which is *acceptable*; without Phase 0 it is a 1.3 s freeze,
-   which is not. If a *fast* click is wanted rather than a *non-blocking* one, the next lever is not more
-   corridor-tuning but making the **cold match rare** — warm/incremental matching (tier 0 is already
-   ~40–68 ms desktop) covering more clicks, plus speculative prefetch of the corridor while the user is
-   still drawing. This doc opens that and deliberately does not answer it; C2's corpus data should decide.
-
-*(Warm columns deliberately absent: B0 has to produce them. Filling them in by subtraction is exactly
-the move this doc is trying not to make.)*
-
-**Re-run `tools/map_profile.sh` after every step.** The profile is the acceptance test: a step that does
-not move the number it predicted is a step whose model is wrong, and that alarm gates the next step
-rather than logging it.
+**Re-run `tools/map_profile.sh` after every step**, and fix its labelling first: it currently reports a
+cold full match as "match", i.e. it measures the outlier as if it were the common case. Add a warm/
+incremental row — that is the number the app lives or dies on.
 
 ---
 
-## 7. Residual — what this design cannot see
+## 9. Residual
 
-One viewport, one route, one machine, headless, warm HTTP cache. Still not covered:
-
-- **A real phone.** CDP throttling scales CPU only — not memory bandwidth, cache size, or GC. It is the
-  best instrument available here and it says the ranking holds (§0), but a real device is the only thing
-  that settles whether the text path degrades *disproportionately*. Cheap next step: run `_site` against
-  a phone over `chrome://inspect` and re-run the same hooks.
-- **Memory.** The phone's real constraint may be RAM, not CPU: a 20 MB layout store + wasm heap on a
-  device that will evict the tab. **A's biggest un-costed win may be memory, not time** — if JS reads the
-  store, loft never allocates the 20 MB at all. Nothing here measures RSS; it should.
-- **Cold fetch.** The 85/341 ms is validation of an HTTP-*cached* store; a first visit adds download.
-- **Session history.** §5's 3× match spread suggests earlier work affects later cost — on a phone, with
-  less headroom, likely worse.
+- **A real phone.** CDP throttling scales CPU only — not memory bandwidth, cache, or GC. It says the
+  ranking holds; a real device is what settles it. Cheap: `chrome://inspect` against `_site`.
+- **Memory.** The phone's real limit may be RAM, not CPU (20 MB layout + wasm heap on a tab that gets
+  evicted). A deletes that allocation. Nothing measures RSS.
+- **Cold fetch.** The 341 ms is validation of an HTTP-*cached* store; a first visit adds download.
+- **Session history.** C0's 3× spread suggests earlier work affects later cost — worse on a phone.
 - **Zoomed-out viewports**, where the emit re-inflates and A's win grows.
-
-Known-unknowns, not discovered ones — the axis list the next measurement varies.
