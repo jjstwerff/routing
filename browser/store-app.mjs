@@ -73,6 +73,49 @@ map.onMove(ensureView);   // re-view when the camera settles outside the loaded 
 await ensureView();       // initial load
 window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 
+// Perf hook (headless profiler, browser/cdp_profile.mjs): run a view/match with each phase timed
+// separately, so the bottleneck is ATTRIBUTED — wasm-side (store decode + text serialize) vs JS-side
+// (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
+window.__perfHooks = {
+  async timedView() {
+    const box = viewportBox(0.6);
+    const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
+    const t1 = performance.now();
+    map.loadView(text);
+    const t2 = performance.now();
+    map.render();
+    const t3 = performance.now();
+    return { kernel: t1 - t0, parse: t2 - t1, render: t3 - t2, total: t3 - t0,
+             bytes: text.length, lines: text.split('\n').length };
+  },
+  // Isolate the per-call store_load_url cost. TWO probes, because the two commands load DIFFERENT
+  // stores: `view` loads layout+roads, `match` loads ONLY roads (the kernel skips layout for match).
+  // A degenerate arg makes the command's own work ≈ 0, so what's left is the decode.
+  async timedDecodeBoth() {   // empty bbox ⇒ view serialize ≈ 0 ⇒ kernel ≈ decode(layout + roads)
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n0.0,0.0,0.000001,0.000001`);
+    return { kernel: performance.now() - t0, bytes: text.length };
+  },
+  async timedDecodeRoads() {  // 2 identical pts ⇒ match compute ≈ 0 ⇒ kernel ≈ decode(roads only)
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n0.0,0.0;0.0,0.0\n${PROFILE}`);
+    return { kernel: performance.now() - t0, bytes: text.length };
+  },
+  async timedMatch(pts) {
+    const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+    const t1 = performance.now();
+    map.loadMatch(text);
+    const t2 = performance.now();
+    map.render();
+    const t3 = performance.now();
+    return { kernel: t1 - t0, parse: t2 - t1, render: t3 - t2, total: t3 - t0, bytes: text.length };
+  },
+};
+
 // Test hook: drive a match programmatically (headless gate), given [[lat,lon],…].
 window.__match = async (pts) => {
   const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
