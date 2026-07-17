@@ -581,36 +581,45 @@ like, and it needs no permission from anyone.
 
 ---
 
-## 7b. Step 20's result — the tube is route-NEUTRAL, so 21/22 may not be needed for it
+## 7b. Steps 20 + 21 — the tube drops 66% of the ways and is NOT route-neutral (so §3's gate IS needed)
 
-`tools/tube_probe.loft` (native, enschede roads):
+**Step 20 (`tiles_corridor_ways_tube`, inert)** keeps only tiles near the polyline, not every tile in its
+bbox rectangle. The test is per-TILE, never per-way (PLAN-MATCH §1 measured a per-vertex sweep past a
+2-minute budget). On three hand-picked sketches it dropped 43–60% of the ways with an **identical route**,
+and I concluded it was route-neutral — a margin-faithful tube being "the same tier computed better"
+rather than a cheap tier, so §3's gate might not apply to it.
 
-| sketch | bbox ways | tube ways | dropped | read | route |
-|---|---|---|---|---|---|
-| straight, 3 pts | 13077 (37 ms) | 6724 (22 ms) | **49%** | −40% | **identical** (11009 m, 145 pts) |
-| straight, 40 pts | 9376 (90 ms) | 5346 (53 ms) | **43%** | −41% | **identical** (12507 m, 220 pts) |
-| **L-bend** | 15141 (159 ms) | 6101 (57 ms) | **60%** | **−64%** | **identical** (18721 m, 235 pts) |
+**Step 21 (`tools/corpus_tube.loft`) falsified that on the fourth sketch it looked at.** 25 deterministic
+sketches across the block (varying origin, direction, bend, and 3/9/15/21 points):
 
-The L-bend is the case the tube exists for: most of a bent sketch's bbox rectangle is nowhere near the
-drawn line, and those tiles' ways cost the read *and* `build_graph` for nothing.
+```
+CORPUS 25 matched: identical=17  diverged=8          ← 32% diverge
+WAYS  bbox=200708  tube=68529  dropped=132179 (66%)
+```
 
-**Why the route survives, where PLAN-MATCH's tube did not.** §1 measured a cell-tube that *"returned a
-different route… 536 m longer"* and concluded "uniform tightening is NOT accuracy-neutral" — the finding
-that motivates the whole §3 gate. This tube is **conservative by construction**: a tile passes if its
-centre is within `margin + TILE_HALF_DIAG_M` (1415 m — a 2 km cell's half-diagonal), so **any tile with
-any part inside the margin is kept**. It is a strict superset of what the margin needs and can only drop
-tiles the corridor never wanted. PLAN-MATCH's tube was tighter *than the margin*; this one is not tighter
-at all — it is the same corridor, minus the rectangle's corners.
+**Three sketches said 0% divergence; 25 say 32%.** That is the sampling error this document warns about
+in §2, made by the author of the warning, one commit after writing it. *Any corridor claim needs the
+corpus, not a sample.*
 
-**Consequence for §7's ladder.** The gate (step 22, the only route-affecting row) exists because a cheap
-tier can silently swap the wanted route. **A margin-faithful tube is not a cheap tier — it is the same
-tier, computed better.** So promoting it to default plausibly needs no gate, only the corpus check (21)
-to confirm route-neutrality beyond these 3 sketches. A *tighter-than-margin* tube (PLAN-MATCH's buf-0,
-~3× rather than ~2×) is a different proposition and still needs the full §3 gate.
+**PLAN-MATCH §1 was right:** *"uniform tightening is NOT accuracy-neutral."* The §3 gate is required.
 
-**Next:** run 21 (corpus compare) against the tube-vs-bbox route, not tube-vs-fat-tier. If it is neutral
-across the corpus, make it default and the cold match gets ~2× on the read plus a smaller `build_graph`
-for free — without step 19's format change or step 22's risk.
+**But the divergences are not uniformly worse — which is exactly why the gate is a QUALITY gate:**
+
+| sketch | bbox | tube | |
+|---|---|---|---|
+| i=3 | dev_max 1639 m, bridged 222 m | dev_max **725 m**, bridged **0 m** | tube **better** |
+| i=7 | len 12489 m, dev_max 484 m | len 16548 m, dev_max 1003 m | tube **worse** |
+| i=2 | len 13383, bridged 0 | len 9888, bridged 559 | different trade |
+
+The tube is not a worse corridor; it is a **different** one — better on some sketches, worse on others.
+Judging that per-segment on deviation + penalty share, and escalating when it fails, is precisely
+PLAN-MATCH §3. So the ladder's shape was right and this plan's §7b guess was wrong.
+
+**Where that leaves it:** the tube stays **inert** — which is why step 20 was specified inert, and it paid
+for itself. It is a genuine ~66% way reduction (and ~2–3× on the corridor read) available the moment
+step 22's gate can accept it per-segment and fall back to bbox when it cannot. `tools/corpus_tube.loft`
+is the harness that tunes and then guards that gate; it prints the §7 numbers (dev_max/dev_mean/pen_m/
+bridged_m/class_m) for both tiers per sketch.
 
 ---
 
