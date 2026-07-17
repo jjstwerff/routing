@@ -190,6 +190,24 @@ sync + backup).
 
 ## 5. Matching — clean the line onto real paths (faithful, not scenic)
 
+**The route is a LINE THAT GROWS, not a result that appears.** The matcher decomposes a sketch into one
+sub-path per stretch (a pair of consecutive drawn points) and each is independent, so the route is
+emitted stretch by stretch **as it is matched** rather than after the whole search finishes. This is a
+design property, not an optimisation:
+
+- **It retraces the user's own gesture** — the line grows in the order they drew it.
+- **It is a progress indicator with no indicator** — no spinner, no percentage, no invented estimate,
+  because the thing being shown IS the work being done. A slow stretch is one the user watches take its
+  time: information, not a stall.
+- **It mimics the journey** — stretches arrive in TRAVEL order, so the line unfolds the way the user will
+  actually walk or ride it. For an app that plans a trip you are about to take, that is the closest a
+  plan gets to rehearsing it.
+
+**Therefore arrival order is load-bearing.** Emitting stretches out of order gives the same pixels and
+none of the meaning — a jigsaw filling in rather than a journey. Any future parallelism must preserve the
+reveal order (loft's `par` does: it computes concurrently but iterates results in order). See
+`PLAN-PERF.md` §6b.
+
 **Faithfulness to the sketch dominates.** The match snaps your imprecise line onto the nearest
 sensible real ways; activity-suitability is only a *local tie-breaker*. It must never take a detour
 to find a nicer surface — the route roughly follows the points you already drew.

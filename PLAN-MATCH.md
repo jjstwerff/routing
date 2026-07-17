@@ -15,6 +15,25 @@ The touch points in code: `match_for` / the widen loop in `server/server.loft`, 
 
 ---
 
+> **Reframed 2026-07-17 — read `PLAN-PERF.md` §6b alongside this.** This plan asks "how do we make ONE
+> big search cheaper?" and answers with an escalation ladder. The app-level measurement changed the
+> question. Two facts this document predates:
+>
+> 1. **The route is already per-stretch, and it now STREAMS.** `subs` is one sub-path per stretch, each
+>    independent, and they are emitted as they are matched — the line grows in travel order. So the
+>    user-facing cost is *time to the first stretch* (~96 ms on a phone), not time to the whole route.
+>    A cheaper ladder tier improves the total; it does not create the responsiveness, and the ladder is
+>    the only lever here that can return a WORSE route.
+> 2. **The numbers below came from a 3-point sketch** (2 huge stretches, widest corridor) — the
+>    pathological end. A real drawn route is ~40 points: measured, that is 39 stretches of ~24 ms each
+>    (native) over a *tighter* corridor (9376 vs 13077 ways), because `corridor_margin` scales with tap
+>    spacing. **Drawing more points makes each chunk cheaper and the corridor smaller.** The §1 table's
+>    "886 ms" is a worst case, not a typical one.
+>
+> The ladder is still wanted — it is what makes the rare COLD match cheap (PLAN-PERF steps 20–22), and
+> §3's quality gate is still the right acceptance. Just do not read it as the answer to "why does it
+> feel slow"; that was a frozen main thread, and streaming fixed it.
+
 ## 1. Problem — the cold/miss match is fat, and tightening it fails *silently*
 
 Warm edits are already fast: an in-coverage move/add/remove re-matches only the edited window
