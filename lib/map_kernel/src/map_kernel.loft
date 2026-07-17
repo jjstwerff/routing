@@ -248,6 +248,6 @@ pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trac
     s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;
   }
-  s.mstate = match_incremental_streamed(s.mstate, s.cg, trace, profile, on_stretch);
+  s.mstate = match_incremental_streamed(s.mstate, s.cg, trace, profile, on_stretch, on_tick);
   emit_route(match_state_result(s.cg, s.mstate).pts, len(s.cways), profile);
 }

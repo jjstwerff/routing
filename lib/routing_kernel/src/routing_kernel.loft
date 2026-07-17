@@ -1180,7 +1180,7 @@ pub fn match_quality(st: MatchState, trace: vector<GeoPoint>, mr: MatchResult) -
 }
 
 // Build a fresh MatchState (a full match). `close` closes a loop (is_loop → append the start).
-fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean, on_stretch: fn(integer, vector<GeoPoint>)) -> MatchState {
+fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean, on_stretch: fn(integer, vector<GeoPoint>), on_tick: fn(integer)) -> MatchState {
   looped = close && is_loop(trace);
   ct: vector<GeoPoint> = [];
   for k in 0..len(trace) { ct += [trace[k]]; }
@@ -1190,7 +1190,9 @@ fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean,
   gen = 0;
   m = len(ct);
   anchors: vector<integer> = [];
-  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; }
+  // Pass 1 is one search PER POINT — 40 points is 40 of them, and with no tick here a dense sketch
+  // froze the page for ~8s even after the corridor read and build_graph were yielded (PLAN-PERF §6b A).
+  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; on_tick(i); }
   subs: vector<SubPath> = [];
   // Report each stretch the moment it is matched, so a caller can DRAW it now instead of waiting for
   // the whole route (PLAN-PERF §6b A). `subs` is already one sub-path per stretch — the route is a
@@ -1232,15 +1234,15 @@ fn common_suffix(a: vector<GeoPoint>, b: vector<GeoPoint>, p: integer) -> intege
 // Incrementally update a MatchState to a new trace on the SAME graph: recompute only the changed span
 // (± one neighbour) and reuse the rest. Falls back to a full build when reuse is unsafe (loop-ness
 // toggled). The result equals build_state on the new trace exactly — purely a speed-up.
-fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: boolean, on_stretch: fn(integer, vector<GeoPoint>)) -> MatchState {
+fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: boolean, on_stretch: fn(integer, vector<GeoPoint>), on_tick: fn(integer)) -> MatchState {
   looped = close && is_loop(trace);
-  if !prev.built || looped != prev.looped { return build_state(g, trace, prev.profile, close, on_stretch); }
+  if !prev.built || looped != prev.looped { return build_state(g, trace, prev.profile, close, on_stretch, on_tick); }
   ct: vector<GeoPoint> = [];
   for k in 0..len(trace) { ct += [trace[k]]; }
   if looped { ct += [trace[0]]; }
   clenNew = len(ct);
   clenOld = len(prev.ctrace);
-  if clenNew < 2 { return build_state(g, trace, prev.profile, close, on_stretch); }
+  if clenNew < 2 { return build_state(g, trace, prev.profile, close, on_stretch, on_tick); }
   p = common_prefix(prev.ctrace, ct);
   s = common_suffix(prev.ctrace, ct, p);
   delta = clenOld - clenNew;    // old index = new index + delta, within the shared suffix
@@ -1254,6 +1256,7 @@ fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: bool
     if i >= lo && i <= hi {
       gen = gen + 1;
       anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen)];
+      on_tick(i);
     } else {
       oldIdx = i;
       if i >= clenNew - s { oldIdx = i + delta; }
@@ -1296,16 +1299,16 @@ pub fn match_state_new() -> MatchState {
 // and profile are unchanged — recomputing only the edited window. Pass a fresh state (match_state_new,
 // or one built on a DIFFERENT graph) to force a full build.
 pub fn match_incremental(prev: MatchState, g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchState {
-  match_incremental_streamed(prev, g, trace, profile, drop_stretch)
+  match_incremental_streamed(prev, g, trace, profile, drop_stretch, drop_tick)
 }
 // As `match_incremental`, but `on_stretch` fires once per stretch, IN ORDER, with that stretch's points
 // — so a caller can draw the route as it arrives rather than after one long stall (PLAN-PERF §6b A).
 // Identical result; only the reporting differs.
 pub fn match_incremental_streamed(prev: MatchState, g: Graph, trace: vector<GeoPoint>, profile: text,
-                                  on_stretch: fn(integer, vector<GeoPoint>)) -> MatchState {
+                                  on_stretch: fn(integer, vector<GeoPoint>), on_tick: fn(integer)) -> MatchState {
   if len(g.nodes) == 0 || len(trace) < 2 { return match_state_new(); }
-  if !prev.built || prev.profile != profile { return build_state(g, trace, profile, true, on_stretch); }
-  update_state(prev, g, trace, true, on_stretch)
+  if !prev.built || prev.profile != profile { return build_state(g, trace, profile, true, on_stretch, on_tick); }
+  update_state(prev, g, trace, true, on_stretch, on_tick)
 }
 // The matched route for a state (stitch the cached sub-paths).
 pub fn match_state_result(g: Graph, st: MatchState) -> MatchResult {
@@ -1316,7 +1319,7 @@ pub fn match_state_result(g: Graph, st: MatchState) -> MatchResult {
 // The core matcher (open — no loop closing), used by match_route.
 fn match_core(g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchResult {
   if len(g.nodes) == 0 || len(trace) < 2 { return MatchResult { pts: [], bridges: 0, bseg: [] }; }
-  stitch(g, build_state(g, trace, profile, false, drop_stretch))
+  stitch(g, build_state(g, trace, profile, false, drop_stretch, drop_tick))
 }
 
 pub fn match_route(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
@@ -1344,7 +1347,7 @@ pub fn is_loop(trace: vector<GeoPoint>) -> boolean {
 // exact finish marker, no straight jump back to the start).
 pub fn match_closed_ex(g: Graph, trace: vector<GeoPoint>, profile: text) -> MatchResult {
   if len(g.nodes) == 0 || len(trace) < 2 { return MatchResult { pts: [], bridges: 0, bseg: [] }; }
-  stitch(g, build_state(g, trace, profile, true, drop_stretch))   // build_state handles the loop close internally
+  stitch(g, build_state(g, trace, profile, true, drop_stretch, drop_tick))   // build_state handles the loop close internally
 }
 
 pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text) -> vector<GeoPoint> {
