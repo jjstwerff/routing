@@ -51,7 +51,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
 | **17** ✅ | throwaway probe | **DONE.** `par` workers can't read a captured reference — the data must go in the ELEMENT. Measured ~4× with a small slice; the copy eats it at 10k. See §6b B. | boundary + scaling established | none |
-| **18** | `lib/routing_kernel` | **Slice the corridor per stretch** into self-contained jobs, then `par` over them (threads from `hardwareConcurrency`). NOT the `Scratch` refactor this row used to say. | ~4× native/Android; route identical over N runs; slice size is the design question | **perf only** |
+| **18a** | design + probe | **Decide the slice** (§6b B2 below): the envelope, the monotonic remap, and whether the copy cost leaves a win. Not code yet. | an envelope proven to be a SUPERSET of what the full search touches | none |
+| **18b** | `lib/routing_kernel` | Build per-stretch jobs from 18a's slice, `par` over them (threads from `hardwareConcurrency`). | ~4× native/Android; route identical over N runs (`match_parity.sh` + repeat) | **perf only** |
 | **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
 | **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -536,6 +537,36 @@ no workers/SAB/atomics — loft's `C3` (*"WASM threading deferred — Web Worker
 and roadmap A10 8a. **Flag for that work:** our kernel now leans on asyncify for both the store fetch and
 `frame_yield`, and BROWSER_INTEROP calls asyncify *"one suspendable stack"* — threads plus one suspendable
 stack is exactly where this goes quietly wrong. Probe that combination first.
+
+#### B2 — what "slice the corridor per stretch" actually requires (read before coding)
+
+`assemble_stretch` is `dijkstra_win(g, ai, [aj], win, ec, sc, gen)` — `ai`/`aj` are node **indices into
+g**, and the search walks the whole graph bounded by the deviation window `win`. To make a stretch a
+self-contained job (the only shape `par` accepts — see B above) each job must carry its own sub-Graph.
+Three things follow, and the second is the one that bites:
+
+1. **The envelope must be a SUPERSET of what the full search would touch**, or the route changes. The
+   natural candidate is the deviation window itself (`win` + `DEV_TOL`), since that is what bounds
+   `dijkstra_win` — but "what the search *could* reach" needs proving, not assuming. Too tight and the
+   route silently degrades; too loose and the copy cost (B's table: 10k elements ⇒ the win is gone) eats
+   the parallelism. **That trade IS step 18a.**
+2. **Renumbering must be MONOTONIC.** A sub-Graph renumbers nodes, and the search's tie-breaks depend on
+   node/edge indices — the same mechanism as the hash-ordering hazard above. If the subgraph's nodes keep
+   the parent's *relative* order, equal-cost ties resolve identically and the route is preserved; an
+   arbitrary remap changes which of several equal-cost paths wins. So: build the slice **in parent index
+   order**. This is cheap to do and silent to get wrong.
+3. **The path must map back** to parent indices/coords before it reaches `SubPath`.
+
+**Do not start 18b before 18a answers (1).** The gate (`match_parity.sh`) would catch a wrong envelope,
+but only as "the route changed" — it will not tell you which envelope is right, and this is a design
+question with a correctness answer, not a tuning knob.
+
+**And weigh it against what streaming already bought.** §6b A took a real route's worst freeze from
+11095 → 744 ms with no threads. `par` shortens the *total* (~4×), which the lookahead already hides for
+every stretch but the first few. The honest case for 18 is now the **cold match** (~5.3 s, the first
+click in a fresh area) — the one thing streaming cannot hide, because there is nothing on screen yet to
+watch. Steps 19–20 (persist the built graph, cell-tube corridor) attack the same number without touching
+the matcher's internals or risking a route. **Do those first, and re-measure before committing to 18.**
 
 ### Order
 
