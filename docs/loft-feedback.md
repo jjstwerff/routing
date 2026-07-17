@@ -1487,3 +1487,71 @@ array → `FlatArray` … multi-instance via a `flat` redirect map keyed by `(re
 **Consequence for routing:** PLAN-PERF step 9 (`expose(1, layout)` — the layout hash, exposed once per
 session) is **valid as specified**. The hash is pre-flattened by `collect_keyed` and JS walks it via the
 descriptor. §7c corrected accordingly.
+
+
+## @PLN108 — the copy-elision WIN has no automated gate, and it is inactive on the installed release — 2026-07-17
+
+**Installed loft 2026.7.1 (reinstalled 17:45, from `../loft` HEAD `cdc48c06`; @PLN108 merged as #586).**
+This is a gate-coverage finding, not a null-flow one, and it is filed because the consumer (routing) runs
+the *release*, not a dev build — and on the release the win routing was waiting for (step 18) is absent.
+
+### The measurement (anchored — NOT a stale binary)
+
+`tools/par_copy_probe.loft` — a queue par whose worker touches none of a large captured heap. On loft2's
+dev binary this showed the copy eliminated (flat vs heap, ~53×, my checksum `383995`). On the installed
+release it shows **no win**, both backends, tight variance:
+
+```
+122 MB heap:  native  OFF 218/214/197   ON 215/213/219      (LOFT_PAR_SHARE=1)
+              interp  OFF 212/213/216   ON 210/224/205
+61 MB, thread-scaling:  OFF 1→16 thr = 40→173 ms · ON = 33→162 ms
+```
+
+The thread-scaling is the tell: under a live borrow, `ON` at 16 threads is FLAT (no per-worker copy). It
+climbs to 162 ms — **the per-worker copy is still happening with the flag on.** `AUTO` (unset) at 122 MB
+is also ~214 ms, though 122 MB ≥ the 2 MB `PAR_SHARE_MIN_BYTES` threshold should elect the borrow.
+
+### It is not a stale rlib (the obvious suspect, checked)
+
+- installed runtime `deps/libloft.rlib` = **17:45**, and it CONTAINS the symbols: `run_parallel_queue_shared`
+  (36), `par_share_for` (3), `borrow_locked_for_light_worker` (8), `clone_for_light_worker` (13).
+- compiled probe `tools/.loft/cache/par_copy_probe-*` = **17:50**, built against that rlib.
+
+So the borrow code is physically present in the linked runtime, freshly built, and still does not take
+effect for this shape. Prime remaining suspect: the CLAUDE.md binary/runtime split — loft2 measured the
+win on a `cargo build` (binary + rlib compiled together); the release links the *separate*
+`deps/libloft.rlib`. "Present but not wired" fits every observation. I cannot instrument further without
+building in `../loft` (read-only), so I stop at the anchored measurement and do not assert the mechanism.
+
+### Root cause of how this shipped: the WIN IS UNTESTED
+
+Nothing in @PLN108's acceptance bar asserts the copy is elided — only that it stays SAFE:
+
+| layer | asserts | passes under clone? | passes under borrow? |
+|---|---|---|---|
+| `par_queue_does_not_grow_parent_stores` | parent alloc count unchanged | ✅ | ✅ |
+| `par_queue_single_thread_matches_multi` | order + values | ✅ | ✅ |
+| `parallel_store_is_read_only_in_workers` | worker write panics | ✅ | ✅ |
+| `borrow_locked_reads_original_data` | the **primitive** shares the buffer | — (bypasses the dispatcher) | ✅ |
+| S5/S6 gates (ASan / TSan) | no UAF / no race | ✅ (cloning is safe) | ✅ |
+
+Every gate is green whether the dispatch borrows or silently clones. The only borrow-specific test
+constructs a `Store` and calls `borrow_locked_for_light_worker()` directly — it never routes through
+`par_share_for → run_parallel_queue_shared`, so it cannot catch a dispatch fallback. **The elision — the
+entire point — has no gate at any level**, which is exactly how a release can ship it inactive and stay
+47/47 + ASan + TSan.
+
+### Ask — add the missing end-to-end elision gate
+
+Mirror how the win was actually confirmed during S9 (call-count traces): under `LOFT_PAR_SHARE=1`, assert
+`clone_for_light_worker` (borrow) is called and `clone_for_worker` (copy) is NOT, for a queue par carrying
+a captured store ≥ `PAR_SHARE_MIN_BYTES` — on the **native** dispatch, the family routing uses. A
+call-count assertion is deterministic where timing is not. `tools/par_copy_probe.loft` is the loft-source
+half of the basis and is offered as-is; it is currently RED on the installed release and would make a good
+consumer smoke-test once the gate is green.
+
+### Consequence for routing
+
+**Step 18 stays blocked.** @PLN108 merged, but the copy-elision it promised does not manifest on the loft
+routing runs. Re-run `tools/par_copy_probe.loft` after the next release; unblock step 18 only when `ON` goes
+flat vs heap there.
