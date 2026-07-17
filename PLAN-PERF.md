@@ -50,8 +50,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
-| **17** | `lib/routing_kernel` | **Per-worker `Scratch`** (§6b B1): un-share the one mutable the stretch loop reuses. | route byte-identical; no behaviour change | **none** (enables par) |
-| **18** | `lib/routing_kernel` | `par(…)` over the stretches (§6b B2), threads from `hardwareConcurrency`. | ~3× on native/Android; browser awaits loft C3 | **perf only** |
+| **17** | throwaway probe | **`par` over the stretch loop AS-IS** — before any refactor. `par` clones all in-use stores per worker (THREADING.md), so `Scratch` may already be private and the Graph may be copied 8×. | wall clock vs sequential · `wasmBytes` · route byte-identical | none — **decides 18** |
+| **18** | `lib/routing_kernel` | Per-worker `Scratch` + `par(…)`, threads from `hardwareConcurrency` — **only what step 17 shows is needed**. | ~3× native/Android; route identical over N runs; browser awaits loft C3 | **perf only** |
 | **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
 | **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -483,6 +483,21 @@ optimisation (reuse the buffer, don't reallocate) that is now the only thing for
 **Give each worker its own `Scratch` and the loop is embarrassingly parallel.** Same for Pass 1's
 `denoise_anchor`, which shares the same `sc`. So the work is not "add threads to the matcher" — it is
 **un-share one buffer**, which is also what makes it streamable.
+
+> **⚠ Step 17's premise needs checking FIRST — `par` may already do this, and may cost more than it
+> saves.** THREADING.md: *"`Stores::clone_for_worker()` creates **locked copies of all in-use stores for
+> each worker thread**."* Two consequences, pulling opposite ways:
+> - **The un-sharing may be automatic.** If each worker gets private stores, `Scratch` is already
+>   per-worker and step 17 is a no-op. Refactoring it by hand first would be work done for nothing.
+> - **But it copies ALL in-use stores, per worker** — including the corridor `Graph` (13077 ways). Eight
+>   workers ⇒ eight graph copies. That could cost more than the ~3× it buys, and it is a *memory* cost on
+>   the device where RAM already binds (the session is at 188 MB).
+>
+> So **measure before refactoring**: run `par` over the stretch loop as-is and read (a) wall clock vs
+> sequential, (b) `wasmBytes`, (c) whether the route stays byte-identical. That probe answers whether
+> step 17 is needed, unnecessary, or moot because 18 is too expensive. Doing 17 first assumes an answer
+> the docs already put in doubt. *(Extra context args ARE forwarded — `par(b = scale(a, mult), N)` — so a
+> worker can take `g`/`ct`/`anchors`/`ec`; that part of the design holds.)*
 
 Measured ceiling: `par(…, 8)` gives **3.3×** natively here (101 → 31 ms on a synthetic load). On a phone's
 8-core big.LITTLE expect ~3× — the 4 little cores are not equal to the prime one, and the thread count
