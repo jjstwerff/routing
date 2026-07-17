@@ -233,8 +233,14 @@ pub fn parse_ways(response: text) -> vector<Way> {
 // --- Tile store (PLAN-TILES) — read side, so the server can match from the data block ------------
 // Shared struct layout for both the generator (write) and the server (read): a durable-store hash of
 // tiles, keyed by grid cell. Coords are fixed-point (1e-7°) deltas from the tile origin; `h` is mm.
-// How often a *_streamed read/build hands the frame back. Small enough that a chunk fits well inside a
-// frame; large enough that the yield's own cost stays noise.
+// How often a *_streamed read/build hands the frame back.
+//
+// MEASURED FLAT — do not bother tuning this. Swept 8 / 32 / 64 / 256 / 1024 on the 40-point route at 4x
+// throttle: total 8161 / 7795 / 7964 / 8011 / 7841 ms, worst frame gap 356 / 347 / 361 / 351 / 363 ms.
+// A 128x range produces no signal; the spread is run-to-run noise. So these ticks are NOT what bounds
+// the remaining gap — Pass 1's per-point searches are, and they tick per point regardless of this value.
+// 64 is kept only because a value is needed. Revisit only if the corridor read or build_graph ever
+// becomes the dominant block again (the profile will say so).
 TICK_EVERY = 64;
 TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)

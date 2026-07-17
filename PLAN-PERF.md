@@ -349,6 +349,13 @@ on a 3-point sketch — the pathological end: 2 huge stretches over the widest c
 
 **Invariant:** *a stretch is drawn the moment it is matched; the user sees progress, never a stall.*
 
+**And the progress is honest, not a decoration.** The route streams in the ORDER THE USER DREW IT, stretch
+by stretch — so the line retraces the same gesture they just made. That is a progress indicator with no
+indicator: it needs no spinner, no percentage, and no invented estimate, because the thing being shown IS
+the work being done. A spinner says "something is happening"; this says "here is your route, arriving".
+It also degrades honestly — a stretch that is slow to match is a stretch the user watches take its time,
+which is information, not a stall.
+
 Emit each `SubPath` as it lands and `frame_yield()` between them. First segment on screen in ~96 ms, then
 ~10 per second, the page painting throughout. **The 4.4 s does not shrink — it stops being a freeze and
 becomes a line growing at a natural pace.** That is the difference between "hanging" and "loading", and
