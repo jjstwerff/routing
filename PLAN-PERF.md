@@ -1,8 +1,16 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status:** design. Nothing here is implemented. **Plan of record for app performance.** It does not
-supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against everything else.
+**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Plan of record for app performance.** It
+does not supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against
+everything else.
+
+**What landed** (all at `CPU_THROTTLE=4`, route proven byte-identical by `tools/match_parity.sh`):
+a click moving a point **4481 → 711 ms**; a repeat match **5274 → 339 ms** (15.6×); stores loaded **once
+per session** (2 fetches for 16 commands, was ~2/command); a real 40-point route's worst frozen frame
+**11095 → 744 ms** — the route now **streams per stretch**, arriving in travel order.
+**Open:** the view path (9–13, blocked upstream — see §2b and `docs/loft-feedback.md`), the render budget
+(14–15, ~13 fps panning, independent of loft), `par` (17–18), the cold match (19–22).
 
 **Target device is a phone.** Judge every number in the 4× column; the desktop column is only there to
 show how badly a desktop profile flatters us.

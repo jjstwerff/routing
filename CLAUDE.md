@@ -127,13 +127,22 @@ session's design work and each would have sent the work at the wrong target:
   `CPU_THROTTLE=4`** (≈ a mid-range phone, the target device); the desktop numbers flatter the app ~4×
   and make a broken interaction look like a nice-to-have. It attributes cost to store-load vs kernel vs
   JS-parse vs render, and `__perfHooks.frameBlocking` reports whether the main thread is *frozen*.
-- **The app is built on the model loft REJECTED**, and that one fact explains its numbers.
-  `store-kernel.mjs` drives `runKernel(blob)` per request — one `loft_start` per click, fresh Stores each
-  call. `BROWSER_INTEROP.md` § *Rejected alternatives* sets exactly that model aside in favour of **loft
-  owning the loop** with `frame_yield()`. Both symptoms follow: no session (so a **full match on every
-  click**, when `match_incremental`/`covered()` exist and `server/server.loft` already uses them for a
-  40–68 ms warm edit), and a synchronous call on the UI thread (so a phone is **frozen 4.2 s** per click
-  — 3 frames of 253 land).
+- **The app now runs loft's INTENDED model** — `loft_start` once, never returns; the kernel loops on
+  `host_input()` and `frame_yield()`s (BROWSER_INTEROP's gather-until-enough). It used to run the
+  one-shot model loft explicitly rejected, and that one fact explained every bad number: no session (a
+  **full match on every click**, when `match_incremental`/`covered()` exist and `server.loft` already used
+  them) plus a synchronous call on the UI thread (a phone **frozen 4.2 s** per click, 3 frames of 253).
+  Fixed in PLAN-PERF steps 4–8; don't re-derive it.
+- **Where it stands (2026-07-17, steps 1–16 done).** Measured at `CPU_THROTTLE=4`:
+  a click that moves a point **4481 → 711 ms**; a repeat match **5274 → 339 ms** (15.6×); each store
+  loaded **once per session** (2 fetches for 16 commands, was ~2 per command); and a real 40-point route's
+  worst frozen frame **11095 → 744 ms**, because the route now **streams per stretch**. Route proven
+  byte-identical throughout by `tools/match_parity.sh` (5 cases, 3 distinct routes) — that gate is the
+  point, not the speed.
+- **Still open:** the view path (steps 9–13, blocked on @PLN105 — see `docs/loft-feedback.md`: `expose`
+  pins a store unreadable and a top-level `hash` will not deliver; the way through is per-tile `deliver`),
+  the render budget (~13 fps panning, independent of loft), and `par` (steps 17–18: un-share `Scratch`,
+  then parallelise — browser-gated on loft's C3).
 - **The invariant to design against:** *every interaction does work proportional to what CHANGED, never
   to the size of the data. Never do everything again; build from what you have.* Every measured cost is
   one violation of it.

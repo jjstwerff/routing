@@ -8,19 +8,40 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 
 ## 1. Where things stand (one paragraph)
 
-The **standalone/serverless browser app is built and runs in a real browser** (`browser/store-app.*`,
-**plan of record `PLAN-BUILD.md`**, which retires PLAN-MAP's M4/M5 JS-baked tiles for the loft-wasm store
-reader). It fetches the two loft stores (layout `PTile` + roads `TTile`) straight from a URL with
-`store_load_url_trusted`, runs the **loft-wasm kernel** (`client/web_basemap_kernel.loft` → `loft --html`)
-for the visible viewport (`view <bbox>` → base-map text → canvas render) and the matched route
-(`match <sketch>` → route text → drawn read-only), and needs **no server** — JS does pixels, loft does the
-map/route. Verified in headless Chromium: on load `view <bbox>` renders the region; a match returns the
-route **byte-identical to native** (ways=13077, 13138.0 m). The old blockers are gone: **loft#521** (wasm
-runtime abort) and the **B4 store-in-wasm gap** are both resolved — loft shipped `store_load` (heap reader
-that runs in wasm) + `store_load_url(_trusted)` (HTTP fetch, asyncify-bridged to JS `fetch()`), so there is
-**no codec and no jco/WASI packaging**. The server-first app still works and matches from a local tile
-block (Overpass fallback). *(§§2–9 below predate PLAN-BUILD and describe the earlier PLAN-APP `web_kernel`
-track — historical; the store app supersedes it.)*
+The **standalone/serverless browser app runs in a real browser** (`browser/store-app.*`, plan of record
+`PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
+kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the viewport (`view <bbox>`) and the
+matched route (`match <sketch>`), and needs **no server** — JS does pixels, loft does the route. **As of
+2026-07-17 the app's performance work is live** (`PLAN-PERF.md`, §0 = an executable step list; **1–16
+done, 17–22 open**). The headline change: the kernel used to run the one-shot model loft explicitly
+rejected — `loft_start` per request, fresh Stores each call — which meant a **full match on every click**
+and a phone **frozen 4.2 s** at a time. It now runs loft's intended model: `loft_start` once, never
+returns, looping on `host_input()` and `frame_yield()`ing, holding the stores + corridor Graph +
+MatchState across commands. Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop
+flatters ~4×**): a click moving a point **4481 → 711 ms**, a repeat match **5274 → 339 ms**, stores loaded
+**once per session**, and a real 40-point route's worst frozen frame **11095 → 744 ms** because the route
+now **streams per stretch, in travel order** (see `DESIGN.md` §5 — that ordering is load-bearing, not
+cosmetic). Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`).
+
+---
+
+## 1a. Resume here (2026-07-17)
+
+- **Read first:** `PLAN-PERF.md` §0 (the step list) and §6b (the match arc). `CLAUDE.md` § "Read the
+  reference before you write" — the two rules that would have saved this session hours.
+- **Instruments** (all new, all durable): `tools/map_profile.sh` (**`CPU_THROTTLE=4`**, the phase
+  profiler), `tools/match_parity.sh` (the route-identity gate), `tools/loop_probe.sh` and
+  `tools/read_probe.sh` (the two probes that unblocked the design).
+- **Next steps, in order:** **17** per-worker `Scratch` (un-share the one mutable the stretch loop reuses
+  — prerequisite for `par`, no behaviour change), **18** `par` over the stretches (~3× native; the
+  browser awaits loft's C3), **14–15** the render budget (~13 fps panning — lag the kernel never touches,
+  independent of loft). **9–13** (view path) are blocked upstream: see below.
+- **Blocked on loft** (`docs/loft-feedback.md`, 2026-07-17): `expose` pins a store read-only and then loft
+  **cannot read it** (`Claim on read-only store` — a hang in the browser); a top-level `hash` is **not
+  deliverable** ("store-internal kind … cursor-walked in a later phase"). The way through is **per-tile
+  `deliver`** — a `PTile` delivers fine. Also filed: a call with **too few arguments is accepted** and
+  silently corrupts the earlier ones (a fn-typed hole → SIGSEGV inside the stdlib's `len`).
+- **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
 
 ---
 
