@@ -15,7 +15,7 @@
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState,
                      tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m,
-                     point_polyline_m, match_state_new, match_incremental, match_state_result);
+                     point_polyline_m, match_state_new, match_incremental, match_incremental_streamed, match_state_result);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
 
@@ -216,6 +216,25 @@ fn covered(s: MatchSession, pts: vector<GeoPoint>, margin: float) -> boolean {
 // speed: match_state_result(cg, match_incremental(…)) must equal match_route(cg, trace) byte-for-byte.
 // tools/match_parity.sh asserts it.
 pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
+  do_match_session_streamed(s, roads, trace, profile, drop_stretch_out);
+}
+
+fn drop_stretch_out(_i: integer, _pts: vector<GeoPoint>) { }
+
+// Emit ONE stretch as `STRETCH <i>;lat,lon;…` the moment it is matched. A caller that wants the route
+// to appear as a growing line passes `on_stretch` (PLAN-PERF §6b A) — typically a closure that emits
+// this and then hands the frame back, so the page paints between stretches instead of stalling for the
+// whole route. Kept out of this library: `frame_yield` is browser-only, and map_kernel must compile on
+// every backend (app_kernel builds it for --native-wasm).
+pub fn emit_stretch(i: integer, pts: vector<GeoPoint>) {
+  line = "STRETCH {i}";
+  for p in pts { line += ";{p.lat:2.6},{p.lon:2.6}"; }
+  println(line);
+}
+
+// As `do_match_session`, but reports each stretch through `on_stretch` as it lands.
+pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>,
+                                 profile: text, on_stretch: fn(integer, vector<GeoPoint>)) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   margin = corridor_margin(trace);
   if !covered(s, trace, margin) {
@@ -225,6 +244,6 @@ pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector
     s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;
   }
-  s.mstate = match_incremental(s.mstate, s.cg, trace, profile);
+  s.mstate = match_incremental_streamed(s.mstate, s.cg, trace, profile, on_stretch);
   emit_route(match_state_result(s.cg, s.mstate).pts, len(s.cways), profile);
 }

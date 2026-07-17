@@ -178,6 +178,39 @@ window.__perfHooks = {
     const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n0.0,0.0;0.0,0.0\n${PROFILE}`);
     return { kernel: performance.now() - t0, bytes: text.length };
   },
+  // Step 16's observable: does the route ARRIVE progressively, and does the page paint while it does?
+  // Counts STRETCH lines and the frames that landed during the match.
+  // n points evenly along the same corridor — a REALISTIC drawn route is ~40 points (PLAN-MATCH),
+  // i.e. ~39 small stretches and 39 yield points. The 3-point sketch every other probe uses is the
+  // pathological end: 2 huge stretches, so only 2 chances to hand back the frame.
+  async streamProgressN(n) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const f = i / (n - 1);
+      pts.push([52.2412299 + f * (52.3116272 - 52.2412299), 6.8834496 + f * (6.9088554 - 6.8834496)]);
+    }
+    const spec = pts.map(([a, b]) => `${a.toFixed(7)},${b.toFixed(7)}`).join(';');
+    const gaps = []; let last = performance.now(), stop = false;
+    const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+    const total = performance.now() - t0;
+    stop = true; await new Promise((r) => setTimeout(r, 50));
+    const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
+    return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
+  },
+  async streamProgress() {
+    const gaps = []; let last = performance.now(), stop = false;
+    const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+    const t0 = performance.now();
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+    const total = performance.now() - t0;
+    stop = true; await new Promise((r) => setTimeout(r, 50));
+    const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
+    return { total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
+  },
   // Is the MAIN THREAD blocked while the kernel runs? Lag is not slowness — it is a frozen frame.
   // Drive rAF across a kernel call: count the frames that actually landed and the longest gap between
   // them. A responsive app keeps ~16ms gaps; a blocked one shows one gap ≈ the whole call.

@@ -66,6 +66,9 @@ const probe = `(async () => {
   if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
+  out.stream = K.streamProgress ? await K.streamProgress() : null;
+  out.streamN = [];
+  if (K.streamProgressN) for (const n of [3, 40]) out.streamN.push(await K.streamProgressN(n));
   out.block = [];
   if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
   return out;
@@ -146,6 +149,22 @@ if (res.stats) {
               (sl <= 2 ? '✅ each store loaded ONCE (step 6)' : '❌ ' + sl + ' loads — the session is re-decoding'));
   console.log('    (pre-step-6 this was 2 per command: every click re-decoded a 20MB image)');
   if (res.stats.wasmBytes) console.log('  wasm memory: ' + (res.stats.wasmBytes / 1048576).toFixed(1) + ' MB working set');
+}
+if (res.stream) {
+  const s = res.stream;
+  console.log('\n=== STEP 16 · does the route ARRIVE progressively? ===');
+  console.log('  stretches emitted : ' + s.stretches);
+  console.log('  match total       : ' + Math.round(s.total) + 'ms');
+  console.log('  frames landed     : ' + s.frames + ' of ~' + s.expectedFrames + ' expected');
+  console.log('  longest frozen gap: ' + Math.round(s.longestGap) + 'ms   ← was ~4212ms (one un-interruptible block)');
+}
+if (res.streamN?.length) {
+  console.log('\n=== STEP 16 · progressive arrival vs SKETCH DENSITY ===');
+  console.log('  points  stretches   total   frames landed / expected   longest frozen gap');
+  for (const s of res.streamN)
+    console.log('   ' + String(s.n).padStart(4) + '   ' + String(s.stretches).padStart(6) + '   ' +
+                String(Math.round(s.total)).padStart(6) + 'ms      ' + String(s.frames).padStart(4) + ' / ' +
+                String(s.expectedFrames).padEnd(5) + '         ' + Math.round(s.longestGap) + 'ms');
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');

@@ -24,9 +24,9 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_match_session, session_new, parse_sketch);
+use map_kernel::(do_view_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
 use basemap::(PTile);
-use routing_kernel::(TTile);
+use routing_kernel::(TTile, GeoPoint);
 use web::frame_yield;
 
 // End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
@@ -43,6 +43,12 @@ EOR = "#EOR";
 // No `frame_yield()` here yet: yielding pulls in the `loft_web.ws_yield` host import, which the page's
 // shim does not provide until it drives the loop (step 5). Until then the empty read means "JS is done
 // with this call", not "wait for more".
+// Emit a stretch, then yield: the host sees `STRETCH i;…` and can paint before the next one lands.
+fn stream_stretch(i: integer, pts: vector<GeoPoint>) {
+  emit_stretch(i, pts);
+  frame_yield();
+}
+
 fn main() {
   // SESSION STATE — declared above the loop, so it outlives the command that filled it. Inside the
   // loop these declarations would re-initialise to `[]` on every pass, which is the stateless app in
@@ -87,7 +93,11 @@ fn main() {
       }
       if ok {
         if cmd == "match" {
-          do_match_session(sess, roads, parse_sketch(arg3), profile);
+          // Stream the route: emit each stretch as it is matched, then hand the frame back. The page
+          // draws a line that GROWS instead of freezing for the whole match (PLAN-PERF §6b A). This is
+          // the only layer that may yield — frame_yield is browser-only, and map_kernel/routing_kernel
+          // must compile on every backend.
+          do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch);
         } else {
           if layout_url != layout_at {
             if store_load_url_trusted(layout, layout_url) {

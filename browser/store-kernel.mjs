@@ -95,15 +95,19 @@ export async function createKernel(wasmUrl) {
         exposed.set(Number(tag), { storeBase, rec, pos, typeId, desc, descLen });
       },
     },
-    // frame_yield() — loft hands the frame back while it waits for the next command. Resuming on rAF is
-    // what keeps the page painting during a long idle poll AND bounds the poll to ~1/frame rather than
-    // a hard spin.
+    // frame_yield() — loft hands the frame back, both while idle-polling for a command and between
+    // match stretches (PLAN-PERF §6b A).
+    //
+    // The resume must be a MACROTASK, not a rAF callback. rAF runs BEFORE paint, so resuming there
+    // executes the next chunk of loft work inside the frame callback and blocks the very paint it was
+    // meant to yield to — measured: 1 frame of ~497 landed, the whole match one frozen gap, even with
+    // 39 yield points. setTimeout(0) runs AFTER the paint, so the browser actually draws between chunks.
     loft_web: {
       ws_yield: () => {
         if (!ctrl.ac) return;
         if (ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return; }   // rewinding → carry on
         waiting = 'yield';
-        requestAnimationFrame(() => wake('yield'));
+        setTimeout(() => wake('yield'), 0);
         ctrl.ac.suspend();
       },
     },
