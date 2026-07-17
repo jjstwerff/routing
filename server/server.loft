@@ -63,7 +63,11 @@ fn fetch_corridor(q: text) -> text {
   _ = mkdir_all(CORRIDOR_CACHE_DIR);
   path = "{CORRIDOR_CACHE_DIR}/c{qhash(q)}.json";
   f = file(path);
-  if f.exists() { return f.content(); }
+  // One fallible read, not exists()+content(): `content()` is `text?` and null covers BOTH "absent" and
+  // "unreadable", which both mean the same thing here — re-fetch. Asking exists() first cannot make the
+  // read infallible (the file can vanish or turn unreadable in between), it only adds a race to lose.
+  cached = f.content();
+  if cached { return cached; }
   resp = web::http_post(OVERPASS, q);
   if resp.status == 429 {
     web::sleep_ms(3000);
@@ -100,16 +104,20 @@ fn serve(srv: server::Server, path: text) {
   q = rel.find("?");
   if q >= 0 { rel = rel[..q]; }
   if rel == "/" { rel = "/index.html"; }
-  if rel.contains("..") {
+  if rel.find("..") >= 0 {
     srv.respond_404();
     return;
   }
+  // Same single fallible read as fetch_corridor: `content()` is `text?`, and null means absent OR
+  // unreadable — both are a 404 here. Serving `f.content() ?? ""` after an exists() check would answer
+  // 200 with an empty body for a file that turned unreadable; the null IS the 404 signal.
   f = file(".{rel}");
-  if !f.exists() {
-    srv.respond_404();
-    return;
-  }
-  srv.respond_typed(200, f.content(), content_type(rel));
+  body = f.content();
+  // Positive form, not the `if !body { return; }` guard clause: @PLN102 narrows a nullable inside a
+  // POSITIVE guard's body but NOT after a negative guard's early return, so the guard-clause version
+  // warns here (docs/loft-feedback.md). `?? ""` would silence it by answering 200 with an empty body
+  // for an unreadable file — the null IS the 404 signal, so it must branch, not default.
+  if body { srv.respond_typed(200, body, content_type(rel)); } else { srv.respond_404(); }
 }
 
 // "lat,lon;lat,lon;..." → route length in metres, reply to the client that sent it.

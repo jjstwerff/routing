@@ -1338,3 +1338,47 @@ reference.*
    written during the loop. It would spare consumers slicing a large read-only structure per job (and the
    duplication that implies). Happy to test it against the matcher — a real ~39-chunk workload with a
    byte-identical route gate (`tools/match_parity.sh`).
+
+
+## @PLN102 does not narrow through a guard clause (early return) — 2026-07-17
+
+**loft 2026.7.1** (installed 10:39, built from `tuxedo-f2-impl-steps`). Surfaced by the sharper lint:
+routing had null-flow at zero, and the new binary correctly found two real TOCTOU bugs in
+`server/server.loft` (`f.exists()` then `f.content()` — the read is fallible whatever `exists()` said).
+Fixing them exposed the gap. Minimal probe:
+
+```loft
+fn take(s: text) { println(s); }
+
+fn guard(t: text) {
+  s: text? = t;
+  if !s { return; }      // guard clause: after this, s CANNOT be null
+  take(s);               // ⚠ WARNS — "a nullable `text?` is stored into parameter 1 of `take`"
+}
+
+fn body(t: text) {
+  s: text? = t;
+  if s { take(s); }      // ✅ no warning — positive narrowing inside the body
+}
+```
+
+**The analysis narrows inside a POSITIVE guard's body, but not after a NEGATIVE guard's early return.**
+The two functions are semantically identical; only the shape differs.
+
+**Why it matters for the definition, not just as a bug.** The guard clause is the canonical idiom for
+exactly the case DN1 creates most of — "a fallible read, handle the failure and leave" — so the model
+pushes you toward a shape it then refuses to credit. The available discharges are all worse:
+
+* `?? <default>` — **actively harmful here.** The null carried the meaning (unreadable ⇒ 404). Defaulting
+  answers `200` with an empty body. A lint whose easy discharge is the wrong behaviour trains the reflex
+  to silence it.
+* re-nest into the positive form — what routing did (`server.loft:120`), and it *is* fine at one site;
+  but it forces rightward drift precisely where guard clauses exist to prevent it.
+
+**Ask:** treat `if !x { return; }` (and `break` / `continue` / any diverging arm) as narrowing `x` to
+non-null for the rest of the block — the standard flow-sensitive treatment of a diverging branch. The
+information is already there: the analysis proves the negative case cannot fall through.
+
+**Note the lint was RIGHT twice before it was incomplete once** — both TOCTOU bugs it found were real, and
+the fix subtracted code (one fallible read replaces `exists()` + `content()`, since null already means
+"absent OR unreadable" and both take the same path). The narrowing gap is the only false positive.
