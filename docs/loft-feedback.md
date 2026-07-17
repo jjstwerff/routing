@@ -1263,12 +1263,28 @@ the prefix; it is the first thing a consumer copies.
 
 ---
 
-## 2026-07-17 — `par` cannot express "many workers reading one shared read-only structure"
+## 2026-07-17 — `par` rejects a captured reference (workable: put the data in the ELEMENT) — DOC gap
 
-**The finding.** A `par` worker may not read a captured **reference** — only scalars. So any workload where
-N workers each read one big shared read-only structure cannot be written with `par` at all. That is not a
-corner case: it is graph search, mesh building, image processing over a shared source — most of what one
-reaches for threads to do.
+**Corrected 2026-07-17 (my first read of this was wrong — the maintainer's).** A `par` worker may not read
+a captured **reference**, only scalars. I concluded the workload was inexpressible. It is not: *"only the
+loop element may be a reference"* is the way through — **put the data in the ELEMENT**, i.e. make each job
+self-contained with the slice that job needs, which is the ordinary data-parallel decomposition. Measured,
+it works and it scales:
+
+| slice each job carries | sequential | `par(…, 8)` | |
+|---|---|---|---|
+| 100 | 96 ms | **26 ms** | **3.7×** |
+| 1000 | 88 ms | **22 ms** | **4.0×** |
+| 10000 | 69 ms | 42 ms | 1.6× — the per-element copy eats the win |
+
+Results identical in every case. So the real rule is a **design constraint, not a blocker**: give a worker
+what its part needs, not the world — and keep the slice small, because the element is copied into the
+worker's isolated store clone.
+
+**What remains a genuine ask** is only the ergonomics for a *large shared read-only* input (a 13k-way
+graph every worker reads). Slicing it per job is real work and may duplicate data; letting a worker read a
+captured reference that is provably not written during the loop would avoid both. But that is an
+optimisation, not a precondition — the workload IS expressible today.
 
 ```loft
 struct Node { x: float, y: float }
@@ -1296,12 +1312,12 @@ just not available to us: *"read the value into a scalar before the loop"* canno
 graph, and *"only the loop element may be a reference"* would mean handing each worker its own copy of
 the graph as the element.
 
-**Why it blocks routing.** `PLAN-PERF.md` §6b B parallelises the matcher's per-stretch loop — the natural
-shape: ~39 independent chunks of ~24 ms, results already iterated in order, nothing shared but
-**read-only** inputs (`g: Graph`, `ct`, `anchors`, `ec`). Every one of those is a reference, so the worker
-cannot see them. The workload is embarrassingly parallel and `par` cannot express it. We are not blocked
-on `Scratch` (the shared mutable we expected to have to un-share) — we are blocked on the read-only
-inputs.
+**What it means for routing.** `PLAN-PERF.md` §6b B parallelises the matcher's per-stretch loop (~39
+independent ~24 ms chunks, results already iterated in order). Its inputs — `g: Graph`, `ct`, `anchors`,
+`ec` — are all references, so they cannot be *captured*. The path is to make each stretch a self-contained
+job carrying its own slice of the corridor. That is a real refactor and it is the right shape anyway
+(data-parallel = partition the data), with a measured ~4× at stake and a byte-identical-route gate already
+in place.
 
 **The docs read as if this works.** THREADING.md says *"Extra context arguments are forwarded to workers:
 `par(b = scale(a, mult), N)`"* with no mention that `mult` being a scalar is load-bearing; and
@@ -1310,13 +1326,15 @@ as "the worker gets its own copy of everything", which is what a consumer would 
 sentence in THREADING.md § par: *a captured argument must be a scalar; only the loop element may be a
 reference.*
 
-**Ask, in preference order.**
-1. **Let a worker read a captured reference that is provably read-only for the loop.** The isolated store
-   clone already exists; the shared structure is not written by anyone during the par. This is the fix
-   that unlocks the whole class.
-2. Failing that, a way to hand workers a **shared immutable** explicitly (a `const &` context arg, a
-   read-only store handle) — anything that says "clone the mutable, share the frozen".
-
-Until then `par` is usable for scalar-fold workloads and not for the ones that motivated us asking. Happy
-to test a fix against the matcher — it is a real ~39-chunk workload with an existing byte-identical
-route gate (`tools/match_parity.sh`) to prove correctness under parallelism.
+**Ask — now a DOC fix plus one optimisation, not a blocker.**
+1. **THREADING.md § par should state the rule.** *"Extra context arguments are forwarded to workers:
+   `par(b = scale(a, mult), N)`"* never says that `mult` being a **scalar** is load-bearing, and
+   *"`clone_for_worker()` creates locked copies of all in-use stores for each worker thread"* reads as
+   "the worker gets its own copy of everything" — which is what a consumer designs against. One sentence
+   would fix it: *a captured argument must be a scalar; only the loop element may be a reference, so put
+   a worker's data in the element.* The runtime diagnostic is already excellent (it names the argument,
+   the reason and the workaround) — the docs just point the other way first.
+2. **Optimisation, not a precondition:** let a worker read a captured reference that is provably not
+   written during the loop. It would spare consumers slicing a large read-only structure per job (and the
+   duplication that implies). Happy to test it against the matcher — a real ~39-chunk workload with a
+   byte-identical route gate (`tools/match_parity.sh`).

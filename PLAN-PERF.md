@@ -50,8 +50,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
-| ~~**17**~~ ✅ | throwaway probe | **DONE — and it killed 18.** `par` workers cannot read a captured reference; every stretch input is one. See §6b B. | boundary established; filed upstream | none |
-| ~~**18**~~ ⛔ | — | **PARKED upstream.** `par` cannot express "N workers read one shared read-only structure". Not a `Scratch` problem — a read-only-input problem. | awaits loft: share an immutable with a worker | — |
+| **17** ✅ | throwaway probe | **DONE.** `par` workers can't read a captured reference — the data must go in the ELEMENT. Measured ~4× with a small slice; the copy eats it at 10k. See §6b B. | boundary + scaling established | none |
+| **18** | `lib/routing_kernel` | **Slice the corridor per stretch** into self-contained jobs, then `par` over them (threads from `hardwareConcurrency`). NOT the `Scratch` refactor this row used to say. | ~4× native/Android; route identical over N runs; slice size is the design question | **perf only** |
 | **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
 | **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -484,19 +484,26 @@ optimisation (reuse the buffer, don't reallocate) that is now the only thing for
 `denoise_anchor`, which shares the same `sc`. So the work is not "add threads to the matcher" — it is
 **un-share one buffer**, which is also what makes it streamable.
 
-> **⛔ MEASURED 2026-07-17 — `par` CANNOT express this workload. §6b B is blocked upstream.** A par worker
-> may not read a captured **reference**, only scalars: *"captured argument 'b' is a reference (Big); a par
-> worker runs on an isolated store clone and cannot read a captured reference … only the loop element may
-> be a reference."* Every input a stretch needs is a reference (`g: Graph`, `ct`, `anchors`, `ec`), so the
-> worker cannot see them. Verified boundary: scalar context ✅ (and it scales, 101 → 31 ms at 8 threads);
-> loop-element-is-a-reference ✅; captured reference ❌. **We were never blocked on `Scratch`** — the
-> shared *mutable* we expected to fight. We are blocked on the read-only *inputs*. Filed with an ask in
-> `docs/loft-feedback.md`; step 18 is parked until loft can share an immutable with a worker. The
-> streaming half (§6b A) is unaffected and already shipped — and it was always the half that fixed the
-> lag.
+> **MEASURED 2026-07-17 — the decomposition changes; `par` still works.** A par worker may not read a
+> captured **reference**, only scalars — so `g`/`ct`/`anchors`/`ec` cannot be handed to a worker that way.
+> But *"only the loop element may be a reference"* is the route: **put the data in the ELEMENT** — make
+> each stretch a self-contained job carrying the slice it needs. That is the ordinary data-parallel
+> decomposition, and measured it scales:
 >
-> *(Superseded note, kept for the reasoning:)* **Step 17's premise needs checking FIRST — `par` may already do this, and may cost more than it
-> saves.** THREADING.md: *"`Stores::clone_for_worker()` creates **locked copies of all in-use stores for
+> | slice per job | sequential | `par(…,8)` | |
+> |---|---|---|---|
+> | 100 | 96 ms | **26 ms** | **3.7×** |
+> | 1000 | 88 ms | **22 ms** | **4.0×** |
+> | 10000 | 69 ms | 42 ms | 1.6× — the per-element copy eats it |
+>
+> Results identical throughout. **So the constraint is: give a worker what its part needs, not the world,
+> and keep the slice small** — the element is copied into the worker's isolated store clone.
+>
+> Two corrections to what this section assumed: (a) **we were never blocked on `Scratch`**, the shared
+> *mutable* — the pressure is on the read-only *inputs*; (b) the work is not "un-share one buffer" but
+> "**slice the corridor per stretch**". Sizing that slice is the open design question, and the copy column
+> above is what decides it. §6b A (streaming) is unaffected and already shipped — it was always the half
+> that fixed the lag. THREADING.md: *"`Stores::clone_for_worker()` creates **locked copies of all in-use stores for
 > each worker thread**."* Two consequences, pulling opposite ways:
 > - **The un-sharing may be automatic.** If each worker gets private stores, `Scratch` is already
 >   per-worker and step 17 is a no-op. Refactoring it by hand first would be work done for nothing.
