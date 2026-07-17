@@ -53,7 +53,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **17** ✅ | throwaway probe | **DONE.** `par` workers can't read a captured reference — the data must go in the ELEMENT. Measured ~4× with a small slice; the copy eats it at 10k. See §6b B. | boundary + scaling established | none |
 | **18a** | design + probe | **Decide the slice** (§6b B2 below): the envelope, the monotonic remap, and whether the copy cost leaves a win. Not code yet. | an envelope proven to be a SUPERSET of what the full search touches | none |
 | **18b** | `lib/routing_kernel` | Build per-stretch jobs from 18a's slice, `par` over them (threads from `hardwareConcurrency`). | ~4× native/Android; route identical over N runs (`match_parity.sh` + repeat) | **perf only** |
-| **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
+| **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
 | **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
@@ -578,6 +578,38 @@ B2 par(…) over stretches             ← ~3x on native/Android today; browser 
 
 A is independent of everything and should land first: it is the only one that changes what the app *feels*
 like, and it needs no permission from anyone.
+
+---
+
+## 7a. Step 19 scoped — persisting the graph is a FORMAT change (read before starting)
+
+Its one-line summary undersells it. `PLAN-TILES` §268 is not "prebuild one graph": *"the generator
+persists per-tile `GNode`/CSR adjacency alongside (or instead of) `Road`s; the loader unions the loaded
+tiles and merges their **exact-integer border nodes, splicing adjacency**… Do this **only after**
+single-tile read (B.2 / D.4) works."* A graph is corridor-specific, so what can be persisted is a graph
+**per tile**, re-unioned per corridor. That means all of:
+
+1. **`TTile` gains `GNode`/CSR fields** — a store-format change.
+2. **`tools/gen-tiles.loft`** builds and writes them.
+3. **The stores are regenerated** (enschede: 20 MB layout + 3.5 MB roads) and re-deployed.
+4. **The loader unions the corridor's tiles and splices border nodes** — the risky part: borders must
+   merge on exact-integer coords, or a route crossing a tile edge changes. §268's own check is "a corridor
+   spanning ≥2 tiles matches identically".
+5. Only then does the kernel skip `build_graph`.
+
+**Prerequisite status:** §268 says "only after single-tile read works". The paged API **is** shipped
+(`store_load_key` / `store_load_keys` / `store_load_key_text`, loft#522) and there is prior art in
+`client/basemap/load_working_set.loft` — but the app's kernel does **not** use it: it loads whole stores.
+So the prerequisite is *available*, not *met*.
+
+**Sizing, honestly.** Since step 7 the graph is built once per corridor and reused, so `build_graph` now
+costs only on a corridor MISS — i.e. the cold match (~5.3 s), where it is ~41% (~2.2 s). Real, but this is
+a format change plus a border splice that can silently alter a route, for one number.
+
+**So do step 20 first.** The cell-tube corridor is *additive and inert* (tube beside bbox, bbox still the
+default), changes no format, regenerates nothing, and shrinks the ways — which makes **both** the corridor
+read and `build_graph` cheaper, attacking the same cold match from the cheap end. Re-measure after it;
+19's ~41% may be a smaller slice of a smaller number by then, and 22's gate may matter more than either.
 
 ---
 
