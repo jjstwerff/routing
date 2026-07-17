@@ -778,18 +778,18 @@ with. Pinning (`lock_store`) is the *feature*: it keeps the read valid ACROSS FR
 proving JS reads survive an asyncify yield (`deliver_expose_survives_cross_frame_yield_in_js`) — which is
 precisely routing's `frame_yield` situation.
 
-**A `hash` will not deliver** — **CONFIRMED, still true**, and it is the one real constraint:
+**A `hash` will not deliver** — **RETRACTED, this was wrong too** (`docs/loft-feedback.md`). `deliver` of
+a hash does fail, but that is the **loopback test reconstructor** (`deliver_reconstruct` →
+`read_via_descriptor`) refusing `FlatArray` — the very node Phase 3 emits for a hash. **`expose` is a
+different function** and never goes near it (`ffi_deliver.rs:56`): it calls `collect_keyed` (Phase 3's
+pre-flattening) → `to_delivery_json(&flat)` (the `(rec,pos)` redirect map) → `lock_store` (the pin) →
+`loft_host_expose`, and its body is `#[cfg(target_arch = "wasm32")]` — **only live on the `--html` target**,
+which is why it is a silent no-op on the plain backend.
 
-```
-deliver(2, w.tiles)   hash<Tile[tkey]>, top-level  -> error: type 69 is a store-internal kind
-deliver(3, w)         hash nested as a FIELD       -> error: type 66 — SAME, not pre-flattened
-deliver(4, v)         vector<Row>                  -> OK: flat interleaved bytes
-```
+**So step 9 stands exactly as written: `expose(1, layout)` on the layout hash.** No per-tile flattening
+workaround is needed — `collect_keyed` does it inside loft. Steps 9–13 need no upstream anything; they
+need us.
 
-Note the plan describes **Phase 3** as pre-flattening keyed collections (`hash/radix/index → FlatArray`),
-but the installed binary rejects a hash in **both** positions with *"cursor-walked in a later phase"* —
-filed as a doc/binary discrepancy in `docs/loft-feedback.md`.
-
-**So the way through is what this plan already said: per-tile `deliver` of a VECTOR.** That is proven to
-work on the installed loft today — flatten the tile's features to a `vector<T>`, deliver that. Steps 9–13
-need no upstream anything; they need us.
+**The lesson, since I paid for it twice in one hour:** probe the function the STEP ACTUALLY CALLS. Both
+wrong conclusions came from testing `deliver`'s loopback and generalising to `expose`'s bridge, and from
+reading a `cfg`-disabled no-op as evidence about loft rather than about my probe.

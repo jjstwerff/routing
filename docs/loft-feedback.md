@@ -1442,31 +1442,48 @@ to re-run it against a `LOFT_PAR_SHARE=1` build on routing's real match session 
 once step 2 exists. A real consumer with a 175 MB session is exactly the case where A-vs-B gets decided.
 
 
-## @PLN105 Phase 3 (keyed collections pre-flattened) is not in the shipped binary — 2026-07-17
+## RETRACTED — "@PLN105 Phase 3 is not in the shipped binary" was WRONG — 2026-07-17
 
-**loft 2026.7.1** (installed 10:39). @PLN105's plan lists Phase 3 as done — *"keyed collections,
-PRE-FLATTENED. hash/radix/index → materialise to a key-ordered scratch array (`build_*_sorted_vec`) →
-`FlatArray` … JS reads them layout-blind via the array path"* — and @PLN105 is CLOSED. But the installed
-binary rejects a `hash` in **both** positions:
+**I filed this and retracted it within the hour. Phase 3 IS shipped. No action needed from loft.**
 
-```loft
-struct Tile  { const tkey: integer, n: integer }
-struct World { name: text, tiles: hash<Tile[tkey]> }
+**The claim** was that `deliver` rejects a `hash` in both top-level and nested position with *"type 69 …
+is a store-internal kind — not in the serializable subset (cursor-walked in a later phase)"*, so Phase 3
+(keyed collections pre-flattened) had not landed despite @PLN105 closing on it.
 
-deliver(2, w.tiles);   // top-level → error: type 69 (hash<Tile[tkey]>) is a store-internal kind —
-                       //   not in the serializable subset (cursor-walked in a later phase)
-deliver(3, w);         // nested FIELD → error: type 66 — the SAME error, not pre-flattened
-deliver(4, v);         // vector<Row> → OK, flat interleaved bytes
+**Why it was wrong.** The probes were real, but they measured the **loopback test reconstructor**, not the
+bridge. `deliver_reconstruct` → `read_via_descriptor` (`descriptor.rs:732`) refuses `Iterated` / `Ref` /
+`ChildRec` / **`FlatArray`** — and `FlatArray` is *precisely what Phase 3 emits for a hash*. So the error
+text is the loopback saying "I don't walk keyed collections", which the plan itself says is deferred there.
+
+The path routing actually uses is `expose`, and it is a **different function** that never touches
+`read_via_descriptor` (`ffi_deliver.rs:56`):
+
+```rust
+pub fn expose_value(&mut self, tag: i64, val: DbRef, db_tp: u16) {
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), not(feature = "wasm")))]
+    {
+        let mut desc = self.layout_descriptor(&[db_tp]);
+        let mut flat: BTreeMap<u64, u32> = BTreeMap::new();
+        self.collect_keyed(&desc, db_tp, val, &mut flat);   // <- Phase 3, right here
+        Self::rewrite_iterated(&mut desc);
+        let json = desc.to_delivery_json(&flat);            // <- the (rec,pos) flat redirect map
+        self.lock_store(&val);                              // <- the cross-frame pin
+        crate::loft_host_expose(tag, store_base, val.rec, val.pos, ..., json.as_ptr(), json.len());
 ```
 
-*"cursor-walked in a later phase"* reads like Phase 3 is still ahead, not behind. Either the phase did not
-ship, it landed after the binary was cut, or it covers a narrower case than the plan's wording implies.
+`collect_keyed` + `to_delivery_json(&flat)` **is** the plan's *"hash/radix/index → key-ordered scratch
+array → `FlatArray` … multi-instance via a `flat` redirect map keyed by `(rec,pos)`"*. It shipped.
 
-**Not a blocker for routing** — the vector path works, and per-tile `deliver` of a `vector<T>` is the route
-we already planned. **Flagging it because the plan closed on the claim.** If Phase 3 is genuinely
-outstanding, @PLN105's Phase 4 (routing's migration, consumer-owned) will be built on the vector path only,
-and any future consumer reading the plan will expect hash delivery that isn't there.
+**Two traps, both of which CLAUDE.md names, both of which I walked into anyway:**
 
-**Worth stating plainly:** the rest of @PLN105 checks out on the binary — `deliver` of a `vector<struct>`
-emits exactly the flat interleaved buffer the design promises. This is a docs-vs-binary gap on one phase,
-not a broken bridge.
+1. **I concluded from the wrong path.** `deliver`'s loopback is a *test host*; `expose` is the browser
+   bridge. Same word ("deliver a hash"), different function — and I never checked which one routing's own
+   step 9 calls.
+2. **A silent no-op read as evidence.** `expose(1, l.tiles)` printed nothing on the plain backend and I
+   treated that as uninformative rather than as the tell: the body is `#[cfg(target_arch = "wasm32")]`, so
+   there was nothing to see off the `--html` target. **Absence of output was a fact about my probe, not
+   about loft.**
+
+**Consequence for routing:** PLAN-PERF step 9 (`expose(1, layout)` — the layout hash, exposed once per
+session) is **valid as specified**. The hash is pre-flattened by `collect_keyed` and JS walks it via the
+descriptor. §7c corrected accordingly.
