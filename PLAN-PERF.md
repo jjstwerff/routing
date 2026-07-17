@@ -356,6 +356,17 @@ the work being done. A spinner says "something is happening"; this says "here is
 It also degrades honestly — a stretch that is slow to match is a stretch the user watches take its time,
 which is information, not a stall.
 
+**It also mimics the journey itself.** The stretches arrive in TRAVEL order, so the growing line is the
+walk/ride unfolding in the direction the user will actually do it — a preview of the trip, not merely a
+loading animation. This app is for planning a route you are about to travel; watching it draw itself
+along the way you will go is the closest a plan gets to rehearsing it.
+
+**So arrival ORDER is load-bearing, not incidental.** Emit stretches out of order and this stops being a
+journey and becomes a jigsaw filling in — same pixels, none of the meaning. That is a real constraint on
+B below, and the good news is it costs nothing: loft's `par(b=worker(a), N)` *"runs the worker in parallel
+over the source and **iterates the results in order**"* (THREADING.md). Parallel work, sequential reveal —
+the two compose exactly, and a stretch that finishes early simply waits its turn to be drawn.
+
 Emit each `SubPath` as it lands and `frame_yield()` between them. First segment on screen in ~96 ms, then
 ~10 per second, the page painting throughout. **The 4.4 s does not shrink — it stops being a freeze and
 becomes a line growing at a natural pace.** That is the difference between "hanging" and "loading", and
@@ -365,7 +376,8 @@ Works today, on the single-threaded browser build, with no loft change and no ro
 
 ### B — `par` over the stretches (fully utilise the processor)
 
-**Invariant:** *each stretch is a self-contained chunk; workers share nothing, so nothing locks.*
+**Invariant:** *each stretch is a self-contained chunk; workers share nothing, so nothing locks — and the
+results are still revealed in travel order.*
 
 That is `par`'s core — divide the work into chunks big enough to be worth dispatching, with no shared
 state. Per stretch the inputs are **read-only** (`g`, `ct`, `anchors`, `ec`) and the output is a fresh
