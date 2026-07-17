@@ -422,6 +422,23 @@ The result: parallel work *behind* a sequencer. The compute order is whatever th
 reveal order is the journey; the route is identical to a sequential run. A stretch finishing early simply
 waits its turn to be drawn — and waiting costs nothing, because the user is watching the earlier ones.
 
+**And the buffer is cheap, because it is bounded by the POOL, not by the route.** Only ~N stretches are
+in flight at once (N = threads, ≈8 on a phone), so the pending set is **O(threads), not O(stretches)** —
+a handful of `SubPath`s held for a moment, whatever the route's length. A 40-point route does not buffer
+39 results; it buffers at most about 8. Two consequences worth stating:
+
+- **Memory is a non-issue.** The reorder buffer is not a data structure to design around — it is a few
+  pending results, and loft's `par` already owns it.
+- **The reveal can stall by at most ONE slow stretch.** If stretch *k* is the slowest in flight, the line
+  pauses at *k* while up to N−1 successors quietly finish behind it — then several appear at once. That
+  is the honest-degradation property again: the pause is exactly where the matcher genuinely struggled,
+  and the catch-up is instant. It is bounded by one stretch's cost (~24 ms native / ~96 ms phone), never
+  by the whole route.
+
+So `par`'s non-determinism is bounded in both senses that matter: the *route* becomes deterministic once
+the source is ordered (1), and the *buffering* it costs is bounded by the pool size rather than the
+problem size.
+
 **The gate is therefore determinism, not just parity:** run the SAME match N times with par enabled and
 assert the route is byte-identical every time — and identical to the sequential run. `tools/match_parity.sh`
 already compares session-vs-one-shot on the route (excluding `ways=`, which is corridor size); the par
