@@ -45,7 +45,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **6** | `client/web_basemap_kernel.loft` | Move the two `store_load_url_trusted` calls **above** the loop. | 2nd command −355 ms (view) / −14 ms (match) | **perf only** |
 | **7** | `client/web_basemap_kernel.loft` | Hold the corridor `Graph` across commands; rebuild only when the corridor changes. | 2nd match −~41% (`build_graph` gone) | **perf only** |
 | **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
-| **9** | `client/web_basemap_kernel.loft` | `expose(1, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame). | JS receives descriptor + storeBase/rec/pos | none |
+| **9** ⚠ | `client/web_basemap_kernel.loft` | `expose(1, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame). **ATTEMPTED 2026-07-17 — the one-line call BREAKS THE APP** (never becomes ready, no JS exception, baseline green without it). Reverted; observable built (`tools/expose_probe.sh` + `browser/cdp_expose.mjs`). **See §7d before retrying — do NOT just re-add the line.** | JS receives descriptor + storeBase/rec/pos | none |
 | **10** | `browser/store-kernel.mjs` | Implement the `loft_host_deliver` import; wire `readLoftValue` (`doc/loft-deliver.js`). | one PTile read in JS == the kernel's text for that tile | none |
 | **11** | `browser/map.mjs` | Read **areas only** via `readLoftValue`, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
 | **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
@@ -793,3 +793,54 @@ need us.
 **The lesson, since I paid for it twice in one hour:** probe the function the STEP ACTUALLY CALLS. Both
 wrong conclusions came from testing `deliver`'s loopback and generalising to `expose`'s bridge, and from
 reading a `cfg`-disabled no-op as evidence about loft rather than about my probe.
+
+## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
+
+**Status: reverted, undiagnosed.** The tree is clean and the app works. The observable is built and
+committed; the kernel change is not. Whoever picks this up starts here, not from the step-9 row.
+
+**What was done.** One additive line in `client/web_basemap_kernel.loft`, right after the layout store
+loads (inside the `layout_url != layout_at` guard, so once per session):
+
+```loft
+if store_load_url_trusted(layout, layout_url) {
+  layout_at = layout_url;
+  expose(EXPOSE_LAYOUT, layout);     // <- this line
+}
+```
+
+Nothing else changed — the text path still emits every feature, JS still renders from it.
+
+**What happened.** The app **never becomes ready**: `window.__storeApp.ready` stays false through a 100 s
+poll, and **no JS exception is thrown** — it is a silent hang or trap, not an error. Isolated properly:
+`git stash` + rebuild the wasm ⇒ `tools/map_profile.sh` runs green; restore + rebuild ⇒ dead again. So it
+is this line, not the harness and not a pre-existing break.
+
+**The hypothesis to test first — it would VINDICATE the claim I retracted.** `expose_value` calls
+`self.lock_store(&val)` to pin the store across frames. The very next thing the kernel does is
+`do_view_bbox(layout, roads, arg3)` — **loft reading the store it just pinned.** If the pin makes loft's
+own subsequent read fail or block, then my original *"`expose` pins a store unreadable"* was **right**, and
+my retraction of it was wrong for the second time on the same claim. I have not tested this and am not
+asserting it — but it is the cheapest cell to probe, and the retraction (`docs/loft-feedback.md`) should
+NOT be trusted as settling it. What the retraction *did* establish and does still stand: `collect_keyed`
+pre-flattens the hash, so "a hash cannot be exposed" is not the problem.
+
+**Other cells worth probing, cheapest first:**
+
+| probe | catches |
+|---|---|
+| `expose` a small **`vector`** instead of the layout hash | is it the pin, or the keyed walk? `collect_keyed` runs a full walk of a 20 MB / ~230k-feature hash at load — an infinite loop or an OOM there would look exactly like this |
+| `expose` AFTER `do_view_bbox` instead of before | orders the pin against loft's own read |
+| watch the wasm's memory + `starts` while it hangs | separates trap (dead) from loop (spinning) |
+| the loft-side test `deliver_expose_survives_cross_frame_yield_in_js` | proves the shape works upstream — diff their harness against ours |
+
+**The tooling is the deliverable of this attempt.** `tools/expose_probe.sh` → `browser/cdp_expose.mjs`
+asserts step 9's observable where the call actually lands (the host import), and will fail loudly instead
+of silently: expose called exactly once, descriptor parses (not `{__parseError}`), `storeBase`/`rec`
+nonzero (`rec == 0` is `expose_value`'s early return). It currently reports `FAIL: app never became ready`
+— which is the correct answer today.
+
+**Method note, since it is the third time this hour.** `expose` is a **silent no-op off the `--html`
+target** (`expose_value` is `#[cfg(target_arch = "wasm32")]`), so nothing about it can be learned from
+`loft file.loft`, and a quiet run means "wrong target", never "works". Every probe of this call must go
+through the browser.
