@@ -56,7 +56,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
-| **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
+| **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. **Thresholds tuned** — PLAN-MATCH §3: `bridges == 0 && dev_max <= 900` (cycling_road); PEN_TOL unusable on this corpus. | corpus: 0 worse-accepted; re-run `tools/corpus_tube.loft` after wiring | **⚠ route-affecting — the only one** |
 
 **Steps 2 and 3 are probes and come first**: each is an afternoon and each gates a block (2 → steps
 4–8; 3 → steps 9–12). If a probe fails, that block is fiction and the fallback is named in its phase.

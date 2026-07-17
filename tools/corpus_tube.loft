@@ -67,13 +67,17 @@ fn main() {
       qt = quality_of(wt, pts, profile);
       same = qb.len_m == qt.len_m && qb.dev_max == qt.dev_max && qb.pen_m == qt.pen_m
              && qb.bridged_m == qt.bridged_m && class_text(qb.class_m) == class_text(qt.class_m);
-      if same { n_same += 1; }
-      else {
-        n_diff += 1;
-        println("DIFF i={i} pts={len(pts)} ways {len(wb)}->{len(wt)}");
-        println("   bbox len={qb.len_m:1.1} dev_max={qb.dev_max:1.1} dev_mean={qb.dev_mean:1.1} pen={qb.pen_m:1.1} bridged={qb.bridged_m:1.1} class={class_text(qb.class_m)}");
-        println("   tube len={qt.len_m:1.1} dev_max={qt.dev_max:1.1} dev_mean={qt.dev_mean:1.1} pen={qt.pen_m:1.1} bridged={qt.bridged_m:1.1} class={class_text(qt.class_m)}");
-      }
+      // The TUBE's own gate inputs — all the gate can see at runtime. It never sees bbox's numbers;
+      // that is the whole point of a cheap-first ladder.
+      t_pen_share = 0.0;
+      if qt.len_m > 0.0 { t_pen_share = qt.pen_m / qt.len_m ?? 0.0; }
+      // GROUND TRUTH (offline only): is the tube's result actually worse than bbox's? §7 bars length —
+      // judge on bridging and faithfulness, the two things the gate is allowed to care about.
+      worse = qt.bridged_m > qb.bridged_m + 1.0 || qt.dev_max > qb.dev_max * 1.10 + 1.0;
+      verdict = "SAME";
+      if !same { if worse { verdict = "WORSE"; } else { verdict = "OK-DIFF"; } }
+      if same { n_same += 1; } else { n_diff += 1; }
+      println("ROW i={i} pts={len(pts)} ways={len(wt)} t_bridged={qt.bridged_m:1.0} t_devmax={qt.dev_max:1.0} t_devmean={qt.dev_mean:1.0} t_penshare={t_pen_share:1.3} | b_bridged={qb.bridged_m:1.0} b_devmax={qb.dev_max:1.0} | {verdict}");
     }
   }
   println("CORPUS {n_same + n_diff} matched ({n_empty} empty corridors skipped): identical={n_same} diverged={n_diff}");

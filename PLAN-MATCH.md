@@ -112,6 +112,40 @@ tier that *can* see the better ways. `DEV_TOL` / `PEN_TOL` are per-profile const
 tolerates more curve and lower road classes than a road ride) — the same profile weights that are the
 main first-match lever (DESIGN §6). Start generous, tighten against real routes.
 
+### Tuned against a corpus (2026-07-17, `tools/corpus_tube.loft`, cycling_road)
+
+25 deterministic sketches, cell-tube (PLAN-PERF step 20) vs bbox, scored on the §7 numbers. 8 diverged;
+3 of those were genuinely **worse** (the tube bridged where bbox did not, or deviated materially further).
+Sweeping the gate over the tube's OWN numbers — all it can see at runtime:
+
+| `DEV_TOL` | accepted | escalated | **worse accepted** |
+|---|---|---|---|
+| 700 | 10/25 | 15 | 0 |
+| **900** | **13/25** | 12 | **0** |
+| 1000 | 14/25 | 11 | 0 |
+| 1100 | 18/25 | 7 | **1** ← lets i=7 through |
+
+**Findings:**
+
+1. **"Connected" does most of the work.** `bridges == 0` alone catches 2 of the 3 worse cases (i=2, i=14 —
+   the tube bridged where bbox did not). Only i=7 (connected, but dev_max 1003 vs bbox's 484) needs a
+   deviation threshold at all.
+2. **`DEV_TOL = 900`, not 1000.** 1000 maximises acceptance and still rejects everything worse — but the
+   boundary is *highest acceptable 971 vs lowest worse 1003*, a **32 m window** on 25 sketches. That is
+   fitted to the corpus, not learned from it. 900 costs **one** case of acceptance (14 → 13) and buys a
+   103 m margin. §3's own safety argument decides it: the gate can only make us escalate, so erring low
+   costs speed and never a route.
+3. **`PEN_TOL` does not discriminate here — do not set it from this corpus.** Accepted sketches span
+   pen_share −1.200…−0.038; the worse ones span −0.938…−0.385 — *fully overlapping*. On `cycling_road`
+   every share is negative (the cycle-infra bonus dominates the penalty), so the number carries no signal.
+   It is expected to matter on **walking/trail** profiles, where penalties dominate rather than bonuses —
+   which is exactly where §3 predicts the "forced onto worse ways" tell lives. **Re-tune per profile;
+   these are `cycling_road` numbers only.**
+
+**Caveat, stated so it is not forgotten:** 25 synthetic sketches over one block. The corpus already
+overturned a 3-sketch conclusion once (PLAN-PERF §7b), so treat 900 as the current best estimate, not a
+constant — and re-run the sweep when the corpus grows or the profile changes.
+
 > The gate can only make us *escalate* (spend more), never accept something a wider tier would improve
 > on. So mistuning it costs speed, never the wanted route — the fat corridor (§5, tier 3) is always the
 > floor.
