@@ -205,8 +205,14 @@ design property, not an optimisation:
 
 **Therefore arrival order is load-bearing.** Emitting stretches out of order gives the same pixels and
 none of the meaning — a jigsaw filling in rather than a journey. Any future parallelism must preserve the
-reveal order (loft's `par` does: it computes concurrently but iterates results in order). See
-`PLAN-PERF.md` §6b.
+reveal order (loft's `par` does: it computes concurrently but iterates results in order).
+
+**And parallelism must preserve DETERMINISM, which `par` does not give for free.** Same input → same
+match is a §5 requirement, and the sharpest threat is not a race but ORDER: a `par` loop over a hash walks
+its buckets unsorted, so parallelising the corridor read would change the way order, hence `build_graph`'s
+node indices, hence Dijkstra's tie-breaks — a route that wobbles run to run from identical input, silently
+and plausibly. The acceptance for any parallel work is therefore an N-run identity check, not a single
+comparison. See `PLAN-PERF.md` §6b B.
 
 **Faithfulness to the sketch dominates.** The match snaps your imprecise line onto the nearest
 sensible real ways; activity-suitability is only a *local tie-breaker*. It must never take a detour

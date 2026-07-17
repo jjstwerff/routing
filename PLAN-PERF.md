@@ -377,7 +377,35 @@ Works today, on the single-threaded browser build, with no loft change and no ro
 ### B — `par` over the stretches (fully utilise the processor)
 
 **Invariant:** *each stretch is a self-contained chunk; workers share nothing, so nothing locks — and the
-results are still revealed in travel order.*
+results are still revealed in travel order, for the same route as a sequential run.*
+
+#### ⚠ `par` is NOT deterministic by default — and determinism is a design requirement
+
+DESIGN §5 / PLAN-MATCH §2 require *same input → same match*. `par` does not give that for free. Three
+sources, in the order they will bite:
+
+**1. A `par` loop over a HASH visits in a different order.** THREADING.md: *"A hash uses an unsorted
+bucket walk for par (`hash_unsorted`) since the queue has no use for the hash's key order — so a par loop
+over a hash may visit elements in a different order than sequential `for x in h`."* `tiles_corridor_ways`
+iterates `for t in store` — a `hash<TTile[tkey]>`. Par it and the **way order changes**, so `build_graph`
+assigns different node/edge indices, so Dijkstra breaks ties differently, so **the route changes run to
+run from identical input**. This is the dangerous one: it is silent, plausible, and only shows as a route
+that "wobbles". *Fix:* do not par the corridor read, or materialise the tiles in `tkey` order first.
+
+**2. `gen` is a loop-carried counter.** The stretch loop does `gen = gen + 1` and hands `gen` to
+`assemble_stretch` to invalidate the shared `Scratch`. Under par that is a shared mutable and a race.
+*Fix:* it disappears with B1 — a per-worker `Scratch` gets a per-worker `gen`, and neither is shared.
+
+**3. Float summation order**, if any per-stretch cost is ever reduced across workers. Not an issue today
+(each `SubPath` is independent and `emit_route` sums in order), but it is the classic way a parallel
+refactor silently changes a length by 1e-12. *Fix:* keep every reduction in the ordered body, never in
+the workers.
+
+**The gate is therefore determinism, not just parity:** run the SAME match N times with par enabled and
+assert the route is byte-identical every time — and identical to the sequential run. `tools/match_parity.sh`
+already compares session-vs-one-shot on the route (excluding `ways=`, which is corridor size); the par
+work extends it with an N-run repeat. A one-shot comparison would pass on a wobble that only appears one
+run in ten, so the repeat is the point.
 
 That is `par`'s core — divide the work into chunks big enough to be worth dispatching, with no shared
 state. Per stretch the inputs are **read-only** (`g`, `ct`, `anchors`, `ec`) and the output is a fresh
