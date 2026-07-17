@@ -82,6 +82,15 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
+  exposeInfo: () => {
+    const e = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!e) return null;
+    const nodes = e.desc && e.desc.nodes ? Object.keys(e.desc.nodes).length : 0;
+    const names = e.desc && e.desc.names ? (Array.isArray(e.desc.names) ? e.desc.names : Object.values(e.desc.names)) : [];
+    return { storeBase: e.storeBase, rec: e.rec, pos: e.pos, typeId: e.typeId, descLen: e.descLen,
+             descNodes: nodes, sampleNames: names.slice(0, 12), wasmMB: +(kernel.memory().buffer.byteLength / 1048576).toFixed(1) };
+  },
   // Does the session's graph grow without bound as the user moves to NEW areas? server.loft replaces
   // tile corridors for exactly this reason ("RSS and latency blow up"). Match several sketches in
   // different places and watch wasm memory: replace ⇒ flat, accumulate ⇒ climbing.

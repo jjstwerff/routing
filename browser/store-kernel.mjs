@@ -43,6 +43,7 @@ export async function createKernel(wasmUrl) {
   const enc = new TextEncoder(), dec = new TextDecoder();
   const inQ = [];
   const ctrl = { ac: null, httpBytes: null };
+  const exposed = new Map();   // tag -> { storeBase, rec, pos, typeId, desc } from expose() (step 9)
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
 
@@ -78,6 +79,21 @@ export async function createKernel(wasmUrl) {
         return 0;
       },
       loft_host_http_get_copy: (ptr) => { if (ctrl.httpBytes) new Uint8Array(mem.buffer, ptr, ctrl.httpBytes.length).set(ctrl.httpBytes); },
+      // @PLN105 expose(tag, value) — the LONG-LIVED handle to a loft value in wasm memory. loft has
+      // pinned the store read-only, so `storeBase`/`rec`/`pos` stay valid across frames and JS can read
+      // the records directly (addr(rec,pos) = storeBase + rec*8 + pos) instead of parsing text. `desc` is
+      // the layout descriptor (LayoutDesc::to_json) that says how. `tag` arrives as a BigInt (i64).
+      //
+      // NOTE the descriptor is read HERE, inside the call: the borrow is only guaranteed for its
+      // duration, and mem.buffer detaches on memory.grow — so the JSON is copied out now, and every
+      // later read must re-derive its view from the CURRENT mem.buffer.
+      loft_host_expose: (tag, storeBase, rec, pos, typeId, descPtr, descLen) => {
+        globalThis.__exposeCalls = (globalThis.__exposeCalls || 0) + 1;
+        globalThis.__exposeArgs = { tag: String(tag), storeBase: String(storeBase), rec: String(rec), pos: String(pos), typeId: String(typeId), descLen: String(descLen) };
+        let desc = null;
+        try { desc = JSON.parse(dec.decode(new Uint8Array(mem.buffer, descPtr, descLen))); } catch (e) { desc = { __parseError: String(e) }; }
+        exposed.set(Number(tag), { storeBase, rec, pos, typeId, desc, descLen });
+      },
     },
     // frame_yield() — loft hands the frame back while it waits for the next command. Resuming on rAF is
     // what keeps the page painting during a long idle poll AND bounds the poll to ~1/frame rather than
@@ -119,5 +135,12 @@ export async function createKernel(wasmUrl) {
   // holds (steps 6-8) would be silently rebuilt. tools/map_profile.sh asserts it.
   // wasm linear memory, in bytes. The session holds state now, so a per-command climb here is a LEAK,
   // not noise — and it would explain cost growing with session history (PLAN-PERF §5 C0).
-  return { runKernel, stats: () => ({ starts, commands, storeLoads, wasmBytes: mem.buffer.byteLength }) };
+  return {
+    runKernel,
+    stats: () => ({ starts, commands, storeLoads, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
+    // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
+    // view from the CURRENT buffer — memory.grow detaches the old one.
+    exposedValue: (tag) => exposed.get(tag) || null,
+    memory: () => mem,
+  };
 }

@@ -1141,3 +1141,67 @@ now does) is no longer evidence of much: routing's 0 would be 0 either way.
 Suggested guard, since this class had no regression test: the three-destination probe above (return /
 field / parameter from one `float?` source) as a warning-count test — it is four lines and would have
 caught this.
+
+---
+
+## 2026-07-17 — @PLN105 `expose`/`deliver`: a store you expose becomes unreadable, and a top-level `hash` is not deliverable
+
+**Context.** PLAN-PERF §0 step 9 hands the browser the layout store so JS reads PTiles from wasm memory
+instead of loft serializing ~4.2 MB of text per pan (`view` = 29k lines the JS side then re-parses).
+`BROWSER_INTEROP.md` § *The binary bridge* names routing's base-map `view` as the motivating consumer, so
+this is that consumer trying it. Both findings reproduce on `--interpret` and `--native`.
+
+### 1. `expose(tag, value)` pins the store read-only — and then loft cannot read it either
+
+```loft
+layout: hash<PTile[tkey]> = [];
+store_load(layout, path);
+for t in layout { n0 += 1; }          // fine — 1089 tiles
+expose(1, layout);                     // returns; the host import fires with a valid handle
+for t in layout { n1 += 1; }          // PANIC
+```
+```
+thread panicked at src/store.rs:647:9:
+Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+```
+
+The expose itself works — the host receives a usable handle (`tag=1 storeBase=29126376 rec=1 pos=8
+typeId=135 descLen=1955`, a 1955-byte descriptor). But the read-only pin means **any later operation that
+CLAIMS in that store panics**, and iterating a keyed collection claims (the scratch array the docs
+describe). In the browser this manifests as a hang, not a panic: the kernel dies mid-command, never emits
+its terminator, and the page waits forever.
+
+**Why this bites the intended use.** The doc's model is *"pins the value's store … read it each frame"* —
+i.e. expose once, then keep running. But a consumer that exposes a store it still uses (here: `view` reads
+the same layout to emit its text) is dead on the next read. It also blocks the *safe* migration order —
+land the JS reader **beside** the existing text path and compare, then delete the text path — because
+during that overlap loft must still read what it has exposed.
+
+**Ask:** either a read of a pinned store should not claim (a read-only iteration shouldn't need scratch),
+or `expose` should be documented as *"loft must not touch this store again until `release`"* — currently
+neither the stdlib comment nor BROWSER_INTEROP says so, and the failure is a panic/hang far from the call.
+
+### 2. A top-level `hash<T[k]>` is not deliverable — including as a struct field
+
+```loft
+deliver(1, layout);        // hash<PTile[tkey]>
+→ error=type 86 (hash<PTile[tkey]>) is a store-internal kind — not in the serializable subset
+                            (cursor-walked in a later phase)
+```
+Wrapping it does not help — `struct LayoutRoot { tiles: hash<PTile[tkey]> }` + `deliver(1, root)` reports
+the same, still naming the hash (type 87). `deliver` does NOT pin, so reads keep working — it is only the
+container that is refused.
+
+This reads as a doc/shipped-scope mismatch. BROWSER_INTEROP § *The binary bridge* says keyed collections
+are **PRE-FLATTENED, not cursor-walked** ("at deliver time loft materialises it to a scratch array
+(key-ordered) … the descriptor adds a `flat` redirect map"), which sounds shipped; the runtime says
+cursor-walking is "a later phase". One of the two is describing a phase that is not in the installed loft.
+
+**What DOES work, and is the way forward here:** an individual record delivers fine —
+`deliver(1, t)` for a `PTile` (a struct of `text` + `vector<record>`) returns a proper handle and bytes.
+So routing will deliver the viewport's tiles **one at a time** rather than the store: the view already
+knows which tiles hit the bbox, so this is a handful per pan, not 1089. Recorded in PLAN-PERF §0 step 9.
+
+**Impact.** Not blocking — the per-tile route avoids both findings (no pin, no keyed container). But the
+documented "expose the store, read it each frame" shape is not usable by a consumer that still reads that
+store, and the pre-flattened-keyed-collections paragraph does not match the installed runtime.
