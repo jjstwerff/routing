@@ -50,8 +50,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
-| **17** | throwaway probe | **`par` over the stretch loop AS-IS** — before any refactor. `par` clones all in-use stores per worker (THREADING.md), so `Scratch` may already be private and the Graph may be copied 8×. | wall clock vs sequential · `wasmBytes` · route byte-identical | none — **decides 18** |
-| **18** | `lib/routing_kernel` | Per-worker `Scratch` + `par(…)`, threads from `hardwareConcurrency` — **only what step 17 shows is needed**. | ~3× native/Android; route identical over N runs; browser awaits loft C3 | **perf only** |
+| ~~**17**~~ ✅ | throwaway probe | **DONE — and it killed 18.** `par` workers cannot read a captured reference; every stretch input is one. See §6b B. | boundary established; filed upstream | none |
+| ~~**18**~~ ⛔ | — | **PARKED upstream.** `par` cannot express "N workers read one shared read-only structure". Not a `Scratch` problem — a read-only-input problem. | awaits loft: share an immutable with a worker | — |
 | **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
 | **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -484,7 +484,18 @@ optimisation (reuse the buffer, don't reallocate) that is now the only thing for
 `denoise_anchor`, which shares the same `sc`. So the work is not "add threads to the matcher" — it is
 **un-share one buffer**, which is also what makes it streamable.
 
-> **⚠ Step 17's premise needs checking FIRST — `par` may already do this, and may cost more than it
+> **⛔ MEASURED 2026-07-17 — `par` CANNOT express this workload. §6b B is blocked upstream.** A par worker
+> may not read a captured **reference**, only scalars: *"captured argument 'b' is a reference (Big); a par
+> worker runs on an isolated store clone and cannot read a captured reference … only the loop element may
+> be a reference."* Every input a stretch needs is a reference (`g: Graph`, `ct`, `anchors`, `ec`), so the
+> worker cannot see them. Verified boundary: scalar context ✅ (and it scales, 101 → 31 ms at 8 threads);
+> loop-element-is-a-reference ✅; captured reference ❌. **We were never blocked on `Scratch`** — the
+> shared *mutable* we expected to fight. We are blocked on the read-only *inputs*. Filed with an ask in
+> `docs/loft-feedback.md`; step 18 is parked until loft can share an immutable with a worker. The
+> streaming half (§6b A) is unaffected and already shipped — and it was always the half that fixed the
+> lag.
+>
+> *(Superseded note, kept for the reasoning:)* **Step 17's premise needs checking FIRST — `par` may already do this, and may cost more than it
 > saves.** THREADING.md: *"`Stores::clone_for_worker()` creates **locked copies of all in-use stores for
 > each worker thread**."* Two consequences, pulling opposite ways:
 > - **The un-sharing may be automatic.** If each worker gets private stores, `Scratch` is already

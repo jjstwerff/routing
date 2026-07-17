@@ -1260,3 +1260,63 @@ as `map(nums, fn double)` — with the `fn` prefix. The parser rejects exactly t
 
 The working form is the bare name (`run(sink)`). The skill's *Higher-order functions* example should drop
 the prefix; it is the first thing a consumer copies.
+
+---
+
+## 2026-07-17 — `par` cannot express "many workers reading one shared read-only structure"
+
+**The finding.** A `par` worker may not read a captured **reference** — only scalars. So any workload where
+N workers each read one big shared read-only structure cannot be written with `par` at all. That is not a
+corner case: it is graph search, mesh building, image processing over a shared source — most of what one
+reaches for threads to do.
+
+```loft
+struct Node { x: float, y: float }
+struct Big  { nodes: vector<Node> }
+fn work(i: integer, b: Big) -> float { … reads b.nodes … }
+…
+for i in 0..64 par(r = work(i, b), 8) { … }
+```
+```
+error: par worker 'work': captured argument 'b' is a reference (Big); a par worker runs on an isolated
+       store clone and cannot read a captured reference.  Pass a scalar, or read the value into a scalar
+       before the loop (only the loop element may be a reference).
+```
+
+**The exact boundary** (both verified on `--native`):
+
+| shape | verdict |
+|---|---|
+| scalar context arg — `par(r = work(i, mult), 8)` | ✅ works (and scales: 101 → 31 ms at 8 threads) |
+| the loop ELEMENT is a reference — `for n in v par(r = work(n), 8)` | ✅ works |
+| a captured reference — `par(r = work(i, big_struct), 8)` | ❌ **rejected** |
+
+The diagnostic is excellent — it names the argument, the reason, and the workaround. The workaround is
+just not available to us: *"read the value into a scalar before the loop"* cannot apply to a 13,077-way
+graph, and *"only the loop element may be a reference"* would mean handing each worker its own copy of
+the graph as the element.
+
+**Why it blocks routing.** `PLAN-PERF.md` §6b B parallelises the matcher's per-stretch loop — the natural
+shape: ~39 independent chunks of ~24 ms, results already iterated in order, nothing shared but
+**read-only** inputs (`g: Graph`, `ct`, `anchors`, `ec`). Every one of those is a reference, so the worker
+cannot see them. The workload is embarrassingly parallel and `par` cannot express it. We are not blocked
+on `Scratch` (the shared mutable we expected to have to un-share) — we are blocked on the read-only
+inputs.
+
+**The docs read as if this works.** THREADING.md says *"Extra context arguments are forwarded to workers:
+`par(b = scale(a, mult), N)`"* with no mention that `mult` being a scalar is load-bearing; and
+*"`Stores::clone_for_worker()` creates locked copies of all in-use stores for each worker thread"* reads
+as "the worker gets its own copy of everything", which is what a consumer would design against. Worth a
+sentence in THREADING.md § par: *a captured argument must be a scalar; only the loop element may be a
+reference.*
+
+**Ask, in preference order.**
+1. **Let a worker read a captured reference that is provably read-only for the loop.** The isolated store
+   clone already exists; the shared structure is not written by anyone during the par. This is the fix
+   that unlocks the whole class.
+2. Failing that, a way to hand workers a **shared immutable** explicitly (a `const &` context arg, a
+   read-only store handle) — anything that says "clone the mutable, share the frozen".
+
+Until then `par` is usable for scalar-fold workloads and not for the ones that motivated us asking. Happy
+to test a fix against the matcher — it is a real ~39-chunk workload with an existing byte-identical
+route gate (`tools/match_parity.sh`) to prove correctness under parallelism.
