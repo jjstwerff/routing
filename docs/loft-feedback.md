@@ -1208,53 +1208,55 @@ store, and the pre-flattened-keyed-collections paragraph does not match the inst
 
 ---
 
-## 2026-07-17 — SIGSEGV passing a callback into the matcher (PLAN-PERF step 16) — NOT yet minimised
+## 2026-07-17 — a call with TOO FEW ARGUMENTS is accepted, and silently corrupts the earlier arguments
 
-**Status: unreduced.** Recorded so the next session starts from the probes rather than the symptom. The
-routing change that triggers it is reverted; the tree is green.
+**MINIMISED.** The SIGSEGV I first reported was my own bug — three missed call sites — but what loft did
+with it is the finding: **there is no arity check**, and a missing *function-typed* argument corrupts the
+arguments before it.
 
-**What was being built.** PLAN-PERF §0 step 16 streams the route per stretch: `build_state` /
-`update_state` take `on_stretch: fn(integer, vector<GeoPoint>)` and fire it as each `SubPath` lands, so
-the caller can draw a growing line instead of stalling ~4.4 s. `routing_kernel` does no I/O, so the
-callback belongs to the caller — the design needs a function-typed parameter.
+```loft
+struct P { lat: float, lon: float }
+fn sink(i: integer, p: vector<P>) { }
+fn five(a: integer, b: vector<P>, c: text, d: boolean, cb: fn(integer, vector<P>)) -> integer { len(b) }
+fn main() {
+  n = five(1, [P{lat:1.0,lon:2.0}], "x", true);   // ← 4 args for a 5-param fn. Accepted.
+  println("returned {n}");                         // prints 0.  len(b) of a 1-element vector is 1.
+}
+```
 
-**The crash.** With the callback threaded through `match_incremental_streamed` → `build_state` /
-`update_state` → the per-stretch loop, and a file-scope no-op sink passed by the existing
-`match_incremental`:
+| the call | missing param's type | result |
+|---|---|---|
+| `five(1, [one elem], "x", true)` | `cb: fn(integer, vector<P>)` | **`returned 0`** — `len(b)` is wrong; `b` is corrupted |
+| same, with the 5th param an `integer` | `e: integer` | `returned 1` — correct |
 
+So: (a) too few arguments is not diagnosed at all, on either shape; (b) when the omitted parameter is
+**fn-typed**, the *preceding* arguments are corrupted rather than merely the missing one defaulted.
+
+**How it presented in real code.** Adding `on_stretch: fn(integer, vector<GeoPoint>)` to the matcher's
+`build_state` while three of its five call sites still passed four arguments gave:
 ```
 === loft crash (loft) SIGSEGV caught ===
   last op:  (opcode dispatch) (op=193)
-  pc:       1091
-  fn:       (?) (d_nr=307)
-  at:      /usr/local/share/loft/default/01_code.loft:950:22
+  at:      /usr/local/share/loft/default/01_code.loft:950:22    ← inside `pub fn len(both: vector)`
 ```
-`--interpret`, on `lib/routing_kernel/tests/matcher.loft`.
+A segfault in the stdlib's `len`, naming no user line — from a wrong call several frames away. The
+corrupted `b` above is the same fault, caught before it reached a bad pointer.
 
-**What is already ruled out** (all four PASS on `--interpret`, so none of these alone is the trigger):
+**Ruled out on the way** (all pass, so none is the trigger): a named fn-ref into a `fn(...)` param
+(scalars or `vector<struct>`); an inline lambda; the param passed THROUGH a call and fired in a loop;
+under `--tests` as well as `--interpret`; across a library boundary; the fn param at positions 1–5;
+appending a struct then passing its field to the callback. The mechanism is sound — only the arity hole
+is not.
 
-| probe | shape | result |
-|---|---|---|
-| A | named fn-ref → `fn(integer, vector<integer>)` param | ok |
-| B | named fn-ref → `fn(integer)` param | ok |
-| C | inline lambda `\|i, p\| { }` → same param | ok |
-| D | fn param passed THROUGH a call, fired in a loop, `vector<struct>` | ok |
-| E | same as D with return values | ok |
+**Ask.** Reject a call whose argument count does not match the declaration, at parse time. That is the
+whole fix: the arity is known statically, the check is cheap, and it converts a stdlib segfault (or a
+silently wrong `len`) into the one-line error the consumer actually needs. The corruption of *earlier*
+arguments when the missing one is fn-typed is worth a look in its own right — a missing argument should
+not be able to reach back over the ones that were supplied.
 
-So the mechanism — named refs, struct-vector args, pass-through, loop-firing — works in isolation. The
-trigger is something the matcher does that these do not. Untested suspects, in order: the callback firing
-inside a fn that also carries `&`/reference params (`Scratch` is threaded through `assemble_stretch`);
-the callee being a `pub fn` in a *library* rather than the same file; or a name collision with the
-`d_nr=307` function the crash names.
-
-**A doc bug found on the way (independent, and confirmed).** `loft-write` (the skill) documents a named
-function reference as `map(nums, fn double)` — with the `fn` prefix. The parser rejects exactly that:
+**A doc bug found alongside (independent, confirmed).** `loft-write` documents a named function reference
+as `map(nums, fn double)` — with the `fn` prefix. The parser rejects exactly that:
 > `error: Use the function name directly, without 'fn' prefix`
 
-The working form is the bare name (`run(sink)`). The skill's *Higher-order functions* section should drop
-the `fn` prefix from its example; it is the first thing a consumer copies.
-
-**Ask.** The SIGSEGV is a hard crash with no diagnostic pointing at user code (it names
-`default/01_code.loft:950`, not the consumer's line), so a consumer cannot self-diagnose it. Even a
-parse-time rejection would be better than a segfault. Happy to minimise further next session — the five
-probes above are the starting point.
+The working form is the bare name (`run(sink)`). The skill's *Higher-order functions* example should drop
+the prefix; it is the first thing a consumer copies.
