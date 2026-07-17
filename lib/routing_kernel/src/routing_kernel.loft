@@ -288,7 +288,30 @@ pub fn tiles_corridor_ways_streamed(store: hash<TTile[tkey]>, pts: vector<GeoPoi
 pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
   corridor_ways_impl(store, pts, margin, drop_tick)
 }
+// CELL-TUBE corridor (PLAN-PERF step 20 / PLAN-MATCH §5 tier 1): keep only the tiles NEAR THE POLYLINE
+// rather than every tile in its bbox rectangle. A sketch that bends puts most of its bbox nowhere near
+// the drawn line, and those tiles' ways cost both the read and build_graph for nothing.
+//
+// The test is per-TILE, never per-way: PLAN-MATCH §1 measured a per-vertex distance sweep over the
+// candidate ways past a 2-minute budget, so narrowing must stay cell-level. 1089 tiles is cheap.
+//
+// CONSERVATIVE BY CONSTRUCTION: a tile is kept when its CENTRE is within `margin + TILE_HALF_DIAG_M` of
+// the polyline. A 2 km cell's centre is at most ~1415 m from any of its corners, so any tile with any
+// part inside the margin passes — the tube is a strict SUPERSET of the ways the bbox path would have
+// found within the margin, and can only ever drop tiles the corridor did not need.
+TILE_HALF_DIAG_M = 1415.0;   // half-diagonal of a TILE_CELL (0.02° ≈ 2 km) cell, in metres
+
+pub fn tiles_corridor_ways_tube(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
+  corridor_ways_impl2(store, pts, margin, drop_tick, true)
+}
+pub fn tiles_corridor_ways_tube_streamed(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float,
+                                         on_tick: fn(integer)) -> vector<Way> {
+  corridor_ways_impl2(store, pts, margin, on_tick, true)
+}
 fn corridor_ways_impl(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float, on_tick: fn(integer)) -> vector<Way> {
+  corridor_ways_impl2(store, pts, margin, on_tick, false)
+}
+fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float, on_tick: fn(integer), tube: boolean) -> vector<Way> {
   ways: vector<Way> = [];
   if len(pts) < 1 { return ways; }
   mnlat = pts[0].lat; mxlat = pts[0].lat; mnlon = pts[0].lon; mxlon = pts[0].lon;
@@ -309,7 +332,14 @@ fn corridor_ways_impl(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: f
     seen += 1;
     if seen % TICK_EVERY == 0 { on_tick(seen); }   // hand the frame back mid-read
     ttx = t.ox / TILE_CELL; tty = t.oy / TILE_CELL;
-    if ttx >= tx0 && ttx <= tx1 && tty >= ty0 && tty <= ty1 {
+    hit = ttx >= tx0 && ttx <= tx1 && tty >= ty0 && tty <= ty1;
+    if hit && tube {
+      // Cell-level tube test: the tile's centre against the drawn polyline.
+      clat = ((t.oy + TILE_CELL / 2) as float) / TILE_UNIT;
+      clon = ((t.ox + TILE_CELL / 2) as float) / TILE_UNIT;
+      hit = point_polyline_m(GeoPoint { lat: clat, lon: clon }, pts) <= margin + TILE_HALF_DIAG_M;
+    }
+    if hit {
       o = 0;
       for r in t.roads {
         cnt = r.steps as integer;

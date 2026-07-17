@@ -54,7 +54,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **18a** | design + probe | **Decide the slice** (§6b B2 below): the envelope, the monotonic remap, and whether the copy cost leaves a win. Not code yet. | an envelope proven to be a SUPERSET of what the full search touches | none |
 | **18b** | `lib/routing_kernel` | Build per-stretch jobs from 18a's slice, `par` over them (threads from `hardwareConcurrency`). | ~4× native/Android; route identical over N runs (`match_parity.sh` + repeat) | **perf only** |
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
-| **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
+| **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
 | **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
 
@@ -578,6 +578,39 @@ B2 par(…) over stretches             ← ~3x on native/Android today; browser 
 
 A is independent of everything and should land first: it is the only one that changes what the app *feels*
 like, and it needs no permission from anyone.
+
+---
+
+## 7b. Step 20's result — the tube is route-NEUTRAL, so 21/22 may not be needed for it
+
+`tools/tube_probe.loft` (native, enschede roads):
+
+| sketch | bbox ways | tube ways | dropped | read | route |
+|---|---|---|---|---|---|
+| straight, 3 pts | 13077 (37 ms) | 6724 (22 ms) | **49%** | −40% | **identical** (11009 m, 145 pts) |
+| straight, 40 pts | 9376 (90 ms) | 5346 (53 ms) | **43%** | −41% | **identical** (12507 m, 220 pts) |
+| **L-bend** | 15141 (159 ms) | 6101 (57 ms) | **60%** | **−64%** | **identical** (18721 m, 235 pts) |
+
+The L-bend is the case the tube exists for: most of a bent sketch's bbox rectangle is nowhere near the
+drawn line, and those tiles' ways cost the read *and* `build_graph` for nothing.
+
+**Why the route survives, where PLAN-MATCH's tube did not.** §1 measured a cell-tube that *"returned a
+different route… 536 m longer"* and concluded "uniform tightening is NOT accuracy-neutral" — the finding
+that motivates the whole §3 gate. This tube is **conservative by construction**: a tile passes if its
+centre is within `margin + TILE_HALF_DIAG_M` (1415 m — a 2 km cell's half-diagonal), so **any tile with
+any part inside the margin is kept**. It is a strict superset of what the margin needs and can only drop
+tiles the corridor never wanted. PLAN-MATCH's tube was tighter *than the margin*; this one is not tighter
+at all — it is the same corridor, minus the rectangle's corners.
+
+**Consequence for §7's ladder.** The gate (step 22, the only route-affecting row) exists because a cheap
+tier can silently swap the wanted route. **A margin-faithful tube is not a cheap tier — it is the same
+tier, computed better.** So promoting it to default plausibly needs no gate, only the corpus check (21)
+to confirm route-neutrality beyond these 3 sketches. A *tighter-than-margin* tube (PLAN-MATCH's buf-0,
+~3× rather than ~2×) is a different proposition and still needs the full §3 gate.
+
+**Next:** run 21 (corpus compare) against the tube-vs-bbox route, not tube-vs-fat-tier. If it is neutral
+across the corpus, make it default and the cold match gets ~2× on the read plus a smaller `build_graph`
+for free — without step 19's format change or step 22's risk.
 
 ---
 
