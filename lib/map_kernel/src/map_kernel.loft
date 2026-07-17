@@ -14,7 +14,7 @@
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState,
-                     tiles_corridor_ways, build_graph, match_route, corridor_margin, path_length_m,
+                     tiles_corridor_ways, tiles_corridor_ways_streamed, build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
                      point_polyline_m, match_state_new, match_incremental, match_incremental_streamed, match_state_result);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
@@ -216,10 +216,11 @@ fn covered(s: MatchSession, pts: vector<GeoPoint>, margin: float) -> boolean {
 // speed: match_state_result(cg, match_incremental(…)) must equal match_route(cg, trace) byte-for-byte.
 // tools/match_parity.sh asserts it.
 pub fn do_match_session(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
-  do_match_session_streamed(s, roads, trace, profile, drop_stretch_out);
+  do_match_session_streamed(s, roads, trace, profile, drop_stretch_out, drop_tick_out);
 }
 
 fn drop_stretch_out(_i: integer, _pts: vector<GeoPoint>) { }
+fn drop_tick_out(_n: integer) { }
 
 // Emit ONE stretch as `STRETCH <i>;lat,lon;…` the moment it is matched. A caller that wants the route
 // to appear as a growing line passes `on_stretch` (PLAN-PERF §6b A) — typically a closure that emits
@@ -234,12 +235,15 @@ pub fn emit_stretch(i: integer, pts: vector<GeoPoint>) {
 
 // As `do_match_session`, but reports each stretch through `on_stretch` as it lands.
 pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trace: vector<GeoPoint>,
-                                 profile: text, on_stretch: fn(integer, vector<GeoPoint>)) {
+                                 profile: text, on_stretch: fn(integer, vector<GeoPoint>),
+                                 on_tick: fn(integer)) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   margin = corridor_margin(trace);
   if !covered(s, trace, margin) {
-    s.cways = tiles_corridor_ways(roads, trace, margin);
-    s.cg = build_graph(s.cways);
+    // The REBUILD is the other un-interruptible block: streaming the stretches left the corridor read
+    // and build_graph as one ~11s freeze on a cold match (PLAN-PERF §6b A). Yield inside both.
+    s.cways = tiles_corridor_ways_streamed(roads, trace, margin, on_tick);
+    s.cg = build_graph_streamed(s.cways, on_tick);
     s.covs = [Corridor { pts: trace, margin: margin }];
     s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;

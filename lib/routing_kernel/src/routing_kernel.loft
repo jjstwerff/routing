@@ -233,6 +233,9 @@ pub fn parse_ways(response: text) -> vector<Way> {
 // --- Tile store (PLAN-TILES) — read side, so the server can match from the data block ------------
 // Shared struct layout for both the generator (write) and the server (read): a durable-store hash of
 // tiles, keyed by grid cell. Coords are fixed-point (1e-7°) deltas from the tile origin; `h` is mm.
+// How often a *_streamed read/build hands the frame back. Small enough that a chunk fits well inside a
+// frame; large enough that the yield's own cost stays noise.
+TICK_EVERY = 64;
 TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
@@ -264,7 +267,22 @@ fn tile_hw(tp: integer) -> text {
 
 // Reconstruct Way structs from the tiles covering the corridor (its bbox buffered by `margin` metres,
 // plus a one-cell ring for the assign-by-first-node fringe). Feeds build_graph exactly like parse_ways.
+// Sink for callers that just want the result. ADDITIVE variants below rather than new params on the
+// existing fns: these are public with ~31 call sites, and loft does not check arity — a missed site
+// would silently corrupt its earlier arguments (see docs/loft-feedback.md 2026-07-17).
+fn drop_tick(_n: integer) { }
+
+// As `tiles_corridor_ways`, but `on_tick` fires every TICK_EVERY tiles so a browser caller can hand the
+// frame back mid-read. Reading a corridor out of the store is one of the two un-interruptible blocks of
+// a cold match (PLAN-PERF §6b A); streaming the stretches did not touch it.
+pub fn tiles_corridor_ways_streamed(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float,
+                                    on_tick: fn(integer)) -> vector<Way> {
+  corridor_ways_impl(store, pts, margin, on_tick)
+}
 pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
+  corridor_ways_impl(store, pts, margin, drop_tick)
+}
+fn corridor_ways_impl(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float, on_tick: fn(integer)) -> vector<Way> {
   ways: vector<Way> = [];
   if len(pts) < 1 { return ways; }
   mnlat = pts[0].lat; mxlat = pts[0].lat; mnlon = pts[0].lon; mxlon = pts[0].lon;
@@ -280,7 +298,10 @@ pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, marg
   ty0 = gy0 / TILE_CELL - 1; ty1 = gy1 / TILE_CELL + 1;
   // Iterate the tiles and keep those in the cell window. (Keyed lookup `store[key]` isn't reliable on
   // a mmap-reloaded store, but iteration is — and a region's tile count is small.)
+  seen = 0;
   for t in store {
+    seen += 1;
+    if seen % TICK_EVERY == 0 { on_tick(seen); }   // hand the frame back mid-read
     ttx = t.ox / TILE_CELL; tty = t.oy / TILE_CELL;
     if ttx >= tx0 && ttx <= tx1 && tty >= ty0 && tty <= ty1 {
       o = 0;
@@ -384,9 +405,16 @@ fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: 
 }
 
 // Build the corridor graph from the parsed ways, then its CSR adjacency (a counting-sort pass).
-pub fn build_graph(ways: vector<Way>) -> Graph {
+// As `build_graph`, but `on_tick` fires every TICK_EVERY ways — the second un-interruptible block of a
+// cold match (PLAN-MATCH splits an 886ms match as build 367 + search 519).
+pub fn build_graph_streamed(ways: vector<Way>, on_tick: fn(integer)) -> Graph { build_graph_impl(ways, on_tick) }
+pub fn build_graph(ways: vector<Way>) -> Graph { build_graph_impl(ways, drop_tick) }
+fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
   g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  nw = 0;
   for w in ways {
+    nw += 1;
+    if nw % TICK_EVERY == 0 { on_tick(nw); }
     prev = -1;
     for ci in 0..len(w.coords) {
       p = w.coords[ci];

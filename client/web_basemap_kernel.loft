@@ -49,6 +49,10 @@ fn stream_stretch(i: integer, pts: vector<GeoPoint>) {
   frame_yield();
 }
 
+// Nothing to show mid-rebuild — just hand the frame back so the page keeps painting while the corridor
+// is read and the graph built (the ~11s block streaming the stretches did not cover).
+fn tick_yield(_n: integer) { frame_yield(); }
+
 fn main() {
   // SESSION STATE — declared above the loop, so it outlives the command that filled it. Inside the
   // loop these declarations would re-initialise to `[]` on every pass, which is the stateless app in
@@ -97,7 +101,7 @@ fn main() {
           // draws a line that GROWS instead of freezing for the whole match (PLAN-PERF §6b A). This is
           // the only layer that may yield — frame_yield is browser-only, and map_kernel/routing_kernel
           // must compile on every backend.
-          do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch);
+          do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
         } else {
           if layout_url != layout_at {
             if store_load_url_trusted(layout, layout_url) {
