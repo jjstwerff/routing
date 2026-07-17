@@ -1,7 +1,10 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Plan of record for app performance.** It
+**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Blockers re-validated 2026-07-17** against
+the installed loft (rebuilt 10:39) — see §7c: only **18** is genuinely blocked (@PLN108, awaiting its PR).
+**Steps 9–13 are NOT blocked**: @PLN105 closed 2026-07-16 and steps 9–13 *are* its one open item, Phase 4,
+explicitly consumer-owned. Do not cite @PLN105 as a blocker again without re-probing. **Plan of record for app performance.** It
 does not supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against
 everything else.
 
@@ -750,3 +753,43 @@ incremental row — that is the number the app lives or dies on.
 - **Cold fetch.** The 341 ms is validation of an HTTP-*cached* store; a first visit adds download.
 - **Session history.** C0's 3× spread suggests earlier work affects later cost — worse on a phone.
 - **Zoomed-out viewports**, where the emit re-inflates and A's win grows.
+
+
+## §7c — Blocker re-validation (2026-07-17, installed loft 2026.7.1 @ 10:39)
+
+CLAUDE.md's rule (*re-measure a doc's premise before building on it*) applied to this plan's own
+blockers. Two of the three were stale, in opposite directions.
+
+| blocker | claim | verdict |
+|---|---|---|
+| **18** → @PLN108 | par copies the parent heap per worker | **REAL.** Measured (§ step 18). Awaiting the PR; do not bench a live sibling binary. |
+| **9–13** → @PLN105 | *"`expose` pins a store unreadable and a top-level `hash` will not deliver"* | **NOT A BLOCKER — this was wrong twice over.** |
+| **14–15** | render budget, loft-independent | unchanged; pure JS, nobody blocking |
+
+### Why 9–13 is not blocked
+
+**@PLN105 is CLOSED** (GH `loft-lang/plans#105`, 2026-07-16T09:25:08Z; language work merged as #580). Its
+plan states: *"Language-side prerequisites are all done; what remains is genuinely consumer work in
+`../routing` (owned by that agent)"* — **steps 9–13 ARE @PLN105's Phase 4.** Calling them "blocked on
+@PLN105" had it exactly backwards: @PLN105 is waiting on *us*.
+
+**`expose` pins a store unreadable** — wrong, and it is the same fragment-reading error CLAUDE.md opens
+with. Pinning (`lock_store`) is the *feature*: it keeps the read valid ACROSS FRAMES, and loft has a test
+proving JS reads survive an asyncify yield (`deliver_expose_survives_cross_frame_yield_in_js`) — which is
+precisely routing's `frame_yield` situation.
+
+**A `hash` will not deliver** — **CONFIRMED, still true**, and it is the one real constraint:
+
+```
+deliver(2, w.tiles)   hash<Tile[tkey]>, top-level  -> error: type 69 is a store-internal kind
+deliver(3, w)         hash nested as a FIELD       -> error: type 66 — SAME, not pre-flattened
+deliver(4, v)         vector<Row>                  -> OK: flat interleaved bytes
+```
+
+Note the plan describes **Phase 3** as pre-flattening keyed collections (`hash/radix/index → FlatArray`),
+but the installed binary rejects a hash in **both** positions with *"cursor-walked in a later phase"* —
+filed as a doc/binary discrepancy in `docs/loft-feedback.md`.
+
+**So the way through is what this plan already said: per-tile `deliver` of a VECTOR.** That is proven to
+work on the installed loft today — flatten the tile's features to a `vector<T>`, deliver that. Steps 9–13
+need no upstream anything; they need us.

@@ -1440,3 +1440,33 @@ on something other than used bytes, step 6's "bench the win" needs to know what.
 **Offer:** the probe is 20 lines and sweeps both axes; happy to hand it over as a step-1/step-6 harness, or
 to re-run it against a `LOFT_PAR_SHARE=1` build on routing's real match session (the shape the plan cites)
 once step 2 exists. A real consumer with a 175 MB session is exactly the case where A-vs-B gets decided.
+
+
+## @PLN105 Phase 3 (keyed collections pre-flattened) is not in the shipped binary — 2026-07-17
+
+**loft 2026.7.1** (installed 10:39). @PLN105's plan lists Phase 3 as done — *"keyed collections,
+PRE-FLATTENED. hash/radix/index → materialise to a key-ordered scratch array (`build_*_sorted_vec`) →
+`FlatArray` … JS reads them layout-blind via the array path"* — and @PLN105 is CLOSED. But the installed
+binary rejects a `hash` in **both** positions:
+
+```loft
+struct Tile  { const tkey: integer, n: integer }
+struct World { name: text, tiles: hash<Tile[tkey]> }
+
+deliver(2, w.tiles);   // top-level → error: type 69 (hash<Tile[tkey]>) is a store-internal kind —
+                       //   not in the serializable subset (cursor-walked in a later phase)
+deliver(3, w);         // nested FIELD → error: type 66 — the SAME error, not pre-flattened
+deliver(4, v);         // vector<Row> → OK, flat interleaved bytes
+```
+
+*"cursor-walked in a later phase"* reads like Phase 3 is still ahead, not behind. Either the phase did not
+ship, it landed after the binary was cut, or it covers a narrower case than the plan's wording implies.
+
+**Not a blocker for routing** — the vector path works, and per-tile `deliver` of a `vector<T>` is the route
+we already planned. **Flagging it because the plan closed on the claim.** If Phase 3 is genuinely
+outstanding, @PLN105's Phase 4 (routing's migration, consumer-owned) will be built on the vector path only,
+and any future consumer reading the plan will expect hash delivery that isn't there.
+
+**Worth stating plainly:** the rest of @PLN105 checks out on the binary — `deliver` of a `vector<struct>`
+emits exactly the flat interleaved buffer the design promises. This is a docs-vs-binary gap on one phase,
+not a broken bridge.
