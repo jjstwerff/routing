@@ -212,7 +212,14 @@ match is a §5 requirement, and the sharpest threat is not a race but ORDER: a `
 its buckets unsorted, so parallelising the corridor read would change the way order, hence `build_graph`'s
 node indices, hence Dijkstra's tie-breaks — a route that wobbles run to run from identical input, silently
 and plausibly. The acceptance for any parallel work is therefore an N-run identity check, not a single
-comparison. See `PLAN-PERF.md` §6b B.
+comparison.
+
+The fix is upstream of the parallelism: **order the source, then let `par` sequence the results.** `par`
+iterates in the order of its source, so a range is already safe and a hash must be materialised sorted
+first; results that arrive early are held until their turn, and each is revealed the moment its index
+comes up rather than when all workers finish. Parallel work behind a sequencer: the compute order is the
+scheduler's, the reveal order is the journey, and the route matches a sequential run. See `PLAN-PERF.md`
+§6b B.
 
 **Faithfulness to the sketch dominates.** The match snaps your imprecise line onto the nearest
 sensible real ways; activity-suitability is only a *local tie-breaker*. It must never take a detour

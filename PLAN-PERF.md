@@ -401,6 +401,27 @@ that "wobbles". *Fix:* do not par the corridor read, or materialise the tiles in
 refactor silently changes a length by 1e-12. *Fix:* keep every reduction in the ordered body, never in
 the workers.
 
+#### The shape that fixes it: ORDER THE SOURCE, then let par sequence the results
+
+The two requirements — deterministic route, in-travel-order reveal — collapse into one rule, because
+`par`'s *"iterates the results in order"* means **in the order of its SOURCE**:
+
+1. **Give the source an ordering BEFORE par.** A range (`0..m-1`) already has one — which is why the
+   stretch loop is safe as written. A **hash does not**: par materialises it with an unsorted bucket walk,
+   so "in order" becomes "in an arbitrary order that may differ run to run". So the corridor read must
+   either not be parallelised, or materialise its tiles **`tkey`-sorted** first. Sorting is the fix;
+   par is not the problem.
+2. **Emit the moment the next index lands** — index 0, then 1, then 2 — not when all workers finish.
+   That is what keeps time-to-first-stretch low *with* par: the user still sees the line start growing
+   immediately, while later stretches are computed behind it.
+3. **Hold the ones that arrive early.** A worker that finishes stretch 5 before stretch 2 is done has its
+   result kept until 2, 3, 4 land. That is a reorder buffer, and it is exactly what loft's `par` already
+   does when it iterates results in order — so this costs us no code, only the discipline of (1).
+
+The result: parallel work *behind* a sequencer. The compute order is whatever the scheduler likes; the
+reveal order is the journey; the route is identical to a sequential run. A stretch finishing early simply
+waits its turn to be drawn — and waiting costs nothing, because the user is watching the earlier ones.
+
 **The gate is therefore determinism, not just parity:** run the SAME match N times with par enabled and
 assert the route is byte-identical every time — and identical to the sequential run. `tools/match_parity.sh`
 already compares session-vs-one-shot on the route (excluding `ways=`, which is corridor size); the par
