@@ -1382,3 +1382,61 @@ information is already there: the analysis proves the negative case cannot fall 
 **Note the lint was RIGHT twice before it was incomplete once** — both TOCTOU bugs it found were real, and
 the fix subtracted code (one fallible read replaces `exists()` + `content()`, since null already means
 "absent OR unreadable" and both take the same path). The narrowing gap is the only false positive.
+
+
+## @PLN108 step 1 — the copy cost is NOT a rounding error for this consumer — 2026-07-17
+
+@PLN108's step 1 asks the consumer directly: *"Bench the copy cost — measure per-worker
+`clone_for_worker` time. The win to beat; **if the copy is a rounding error for the consumer's shapes,
+stop here.**"* Routing is the par consumer the plan cites (*"slicing a large read-only structure per job
+is real work"*). **It is not a rounding error. Do not stop.**
+
+**Probe** (`--native`, installed loft 2026.7.1 @ 10:39, 8-core): a par over 64 elements where the worker
+**touches none of the big structure** — it spins on its own element only. The big `vector<Node>` is
+unrelated live heap. If `clone_for_worker` byte-copies *every active store* per worker, wall-clock must
+grow with heap the workload never reads. It does:
+
+| live heap (unrelated) | par_ms (8 threads, ±2) |
+|---|---|
+| 0 MB | **2** |
+| 3 MB | 8 |
+| 15 MB | 40 |
+| 30 MB | 98 |
+| 61 MB | 101 |
+| 122 MB | **205** |
+
+**Confirmed — a per-worker copy.** Threads swept at a fixed 61 MB, same workload:
+
+| threads | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| par_ms | 36 | 45 | 60 | 98 | **178** |
+
+**par gets 5× SLOWER from 1 to 16 threads** — the marginal cost of each additional worker is a fresh copy
+of the parent heap, and it swamps the parallel win. That is par inverted: on a session holding state, the
+thing that is supposed to buy speed sells it.
+
+**Why this is fatal for routing specifically.** The cost tracks the **session's total live heap**, not the
+workload — and routing's match session exists to *hold* state (PLAN-PERF steps 6–8 made stores, Graph and
+MatchState survive across clicks; RSS plateaus ~175 MB). So a par anywhere in that session pays ~200 ms+
+per dispatch against a whole match of ~339 ms. **The work par would parallelise is cheaper than the copy
+par charges to start.** Routing therefore cannot use par on the match path at any thread count until
+@PLN108 lands — this is the real blocker, and it is a memory-model property, not an expressiveness one.
+
+**Two corrections to my own earlier reports, since they mis-aimed this:**
+
+1. I reported par *"cannot express this workload"* — **wrong**, and the THREADING fix (97af1b52) says why:
+   large state is captured read-only, not passed. Expressiveness was never the problem.
+2. I then designed around packing data **into the element** (routing's PLAN-PERF step 18). **Also wrong** —
+   it doesn't dodge the copy, it *adds* to it: the parent heap is copied per worker regardless of what the
+   element carries. Step 18 is being rewritten against this.
+
+**One anomaly, reported unexplained rather than rationalised.** The curve is linear to ~30 MB and again
+from ~64 MB, but **flat between them** — 30 MB (98 ms), 45 MB (103), 61 MB (101), 64 MB (96) are one
+plateau, then 122 MB doubles to 205. I hypothesised a power-of-two capacity step (the copy sizing on
+allocated capacity, not used bytes) and **falsified it**: 2.1M nodes shows no jump at the predicted
+boundary. I have no verified mechanism, so I am not asserting one — flagging it because if the copy sizes
+on something other than used bytes, step 6's "bench the win" needs to know what.
+
+**Offer:** the probe is 20 lines and sweeps both axes; happy to hand it over as a step-1/step-6 harness, or
+to re-run it against a `LOFT_PAR_SHARE=1` build on routing's real match session (the shape the plan cites)
+once step 2 exists. A real consumer with a 175 MB session is exactly the case where A-vs-B gets decided.
