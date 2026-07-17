@@ -422,22 +422,25 @@ The result: parallel work *behind* a sequencer. The compute order is whatever th
 reveal order is the journey; the route is identical to a sequential run. A stretch finishing early simply
 waits its turn to be drawn — and waiting costs nothing, because the user is watching the earlier ones.
 
-**And the buffer is cheap, because it is bounded by the POOL, not by the route.** Only ~N stretches are
-in flight at once (N = threads, ≈8 on a phone), so the pending set is **O(threads), not O(stretches)** —
-a handful of `SubPath`s held for a moment, whatever the route's length. A 40-point route does not buffer
-39 results; it buffers at most about 8. Two consequences worth stating:
+**The buffer stays near the POOL size — but that is a tendency, not a hard bound.** The dispatcher is a
+queue: while the head stretch is still running, the other N−1 threads keep pulling *further* work and
+finishing it, so the pending set grows roughly as **(head cost ÷ typical cost) × N**, not N. It is close
+to N in practice only because stretch costs are similar (measured: ~24 ms each across 39 stretches). Do
+not design as if N were a guarantee:
 
-- **Memory is a non-issue.** The reorder buffer is not a data structure to design around — it is a few
-  pending results, and loft's `par` already owns it.
-- **The reveal can stall by at most ONE slow stretch.** If stretch *k* is the slowest in flight, the line
-  pauses at *k* while up to N−1 successors quietly finish behind it — then several appear at once. That
-  is the honest-degradation property again: the pause is exactly where the matcher genuinely struggled,
-  and the catch-up is instant. It is bounded by one stretch's cost (~24 ms native / ~96 ms phone), never
-  by the whole route.
+- **Memory is still a non-issue, and does not depend on the bound holding.** Even the degenerate case —
+  every remaining stretch buffered behind a stuck head — is ~39 `SubPath`s for a real route. Small
+  whatever the jitter. loft's `par` owns the buffer; we do not size it.
+- **The reveal stalls by the SLOWEST in-flight stretch, not a typical one.** That correction matters:
+  costs are *not* uniform (a 3-point sketch's stretches are ~99 ms vs ~24 ms at 40 points — a 4× spread,
+  and a stretch crossing a dense corridor is worse). So the pause is one *slow* stretch long, then several
+  successors land at once. Still the honest-degradation property — the line hesitates exactly where the
+  matcher struggled, and catches up instantly — but the pause is bounded by the worst stretch in flight,
+  not by the average.
 
-So `par`'s non-determinism is bounded in both senses that matter: the *route* becomes deterministic once
-the source is ordered (1), and the *buffering* it costs is bounded by the pool size rather than the
-problem size.
+So `par`'s non-determinism is bounded in the sense that matters most — the *route* becomes deterministic
+once the source is ordered (1) — while the *buffering* is merely well-behaved: near-N under uniform cost,
+degrading gracefully under jitter, and never large enough to matter at route scale.
 
 **The gate is therefore determinism, not just parity:** run the SAME match N times with par enabled and
 assert the route is byte-identical every time — and identical to the sequential run. `tools/match_parity.sh`
