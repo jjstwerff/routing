@@ -41,18 +41,21 @@ Rules that make these steps safe, and that every row below obeys:
 | **13** | ×4 + kernel | Repeat 11–12 per kind (buildings, lines, labels, pois); then delete the layout text emit. | counts identical per kind; serialize → ~0 | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
-| **16** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
-| **17** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
-| **18** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
-| **19** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
+| **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
+| **17** | `lib/routing_kernel` | **Per-worker `Scratch`** (§6b B1): un-share the one mutable the stretch loop reuses. | route byte-identical; no behaviour change | **none** (enables par) |
+| **18** | `lib/routing_kernel` | `par(…)` over the stretches (§6b B2), threads from `hardwareConcurrency`. | ~3× on native/Android; browser awaits loft C3 | **perf only** |
+| **19** | `tools/gen-tiles.loft` + kernel | Persist the **built graph** (PLAN-TILES §268); load instead of build. | identical route; cold match −~41% | **perf only** |
+| **20** | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. | tube ⊂ bbox; way-count drops | **none** (inert) |
+| **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
+| **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. | quality tracks fat where the gate accepts | **⚠ route-affecting** |
 
 **Steps 2 and 3 are probes and come first**: each is an afternoon and each gates a block (2 → steps
 4–8; 3 → steps 9–12). If a probe fails, that block is fiction and the fallback is named in its phase.
 
-**Step 19 is the only row in this table that can return a worse route.** Everything else is subtraction
+**Step 22 is the only row in this table that can return a worse route.** Everything else is subtraction
 or a pure representation change. That is not an accident — it is why the ladder is last.
 
-**Stop-and-think rows:** 6, 7, 8, 16 each predict a specific drop. A step whose number does not move
+**Stop-and-think rows:** 6, 7, 8, 18, 19 each predict a specific drop. A step whose number does not move
 means the model is wrong; re-measure before taking the next one.
 
 ---
@@ -306,6 +309,97 @@ with no kernel call at all.** Panning is laggy on its own.
 
 Same invariant as §1 — *work ∝ change* — applied to the frame. R is independent of S/A/C and can land
 any time.
+
+---
+
+## 6b. The match arc — a line that GROWS, on all the cores
+
+**This supersedes the framing of §7's ladder.** The ladder tries to make one big search cheaper. This
+makes it *many small independent ones the user watches arrive* — which is both faster to first paint and
+the shape `par` wants.
+
+### The matcher is already per-point; only its presentation is monolithic
+
+`build_state` is two passes, each a loop over INDEPENDENT items:
+
+```loft
+for i in 0..m       { anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; }         // per POINT
+for i in 0..(m - 1) { subs += [assemble_stretch(g, ct, anchors, i, ec, sc, gen)]; } // per STRETCH
+```
+
+`subs` is *"one matched sub-path per stretch"*. The route IS a growing line already — it is just
+collapsed into one blocking call and one final `ROUTE` line. Nothing here needs inventing; it needs
+un-collapsing.
+
+### The chunk size is already right (measured, native, one corridor)
+
+| points | stretches | ways | total | **per stretch** |
+|---|---|---|---|---|
+| 3 | 2 | 13077 | 199 ms | **99 ms** |
+| 10 | 9 | 13077 | 376 ms | 41 ms |
+| 20 | 19 | 9376 | 540 ms | 28 ms |
+| **40** (a real drawn route) | **39** | 9376 | 972 ms | **24 ms** |
+
+A realistic route is **39 chunks of ~24 ms** (≈96 ms on a phone): long enough to dwarf dispatch, short
+enough to stream. **Drawing more points makes each chunk cheaper AND the corridor tighter** (13077 →
+9376 ways — `corridor_margin` scales with tap spacing). *Every other number in this document was measured
+on a 3-point sketch — the pathological end: 2 huge stretches over the widest corridor.*
+
+### A — present per point (fixes the lag; needs nothing from loft)
+
+**Invariant:** *a stretch is drawn the moment it is matched; the user sees progress, never a stall.*
+
+Emit each `SubPath` as it lands and `frame_yield()` between them. First segment on screen in ~96 ms, then
+~10 per second, the page painting throughout. **The 4.4 s does not shrink — it stops being a freeze and
+becomes a line growing at a natural pace.** That is the difference between "hanging" and "loading", and
+it is the whole of the lag problem (§0a): cost is a separate axis, addressed by B and §7.
+
+Works today, on the single-threaded browser build, with no loft change and no route change.
+
+### B — `par` over the stretches (fully utilise the processor)
+
+**Invariant:** *each stretch is a self-contained chunk; workers share nothing, so nothing locks.*
+
+That is `par`'s core — divide the work into chunks big enough to be worth dispatching, with no shared
+state. Per stretch the inputs are **read-only** (`g`, `ct`, `anchors`, `ec`) and the output is a fresh
+`SubPath`. **Exactly one thing is shared and mutable: `sc` (the `Scratch` buffer)**, threaded through
+every call and reused across iterations with a `gen` counter to invalidate it — a *sequential*
+optimisation (reuse the buffer, don't reallocate) that is now the only thing forcing locking.
+
+**Give each worker its own `Scratch` and the loop is embarrassingly parallel.** Same for Pass 1's
+`denoise_anchor`, which shares the same `sc`. So the work is not "add threads to the matcher" — it is
+**un-share one buffer**, which is also what makes it streamable.
+
+Measured ceiling: `par(…, 8)` gives **3.3×** natively here (101 → 31 ms on a synthetic load). On a phone's
+8-core big.LITTLE expect ~3× — the 4 little cores are not equal to the prime one, and the thread count
+should come from `navigator.hardwareConcurrency`, never a constant (this box reports 24).
+
+**Browser gating (measured, not assumed):** threads need `crossOriginIsolated`, which needs COOP/COEP.
+Our own page, same bytes:
+
+| served | `crossOriginIsolated` | `SharedArrayBuffer` |
+|---|---|---|
+| no headers (as GitHub Pages serves it) | `false` | undefined |
+| + COOP/COEP | **`true`** | **`function`** |
+
+Two response headers are the whole difference. GitHub Pages sends no custom headers, but a **service
+worker can inject them** (the `coi-serviceworker` pattern; the older `browser/` app already shipped an
+`sw.js`). The real gate is loft-side: today's `--html` wasm **exports an unshared memory** and the shim has
+no workers/SAB/atomics — loft's `C3` (*"WASM threading deferred — Web Worker pool cost > benefit today"*)
+and roadmap A10 8a. **Flag for that work:** our kernel now leans on asyncify for both the store fetch and
+`frame_yield`, and BROWSER_INTEROP calls asyncify *"one suspendable stack"* — threads plus one suspendable
+stack is exactly where this goes quietly wrong. Probe that combination first.
+
+### Order
+
+```
+A  stream per stretch + yield        ← fixes the LAG. No loft change, no route change, works today.
+B1 per-worker Scratch                ← un-share the one mutable. Prerequisite for par; no behaviour change.
+B2 par(…) over stretches             ← ~3x on native/Android today; browser gated on loft C3 + COOP/COEP.
+```
+
+A is independent of everything and should land first: it is the only one that changes what the app *feels*
+like, and it needs no permission from anyone.
 
 ---
 
