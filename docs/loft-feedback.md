@@ -1205,3 +1205,56 @@ knows which tiles hit the bbox, so this is a handful per pan, not 1089. Recorded
 **Impact.** Not blocking — the per-tile route avoids both findings (no pin, no keyed container). But the
 documented "expose the store, read it each frame" shape is not usable by a consumer that still reads that
 store, and the pre-flattened-keyed-collections paragraph does not match the installed runtime.
+
+---
+
+## 2026-07-17 — SIGSEGV passing a callback into the matcher (PLAN-PERF step 16) — NOT yet minimised
+
+**Status: unreduced.** Recorded so the next session starts from the probes rather than the symptom. The
+routing change that triggers it is reverted; the tree is green.
+
+**What was being built.** PLAN-PERF §0 step 16 streams the route per stretch: `build_state` /
+`update_state` take `on_stretch: fn(integer, vector<GeoPoint>)` and fire it as each `SubPath` lands, so
+the caller can draw a growing line instead of stalling ~4.4 s. `routing_kernel` does no I/O, so the
+callback belongs to the caller — the design needs a function-typed parameter.
+
+**The crash.** With the callback threaded through `match_incremental_streamed` → `build_state` /
+`update_state` → the per-stretch loop, and a file-scope no-op sink passed by the existing
+`match_incremental`:
+
+```
+=== loft crash (loft) SIGSEGV caught ===
+  last op:  (opcode dispatch) (op=193)
+  pc:       1091
+  fn:       (?) (d_nr=307)
+  at:      /usr/local/share/loft/default/01_code.loft:950:22
+```
+`--interpret`, on `lib/routing_kernel/tests/matcher.loft`.
+
+**What is already ruled out** (all four PASS on `--interpret`, so none of these alone is the trigger):
+
+| probe | shape | result |
+|---|---|---|
+| A | named fn-ref → `fn(integer, vector<integer>)` param | ok |
+| B | named fn-ref → `fn(integer)` param | ok |
+| C | inline lambda `\|i, p\| { }` → same param | ok |
+| D | fn param passed THROUGH a call, fired in a loop, `vector<struct>` | ok |
+| E | same as D with return values | ok |
+
+So the mechanism — named refs, struct-vector args, pass-through, loop-firing — works in isolation. The
+trigger is something the matcher does that these do not. Untested suspects, in order: the callback firing
+inside a fn that also carries `&`/reference params (`Scratch` is threaded through `assemble_stretch`);
+the callee being a `pub fn` in a *library* rather than the same file; or a name collision with the
+`d_nr=307` function the crash names.
+
+**A doc bug found on the way (independent, and confirmed).** `loft-write` (the skill) documents a named
+function reference as `map(nums, fn double)` — with the `fn` prefix. The parser rejects exactly that:
+> `error: Use the function name directly, without 'fn' prefix`
+
+The working form is the bare name (`run(sink)`). The skill's *Higher-order functions* section should drop
+the `fn` prefix from its example; it is the first thing a consumer copies.
+
+**Ask.** The SIGSEGV is a hard crash with no diagnostic pointing at user code (it names
+`default/01_code.loft:950`, not the consumer's line), so a consumer cannot self-diagnose it. Even a
+parse-time rejection would be better than a segfault. Happy to minimise further next session — the five
+probes above are the starting point.
