@@ -438,9 +438,27 @@ not design as if N were a guarantee:
   matcher struggled, and catches up instantly — but the pause is bounded by the worst stretch in flight,
   not by the average.
 
+**And the luck cuts both ways — mostly in our favour.** Whether a slow stretch is felt depends on WHERE it
+sits in the order:
+
+- **Slow stretch at the head** → the worst case above: the reveal waits, successors pile up behind it.
+- **Slow stretch late** → *invisible*. By the time the eye reaches stretch 30, the workers have been
+  chewing on it for as long as the user spent watching stretches 0–29. It is already done.
+
+So `par` hands every stretch a head start **proportional to how late it is** — and only the first few have
+no head start at all. That inverts what the buffer is: **the pending results are not overhead, they are
+LOOKAHEAD.** The work runs ahead of the eye, and the "buffer" is simply how far ahead it has got.
+
+This is the real prize of par + ordered streaming, and it is bigger than the ~3× on the total. Sequential
+streaming makes the reveal wait for each stretch in turn, so the line advances at `sum(costs)`. Par + an
+ordered reveal makes the line advance at the pace the user watches, stalling only when the head is not yet
+ready — i.e. cost is hidden behind attention rather than added to it. A route whose expensive stretches
+are anywhere but the start can be *entirely* hidden.
+
 So `par`'s non-determinism is bounded in the sense that matters most — the *route* becomes deterministic
 once the source is ordered (1) — while the *buffering* is merely well-behaved: near-N under uniform cost,
-degrading gracefully under jitter, and never large enough to matter at route scale.
+degrading gracefully under jitter, never large enough to matter at route scale, and in the good case not a
+cost at all but the lookahead that hides the work.
 
 **The gate is therefore determinism, not just parity:** run the SAME match N times with par enabled and
 assert the route is byte-identical every time — and identical to the sequential run. `tools/match_parity.sh`
