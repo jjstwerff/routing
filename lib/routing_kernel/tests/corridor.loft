@@ -4,7 +4,9 @@
 use routing_kernel::(GeoPoint, bounds, overpass_query, overpass_corridor_query, parse_ways);
 
 fn test_parse_ways() {
-  ways = parse_ways(file("fixtures/overpass_sample.json").content());
+  // content() is text? (an unreadable file reads null); "" would parse to 0 ways and fail the assert
+  // below with a clear count, so the discharge cannot hide a missing fixture.
+  ways = parse_ways(file("fixtures/overpass_sample.json").content() ?? "");
   assert(len(ways) == 2, "2 ways (the node is skipped), got {len(ways)}");
 
   assert(ways[0].highway == "residential", "way0 highway = {ways[0].highway}");

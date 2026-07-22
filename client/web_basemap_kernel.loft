@@ -6,12 +6,16 @@
 // argv, so it loads the two stores straight from a URL with `store_load_url_trusted` (the fetch is
 // bridged to JS `fetch()` in wasm) and takes its command over the host_input()/println channel.
 //
-// `loft_start` rebuilds fresh state each call, so re-matching per sketch edit is another call with a new
-// blob; the browser HTTP-caches the store, so the refetch is a decode, not a download. (store_load_url
-// is --html-only — it does NOT compile to --native-wasm/WASI, which is why this is a separate file from
-// the path-loading `basemap_kernel.loft`.)
+// `main` is a COMMAND LOOP, reading one blob per pass. Today JS still pushes one blob per `loft_start`,
+// so it runs a single pass and returns — but the loop is the seam the session work goes through
+// (PLAN-PERF §0 steps 5–8): a `main` that never returns is a `loft_start` that never rebuilds the
+// stores, so the decoded stores, the Graph and the MatchState survive across clicks instead of being
+// rebuilt for each. `tools/loop_probe.sh` proves loft can hold that state and still yield the frame.
+// (store_load_url is --html-only — it does NOT compile to --native-wasm/WASI, which is why this is a
+// separate file from the path-loading `basemap_kernel.loft`.)
 //
-// Input framing — one host_input() blob, newline-separated (JS sets globalThis.loftInput before loft_start):
+// Input framing — one host_input() blob per command, newline-separated (JS sets globalThis.loftInput
+// before loft_start; step 5 adds loftPush for subsequent commands):
 //   line 0: <layout.store URL>
 //   line 1: <roads.store URL>
 //   line 2: view | match
@@ -20,26 +24,107 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_match, parse_sketch);
+use map_kernel::(do_view_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
 use basemap::(PTile);
-use routing_kernel::(TTile);
+use routing_kernel::(TTile, GeoPoint);
+use web::frame_yield;
+
+// End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
+// "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
+// every map line carries a type prefix (A/B/L/P/N/S/R) and the summaries are `# view:` / `SUMMARY`.
+EOR = "#EOR";
+
+// The command loop. Today JS pushes exactly one blob per `loft_start`, so this runs a single pass and
+// then returns on the empty read — byte-identical behaviour to the one-shot form it replaces. It is a
+// loop because the loads and the state they produce are about to be hoisted ABOVE it (PLAN-PERF §0
+// steps 6–8): once `main` no longer returns between commands, `loft_start` cannot rebuild the stores,
+// and the Graph/MatchState survive from one click to the next. Structure first, behaviour later.
+//
+// No `frame_yield()` here yet: yielding pulls in the `loft_web.ws_yield` host import, which the page's
+// shim does not provide until it drives the loop (step 5). Until then the empty read means "JS is done
+// with this call", not "wait for more".
+// Emit a stretch, then yield: the host sees `STRETCH i;…` and can paint before the next one lands.
+fn stream_stretch(i: integer, pts: vector<GeoPoint>) {
+  emit_stretch(i, pts);
+  frame_yield();
+}
+
+// Nothing to show mid-rebuild — just hand the frame back so the page keeps painting while the corridor
+// is read and the graph built (the ~11s block streaming the stretches did not cover).
+fn tick_yield(_n: integer) { frame_yield(); }
 
 fn main() {
-  lines = host_input().split('\n');
-  layout_url = lines[0] ?? "";
-  roads_url  = lines[1] ?? "";
-  cmd        = lines[2] ?? "view";
-  arg3       = lines[3] ?? "";                    // bbox (view) or sketch (match)
-  profile    = lines[4] ?? "cycling_road";
-
+  // SESSION STATE — declared above the loop, so it outlives the command that filled it. Inside the
+  // loop these declarations would re-initialise to `[]` on every pass, which is the stateless app in
+  // miniature. `main` never returns, so loft_start never re-enters and never rebuilds them.
   roads: hash<TTile[tkey]> = [];
-  if !store_load_url_trusted(roads, roads_url) { println("ERR roads store_load_url failed: {roads_url}"); return; }
+  layout: hash<PTile[tkey]> = [];
+  // Which URL each store currently holds ("" = empty). The URLs arrive IN the command, so the loads
+  // cannot literally precede the loop — this is the equivalent: load on first use, reuse after, and
+  // reload only if the command names a different region. Re-validating a static 20 MB image on every
+  // pan was ~341 ms of the 1121 ms pan (PLAN-PERF §2).
+  roads_at  = "";
+  layout_at = "";
+  // The corridor ways + the graph built from them, held across commands: identical for every click that
+  // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
+  // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
+  sess = session_new();
+  while true {
+    blob = host_input();
+    if blob == "" {
+      // Gather-until-enough: no command queued. Hand the frame back and poll again — the load-bearing
+      // rule is that "blocking" yields, never hard-spins, so the page keeps painting while we wait
+      // (BROWSER_INTEROP.md; tools/loop_probe.sh proves the shape).
+      frame_yield();
+    } else {
+      lines = blob.split('\n');
+      layout_url = lines[0] ?? "";
+      roads_url  = lines[1] ?? "";
+      cmd        = lines[2] ?? "view";
+      arg3       = lines[3] ?? "";                // bbox (view) or sketch (match)
+      profile    = lines[4] ?? "cycling_road";
 
-  if cmd == "match" {
-    do_match(roads, parse_sketch(arg3), profile);
-  } else {
-    layout: hash<PTile[tkey]> = [];
-    if !store_load_url_trusted(layout, layout_url) { println("ERR layout store_load_url failed: {layout_url}"); return; }
-    do_view_bbox(layout, roads, arg3);
+      ok = true;
+      if roads_url != roads_at {
+        if store_load_url_trusted(roads, roads_url) {
+          roads_at = roads_url;
+          sess = session_new();                   // different region ⇒ the cached corridor/graph is stale
+        } else {
+          println("ERR roads store_load_url failed: {roads_url}");
+          roads_at = "";                          // failed load leaves the store unusable — don't cache it
+          ok = false;
+        }
+      }
+      if ok {
+        if cmd == "reset" {
+          // Profiler hook (PLAN-PERF §7e). The session is what makes a warm edit cheap — and it is also
+          // what makes a "cold" measurement impossible once it exists: re-sending the same sketch into a
+          // live session measures the nothing-changed case, not a cold match. Dropping the session is the
+          // only way to time a genuinely cold one without also re-fetching the stores (which would charge
+          // the match a 355 ms decode it never pays in real use). Costs nothing when unused.
+          sess = session_new();
+        } else if cmd == "match" {
+          // Stream the route: emit each stretch as it is matched, then hand the frame back. The page
+          // draws a line that GROWS instead of freezing for the whole match (PLAN-PERF §6b A). This is
+          // the only layer that may yield — frame_yield is browser-only, and map_kernel/routing_kernel
+          // must compile on every backend.
+          do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
+        } else {
+          if layout_url != layout_at {
+            if store_load_url_trusted(layout, layout_url) {
+              layout_at = layout_url;
+            } else {
+              println("ERR layout store_load_url failed: {layout_url}");
+              layout_at = "";
+              ok = false;
+            }
+          }
+          if ok { do_view_bbox(layout, roads, arg3); }
+        }
+      }
+      // Terminate the response on EVERY path, errors included — a host waiting on this marker must
+      // never be left hanging by a failed load.
+      println(EOR);
+    }
   }
 }

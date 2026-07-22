@@ -190,6 +190,37 @@ sync + backup).
 
 ## 5. Matching — clean the line onto real paths (faithful, not scenic)
 
+**The route is a LINE THAT GROWS, not a result that appears.** The matcher decomposes a sketch into one
+sub-path per stretch (a pair of consecutive drawn points) and each is independent, so the route is
+emitted stretch by stretch **as it is matched** rather than after the whole search finishes. This is a
+design property, not an optimisation:
+
+- **It retraces the user's own gesture** — the line grows in the order they drew it.
+- **It is a progress indicator with no indicator** — no spinner, no percentage, no invented estimate,
+  because the thing being shown IS the work being done. A slow stretch is one the user watches take its
+  time: information, not a stall.
+- **It mimics the journey** — stretches arrive in TRAVEL order, so the line unfolds the way the user will
+  actually walk or ride it. For an app that plans a trip you are about to take, that is the closest a
+  plan gets to rehearsing it.
+
+**Therefore arrival order is load-bearing.** Emitting stretches out of order gives the same pixels and
+none of the meaning — a jigsaw filling in rather than a journey. Any future parallelism must preserve the
+reveal order (loft's `par` does: it computes concurrently but iterates results in order).
+
+**And parallelism must preserve DETERMINISM, which `par` does not give for free.** Same input → same
+match is a §5 requirement, and the sharpest threat is not a race but ORDER: a `par` loop over a hash walks
+its buckets unsorted, so parallelising the corridor read would change the way order, hence `build_graph`'s
+node indices, hence Dijkstra's tie-breaks — a route that wobbles run to run from identical input, silently
+and plausibly. The acceptance for any parallel work is therefore an N-run identity check, not a single
+comparison.
+
+The fix is upstream of the parallelism: **order the source, then let `par` sequence the results.** `par`
+iterates in the order of its source, so a range is already safe and a hash must be materialised sorted
+first; results that arrive early are held until their turn, and each is revealed the moment its index
+comes up rather than when all workers finish. Parallel work behind a sequencer: the compute order is the
+scheduler's, the reveal order is the journey, and the route matches a sequential run. See `PLAN-PERF.md`
+§6b B.
+
 **Faithfulness to the sketch dominates.** The match snaps your imprecise line onto the nearest
 sensible real ways; activity-suitability is only a *local tie-breaker*. It must never take a detour
 to find a nicer surface — the route roughly follows the points you already drew.

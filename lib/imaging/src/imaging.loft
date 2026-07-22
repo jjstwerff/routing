@@ -6,9 +6,9 @@
 // Data per pixel of a PNG image.
 // Fields r, g, b hold red, green and blue intensity, each 0–255.
 pub struct Pixel {
-  r: integer limit(0, 255) not null,
-  g: integer limit(0, 255) not null,
-  b: integer limit(0, 255) not null
+  const r: integer limit(0, 255),
+  const g: integer limit(0, 255),
+  const b: integer limit(0, 255)
 }
 
 // Returns the pixel colour as a packed 24-bit integer (0xRRGGBB).
@@ -20,10 +20,10 @@ pub fn value(self: Pixel) -> integer {
 // Database structure with image data.
 // The actual data is in height rows of width length.
 pub struct Image {
-  name: text,
-  width: integer,
-  height: integer,
-  data: vector<Pixel>
+  const name: text,
+  const width: integer,
+  const height: integer,
+  const data: vector<Pixel>   // grown via `img.data += [Pixel{…}]` — an append, which const permits
 }
 
 // Native function: decode a PNG file into an Image struct.

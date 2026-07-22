@@ -8,19 +8,60 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 
 ## 1. Where things stand (one paragraph)
 
-The **standalone/serverless browser app is built and runs in a real browser** (`browser/store-app.*`,
-**plan of record `PLAN-BUILD.md`**, which retires PLAN-MAP's M4/M5 JS-baked tiles for the loft-wasm store
-reader). It fetches the two loft stores (layout `PTile` + roads `TTile`) straight from a URL with
-`store_load_url_trusted`, runs the **loft-wasm kernel** (`client/web_basemap_kernel.loft` → `loft --html`)
-for the visible viewport (`view <bbox>` → base-map text → canvas render) and the matched route
-(`match <sketch>` → route text → drawn read-only), and needs **no server** — JS does pixels, loft does the
-map/route. Verified in headless Chromium: on load `view <bbox>` renders the region; a match returns the
-route **byte-identical to native** (ways=13077, 13138.0 m). The old blockers are gone: **loft#521** (wasm
-runtime abort) and the **B4 store-in-wasm gap** are both resolved — loft shipped `store_load` (heap reader
-that runs in wasm) + `store_load_url(_trusted)` (HTTP fetch, asyncify-bridged to JS `fetch()`), so there is
-**no codec and no jco/WASI packaging**. The server-first app still works and matches from a local tile
-block (Overpass fallback). *(§§2–9 below predate PLAN-BUILD and describe the earlier PLAN-APP `web_kernel`
-track — historical; the store app supersedes it.)*
+The **standalone/serverless browser app runs in a real browser** (`browser/store-app.*`, plan of record
+`PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
+kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the viewport (`view <bbox>`) and the
+matched route (`match <sketch>`), and needs **no server** — JS does pixels, loft does the route. **As of
+2026-07-17 the app's performance work is live** (`PLAN-PERF.md`, §0 = an executable step list; **1–16
+done, 17–22 open**). The headline change: the kernel used to run the one-shot model loft explicitly
+rejected — `loft_start` per request, fresh Stores each call — which meant a **full match on every click**
+and a phone **frozen 4.2 s** at a time. It now runs loft's intended model: `loft_start` once, never
+returns, looping on `host_input()` and `frame_yield()`ing, holding the stores + corridor Graph +
+MatchState across commands. Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop
+flatters ~4×**): a click moving a point **4481 → 711 ms**, a repeat match **5274 → 339 ms**, stores loaded
+**once per session**, and a real 40-point route's worst frozen frame **11095 → 744 ms** because the route
+now **streams per stretch, in travel order** (see `DESIGN.md` §5 — that ordering is load-bearing, not
+cosmetic). Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`).
+
+---
+
+## 1a. Resume here (2026-07-22)
+
+- **Read first:** `PLAN-PERF.md` §0 (the step list), §7c (blocker state), §7d(2) (the `expose` diagnosis)
+  and §7e (what the latest measurement contradicts). `CLAUDE.md` § "Read the reference before you write".
+- **Toolchain:** installed loft is **2026.7.2** (reinstalled 2026-07-22 09:01 — the @PLN110 `len`/`size`
+  flip release: `len(text)` is now CHARACTERS, `size(text)` is BYTES, breaking). **All four gates pass on
+  it unchanged** (`make test`, `test-native`, `test-wasm`, `test-map`) — routing absorbed the flip with no
+  source edits.
+- **Instruments:** `tools/map_profile.sh` (**`CPU_THROTTLE=4`**, the phase profiler), `tools/match_parity.sh`
+  (the route-identity gate), `tools/expose_probe.sh` (step 9's observable), `tools/par_copy_probe.loft`
+  (step 18's), `tools/loop_probe.sh` and `tools/read_probe.sh`.
+- **Nothing is blocked upstream any more** (re-validated 2026-07-22, `PLAN-PERF` §7c):
+  - **Step 18 (`par`) unblocked** — @PLN108's copy elision is live and default-on in 2026.7.2. The probe is
+    flat (1–3 ms) across 0/61/122 MB of heap and 1/8/16 threads; it was 214 ms / 162 ms on 2026.7.1.
+  - **Steps 9–13 unblocked** — the `expose` hang is root-caused: `expose` pins the store read-only, and
+    **iterating** a store-backed hash claims a cursor record *inside that store*, which the pin rejects
+    (`Claim on read-only store (size=546)`). **Reads are fine** — `len`, point lookups, field reads all
+    work. `release(tag, value)` restores iteration and re-`expose` works, so step 9 lands as a
+    release/emit/expose bracket. Diagnosed off-browser in one native run; see §7d(2).
+- **No warm-match regression** (`PLAN-PERF` §7e). A "warm 1.79× cold" reading was raised and **retracted
+  the same day**: the profiler's `matchColdFull` stopped being cold when step 6 landed the persistent
+  session, so it was measuring the nothing-changed case under a stale name. Calibrated, warm ÷ TRUE cold
+  is **0.14× in the browser and 0.16× native** — step 8 confirmed on both backends. The harness is fixed
+  (kernel `reset` command + `matchTrueCold`/`matchRepeat`) and `tools/match_session_probe.loft` is the
+  native ground truth to check it against.
+- **The biggest remaining user-visible cost is the COLD match: ~6.1 s on a phone, of which ~3.0 s is one
+  frozen frame** — newly visible, because nothing measured it until the probes were fixed. The **warm**
+  path (the common interaction) blocks only **451 ms**. The cold freeze lives in the rebuild phase
+  (`tiles_corridor_ways_streamed` + `build_graph_streamed`, *before* the first stretch exists), so step
+  16's streaming cannot reach it — **steps 19 (persist the graph) and 20 (cell-tube corridor, landed and
+  inert) are the remedies**, both already in the plan.
+- **Three profiler sections were measuring an unannounced cold rebuild** because each inherited the
+  previous probe's corridor. All now `reset` and declare their entry state (`PLAN-PERF` §7e). If you take
+  one habit from this: **a probe that depends on session state must set that state itself.**
+- **Branch state:** `standalone-app` is **64 commits ahead of `main`** (last merge PR #18, 2026-07-11),
+  pushed, all gates green. A PR is due.
+- **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
 
 ---
 

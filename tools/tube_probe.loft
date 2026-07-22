@@ -1,0 +1,38 @@
+// PLAN-PERF step 20: is the cell-tube a strict SUBSET of the bbox corridor, and how much does it drop?
+// Also: does matching on the tube give the same route? (It need not — a tighter corridor can legitimately
+// change the answer, which is exactly what PLAN-MATCH §3's gate exists to judge. Reported, not asserted.)
+#cwd
+use map_kernel::(parse_sketch);
+use routing_kernel::(GeoPoint, Way, TTile, tiles_corridor_ways, tiles_corridor_ways_tube,
+                     build_graph, match_route, corridor_margin, path_length_m);
+
+fn line_pts(n: integer) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for i in 0..n {
+    f = (i as float) / ((n - 1) as float);
+    pts += [GeoPoint { lat: 52.2412299 + f * (52.3116272 - 52.2412299),
+                       lon: 6.8834496  + f * (6.9088554  - 6.8834496) }];
+  }
+  pts
+}
+
+fn report(roads: hash<TTile[tkey]>, tag: text, pts: vector<GeoPoint>) {
+  m = corridor_margin(pts);
+  t0 = now(); wb = tiles_corridor_ways(roads, pts, m);      tb = now() - t0;
+  t1 = now(); wt = tiles_corridor_ways_tube(roads, pts, m); tt = now() - t1;
+  rb = match_route(build_graph(wb), pts, "cycling_road");
+  rt = match_route(build_graph(wt), pts, "cycling_road");
+  same = len(rb) == len(rt);
+  println("{tag}: bbox ways={len(wb)} ({tb}ms) · tube ways={len(wt)} ({tt}ms) · dropped={len(wb) - len(wt)} · route_pts bbox={len(rb)} tube={len(rt)} same_len={same} len_bbox={path_length_m(rb):1.0}m len_tube={path_length_m(rt):1.0}m");
+}
+
+fn main() {
+  a = arguments();
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, a[0] ?? "") { println("ERR load"); return; }
+  // A straight-ish sketch: bbox ≈ tube, little to drop.
+  report(roads, "straight-3 ", line_pts(3));
+  report(roads, "straight-40", line_pts(40));
+  // An L-BEND: most of the bbox rectangle is nowhere near the drawn line — the case the tube is for.
+  report(roads, "L-bend     ", parse_sketch("52.2412299,6.8834496;52.2412299,6.9700000;52.3116272,6.9700000"));
+}

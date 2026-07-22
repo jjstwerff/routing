@@ -1,0 +1,85 @@
+// PLAN-PERF §0 step 21 — the corpus compare, aimed at the question §7b actually poses:
+// is the CONSERVATIVE cell-tube route-NEUTRAL versus the bbox corridor, across many sketches?
+//
+// Not "can a gate accept a cheap tier" (PLAN-MATCH §3's question) — a margin-faithful tube is not a
+// cheap tier, it is the same corridor minus the rectangle's corners. So the acceptance is EQUALITY on
+// the §7 quality numbers, and any divergence is a finding, not something to tune a threshold around.
+//
+// Sketches are DETERMINISTIC (a fixed lattice over the region), so the corpus is reproducible and a
+// future run compares against this one.
+//   tools/corpus_tube.loft <roads.store>
+#cwd
+use routing_kernel::(GeoPoint, Way, TTile, MatchState, MatchQuality,
+                     tiles_corridor_ways, tiles_corridor_ways_tube, build_graph, corridor_margin,
+                     match_state_new, match_incremental, match_state_result, match_quality, path_length_m);
+
+// A deterministic spread over the enschede block: start cell, direction, bend, density.
+fn sketch_at(i: integer) -> vector<GeoPoint> {
+  la0 = 52.190 + ((i % 5) as float) * 0.030;
+  lo0 = 6.800  + (((i / 5) % 5) as float) * 0.040;
+  dla = 0.020 + ((i % 3) as float) * 0.020;
+  dlo = 0.030 + ((i % 4) as float) * 0.015;
+  bend = (i % 2) == 1;
+  n = 3 + (i % 4) * 6;                       // 3 / 9 / 15 / 21 points
+  pts: vector<GeoPoint> = [];
+  for k in 0..n {
+    f = (k as float) / ((n - 1) as float);
+    if bend {
+      // an L: run east, then north — most of the bbox is nowhere near the line
+      if f < 0.5 { pts += [GeoPoint { lat: la0, lon: lo0 + dlo * (f * 2.0) }]; }
+      else { pts += [GeoPoint { lat: la0 + dla * ((f - 0.5) * 2.0), lon: lo0 + dlo }]; }
+    } else {
+      pts += [GeoPoint { lat: la0 + dla * f, lon: lo0 + dlo * f }];
+    }
+  }
+  pts
+}
+
+fn quality_of(ways: vector<Way>, pts: vector<GeoPoint>, profile: text) -> MatchQuality {
+  g = build_graph(ways);
+  st = match_incremental(match_state_new(), g, pts, profile);
+  mr = match_state_result(g, st);
+  match_quality(st, pts, mr)
+}
+
+fn class_text(cm: vector<float>) -> text {
+  t = "";
+  for c in 0..6 { t += "{cm[c] ?? 0.0:1.0}/"; }
+  t
+}
+
+fn main() {
+  a = arguments();
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, a[0] ?? "") { println("ERR store_load"); return; }
+  profile = a[1] ?? "cycling_road";
+
+  n_same = 0; n_diff = 0; n_empty = 0; wb_tot = 0; wt_tot = 0;
+  for i in 0..25 {
+    pts = sketch_at(i);
+    m = corridor_margin(pts);
+    wb = tiles_corridor_ways(roads, pts, m);
+    wt = tiles_corridor_ways_tube(roads, pts, m);
+    wb_tot += len(wb); wt_tot += len(wt);
+    if len(wb) == 0 { n_empty += 1; }
+    else {
+      qb = quality_of(wb, pts, profile);
+      qt = quality_of(wt, pts, profile);
+      same = qb.len_m == qt.len_m && qb.dev_max == qt.dev_max && qb.pen_m == qt.pen_m
+             && qb.bridged_m == qt.bridged_m && class_text(qb.class_m) == class_text(qt.class_m);
+      // The TUBE's own gate inputs — all the gate can see at runtime. It never sees bbox's numbers;
+      // that is the whole point of a cheap-first ladder.
+      t_pen_share = 0.0;
+      if qt.len_m > 0.0 { t_pen_share = qt.pen_m / qt.len_m ?? 0.0; }
+      // GROUND TRUTH (offline only): is the tube's result actually worse than bbox's? §7 bars length —
+      // judge on bridging and faithfulness, the two things the gate is allowed to care about.
+      worse = qt.bridged_m > qb.bridged_m + 1.0 || qt.dev_max > qb.dev_max * 1.10 + 1.0;
+      verdict = "SAME";
+      if !same { if worse { verdict = "WORSE"; } else { verdict = "OK-DIFF"; } }
+      if same { n_same += 1; } else { n_diff += 1; }
+      println("ROW i={i} pts={len(pts)} ways={len(wt)} t_bridged={qt.bridged_m:1.0} t_devmax={qt.dev_max:1.0} t_devmean={qt.dev_mean:1.0} t_penshare={t_pen_share:1.3} | b_bridged={qb.bridged_m:1.0} b_devmax={qb.dev_max:1.0} | {verdict}");
+    }
+  }
+  println("CORPUS {n_same + n_diff} matched ({n_empty} empty corridors skipped): identical={n_same} diverged={n_diff}");
+  println("WAYS bbox={wb_tot} tube={wt_tot} dropped={wb_tot - wt_tot} ({((wb_tot - wt_tot) as float) * 100.0 / (wb_tot as float):1.0}%)");
+}

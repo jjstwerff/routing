@@ -740,3 +740,959 @@ loft-wasm matches from the roads text via `host_input` (the proven `web_kernel` 
 compiled a `store_load` probe (399 KB html / 298 KB wasm) — but that's the mmap reader; `lib/web`'s wasm HTTP
 is text-only. `../loft` is read-only for us — the codec + binary fetch are the maintainer's to build ("we'll
 build something that works here").
+
+## 2026-07-15 — loft 2026.7.1 resolution: `use <submodule>;` no longer reaches a package submodule from a test file
+
+**Context.** loft `2026.7.1` (installed 2026-07-15; it ships @PLN106 `--native-android` and the @PLN107
+dead-store lint DEFAULT-ON — `LOFT_NO_DEAD_STORES` opts out — both validated here while cutting
+`graphics 0.4.2`) tightened library/submodule resolution.
+
+**What we found (verified, both backends).** In `loft-libs-graphics` the package entry is `src/graphics.loft`,
+with sibling submodules `src/{math,mesh,scene,render,glb}.loft`. Two resolution facts now disagree:
+
+- **From inside the package it still works.** `src/graphics.loft` itself does `use math; use mesh; use scene;
+  use glb;` and compiles fine — so every `use graphics;` consumer is green (verified: `ssh_home` +
+  `tests/canvas.loft` pass 30/30 on `--interpret` and `--native`).
+- **From a sibling test file it no longer works.** A module test that does `use math;` to exercise the
+  submodule directly fails to resolve the submodule's own `pub` functions:
+  ```
+  Error: Unknown function vec3        at tests/math.loft:7:34
+  Error: Unknown function dot3        at tests/math.loft:25:31
+  Error: Unknown function normalize3  at tests/math.loft:41:29
+  FAIL  tests/math.loft  (parse errors)
+  ```
+  And the qualified form does not reach it either:
+  ```
+  Error: Name 'math' not found in library   at tests/math.loft:6:3    (with `use graphics::math;`)
+  ```
+
+**Impact.** graphics' four module-level tests — `tests/{math,mesh,scene,scene_glb}.loft` — all fail
+(`5 failed; 34 passed`); only the `use graphics;` tests (canvas, text_height, kerning, font_ascent,
+input_events) pass. **Pre-existing** — it fails identically on the committed `0.4.1` HEAD, i.e. it is the
+toolchain upgrade, not the lib. `graphics 0.4.2` shipped with these four tests red on purpose (orthogonal to
+the warning cleanup; called out in the release commit).
+
+**The asymmetry is the bug.** A package submodule is importable by bare name *from within the package* but not
+*from a sibling test dir*, and there is **no qualified form** that reaches it (`graphics::math` → "not found").
+So a package submodule is currently **un-unit-testable in isolation**. Either the test-context submodule
+resolution regressed, or bare-submodule import is being retired — in which case the entry's own `use math;`
+should break the same way (it does not — that is the asymmetry), and there needs to be a sanctioned way to
+reach `math::vec3` from a test (a working `use graphics::math;`, or a `pub use` re-export). `../loft` is
+read-only for us — filing/fixing is the maintainer's call.
+
+## 2026-07-15 — @PLN25 DN1 diagnostic: the nullable-return warning anchors at the *next* function, not the culprit
+
+Under DN1, storing a `τ?` (from a fallible `/`, `sqrt`, or a parse) into a non-null return warns:
+```
+warning: a nullable `integer?` is stored into element 0 of the return value of the
+non-null type `integer` — it becomes null there; discharge with `?? <default>` …
+```
+The rule itself is landing cleanly and is ergonomically bearable — a single `?? <default>` at the return site
+discharges it (matches the C80 spreadsheet model). **But the source span points at the wrong function** —
+consistently the *declaration line of the function AFTER* the one that actually returns the nullable value.
+Two independent instances, same session:
+
+| culprit (returns a fallible expr into a non-null type) | warning anchored at |
+|---|---|
+| `ssh_home` `grid_cols_rows` → `(integer, integer)` from a guarded `win_w / cell_w` (`main.loft:120`) | `default_font_size` (`main.loft:129`, the *next* fn) |
+| `graphics` `length3` → `sqrt(sum-of-squares)` = `float?` (`math.loft:67`) | `normalize3` (`math.loft:71`, the *next* fn — which is already `??`-discharged) |
+
+So the caret sends you to a function that is *fine* (often already discharged), and you locate the real site by
+elimination (which fn returns a fallible expression into a non-null type). Minor but repeatable — the span
+should anchor on the offending `return`/tail expression, or at least on the culprit function's own header. It
+slightly raises the DN1 discharge cost: the first look lands on the wrong line. Both sites were fixed here with
+`?? 0` / `?? 0.0`; `../loft` is read-only for us — reported for the maintainer.
+
+## 2026-07-16 — `loft --native`: a `#native` package's symbols "not registered" though its `loft_register!` is correct (P269)
+
+**Context.** `ssh_home` Step 4 wires the published `ssh 0.1.0` lib (`loft-libs-net`, russh FFI) into a live
+transport test. It works end-to-end under `--interpret` (see below), but **fails to compile under
+`loft --native`**:
+
+```
+error: loft --native: native fn `n_ssh_recv` (#native "n_ssh_recv") has no implementation in any registered
+       native crate; either run via --interpret or wire the symbol in a #native package or
+       src/codegen_runtime.rs (P269)
+```
+— the same for `n_byte_at` and the other `n_ssh_*` (5 errors total).
+
+**The registration is correct.** The ssh native crate's build.rs runs
+`loft_ffi_build::generate_register_from_loft_with_bridges("../src")`, and the generated
+`OUT_DIR/loft_register_gen.rs` is complete and well-formed — all nine functions plus their bridges:
+```
+loft_ffi::loft_register! { n_byte_at, n_ssh_close, n_ssh_connect, n_ssh_is_open, n_ssh_login,
+                           n_ssh_open_shell, n_ssh_recv, n_ssh_resize, n_ssh_send, }
+loft_ffi::loft_register_bridges! { "n_byte_at" => n_byte_at__loft_bridge, … }
+```
+(pulled into `native/src/lib.rs` via `include!(concat!(env!("OUT_DIR"), "/loft_register_gen.rs"))`).
+
+**The contrast that localises it.** In the SAME project, `graphics 0.4.2` — whose native crate declares an
+equivalent `loft_register!` / `loft_register_bridges!` (hand-written in `lib.rs` rather than `include!`d) —
+**links fine under `--native`** (all the `vttest*` model tests run `--native`). And the ssh lib itself was
+*"interpret + native + live-sshd all green"* under an **earlier** loft. So this is a **loft 2026.7.1 `--native`
+regression** in discovering / linking a `#native` package's registration, **not** an ssh-lib or ssh_home
+defect — the generated registration is byte-correct. The one visible difference to probe: graphics registers
+directly in `lib.rs`; ssh registers via `include!(OUT_DIR/loft_register_gen.rs)` — if `--native`'s crate/symbol
+discovery no longer sees an `include!`d `loft_register!`, that would explain the asymmetry (the interpreter
+cdylib path finds it either way; only the `--native` rlib-link path regressed).
+
+**What works (so the transport itself is proven).** Under `--interpret`, the full live smoke against a
+throwaway paramiko sshd (real bash PTY) passes: connect, password auth **and** rejection, a real shell,
+`echo LOFT_OK` round-trip, a **binary** round-trip (raw `ESC` 0x1B survives the FFI, checked via `byte_at`),
+and resize propagation (`stty size` reports the resized dims).
+
+**Impact / ask.** `ssh_home` is a `--native` app, so this blocks its Step 5 integration. `../loft` is
+read-only for us. Likely fixes for the maintainer: restore `--native` discovery of an `include!`d
+`loft_register!`, or (ssh-lib side) hand-write the register block into `lib.rs` like graphics + republish
+`ssh 0.1.1` rebuilt under 2026.7.1 — but that only helps if the root cause is the `include!`, which is the
+maintainer's to confirm.
+
+> **ROOT-CAUSED + FIXED upstream 2026-07-16 (my `include!` guess was wrong).** The loft agent hit the same
+> failure and fixed it on `../loft` `tuxedo-consumer-nullflow-fixes` (commit `917da317`, not yet merged): a
+> **`loft install <dir>` copied only `src/*.loft` + `loft.toml` and DROPPED the `#native` crate (`native/`)**,
+> so the `n_*` symbols were undefined at `--native`/`--native-android` link time — a local-vs-registry
+> asymmetry (`loft package`/the registry path already carried `native/`). `install_package` now recursively
+> copies `native/` (excluding `target/`+dot-dirs), and it's **verified end-to-end specifically with `ssh`
+> (russh/ring FFI): local-installed `ssh` now cross-compiles + links via `--native-android`**. So this is a
+> toolchain/packaging bug, not `include!` discovery. **Action here:** once that branch lands and `loft` is
+> reinstalled, re-run `loft --native tools/ssh_smoke.loft` — it should pass and unblock ssh_home Step 5.
+>
+> **✅ VERIFIED RESOLVED 2026-07-16.** The local `loft` was rebuilt (still `2026.7.1`, binary+runtime dated
+> 2026-07-16 11:56) carrying this fix (and the `@PLN102` domain lattice — `LOFT_NO_MATH_DOMAIN`). After a fresh
+> `loft install ssh@0.1.0 --refresh`, **`loft --native tools/ssh_smoke.loft` now PASSES the full smoke** —
+> auth accept+reject, shell, binary ESC round-trip, resize — so ssh_home Step 5 is unblocked. No P269. Whole
+> issue closed.
+
+---
+
+## 2026-07-16 — `@PLN40` const fields: a const field READ on the RHS of an element-store is rejected as a "reassignment"
+
+**Context.** `@PLN40` (const struct fields, `4067eb52`, now the HEAD of loft `origin/main`) landed today, and
+routing swept `const` across its six vendored libraries to dogfood it. The sweep does not compile — and the
+two failures below are why the sweep had to be **substantially rolled back** (see *Impact*).
+
+**Defect 1 — a READ is flagged as a reassignment (false positive).** Reading a struct field on the
+right-hand side of a **vector element-store** is rejected, though a read reassigns nothing:
+
+```loft
+struct E { const length: float }
+fn main() {
+  e = E { length: 4.0 };
+  cm = [0.0];
+  cm[0] = (cm[0] ?? 0.0) + e.length;   // error: cannot reassign const field 'length' of struct 'E'
+}
+```
+
+The identical expression on the RHS of a **plain** assign (`x = x + e.length`) is fine. So the trigger is
+the *element-store target*, not the read.
+
+**Defect 2 — the trigger is the STRUCT, not the field (this is the severe one).** The field actually read
+does not need to be const. Any struct carrying **≥1 const field** cannot have **ANY** of its fields read on
+the RHS of an element-store:
+
+```loft
+struct E { const zzz_first: integer, bbb_second: float }   // only zzz_first is const
+…
+cm[0] = (cm[0] ?? 0.0) + e.bbb_second;   // reads the NON-const field
+// error: cannot reassign const field 'zzz_first' of struct 'E'
+```
+
+Note the diagnostic names **`zzz_first`** — a field the statement never mentions. It appears to report the
+struct's **first** const field rather than the one referenced, which sends you looking at the wrong line
+(in routing it named `GEdge.a` while pointing at a column holding `e.b`).
+
+**Boundary matrix** (loft `origin/main` `4067eb52`; identical on `--interpret` and `--native`):
+
+| shape | verdict |
+|---|---|
+| `s.v += [x]` where `const v: vector<T>` | rejected — see the spec question below |
+| `s.v[0] = x` where `const v: vector<T>` | ok (matches LOFT.md: contents allowed) |
+| `vec[s.cf] = x` — const read as **index on the LHS** | ok |
+| `vec[i] = … + s.cf` — const read on the **RHS** | **REJECTED — defect 1** |
+| `x = x + s.cf` — same read, **plain** assign | ok |
+| `vec[i] = … + s.NONCONST` where the struct has any const field | **REJECTED — defect 2** |
+| `t = s.cf;` then `vec[i] = … + t` | ok — **workaround** (hoist to a local) |
+| *control:* same code, struct has **zero** const fields | ok — proves `const` is the trigger |
+
+The control is the point: adding a single `const` anywhere in a struct breaks every element-store that
+reads that struct, including reads of its non-const fields.
+
+**Spec question (not a bug) — is `+=` on a const collection field a rebind?** LOFT.md § Fields says const
+"freezes the field *binding*, not its contents: `const v: vector<T>` rejects `t.v = […]` but still allows
+`t.v[0] = x`." `+=` is a compound assign, so it is a rebind and is rejected. That is self-consistent, but it
+means **any `+=`-grown collection field can never be const** — which in routing is most of them
+(`EdgeCosts`'s 5 parallel arrays, `PTile`'s 5 geometry vectors, `TTile.roads/steps`, `Image.data`). If
+"append" is meant to be a contents mutation rather than a rebind, that is a language-definition decision
+worth making explicitly; today the ergonomics push `const` off exactly the set-once-then-grown fields where
+it would document the most.
+
+**Impact here.** Routing's sweep keeps `const` only on pure value structs (`GeoPoint`, `BBox`, `Coord`,
+`Way`, `Request`, `HttpResponse`, `WsEvent`, …). Rolled back to plain fields:
+- `GEdge` — set-once at build, never mutated, but `to[pa] = e.b` (`build_adj`) and `cm[c] = … + e.length`
+  (`match_quality`) trip defect 2. This is the hot path; the workaround (hoisting each read to a local)
+  would add noise to the inner loop to satisfy a false positive, so the struct stays plain.
+- `SubPath` — same shape via `cm[c] = (cm[c] ?? 0.0) + (s.class_m[c] ?? 0.0)`.
+- `EdgeCosts` / `PTile.areas…` / `TTile.roads/steps` / `Image.data` — the `+=` spec question above.
+
+Both are marked in-source with a pointer back here, so the `const` can be restored once defect 2 is fixed.
+
+**Verified.** With defects 1–2 worked around, the full routing suite is green on `origin/main`'s loft —
+kernel 39 tests (geodesic/corridor/gpx/import/loop/matcher/profiles/roundtrip/elevation) plus imaging/web,
+on **both** `--interpret` and `--native`.
+
+**Toolchain note.** The installed `/usr/local/bin/loft` was **reinstalled at 16:58 local while this was
+being written** and now carries `@PLN40`; the earlier build (09:56 UTC, predating the 11:57 UTC merge)
+rejected `const` outright with "const struct fields are not yet supported (planned — @PLAN33)". Every cell
+of the matrix above was **re-probed on the fresh installed binary and reproduces identically** — so this is
+a live defect, not an artifact of a stale toolchain. (Worth noting for the next reader: loft is a moving
+target here, and a matrix probed against one binary can be invalidated by a reinstall mid-session.)
+
+**Ask.** Fix defect 2 (and with it defect 1): a field **read** should never be treated as a write,
+whatever the enclosing statement's assignment target is; and the diagnostic should name the field actually
+referenced, not the struct's first const field. Until then `const` is unusable on any struct that feeds a
+vector element-store, which in array-of-struct code (the whole routing kernel) is most of them.
+
+---
+
+## 2026-07-16 — the null-flow lint (@PLN102/DN1): inverted polarity, plus two hazards found discharging it
+
+Discharging routing's 26 null-flow warnings surfaced three separate things. The discharge itself went
+fine — the idiom from `4f66f60` (`?? <default>` at a site the surrounding code already bounds, with the
+bound written down) scaled to all 26, and every value is byte-identical before/after on interpret and
+native. These are what the exercise *found*.
+
+### 1. The lint warns on correct code and stays silent on the broken case (for-range bound-carry)
+
+`v[i]` bound-carry (@PLN102 D1) suppresses the warning whenever `i` is a **for-range variable**, without
+checking that the vector indexed is the one the range came from. Identical bug, opposite diagnosis:
+
+```loft
+v: vector<P> = [ … 3 elements … ];
+w: vector<P> = [ … 1 element  … ];      // SHORTER
+for i in 0..len(v) { s = s + take(w[i]); }   // 0 warnings — runtime: s = null
+i = 0;
+while i < len(v) { s = s + take(w[i]); i = i + 1; }   // 1 warning — runtime: s = null
+```
+
+Both silently produce `s = null`. Only the `while` form is flagged. Meanwhile every site the lint DID
+flag in routing's kernel was provably in range (a loop condition, an early return, a `len()` check).
+
+So the polarity is inverted where it matters: false positives on correct code, a false negative on the
+genuine out-of-bounds read — and, worse, the shortest way to silence a warning is to rewrite the `while`
+as a `for`, which removes the diagnostic while *preserving* the bug. We deliberately did **not** do that
+in routing; the discharges name their bound instead.
+
+> **Root cause located by the maintainer's triage (2026-07-16):** `Parser::index_provably_fit`,
+> `src/parser/fields.rs:774` — the `Value::Var` arm returns `true` for *any* `is_active_loop_var`, with no
+> check that the loop's range source is the vector being indexed. The neighbouring `if idx < len(vec)`
+> guard path already does it correctly, pairing the index var with the vector's `VecKey` via
+> `self.index_bounded`; the loop-var path needs the same pairing. Confirms the guess in this entry's last
+> line — the carry should hold only when the range's source *is* the indexed vector.
+
+Coverage probed (all with `for i in 0..…`): `v[i]` ✓ carried, `v[i-1]`/`v[i+1]` under `0..len(v)-1` ✓,
+`v[2*i]`/`v[2*i+1]` under `0..len(v)/2` ✓, `for i in 0..n` with a local `n` ✓ (carries regardless of
+what `n` is), reverse `v[len(v)-1-i]` ✗ (warns).
+
+### 2. A struct CONSTANT as a `??` fallback miscompiles under `--native` (interpret/native divergence)
+
+```loft
+struct P { lat: float, lon: float }
+NOWHERE = P { lat: 0.0, lon: 0.0 };     // top-level struct constant
+…
+take(v[0] ?? NOWHERE)
+```
+`--native` fails to compile: `error[E0308]: 'if' and 'else' have incompatible types … expected 'DbRef',
+found '()'`. An **inline struct literal** (`?? P { lat: 0.0, lon: 0.0 }`) and a **zero-arg fn**
+(`?? point_none()`) both compile and run identically on both backends.
+
+> **Correction (2026-07-16, after the maintainer's triage — my first write-up understated this).** I
+> reported the interpreter as merely *accepting* the form. It does worse: **the fallback never
+> materialises and the expression evaluates to `null`.** My probe only ever exercised the non-null path
+> (`v[0] ?? CONST`), so I never saw it. With the fallback actually taken:
+> ```loft
+> NOWHERE = P { lat: 42.0, lon: 99.0 };
+> miss = v[5] ?? NOWHERE;      // --interpret: miss is NULL, not 42.0
+> ```
+> So both backends are broken and only native is loud: interpret yields a **silent wrong value** while the
+> suite goes green; native fails the build. That inverts the severity — this is the more dangerous half,
+> not the divergence. Verified the shipped fix is unaffected: `?? point_none()` and `?? P{…}` both return
+> the fallback's fields when taken, on interpret AND native.
+
+This bit exactly once: the interpreter suite was green while `make test`/`make test-native` failed with 17
+E0308s. routing now spells the sentinel as `fn point_none() -> GeoPoint`, noted in-source. Repro is 7 lines.
+
+### 3. `v[-1]` returns the LAST element — but the scalar-index contract says "null if out of bounds"
+
+```loft
+v: vector<P> = [P{lat:1.0,…}, P{lat:9.0,…}];
+n = -1;
+x = v[n];      // x.lat == 9.0  — the LAST element, NOT null
+m = 99;
+y = v[m];      // null, as documented
+```
+
+LOFT.md § Vectors documents scalar indexing as `v[i] // index (null if out of bounds)`, and `-1` is out
+of bounds under any reading of that. Negative-counts-from-the-end is documented (@P384, INCONSISTENCIES
+§ 28) **only for slices** — `v[2..-1]`, `v[-2..]` — not for scalar `v[i]`. So the index silently adopts
+the slice convention, asymmetrically: **high** OOB → null, **negative** OOB → wraps to a real element.
+
+The hazard is that this defeats the guard the lint itself recommends. `x = v[i]; if x { … }` reads as
+"skip the out-of-range case", and it does — for `i >= len`, not for `i < 0`, where it happily hands you
+the wrong element. Found it while trying to simplify `if ei >= 0 { e = g.edges[ei]; … }` (ei is -1 for
+"no edge") down to a null guard: that refactor looks obviously equivalent and is silently wrong —
+`g.edges[-1]` is the last edge, so the report would have attributed a real edge to a non-existent one.
+The `ei >= 0` test is kept, with a comment saying why it is not redundant.
+
+> **Resolved by the maintainer's triage (2026-07-16): INTENTIONAL, a doc gap — not a bug.** Scalar
+> negative indexing is the deliberate Python-style last-element idiom, backend-identical, mirroring the
+> negative *slice* bounds at LOFT.md:1269 (@P384). The full contract, which I verified independently on
+> both backends (`v = [10,20,30]`):
+>
+> | index | `v[0]` | `v[2]` | `v[3]` | `v[-1]` | `v[-3]` | `v[-4]` |
+> |---|---|---|---|---|---|---|
+> | result | 10 | 30 | **null** | **30** | **10** | **null** |
+>
+> i.e. `i ∈ [0,len)` → element · `i ≥ len` → null · `i ∈ [-len,-1]` → element from the end · `i < -len` →
+> null. So the ask is documentation only: LOFT.md § Vectors says `v[i] // index (null if out of bounds)`,
+> which describes just the first two columns. The footgun below stands regardless of intent — `if v[i] {…}`
+> does not guard a negative index — so the routing comment at the `ei >= 0` site stays either way.
+
+### Verified
+
+Kernel null-flow warnings 26 → 0, and 0 across the whole tree (kernel/imaging/web suites). All three
+gates green: `make test` (ALL OFFLINE GATES PASS), `make test-native` (NATIVE KERNEL SUITE PASSES),
+`make test-wasm` (interpret == native == native-wasm byte-identical; geodesic 1113.194907792064 m).
+Value-parity checked directly against the pre-change kernel over 30 high-precision values (bounds /
+corridor_margin / tile_xf / tile_yf / tile_key incl. extreme latitudes / path_length_m / is_loop /
+clean_track / douglas_peucker / retrace_m): **byte-identical** old-vs-new on interpret AND native.
+
+---
+
+## 2026-07-16 (18:54 build) — REGRESSION: the "nullable → non-null PARAMETER" warning no longer fires
+
+Re-tested routing against the freshly installed loft (18:54, built from `loft2` `tuxedo-work` @ `8118ab16`),
+which carries the fixes for all three findings above. Two of the three land well; the third is defeated by
+a separate regression in the same build.
+
+### ✅ f2 (struct-valued constant) — fixed, and the diagnostic is exemplary
+
+```
+error: a struct-valued constant ('NOWHERE') is not supported — a record cannot be materialised at each
+use site (it reads `null` on --interpret and fails to compile on --native).  Wrap it in a zero-argument
+function instead: `fn nowhere() -> P { … }`, then call `nowhere()`
+```
+It names the failure on BOTH backends and prescribes exactly the workaround routing shipped. The fn form
+and the inline-literal form both still return the fallback's fields when taken, on interpret and native.
+
+### ✅ @PLN40 const model — fully fixed (`4f810080`)
+
+All 8 cells of the const boundary matrix from the entry above now pass, including the two that forced
+routing's rollback: `s.v += [x]` on a `const` collection field is accepted (append is contents, not a
+rebind), and the RHS-read false positive is gone (`vec[i] = … + s.field` where the struct carries a const
+field). **Routing's reverted `const` is now restored** — on `GEdge`, `SubPath`, `EdgeCosts`,
+`TTile.roads/steps`, `PTile`'s geometry vectors and `Image.data`, plus `TileHeights.heights`,
+`Server.handle` and `WebSocket.ws_id`, which the original sweep had left out for the same `+=` reason.
+34 of routing's 40 lib structs are now fully const; the remaining 6 are genuine (`Graph` rebinds
+`adj_head`/`adj_to`/`adj_edge` wholesale in `build_adj`; `Heap`/`Scratch` are mutable-by-design).
+Value-identical on both backends; all four gates green.
+
+### ⚠️ f1 (index-fit carry) — the fix is correct, but a regression hides its effect
+
+The fix itself works: their guard case errors as designed, because the nullable propagates into a local
+whose type would change.
+```loft
+fn f(v: vector<integer>, w: vector<integer>) -> integer { s = 0; for i in 0..len(v) { s = s + w[i]; } s }
+// error: Variable 's' cannot change type from integer to integer?   ← the fix, working
+```
+But routing's ORIGINAL repro (`sound.loft`) is **still completely silent** — 0 warnings, `s = null` at
+runtime — because it routes the nullable through a **non-null parameter** instead of a type-changing local:
+```loft
+fn f(v: vector<integer>, w: vector<integer>) -> integer { s = 0; for i in 0..len(v) { s = s + take(w[i]); } s }
+// take(a: integer) returns integer, so `s` never changes type — and NOTHING is reported.
+```
+
+### The regression: the parameter class of the null-flow warning is gone
+
+Not an indexing issue — it is the whole warning class. Same `float?` source (`1.0 / n`, no `v[i]` anywhere),
+three destinations:
+
+| destination | 16:58 build | 18:54 build |
+|---|---|---|
+| non-null **return value** | warns | **warns** ✓ |
+| non-null **field** | warns | **warns** ✓ |
+| non-null **parameter** | warns | **SILENT** ✗ |
+
+```loft
+fn takes(a: float) -> float { a }
+fn par(n: float) -> float { x = 1.0 / n; takes(x) }   // float? -> non-null param: NO warning
+```
+Confirmed identical on the installed 18:54 binary and on `loft2/target/release/loft`. This is a regression,
+not a softening we asked for: the 16:58 build warned on exactly this shape — routing's own kernel reported
+`a nullable float? is stored into parameter 1 of 'sqrt'` and `... parameter 2 of 'geodesic_m'`. Measured on
+the SAME unmodified pre-fix kernel source: **26 warnings on 16:58 → 5 on 18:54**, and all 21 that vanished
+are the `parameter N of F` class; the 5 survivors are exactly the `field` (3) and `return value` (2) ones.
+
+**Why this matters for "stable".** Passing `v[i]` (or any fallible-arithmetic result) straight to a function
+is the most common shape in real loft code — it was 21 of routing's 26 sites. With that class silent, the
+f1 fix cannot be observed through a call, and an out-of-bounds read silently yields `null` with no
+diagnostic on either backend. It also means a consumer that discharges to zero warnings today (as routing
+now does) is no longer evidence of much: routing's 0 would be 0 either way.
+
+Suggested guard, since this class had no regression test: the three-destination probe above (return /
+field / parameter from one `float?` source) as a warning-count test — it is four lines and would have
+caught this.
+
+---
+
+## 2026-07-17 — @PLN105 `expose`/`deliver`: a store you expose becomes unreadable, and a top-level `hash` is not deliverable
+
+> **§ 1 CONFIRMED on 2026.7.2, and narrowed — see *"`expose` UN-RETRACTED"* (2026-07-22) at the end of this
+> file.** It is **iteration** that claims, not reading: `len`, point lookups and field reads all work on an
+> exposed store. `release(tag, value)` restores iteration, which is the workaround this entry lacked. The
+> "unreadable" phrasing below is too broad; everything else in § 1 holds.
+>
+> **§ 2 is SUPERSEDED** — `deliver` of a hash does fail, but `expose` does not go near that path
+> (`collect_keyed` pre-flattens it). See the RETRACTED entry below. The per-tile fallback § 2 proposes is
+> therefore unnecessary; step 9 exposes the whole layout hash.
+
+**Context.** PLAN-PERF §0 step 9 hands the browser the layout store so JS reads PTiles from wasm memory
+instead of loft serializing ~4.2 MB of text per pan (`view` = 29k lines the JS side then re-parses).
+`BROWSER_INTEROP.md` § *The binary bridge* names routing's base-map `view` as the motivating consumer, so
+this is that consumer trying it. Both findings reproduce on `--interpret` and `--native`.
+
+### 1. `expose(tag, value)` pins the store read-only — and then loft cannot read it either
+
+```loft
+layout: hash<PTile[tkey]> = [];
+store_load(layout, path);
+for t in layout { n0 += 1; }          // fine — 1089 tiles
+expose(1, layout);                     // returns; the host import fires with a valid handle
+for t in layout { n1 += 1; }          // PANIC
+```
+```
+thread panicked at src/store.rs:647:9:
+Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+```
+
+The expose itself works — the host receives a usable handle (`tag=1 storeBase=29126376 rec=1 pos=8
+typeId=135 descLen=1955`, a 1955-byte descriptor). But the read-only pin means **any later operation that
+CLAIMS in that store panics**, and iterating a keyed collection claims (the scratch array the docs
+describe). In the browser this manifests as a hang, not a panic: the kernel dies mid-command, never emits
+its terminator, and the page waits forever.
+
+**Why this bites the intended use.** The doc's model is *"pins the value's store … read it each frame"* —
+i.e. expose once, then keep running. But a consumer that exposes a store it still uses (here: `view` reads
+the same layout to emit its text) is dead on the next read. It also blocks the *safe* migration order —
+land the JS reader **beside** the existing text path and compare, then delete the text path — because
+during that overlap loft must still read what it has exposed.
+
+**Ask:** either a read of a pinned store should not claim (a read-only iteration shouldn't need scratch),
+or `expose` should be documented as *"loft must not touch this store again until `release`"* — currently
+neither the stdlib comment nor BROWSER_INTEROP says so, and the failure is a panic/hang far from the call.
+
+### 2. A top-level `hash<T[k]>` is not deliverable — including as a struct field
+
+```loft
+deliver(1, layout);        // hash<PTile[tkey]>
+→ error=type 86 (hash<PTile[tkey]>) is a store-internal kind — not in the serializable subset
+                            (cursor-walked in a later phase)
+```
+Wrapping it does not help — `struct LayoutRoot { tiles: hash<PTile[tkey]> }` + `deliver(1, root)` reports
+the same, still naming the hash (type 87). `deliver` does NOT pin, so reads keep working — it is only the
+container that is refused.
+
+This reads as a doc/shipped-scope mismatch. BROWSER_INTEROP § *The binary bridge* says keyed collections
+are **PRE-FLATTENED, not cursor-walked** ("at deliver time loft materialises it to a scratch array
+(key-ordered) … the descriptor adds a `flat` redirect map"), which sounds shipped; the runtime says
+cursor-walking is "a later phase". One of the two is describing a phase that is not in the installed loft.
+
+**What DOES work, and is the way forward here:** an individual record delivers fine —
+`deliver(1, t)` for a `PTile` (a struct of `text` + `vector<record>`) returns a proper handle and bytes.
+So routing will deliver the viewport's tiles **one at a time** rather than the store: the view already
+knows which tiles hit the bbox, so this is a handful per pan, not 1089. Recorded in PLAN-PERF §0 step 9.
+
+**Impact.** Not blocking — the per-tile route avoids both findings (no pin, no keyed container). But the
+documented "expose the store, read it each frame" shape is not usable by a consumer that still reads that
+store, and the pre-flattened-keyed-collections paragraph does not match the installed runtime.
+
+---
+
+## 2026-07-17 — a call with TOO FEW ARGUMENTS is accepted, and silently corrupts the earlier arguments
+
+**MINIMISED.** The SIGSEGV I first reported was my own bug — three missed call sites — but what loft did
+with it is the finding: **there is no arity check**, and a missing *function-typed* argument corrupts the
+arguments before it.
+
+```loft
+struct P { lat: float, lon: float }
+fn sink(i: integer, p: vector<P>) { }
+fn five(a: integer, b: vector<P>, c: text, d: boolean, cb: fn(integer, vector<P>)) -> integer { len(b) }
+fn main() {
+  n = five(1, [P{lat:1.0,lon:2.0}], "x", true);   // ← 4 args for a 5-param fn. Accepted.
+  println("returned {n}");                         // prints 0.  len(b) of a 1-element vector is 1.
+}
+```
+
+| the call | missing param's type | result |
+|---|---|---|
+| `five(1, [one elem], "x", true)` | `cb: fn(integer, vector<P>)` | **`returned 0`** — `len(b)` is wrong; `b` is corrupted |
+| same, with the 5th param an `integer` | `e: integer` | `returned 1` — correct |
+
+So: (a) too few arguments is not diagnosed at all, on either shape; (b) when the omitted parameter is
+**fn-typed**, the *preceding* arguments are corrupted rather than merely the missing one defaulted.
+
+**How it presented in real code.** Adding `on_stretch: fn(integer, vector<GeoPoint>)` to the matcher's
+`build_state` while three of its five call sites still passed four arguments gave:
+```
+=== loft crash (loft) SIGSEGV caught ===
+  last op:  (opcode dispatch) (op=193)
+  at:      /usr/local/share/loft/default/01_code.loft:950:22    ← inside `pub fn len(both: vector)`
+```
+A segfault in the stdlib's `len`, naming no user line — from a wrong call several frames away. The
+corrupted `b` above is the same fault, caught before it reached a bad pointer.
+
+**Ruled out on the way** (all pass, so none is the trigger): a named fn-ref into a `fn(...)` param
+(scalars or `vector<struct>`); an inline lambda; the param passed THROUGH a call and fired in a loop;
+under `--tests` as well as `--interpret`; across a library boundary; the fn param at positions 1–5;
+appending a struct then passing its field to the callback. The mechanism is sound — only the arity hole
+is not.
+
+**Ask.** Reject a call whose argument count does not match the declaration, at parse time. That is the
+whole fix: the arity is known statically, the check is cheap, and it converts a stdlib segfault (or a
+silently wrong `len`) into the one-line error the consumer actually needs. The corruption of *earlier*
+arguments when the missing one is fn-typed is worth a look in its own right — a missing argument should
+not be able to reach back over the ones that were supplied.
+
+**A doc bug found alongside (independent, confirmed).** `loft-write` documents a named function reference
+as `map(nums, fn double)` — with the `fn` prefix. The parser rejects exactly that:
+> `error: Use the function name directly, without 'fn' prefix`
+
+The working form is the bare name (`run(sink)`). The skill's *Higher-order functions* example should drop
+the prefix; it is the first thing a consumer copies.
+
+---
+
+## 2026-07-17 — `par` rejects a captured reference (workable: put the data in the ELEMENT) — DOC gap
+
+**Corrected 2026-07-17 (my first read of this was wrong — the maintainer's).** A `par` worker may not read
+a captured **reference**, only scalars. I concluded the workload was inexpressible. It is not: *"only the
+loop element may be a reference"* is the way through — **put the data in the ELEMENT**, i.e. make each job
+self-contained with the slice that job needs, which is the ordinary data-parallel decomposition. Measured,
+it works and it scales:
+
+| slice each job carries | sequential | `par(…, 8)` | |
+|---|---|---|---|
+| 100 | 96 ms | **26 ms** | **3.7×** |
+| 1000 | 88 ms | **22 ms** | **4.0×** |
+| 10000 | 69 ms | 42 ms | 1.6× — the per-element copy eats the win |
+
+Results identical in every case. So the real rule is a **design constraint, not a blocker**: give a worker
+what its part needs, not the world — and keep the slice small, because the element is copied into the
+worker's isolated store clone.
+
+**What remains a genuine ask** is only the ergonomics for a *large shared read-only* input (a 13k-way
+graph every worker reads). Slicing it per job is real work and may duplicate data; letting a worker read a
+captured reference that is provably not written during the loop would avoid both. But that is an
+optimisation, not a precondition — the workload IS expressible today.
+
+```loft
+struct Node { x: float, y: float }
+struct Big  { nodes: vector<Node> }
+fn work(i: integer, b: Big) -> float { … reads b.nodes … }
+…
+for i in 0..64 par(r = work(i, b), 8) { … }
+```
+```
+error: par worker 'work': captured argument 'b' is a reference (Big); a par worker runs on an isolated
+       store clone and cannot read a captured reference.  Pass a scalar, or read the value into a scalar
+       before the loop (only the loop element may be a reference).
+```
+
+**The exact boundary** (both verified on `--native`):
+
+| shape | verdict |
+|---|---|
+| scalar context arg — `par(r = work(i, mult), 8)` | ✅ works (and scales: 101 → 31 ms at 8 threads) |
+| the loop ELEMENT is a reference — `for n in v par(r = work(n), 8)` | ✅ works |
+| a captured reference — `par(r = work(i, big_struct), 8)` | ❌ **rejected** |
+
+The diagnostic is excellent — it names the argument, the reason, and the workaround. The workaround is
+just not available to us: *"read the value into a scalar before the loop"* cannot apply to a 13,077-way
+graph, and *"only the loop element may be a reference"* would mean handing each worker its own copy of
+the graph as the element.
+
+**What it means for routing.** `PLAN-PERF.md` §6b B parallelises the matcher's per-stretch loop (~39
+independent ~24 ms chunks, results already iterated in order). Its inputs — `g: Graph`, `ct`, `anchors`,
+`ec` — are all references, so they cannot be *captured*. The path is to make each stretch a self-contained
+job carrying its own slice of the corridor. That is a real refactor and it is the right shape anyway
+(data-parallel = partition the data), with a measured ~4× at stake and a byte-identical-route gate already
+in place.
+
+**The docs read as if this works.** THREADING.md says *"Extra context arguments are forwarded to workers:
+`par(b = scale(a, mult), N)`"* with no mention that `mult` being a scalar is load-bearing; and
+*"`Stores::clone_for_worker()` creates locked copies of all in-use stores for each worker thread"* reads
+as "the worker gets its own copy of everything", which is what a consumer would design against. Worth a
+sentence in THREADING.md § par: *a captured argument must be a scalar; only the loop element may be a
+reference.*
+
+**Ask — now a DOC fix plus one optimisation, not a blocker.**
+1. **THREADING.md § par should state the rule.** *"Extra context arguments are forwarded to workers:
+   `par(b = scale(a, mult), N)`"* never says that `mult` being a **scalar** is load-bearing, and
+   *"`clone_for_worker()` creates locked copies of all in-use stores for each worker thread"* reads as
+   "the worker gets its own copy of everything" — which is what a consumer designs against. One sentence
+   would fix it: *a captured argument must be a scalar; only the loop element may be a reference, so put
+   a worker's data in the element.* The runtime diagnostic is already excellent (it names the argument,
+   the reason and the workaround) — the docs just point the other way first.
+2. **Optimisation, not a precondition:** let a worker read a captured reference that is provably not
+   written during the loop. It would spare consumers slicing a large read-only structure per job (and the
+   duplication that implies). Happy to test it against the matcher — a real ~39-chunk workload with a
+   byte-identical route gate (`tools/match_parity.sh`).
+
+
+## @PLN102 does not narrow through a guard clause (early return) — 2026-07-17
+
+**loft 2026.7.1** (installed 10:39, built from `tuxedo-f2-impl-steps`). Surfaced by the sharper lint:
+routing had null-flow at zero, and the new binary correctly found two real TOCTOU bugs in
+`server/server.loft` (`f.exists()` then `f.content()` — the read is fallible whatever `exists()` said).
+Fixing them exposed the gap. Minimal probe:
+
+```loft
+fn take(s: text) { println(s); }
+
+fn guard(t: text) {
+  s: text? = t;
+  if !s { return; }      // guard clause: after this, s CANNOT be null
+  take(s);               // ⚠ WARNS — "a nullable `text?` is stored into parameter 1 of `take`"
+}
+
+fn body(t: text) {
+  s: text? = t;
+  if s { take(s); }      // ✅ no warning — positive narrowing inside the body
+}
+```
+
+**The analysis narrows inside a POSITIVE guard's body, but not after a NEGATIVE guard's early return.**
+The two functions are semantically identical; only the shape differs.
+
+**Why it matters for the definition, not just as a bug.** The guard clause is the canonical idiom for
+exactly the case DN1 creates most of — "a fallible read, handle the failure and leave" — so the model
+pushes you toward a shape it then refuses to credit. The available discharges are all worse:
+
+* `?? <default>` — **actively harmful here.** The null carried the meaning (unreadable ⇒ 404). Defaulting
+  answers `200` with an empty body. A lint whose easy discharge is the wrong behaviour trains the reflex
+  to silence it.
+* re-nest into the positive form — what routing did (`server.loft:120`), and it *is* fine at one site;
+  but it forces rightward drift precisely where guard clauses exist to prevent it.
+
+**Ask:** treat `if !x { return; }` (and `break` / `continue` / any diverging arm) as narrowing `x` to
+non-null for the rest of the block — the standard flow-sensitive treatment of a diverging branch. The
+information is already there: the analysis proves the negative case cannot fall through.
+
+**Note the lint was RIGHT twice before it was incomplete once** — both TOCTOU bugs it found were real, and
+the fix subtracted code (one fallible read replaces `exists()` + `content()`, since null already means
+"absent OR unreadable" and both take the same path). The narrowing gap is the only false positive.
+
+
+## @PLN108 step 1 — the copy cost is NOT a rounding error for this consumer — 2026-07-17
+
+@PLN108's step 1 asks the consumer directly: *"Bench the copy cost — measure per-worker
+`clone_for_worker` time. The win to beat; **if the copy is a rounding error for the consumer's shapes,
+stop here.**"* Routing is the par consumer the plan cites (*"slicing a large read-only structure per job
+is real work"*). **It is not a rounding error. Do not stop.**
+
+**Probe** (`--native`, installed loft 2026.7.1 @ 10:39, 8-core): a par over 64 elements where the worker
+**touches none of the big structure** — it spins on its own element only. The big `vector<Node>` is
+unrelated live heap. If `clone_for_worker` byte-copies *every active store* per worker, wall-clock must
+grow with heap the workload never reads. It does:
+
+| live heap (unrelated) | par_ms (8 threads, ±2) |
+|---|---|
+| 0 MB | **2** |
+| 3 MB | 8 |
+| 15 MB | 40 |
+| 30 MB | 98 |
+| 61 MB | 101 |
+| 122 MB | **205** |
+
+**Confirmed — a per-worker copy.** Threads swept at a fixed 61 MB, same workload:
+
+| threads | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| par_ms | 36 | 45 | 60 | 98 | **178** |
+
+**par gets 5× SLOWER from 1 to 16 threads** — the marginal cost of each additional worker is a fresh copy
+of the parent heap, and it swamps the parallel win. That is par inverted: on a session holding state, the
+thing that is supposed to buy speed sells it.
+
+**Why this is fatal for routing specifically.** The cost tracks the **session's total live heap**, not the
+workload — and routing's match session exists to *hold* state (PLAN-PERF steps 6–8 made stores, Graph and
+MatchState survive across clicks; RSS plateaus ~175 MB). So a par anywhere in that session pays ~200 ms+
+per dispatch against a whole match of ~339 ms. **The work par would parallelise is cheaper than the copy
+par charges to start.** Routing therefore cannot use par on the match path at any thread count until
+@PLN108 lands — this is the real blocker, and it is a memory-model property, not an expressiveness one.
+
+**Two corrections to my own earlier reports, since they mis-aimed this:**
+
+1. I reported par *"cannot express this workload"* — **wrong**, and the THREADING fix (97af1b52) says why:
+   large state is captured read-only, not passed. Expressiveness was never the problem.
+2. I then designed around packing data **into the element** (routing's PLAN-PERF step 18). **Also wrong** —
+   it doesn't dodge the copy, it *adds* to it: the parent heap is copied per worker regardless of what the
+   element carries. Step 18 is being rewritten against this.
+
+**One anomaly, reported unexplained rather than rationalised.** The curve is linear to ~30 MB and again
+from ~64 MB, but **flat between them** — 30 MB (98 ms), 45 MB (103), 61 MB (101), 64 MB (96) are one
+plateau, then 122 MB doubles to 205. I hypothesised a power-of-two capacity step (the copy sizing on
+allocated capacity, not used bytes) and **falsified it**: 2.1M nodes shows no jump at the predicted
+boundary. I have no verified mechanism, so I am not asserting one — flagging it because if the copy sizes
+on something other than used bytes, step 6's "bench the win" needs to know what.
+
+**Offer:** the probe is 20 lines and sweeps both axes; happy to hand it over as a step-1/step-6 harness, or
+to re-run it against a `LOFT_PAR_SHARE=1` build on routing's real match session (the shape the plan cites)
+once step 2 exists. A real consumer with a 175 MB session is exactly the case where A-vs-B gets decided.
+
+
+## RETRACTED — "@PLN105 Phase 3 is not in the shipped binary" was WRONG — 2026-07-17
+
+**I filed this and retracted it within the hour. Phase 3 IS shipped. No action needed from loft.**
+
+> **SCOPE WARNING (2026-07-22).** This retraction is correct *about Phase 3* — and about nothing else. It
+> says nothing about `lock_store`, and the pin finding above stands (re-confirmed on 2026.7.2). PLAN-PERF
+> §7c read it as clearing the entire earlier entry and concluded *"step 9 is valid as written"*; step 9 was
+> then attempted on that reading and hung the app. **A retraction inherits the scope of what it actually
+> probed.** The two functions share a name in prose only: `deliver`'s loopback refuses `FlatArray`;
+> `expose` pins. Both facts are true simultaneously.
+
+**The claim** was that `deliver` rejects a `hash` in both top-level and nested position with *"type 69 …
+is a store-internal kind — not in the serializable subset (cursor-walked in a later phase)"*, so Phase 3
+(keyed collections pre-flattened) had not landed despite @PLN105 closing on it.
+
+**Why it was wrong.** The probes were real, but they measured the **loopback test reconstructor**, not the
+bridge. `deliver_reconstruct` → `read_via_descriptor` (`descriptor.rs:732`) refuses `Iterated` / `Ref` /
+`ChildRec` / **`FlatArray`** — and `FlatArray` is *precisely what Phase 3 emits for a hash*. So the error
+text is the loopback saying "I don't walk keyed collections", which the plan itself says is deferred there.
+
+The path routing actually uses is `expose`, and it is a **different function** that never touches
+`read_via_descriptor` (`ffi_deliver.rs:56`):
+
+```rust
+pub fn expose_value(&mut self, tag: i64, val: DbRef, db_tp: u16) {
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), not(feature = "wasm")))]
+    {
+        let mut desc = self.layout_descriptor(&[db_tp]);
+        let mut flat: BTreeMap<u64, u32> = BTreeMap::new();
+        self.collect_keyed(&desc, db_tp, val, &mut flat);   // <- Phase 3, right here
+        Self::rewrite_iterated(&mut desc);
+        let json = desc.to_delivery_json(&flat);            // <- the (rec,pos) flat redirect map
+        self.lock_store(&val);                              // <- the cross-frame pin
+        crate::loft_host_expose(tag, store_base, val.rec, val.pos, ..., json.as_ptr(), json.len());
+```
+
+`collect_keyed` + `to_delivery_json(&flat)` **is** the plan's *"hash/radix/index → key-ordered scratch
+array → `FlatArray` … multi-instance via a `flat` redirect map keyed by `(rec,pos)`"*. It shipped.
+
+**Two traps, both of which CLAUDE.md names, both of which I walked into anyway:**
+
+1. **I concluded from the wrong path.** `deliver`'s loopback is a *test host*; `expose` is the browser
+   bridge. Same word ("deliver a hash"), different function — and I never checked which one routing's own
+   step 9 calls.
+2. **A silent no-op read as evidence.** `expose(1, l.tiles)` printed nothing on the plain backend and I
+   treated that as uninformative rather than as the tell: the body is `#[cfg(target_arch = "wasm32")]`, so
+   there was nothing to see off the `--html` target. **Absence of output was a fact about my probe, not
+   about loft.**
+
+**Consequence for routing:** PLAN-PERF step 9 (`expose(1, layout)` — the layout hash, exposed once per
+session) is **valid as specified**. The hash is pre-flattened by `collect_keyed` and JS walks it via the
+descriptor. §7c corrected accordingly.
+
+
+## @PLN108 — the copy-elision WIN has no automated gate, and it is inactive on the installed release — 2026-07-17
+
+**Installed loft 2026.7.1 (reinstalled 17:45, from `../loft` HEAD `cdc48c06`; @PLN108 merged as #586).**
+This is a gate-coverage finding, not a null-flow one, and it is filed because the consumer (routing) runs
+the *release*, not a dev build — and on the release the win routing was waiting for (step 18) is absent.
+
+### The measurement (anchored — NOT a stale binary)
+
+`tools/par_copy_probe.loft` — a queue par whose worker touches none of a large captured heap. On loft2's
+dev binary this showed the copy eliminated (flat vs heap, ~53×, my checksum `383995`). On the installed
+release it shows **no win**, both backends, tight variance:
+
+```
+122 MB heap:  native  OFF 218/214/197   ON 215/213/219      (LOFT_PAR_SHARE=1)
+              interp  OFF 212/213/216   ON 210/224/205
+61 MB, thread-scaling:  OFF 1→16 thr = 40→173 ms · ON = 33→162 ms
+```
+
+The thread-scaling is the tell: under a live borrow, `ON` at 16 threads is FLAT (no per-worker copy). It
+climbs to 162 ms — **the per-worker copy is still happening with the flag on.** `AUTO` (unset) at 122 MB
+is also ~214 ms, though 122 MB ≥ the 2 MB `PAR_SHARE_MIN_BYTES` threshold should elect the borrow.
+
+### It is not a stale rlib (the obvious suspect, checked)
+
+- installed runtime `deps/libloft.rlib` = **17:45**, and it CONTAINS the symbols: `run_parallel_queue_shared`
+  (36), `par_share_for` (3), `borrow_locked_for_light_worker` (8), `clone_for_light_worker` (13).
+- compiled probe `tools/.loft/cache/par_copy_probe-*` = **17:50**, built against that rlib.
+
+So the borrow code is physically present in the linked runtime, freshly built, and still does not take
+effect for this shape. Prime remaining suspect: the CLAUDE.md binary/runtime split — loft2 measured the
+win on a `cargo build` (binary + rlib compiled together); the release links the *separate*
+`deps/libloft.rlib`. "Present but not wired" fits every observation. I cannot instrument further without
+building in `../loft` (read-only), so I stop at the anchored measurement and do not assert the mechanism.
+
+### Root cause of how this shipped: the WIN IS UNTESTED
+
+Nothing in @PLN108's acceptance bar asserts the copy is elided — only that it stays SAFE:
+
+| layer | asserts | passes under clone? | passes under borrow? |
+|---|---|---|---|
+| `par_queue_does_not_grow_parent_stores` | parent alloc count unchanged | ✅ | ✅ |
+| `par_queue_single_thread_matches_multi` | order + values | ✅ | ✅ |
+| `parallel_store_is_read_only_in_workers` | worker write panics | ✅ | ✅ |
+| `borrow_locked_reads_original_data` | the **primitive** shares the buffer | — (bypasses the dispatcher) | ✅ |
+| S5/S6 gates (ASan / TSan) | no UAF / no race | ✅ (cloning is safe) | ✅ |
+
+Every gate is green whether the dispatch borrows or silently clones. The only borrow-specific test
+constructs a `Store` and calls `borrow_locked_for_light_worker()` directly — it never routes through
+`par_share_for → run_parallel_queue_shared`, so it cannot catch a dispatch fallback. **The elision — the
+entire point — has no gate at any level**, which is exactly how a release can ship it inactive and stay
+47/47 + ASan + TSan.
+
+### Ask — add the missing end-to-end elision gate
+
+Mirror how the win was actually confirmed during S9 (call-count traces): under `LOFT_PAR_SHARE=1`, assert
+`clone_for_light_worker` (borrow) is called and `clone_for_worker` (copy) is NOT, for a queue par carrying
+a captured store ≥ `PAR_SHARE_MIN_BYTES` — on the **native** dispatch, the family routing uses. A
+call-count assertion is deterministic where timing is not. `tools/par_copy_probe.loft` is the loft-source
+half of the basis and is offered as-is; it is currently RED on the installed release and would make a good
+consumer smoke-test once the gate is green.
+
+### Consequence for routing
+
+**Step 18 stays blocked.** @PLN108 merged, but the copy-elision it promised does not manifest on the loft
+routing runs. Re-run `tools/par_copy_probe.loft` after the next release; unblock step 18 only when `ON` goes
+flat vs heap there.
+
+> **SUPERSEDED 2026-07-22 — the win is live on 2026.7.2 and step 18 is unblocked.** See
+> *"@PLN108 — the copy-elision win is ACTIVE"* below. The gate-coverage ask stands; the consumer
+> complaint does not.
+
+---
+
+## 2026-07-22 — `expose` UN-RETRACTED: it is ITERATION that claims, not reading (loft 2026.7.2)
+
+**Installed loft 2026.7.2** (`/usr/local/bin/loft`, reinstalled 2026-07-22 09:01 — the @PLN110 len/size
+flip release). All four routing gates pass on it unchanged, so this is not fallout from the flip.
+
+**This entry settles a claim that flipped twice in one hour on 2026-07-17.** The original finding
+(*"@PLN105 `expose`/`deliver`: a store you expose becomes unreadable"* § 1, above) was **CORRECT** — its
+repro, its panic text, and its named mechanism all reproduce verbatim on the current release. The
+retraction (*"RETRACTED — @PLN105 Phase 3 is not in the shipped binary"*, above) was right about its own
+subject — Phase 3 *is* shipped, `collect_keyed` *does* pre-flatten the hash — but it did **not** touch the
+pin, and PLAN-PERF §7c wrongly read it as clearing the whole entry. Step 9 was then attempted on that
+reading and hung the app (§7d).
+
+### The narrowing the original entry did not have: reads are fine
+
+Same probe shape as § 1, but each operation in its own process against the real 20 MB layout store
+(`_site/stores/enschede.layout.store`, 1089 tiles), `loft --native --lib lib`. Kept as a durable probe —
+**`tools/expose_iter_probe.loft`**, `op = read | iter | release` — so it can be re-run against each loft
+release the way `tools/par_copy_probe.loft` is:
+
+| after `expose(1, layout)` | result |
+|---|---|
+| nothing at all | ✅ |
+| `len(layout)` | ✅ `1089` |
+| `layout[2047327105]` — point lookup | ✅ `tkey=2047327105 ox=68600000` |
+| field reads + `"{t.tkey} ox={t.ox}"` text interpolation | ✅ |
+| **`for t in layout { }` — empty body** | ❌ **panic** |
+
+```
+thread panicked at src/store.rs:647:9:
+Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+```
+
+So it is **not** that "loft cannot read an exposed store" — reads, lookups and text built from its records
+all work. It is that **iterating a store-backed keyed collection CLAIMS a 546-byte cursor record inside
+that same store**, and the read-only pin rejects the claim. An *empty* loop body fails, which places the
+claim in the iteration machinery itself, not in anything the body does.
+
+Reproduces identically on `loft` (default) and `loft --native`.
+
+### `release(tag, value)` restores iteration — the workaround the original entry lacked
+
+```loft
+store_load(layout, path);
+expose(1, layout);                     // pin for JS
+release(1, layout);                    // unpin
+for t in layout { n += 1; }            // ✅ ITERATE AFTER RELEASE OK n=1089
+expose(1, layout);                     // ✅ re-expose works
+```
+
+This is what makes PLAN-PERF steps 9–13 buildable **today**, with no upstream change: bracket loft's own
+layout walk in `release` … `expose`. It also restores the safe migration order the original entry said was
+blocked — land the JS reader beside the text path, compare, then delete the text path — because during the
+overlap loft can unpin, emit, and re-pin.
+
+### Correction to our own method note (PLAN-PERF §7d)
+
+§7d says `expose` *"is a silent no-op off the `--html` target … so nothing can be learned about it from
+`loft file.loft`"*. **That is wrong, and it is why the 2026-07-17 session paid for this in the browser.**
+Only the *host-call* half is `cfg`-gated; `lock_store` runs on **every** target (`ffi_deliver.rs:80-84`):
+
+```rust
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"), not(feature = "wasm"))))]
+{
+    let _ = (tag, db_tp);
+    self.lock_store(&val);      // <- the pin, on every backend
+}
+```
+
+The whole diagnosis above came from one native run of `client/basemap_kernel.loft` — the path-loading twin
+of the browser kernel — with `expose(1, layout)` added after `store_load`. The browser hang and the native
+panic are the same event; in wasm it surfaces as a silent trap (the kernel dies mid-command, never emits
+its terminator, the page waits forever, no JS exception), which is exactly what §7d observed.
+
+**The generalisable lesson:** when a browser-only symptom has a non-browser code path underneath it, probe
+the non-browser path first. A `cfg` on *part* of a function is not a `cfg` on the function.
+
+### Ask (unchanged in substance from § 1, now with the mechanism pinned)
+
+A read-only iteration should not need to claim scratch **inside the pinned store**. Either allocate the
+cursor record outside the locked store, or let the read-only lock permit cursor claims. Failing that,
+`expose` needs documenting as *"loft must not ITERATE this store until `release`"* — reads are fine, so the
+current blanket phrasing would be both wrong and unhelpfully broad. Neither the stdlib comment
+(`default/02_files.loft:107-110`) nor `BROWSER_INTEROP.md:297` says anything about it, and the failure
+lands far from the call.
+
+### Consequence for routing
+
+**Steps 9–13 are unblocked and need nothing from loft.** Step 9's row must change, though: it is specified
+as an *additive* one-liner landing beside a still-emitting text path, and that specific shape is the one
+that cannot work — the text path iterates the layout. Use the release/expose bracket.
+
+---
+
+## @PLN108 — the copy-elision win is ACTIVE on 2026.7.2; step 18 unblocked — 2026-07-22
+
+Re-ran `tools/par_copy_probe.loft` on the installed 2026.7.2 per the previous entry's own instruction
+(*"unblock step 18 only when `ON` goes flat vs heap there"*). It is flat — and flat with the flag
+**unset**, so sharing is now the default dispatch, not an opt-in:
+
+```
+par_ms, --native, LOFT_PAR_SHARE unset:
+  heap    0 MB:  1 thr 3 · 8 thr 1 · 16 thr 1
+  heap   61 MB:  1 thr 2 · 8 thr 3 · 16 thr 3
+  heap  122 MB:  1 thr 3 · 8 thr 2 · 16 thr 3
+```
+
+Against the 2026-07-17 measurement on 2026.7.1 — 122 MB heap ≈ **214 ms** regardless of the flag, and
+1→16 threads climbing **33 → 162 ms** — the per-worker copy is gone. Upstream credit: `ae0c266b`
+(*"@PLN108 par-store single-impl"*, 2026-07-18), i.e. the fallback the previous entry suspected
+("present but not wired") was resolved by collapsing the two implementations into one.
+
+**The gate-coverage ask still stands.** Nothing in this measurement contradicts it: the win shipped
+inactive once precisely because no test asserts elision, and a single-impl refactor is not a substitute for
+a gate that would have caught the fallback. `tools/par_copy_probe.loft` is now GREEN on the release and is
+offered as the consumer-side smoke test.
+
+**Step 18 is unblocked** — `par` over the stretches is designable again.

@@ -1,0 +1,24 @@
+// @PLN108 step 1 — bench the copy cost with a consumer's shape.
+// The worker touches NONE of the big structure: it spins on its own element only. If par's wall-clock
+// still grows with the size of that UNRELATED live heap, clone_for_worker's per-worker byte-copy of
+// "every active store" is confirmed, and its cost is a function of the SESSION's heap, not the workload.
+struct Node { const id: integer, x: float, y: float, z: float }
+struct Heap { nodes: vector<Node> }
+
+NODES = 2000000;      // vary: the unrelated live heap, 32B/node
+fn spin(i: integer) -> integer {
+  s = 0;
+  for j in 0..2000 { s += (i + j) % 7; }
+  s
+}
+fn main() {
+  h = Heap { nodes: [] };
+  for i in 0..NODES { h.nodes += [Node { id: i, x: 1.0, y: 2.0, z: 3.0 }]; }
+  // touch it so it cannot be optimised away, and report a checksum
+  guard = len(h.nodes);
+  t0 = now();
+  total = 0;
+  for a in 0..64 par(b = spin(a), 8) { total += b; }
+  t1 = now();
+  println("nodes={guard} heap_mb={guard * 32 / 1048576} par_ms={t1 - t0} total={total}");
+}

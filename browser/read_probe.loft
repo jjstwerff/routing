@@ -1,0 +1,39 @@
+// PLAN-PERF §0 step 3 — the probe that gates steps 9-12.
+//
+// CLAIM UNDER TEST: "a store file is its own serialization" (HANDOFF's no-codec bet) — i.e. the bytes
+// on disk ARE the in-memory record image, so JS can read PTiles straight from the fetched ArrayBuffer
+// and loft need not be in the view path at all.
+//
+// METHOD: store_load the layout image, deliver one PTile (deliver prints its raw record bytes on
+// native), and print enough identity to locate the same tile in the file. If store_load ADOPTS the
+// image, those bytes appear in the file verbatim; if it relocates / interns / fixes up on load, they
+// will not — and steps 9-13 are dead as written.
+#cwd
+
+use basemap::(PTile);
+
+fn main() {
+  args = arguments();
+  path = args[0] ?? "";
+  layout: hash<PTile[tkey]> = [];
+  if !store_load(layout, path) { println("ERR store_load failed: {path}"); return; }
+
+  n = 0;
+  for t in layout {
+    if n == 0 {
+      println("first tile: tkey={t.tkey} ox={t.ox} oy={t.oy} areas={len(t.areas)} buildings={len(t.buildings)}");
+      // The first area's cover text + first ring point — the identity JS must reproduce.
+      for ar in t.areas {
+        if ar#first {
+          println("first area: cover={ar.cover} ring_len={len(ar.ring)}");
+          for c in ar.ring {
+            if c#first { println("first ring pt: x={c.x} y={c.y}"); }
+          }
+        }
+      }
+      deliver(1, t);
+    }
+    n = n + 1;
+  }
+  println("tiles={n}");
+}

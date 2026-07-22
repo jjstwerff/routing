@@ -1,0 +1,63 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// @PLN105 — what does `expose` actually forbid? (PLAN-PERF §7d(2), docs/loft-feedback.md 2026-07-22)
+//
+// `expose(tag, value)` pins the value's store read-only so its wasm addresses stay stable across frames.
+// The question this answers is which later operations that pin rejects. Answer, on loft 2026.7.2:
+// READS are fine; ITERATION is not — walking a store-backed keyed collection claims a ~546-byte cursor
+// record INSIDE the pinned store, and the read-only lock rejects the claim:
+//
+//   thread panicked at src/store.rs:647:9:
+//   Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+//
+// That is what hung the browser app on step 9's first attempt: `do_view_bbox` iterates the layout, and in
+// wasm the panic is a silent trap (kernel dies mid-command, never emits its terminator, page waits).
+//
+// Probe it here and NOT in a browser. Only the host-call half of `expose_value` is cfg-gated to wasm;
+// `lock_store` runs on every target (ffi_deliver.rs:80-84), so the whole behaviour reproduces natively.
+//
+//   loft --native --lib lib tools/expose_iter_probe.loft _site/stores/enschede.layout.store [op]
+//     op = read     point lookup + len + field reads + text interpolation after expose   → expect OK
+//          iter     `for t in layout {}` after expose                                    → expect PANIC
+//          release  release() then iterate then re-expose                                → expect OK
+//
+// `release` is the routing-side fix: bracket loft's own walk in release … expose. Re-run this after each
+// loft release — if `iter` stops panicking, the upstream ask below has landed and the bracket can go.
+// Ask: a read-only iteration should not claim scratch inside the pinned store.
+#cwd
+
+use basemap::(PTile);
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: expose_iter_probe <layout.store> [read|iter|release]"); return; }
+  op = a[1] ?? "iter";
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+  println("loaded tiles={len(layout)}  op={op}");
+
+  expose(1, layout);
+  println("exposed (store now pinned read-only)");
+
+  if op == "read" {
+    println("  len after expose = {len(layout)}");
+    t = layout[2047327105];
+    if t { println("  lookup ok: tkey={t.tkey} ox={t.ox}  (text interpolation works too)"); }
+    else { println("  lookup returned null — pick a tkey present in this store"); }
+    println("READ AFTER EXPOSE: OK");
+  } else if op == "release" {
+    release(1, layout);
+    n = 0;
+    for _ in layout { n += 1; }
+    println("  iterated {n} tiles after release");
+    expose(1, layout);
+    println("RELEASE/ITERATE/RE-EXPOSE: OK");
+  } else {
+    n2 = 0;
+    for _ in layout { n2 += 1; }
+    println("ITERATE AFTER EXPOSE: OK n={n2}  <- if you see this, the upstream fix has landed");
+  }
+}
