@@ -90,6 +90,75 @@ past it after it has quietly opened.
 
 ---
 
+## 2a. ⏭ NEXT TASK — port the rough-layer editor into the standalone app
+
+**The standalone app can only APPEND to a sketch. It cannot reshape one.** `DESIGN.md` §46–52 makes the
+rough layer the editing model — *"editing the rough layer just reshapes the trace and re-matches"* — so
+this is a missing half of the product, not a nice-to-have. Raised by the maintainer 2026-07-22.
+
+**It is a PORT, not a regression.** `browser/map.mjs` has drawn rough points as bare dots since its first
+commit. The working implementation is the **server/database client**: **`rough.js` at the repo root**
+(366 lines, Leaflet), alongside `geo.js` / `routes.js` / `ws.js` / `controls.js`.
+
+### What `rough.js` does (the spec to match)
+
+Two **stacked polylines** — this is the load-bearing trick:
+- a **fat transparent hit line** — `weight 18`, `opacity 0`, `interactive: true` — a finger-friendly tap
+  target, and
+- the **visible dashed sketch line** on top — `color #2b6cff`, `weight 3`, `opacity 0.9`,
+  `dashArray "6 7"`, round cap/join, **`interactive: false` so taps fall through to the hit line**.
+
+Interactions (from its own header):
+- **sweep from a segment** — press ON the line and drag: inserts a point there *and positions it in ONE
+  gesture*. A plain tap with no drag just inserts at the press point.
+- **drag a point** → move it, the line follows live.
+- **double-click a point** → delete it. `DOUBLE_TAP_MS = 250` collapses the second click of a
+  same-spot double-click so it does not also add a point.
+- **shift+drag box select** (desktop) → selects the contiguous range spanning the box.
+- a `keydown` handler, and `pointIcon(role, selected)` for marker states.
+
+### What the app has today
+
+`browser/store-app.mjs`'s canvas `click` listener appends to `sketch` and re-matches; `browser/map.mjs`
+draws `this.points` as 4-px red dots (`#c0392b`, white stroke). No line, no hit target, no
+insert / drag / delete.
+
+### Three things to know before starting
+
+1. ⚠ **Do NOT draw the rough layer in `_drawBase`.** It would be baked into the step-15 block raster
+   cache and go stale the moment a point moves. Draw it in the **overlay pass**, beside `drawRoute` —
+   inside the snapped-origin block, for the same reason the route and the sketch dots are (§6d).
+2. **The matcher already supports reshaping.** `match_incremental` diffs the trace and recomputes only
+   the edited window — exactly what an insert/move/delete produces — and a warm edit is **343 ms**. No
+   kernel work is needed.
+3. **The pixel hash WILL change**, deliberately, when the line is added. `storeRenderParity` compares the
+   object path against the store path (both change identically) so it stays green, but the hash VALUES
+   quoted in §6c/§6d become stale and should be re-recorded.
+
+### The gate to build on
+
+`make test-map` now drives the **real click path** with `Input.dispatchMouseEvent` (added 2026-07-22
+after this came up — it had never been exercised; every other match assertion called `window.__match`,
+skipping the canvas listener):
+
+```
+✓ the click path works: 3 clicks → 3 rough points, route 28 pts
+```
+
+Extend that with the same shape for insert-on-line, drag-a-point and double-click-delete. *That gate is
+the only reason the append path is known to work* — the rough points draw as isolated dots, so there is
+no visual answer to "did my click land?".
+
+### Suggested increments
+
+1. The **visible line + hit line** (restores the ability to see a sketch at all — the original complaint).
+2. **Insert on tap/press** of the hit line.
+3. **Drag to move** a point, line following live.
+4. **Double-click to delete**, with the 250 ms dedupe.
+5. Box-select last — desktop-only and the least load-bearing.
+
+---
+
 ## 3. Resume here (2026-07-22)
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
