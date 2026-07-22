@@ -69,6 +69,46 @@ export function pointToSegment(px, py, ax, ay, bx, by) {
   return { d: Math.hypot(dx, dy), t };
 }
 
+// Undo depth, and how long the bulk-delete offer stays up. Ported from undo.js.
+export const UNDO_MAX = 200;
+export const SNACKBAR_MS = 6000;
+
+// A per-session, ephemeral, LOCAL edit history over snapshots of the rough sketch (DESIGN.md §1, which
+// makes undo a primitive rather than an extra). `_stack[_idx]` IS the current state, and the stack is
+// seeded with the initial empty sketch so the very first edit is undoable back to nothing.
+//
+// Because it is per-session and local, undo only ever takes back YOUR own recent actions — which is what
+// sidesteps the collaborative-undo footguns in multi-user mode.
+export class History {
+  constructor(max = UNDO_MAX) {
+    this._stack = [];
+    this._idx = -1;
+    this._max = max;
+    this.applying = false;      // true while REPLAYING, so a restore does not record itself
+  }
+  get canUndo() { return this._idx > 0; }
+  get canRedo() { return this._idx < this._stack.length - 1; }
+  get depth() { return this._stack.length; }
+  get index() { return this._idx; }
+  get current() { return this._idx < 0 ? null : this._stack[this._idx].map((p) => ({ ...p })); }
+
+  // Record a committed state. Returns how many points the edit DROPPED — the bulk-delete signal — or -1
+  // when suppressed because a replay is in progress.
+  record(points) {
+    if (this.applying) return -1;
+    const prev = this._idx >= 0 ? this._stack[this._idx] : [];
+    const dropped = prev.length - points.length;
+    this._stack.splice(this._idx + 1);                            // a fresh edit truncates the redo tail
+    this._stack.push(points.map((p) => ({ id: p.id, lat: p.lat, lon: p.lon })));
+    this._idx = this._stack.length - 1;
+    if (this._stack.length > this._max) { this._stack.shift(); this._idx--; }
+    return dropped;
+  }
+
+  undo() { if (!this.canUndo) return null; this._idx--; return this.current; }
+  redo() { if (!this.canRedo) return null; this._idx++; return this.current; }
+}
+
 // CHOKEPOINT 3 — every command to the kernel goes through here.
 //
 // The kernel is single-threaded and `runKernel` keeps ONE resolve slot, so a second concurrent call
@@ -136,6 +176,13 @@ export class RoughLayer {
     this._anchorB = null;
     this._lastPress = null;         // { id, t } — the last press that landed on a point (E4's dblclick)
     this._deleteBtn = opts.deleteButton || null;
+    this._snack = opts.snackbar || null;   // { el, label, button } — the bulk-delete undo offer (E6)
+    this._snackTimer = null;
+    // Undo lives INSIDE the layer, hanging off the commit chokepoint, so every gesture is undoable by
+    // construction. Wiring it externally would make "remember to also record undo" a per-gesture duty —
+    // exactly the N-silent-sites problem the chokepoints exist to remove (PLAN-EDIT §4).
+    this.history = new History();
+    this.history.record(this.points);      // seed with the initial empty sketch
     this._syncSelection();
     if (opts.bind !== false) this.bind();
   }
@@ -315,6 +362,12 @@ export class RoughLayer {
   // one undo step (E6). It is passed through rather than interpreted here, because what "committed" costs
   // is the caller's business — this function's job is that NOBODY skips it.
   commitEdit(committed = true) {
+    // The history hangs off this one line, which is why every gesture is undoable and why a LIVE drag
+    // frame is not: `committed` is false until the finger lifts, so a drag is one undo step, not thirty.
+    if (committed) {
+      const dropped = this.history.record(this.points);
+      if (dropped >= 2) this._showSnackbar(dropped);   // a bulk delete — offer a one-tap way back
+    }
     // requestRender, not render: a drag emits pointermove faster than the display refreshes (a 125 Hz
     // mouse against a 60 Hz screen), and rendering per EVENT would draw frames nobody ever sees. This
     // coalesces to one render per frame. In node there is no requestAnimationFrame and it falls through to
@@ -322,6 +375,53 @@ export class RoughLayer {
     this.map.requestRender();
     this.onCommit(this.coords(), committed);
     return this;
+  }
+
+  // ---- undo / redo ---------------------------------------------------------------------------------
+
+  undo() { return this._replay(this.history.undo()); }
+  redo() { return this._replay(this.history.redo()); }
+  get canUndo() { return this.history.canUndo; }
+  get canRedo() { return this.history.canRedo; }
+
+  _replay(snapshot) {
+    if (!snapshot) return false;
+    this.history.applying = true;                      // so setPoints' own commit does not record itself
+    try { this.setPoints(snapshot); } finally { this.history.applying = false; }
+    this._hideSnackbar();
+    return true;
+  }
+
+  // Replace the whole sketch (an undo/redo restore, and PLAN step 11's cleaned GPX import). Ids are
+  // restored with the points so a replayed state is the SAME sketch, not a look-alike — the double-click
+  // detector and the selection anchors both key on id.
+  setPoints(list) {
+    this.points.length = 0;                            // in place: the renderer holds this array
+    for (const p of list) {
+      this.points.push({ id: p.id, lat: p.lat, lon: p.lon });
+      if (p.id > this._seq) this._seq = p.id;          // never hand out an id a restore could collide with
+    }
+    this._anchorA = null;
+    this._anchorB = null;
+    this._lastPress = null;
+    this._syncSelection();
+    this.commitEdit(true);
+    return this;
+  }
+
+  _showSnackbar(n) {
+    const s = this._snack;
+    if (!s || !s.el) return;
+    if (s.label) s.label.textContent = `Deleted ${n} · `;
+    s.el.classList.remove('hidden');
+    if (this._snackTimer) clearTimeout(this._snackTimer);
+    this._snackTimer = setTimeout(() => this._hideSnackbar(), SNACKBAR_MS);
+    if (this._snackTimer && this._snackTimer.unref) this._snackTimer.unref();   // never hold node open
+  }
+
+  _hideSnackbar() {
+    if (this._snackTimer) { clearTimeout(this._snackTimer); this._snackTimer = null; }
+    if (this._snack && this._snack.el) this._snack.el.classList.add('hidden');
   }
 
   // ---- CHOKEPOINT 1 — input ------------------------------------------------------------------------
@@ -431,10 +531,19 @@ export class RoughLayer {
     // button is bound HERE rather than in the app for the same reason the canvas is: it is an input that
     // produces a sketch mutation, and those have one owner (PLAN-EDIT §4, chokepoint 1).
     if (this._deleteBtn) this._deleteBtn.addEventListener('click', () => this.deleteSelected());
+    // The phone's undo surface: a bulk delete is the one risky op, so it offers a one-tap way back
+    // (DESIGN.md §1). Single moves and inserts are self-correcting and get no chrome.
+    if (this._snack && this._snack.button) this._snack.button.addEventListener('click', () => this.undo());
     if (typeof document !== 'undefined') {
       document.addEventListener('keydown', (e) => {
         const tag = (e.target && e.target.tagName) || '';
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.ctrlKey || e.metaKey) {
+          const k = (e.key || '').toLowerCase();
+          if (k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); }
+          else if (k === 'y') { e.preventDefault(); this.redo(); }
+          return;
+        }
         if (e.key === 'Delete' || e.key === 'Backspace') {
           if (this._anchorA === null) return;
           e.preventDefault();

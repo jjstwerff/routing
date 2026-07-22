@@ -297,12 +297,28 @@ the matching; it is false on a phone.
   emptying the sketch point by point. Browser: five clicks, tap-first + tap-last selects **3**,
   *"Delete 3 points"* removes them, the ends re-role and the route re-matches to **41 pts**.
 
-### E6 — undo / redo
-- **Build.** Port `undo.js`: per-session snapshot stack, recorded **only** on `commitEdit(true)`;
-  `Ctrl+Z`/`Ctrl+Shift+Z`/`Ctrl+Y`; an `applying` guard so replay does not record itself; the
-  **"Deleted N · Undo" snackbar** on a bulk delete (`DESIGN.md` §1 makes undo a primitive, not an extra).
-- **Check.** move → insert → delete, then `Ctrl+Z` ×3 returns to the start state and the route re-matches
-  each time; a bulk delete shows the snackbar and one tap restores.
+### E6 — undo / redo ✅ **DONE**
+- **Built.** `undo.js` ported as a `History` class the layer **owns**: a per-session snapshot stack where
+  `stack[idx]` is the current state, seeded with the empty sketch so the first edit is undoable back to
+  nothing. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y`, an `applying` guard so a replay does not record itself,
+  and the **"Deleted N · Undo" snackbar** when an edit drops ≥ 2 points.
+- **The history hangs off `commitEdit`, which is why nothing had to be wired per gesture.** Every step
+  E0–E5 spent effort on "one gesture, one commit", and undo is what that discipline was *for*: a live drag
+  frame commits with `committed:false` and adds no history, so a 30-frame drag is **one** undo step — and
+  so is the sweep, and so is a bulk delete of three points. Wiring undo externally would have made
+  "remember to also record" a per-gesture duty: the N-silent-sites problem the chokepoints exist to kill.
+- **A replayed state is the SAME sketch, not a look-alike.** Snapshots carry point **ids**, and `setPoints`
+  restores them and advances `_seq` past the highest so a later insert cannot collide. Both the
+  double-click detector and the selection anchors key on id, so a restore that invented fresh ones would
+  silently break them. It rebuilds the array **in place** — the same shared-array rule as E5.
+- **Checked.** Unit: the seed; **8 live drag frames add no history and the release adds exactly one**;
+  move → insert → delete then three undos walk back, and undoing everything empties the sketch; a replay
+  does not record itself and a fresh edit truncates the redo tail; ids survive a restore and stay unique;
+  the sweep and the bulk delete are one step each; the snackbar fires on a bulk delete but **not** on a
+  single one; the stack is bounded and drops its oldest state. Browser, with **real keystrokes**: `Ctrl+Z`
+  walks 4 → 3 → 2 and `Ctrl+Shift+Z` redoes to 3, re-matching each time and matching a fresh re-match
+  exactly; a bulk delete shows *"Deleted 3 · Undo"* and one tap on the snackbar's own button restores all
+  five.
 
 ### E7 — box select + gates
 - **Build.** Shift+drag box select (desktop only, least load-bearing). Add `matchInsert` / `matchDelete` to

@@ -361,6 +361,61 @@ else if (!bulk.shared) { console.log('  FAIL: bulk delete REPLACED the shared po
 else if (!(bulk.route >= 2) || bulk.sel !== 0 || !bulk.hidden) { console.log(`  FAIL: after the bulk delete route=${bulk.route} sel=${bulk.sel} hidden=${bulk.hidden}`); ok = false; }
 else console.log(`  ✓ tap-first + tap-last selects 3, "${ranged.label}" removes them, ends re-role, route re-matches (${bulk.route} pts) (E5)`);
 
+// 7c7. PLAN-EDIT E6 — undo/redo, driven by REAL Ctrl+Z keystrokes and the snackbar's own button.
+//
+// DESIGN.md §1 makes undo a primitive with two surfaces: Ctrl+Z on desktop, and a brief "Deleted N · Undo"
+// offer after a bulk delete on a phone (the one risky op — single edits are self-correcting).
+const key = async (k, mods = 0) => {
+  for (const type of ['keyDown', 'keyUp']) {
+    await call('Input.dispatchKeyEvent', { type, key: k, code: `Key${k.toUpperCase()}`, modifiers: mods,
+                                           windowsVirtualKeyCode: k.toUpperCase().charCodeAt(0) });
+  }
+  await sleep(600);
+};
+await resetSketch();
+for (const [x, y] of [[260, 440], [420, 340], [600, 260], [740, 180]]) await click(x, y);
+await sleep(3500);
+const base6 = JSON.parse(await ev('JSON.stringify({ n: window.__rough.points.length, ids: window.__rough.points.map((p) => p.id) })'));
+await key('z', 2);                            // Ctrl+Z  (modifiers: 2 = Ctrl)
+const u1 = await ev('window.__rough.points.length');
+await key('z', 2);
+const u2 = await ev('window.__rough.points.length');
+await key('z', 10);                           // Ctrl+Shift+Z = redo  (2|8)
+const r1 = await ev('window.__rough.points.length');
+await sleep(2000);
+const redone = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7) })`));
+const redoRe = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+if (base6.n !== 4) { console.log(`  FAIL: expected 4 points before undo, got ${base6.n}`); ok = false; }
+else if (u1 !== 3 || u2 !== 2) { console.log(`  FAIL: two Ctrl+Z gave ${u1} then ${u2} points (want 3 then 2)`); ok = false; }
+else if (r1 !== 3) { console.log(`  FAIL: Ctrl+Shift+Z redid to ${r1} points (want 3)`); ok = false; }
+else if (redone.hash !== redoRe) { console.log(`  FAIL: the route after undo/redo is STALE — a re-match differs (${redone.hash} vs ${redoRe})`); ok = false; }
+else console.log(`  ✓ Ctrl+Z walks back 4→3→2 and Ctrl+Shift+Z redoes to 3, re-matching each time (E6)`);
+
+// 7c8. The bulk-delete snackbar, and its one-tap restore.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const s1 = await ptAt(1), s3 = await ptAt(3);
+await click(s1.x, s1.y, 400);
+await click(s3.x, s3.y, 400);
+await ev("document.getElementById('rough-delete').click();");
+await sleep(2500);
+const snack = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  hidden: document.getElementById('undo-snackbar').classList.contains('hidden'),
+  label: document.getElementById('undo-snack-label').textContent })`));
+await ev("document.getElementById('undo-snack-btn').click();");
+await sleep(2500);
+const back = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hidden: document.getElementById('undo-snackbar').classList.contains('hidden') })`));
+if (snack.n !== 2) { console.log(`  FAIL: the bulk delete left ${snack.n} points (want 2)`); ok = false; }
+else if (snack.hidden || snack.label !== 'Deleted 3 · ') { console.log(`  FAIL: no snackbar after a bulk delete (hidden=${snack.hidden}, "${snack.label}")`); ok = false; }
+else if (back.n !== 5) { console.log(`  FAIL: the snackbar's Undo restored ${back.n} points (want 5)`); ok = false; }
+else if (!back.hidden) { console.log('  FAIL: the snackbar stayed up after its offer was taken'); ok = false; }
+else if (!(back.route >= 2)) { console.log(`  FAIL: the route did not re-match after the undo (${back.route} pts)`); ok = false; }
+else console.log(`  ✓ a bulk delete offers "${snack.label}Undo" and one tap restores all 5, re-matching (${back.route} pts) (E6)`);
+
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
 // with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the

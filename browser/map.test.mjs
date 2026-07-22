@@ -856,5 +856,150 @@ console.log('E5 · a deleted anchor cannot resurrect a stale range');
   ok(sel.every((id) => r.points.some((p) => p.id === id)), 'every selected id is still a live point');
 }
 
-console.log(fails ? `\nM0+M1+E0-E5 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E5 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag, delete and range-delete hold');
+// --- PLAN-EDIT E6: undo / redo -----------------------------------------------------------------------
+
+const stubSnack = () => ({ el: { classList: { _h: true, add() { this._h = true; }, remove() { this._h = false; } } },
+                           label: { textContent: '' } });
+
+console.log('\nE6 · the history records COMMITTED edits only, and is seeded with the empty sketch');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  ok(r.history.depth === 1 && r.history.index === 0, 'seeded with the initial empty state');
+  ok(!r.canUndo && !r.canRedo, 'nothing to undo before the first edit');
+
+  r.append(52.20, 6.85);
+  r.append(52.24, 6.95);
+  ok(r.history.depth === 3, `two appends → three states (${r.history.depth})`);
+  ok(r.canUndo, 'and now there is something to undo');
+
+  // A live drag frame must NOT become an undo step: `committed` is false until the finger lifts.
+  const mid = m.project(52.20, 6.85);
+  const depth = r.history.depth;
+  r.pointerDown(mid.x, mid.y, 1000);
+  for (let i = 1; i <= 8; i++) r.pointerMove(mid.x + i * 10, mid.y + i * 6);
+  ok(r.history.depth === depth, `8 live drag frames add NO history (${r.history.depth})`);
+  r.pointerUp();
+  ok(r.history.depth === depth + 1, `the release adds exactly one (${r.history.depth})`);
+}
+
+console.log('E6 · move → insert → delete, then three undos walk back to the start');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const start = JSON.stringify(r.coords());
+  const startDepth = r.history.depth;
+
+  const mid = m.project(TRI[1][0], TRI[1][1]);                       // 1. move the middle point
+  r.pointerDown(mid.x, mid.y, 1000);
+  r.pointerMove(mid.x + 70, mid.y - 50);
+  r.pointerUp();
+  const afterMove = JSON.stringify(r.coords());
+
+  const a = m.project(r.points[0].lat, r.points[0].lon);             // 2. insert on the first segment
+  const b = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown((a.x + b.x) / 2, (a.y + b.y) / 2, 2000);
+  r.pointerUp();
+  ok(r.points.length === 4, `inserted (${r.points.length} points)`);
+
+  r.removeId(r.points[3].id);                                        // 3. delete one
+  ok(r.points.length === 3, `deleted (${r.points.length} points)`);
+  ok(r.history.depth === startDepth + 3, `three edits → three new states (${r.history.depth})`);
+
+  ok(r.undo() && JSON.stringify(r.coords()) !== start, 'undo 1 takes back the delete');
+  ok(r.undo() && JSON.stringify(r.coords()) === afterMove, 'undo 2 takes back the insert');
+  ok(r.undo() && JSON.stringify(r.coords()) === start, 'undo 3 takes back the move — back to the start');
+  // Not the end of the history: the three appends that BUILT this sketch are still behind it, and undo
+  // keeps walking until the sketch is empty again.
+  ok(r.canUndo, 'the appends that built the sketch are still undoable');
+
+  ok(r.redo() && JSON.stringify(r.coords()) === afterMove, 'redo replays the move');
+  ok(r.canRedo, 'with two more to redo');
+
+  while (r.undo()) { /* walk it all the way back */ }
+  ok(r.points.length === 0 && !r.canUndo, `undoing everything empties the sketch (${r.points.length} points)`);
+}
+
+console.log('E6 · a replay does not record itself, and a fresh edit truncates the redo tail');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const depth = r.history.depth;
+  r.undo();
+  ok(r.history.depth === depth, `undo does not grow the history (${r.history.depth}) — the applying guard holds`);
+  ok(r.canRedo, 'and it leaves a redo tail');
+  r.append(52.30, 6.99);
+  ok(!r.canRedo, 'a fresh edit truncates that tail');
+  ok(r.history.depth === depth, `and replaces it rather than appending (${r.history.depth})`);
+}
+
+console.log('E6 · a replayed state is the SAME sketch — ids restored, array shared');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const shared = m.points;
+  const ids = r.points.map((p) => p.id).join();
+  r.removeId(r.points[1].id);
+  r.undo();
+  ok(r.points.map((p) => p.id).join() === ids, `the restored points carry their original ids (${ids})`);
+  ok(m.points === shared && m.points === r.points, 'and the renderer still shares the SAME array');
+  // Ids must stay unique afterwards, or a restore could collide with a later insert.
+  r.append(52.31, 6.99);
+  const all = r.points.map((p) => p.id);
+  ok(new Set(all).size === all.length, `ids remain unique after a restore + append (${all.join()})`);
+}
+
+console.log('E6 · one undo step per GESTURE — the sweep and the bulk delete included');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const depth = r.history.depth;
+  // the sweep: insert + position in one gesture
+  const a = m.project(r.points[0].lat, r.points[0].lon), b = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown((a.x + b.x) / 2, (a.y + b.y) / 2, 1000);
+  for (let i = 1; i <= 6; i++) r.pointerMove((a.x + b.x) / 2 + i * 9, (a.y + b.y) / 2 - i * 7);
+  r.pointerUp();
+  ok(r.history.depth === depth + 1, `the whole sweep is ONE undo step (${r.history.depth - depth})`);
+  ok(r.undo() && r.points.length === 5, 'and one undo takes the inserted point back out');
+}
+
+console.log('E6 · a bulk delete offers the snackbar; a single delete does not');
+{
+  const m = freshMap();
+  const snack = stubSnack();
+  const r = new RoughLayer(m, { bind: false, snackbar: snack });
+  for (const [lat, lon] of FIVE) r.append(lat, lon);
+  ok(snack.el.classList._h === true, 'no offer during ordinary edits');
+
+  r.removeId(r.points[2].id);
+  ok(snack.el.classList._h === true, 'deleting ONE point shows nothing — it is self-correcting');
+
+  pressPoint(m, r, 0, 1000);
+  pressPoint(m, r, 2, 2000);
+  r.deleteSelected();
+  ok(r.points.length === 1, `bulk-deleted 3 of 4 (${r.points.length} left)`);
+  ok(snack.el.classList._h === false, 'a bulk delete DOES offer the way back');
+  ok(snack.label.textContent === 'Deleted 3 · ', `and it says how many (\"${snack.label.textContent}\")`);
+
+  ok(r.undo() && r.points.length === 4, 'one undo restores the lot');
+  ok(snack.el.classList._h === true, 'and the offer goes away once taken');
+}
+
+console.log('E6 · the history is bounded, and the oldest state falls off the bottom');
+{
+  const m = freshMap();
+  const r = new RoughLayer(m, { bind: false });
+  r.history._max = 5;                       // the same rule as UNDO_MAX, small enough to reach
+  for (let i = 0; i < 12; i++) r.append(52.2 + i * 0.001, 6.9);
+  ok(r.history.depth === 5, `the stack stops growing at its cap (${r.history.depth})`);
+  ok(r.history.index === 4, `and the index tracks the top (${r.history.index})`);
+  let n = 0;
+  while (r.undo()) n++;
+  ok(n === 4, `it still walks back through everything it kept (${n} undos)`);
+}
+
+console.log(fails ? `\nM0+M1+E0-E6 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E6 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag, delete, range-delete and undo hold');
 process.exit(fails ? 1 : 0);

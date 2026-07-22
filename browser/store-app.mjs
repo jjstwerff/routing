@@ -153,6 +153,9 @@ async function streamedMatch(spec, isCurrent) {
 const rough = new RoughLayer(map, {
   onCommit: (pts) => requestMatch(pts),
   deleteButton: document.getElementById('rough-delete'),   // bound BY the layer — see rough.mjs bind()
+  snackbar: { el: document.getElementById('undo-snackbar'),
+              label: document.getElementById('undo-snack-label'),
+              button: document.getElementById('undo-snack-btn') },
 });
 
 // Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen

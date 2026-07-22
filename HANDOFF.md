@@ -197,8 +197,15 @@ no visual answer to "did my click land?".
    shared array in place** — `filter()` would leave the renderer holding the pre-delete sketch.
    The browser gate caught a real bug the unit tier missed: `clear()` left stale anchors, so selecting a
    point in a *later* sketch silently did nothing. Anchors are now pruned before every read and change.
-6. ⏭ **NEXT — undo/redo** (`DESIGN.md` §1 makes undo a primitive, with a snackbar on bulk delete). Every
-   gesture already commits **exactly once**, and `commitEdit`'s `committed` flag is what a history records.
+6. ✅ **DONE — undo/redo.** A `History` the layer owns, hanging off `commitEdit`, so nothing is wired per
+   gesture: a live drag frame is `committed:false` and adds no history, making a 30-frame drag — and the
+   sweep, and a bulk delete — **one** undo step each. `Ctrl+Z`/`Ctrl+Shift+Z`/`Ctrl+Y` plus the
+   *"Deleted N · Undo"* snackbar. Snapshots carry point **ids**, so a replay is the same sketch and the
+   id-keyed detector and anchors keep working.
+7. ⏭ **NEXT — E7: box-select** (desktop-only, least load-bearing) **+ the measurement wrap-up**: add
+   `matchInsert`/`matchDelete` to `__perfHooks` so PLAN-EDIT §2's P5 becomes a standing measurement, and
+   **re-record the warm/cold numbers on a quiet box** — everything quoted this session was taken at load
+   average 2–10, so it is directionally right but not publication-grade.
 6. Box-select last — desktop-only and the least load-bearing.
 
 ⚠ **A drag cannot re-match per frame.** A warm match is ~545 ms throttled and ~33 move events arrive per
