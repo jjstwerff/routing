@@ -1142,11 +1142,39 @@ load 16 and the probe spread opened to 1.7× (match 70–121 ms). The commit lan
 with the timing explicitly *not* claimed, and the numbers above were taken later on a quiet box. *A
 change can be committed on a gate; it cannot be characterised on a contended one.*
 
-**Still open in the search:** `nearest_nodes` is **O(nodes) per call**. loft has `spatial<T[x,y]>`
-(Morton/Z-order, proximity range-slices) which would make it O(log n) — but a Morton walk returns
-candidates in Z-order, *not* distance order, so an exact replacement needs an expanding-box query plus an
-exact re-rank, and the candidate SET and its tie-breaking must come out identical. The border gate and
-`match_parity` are its acceptance.
+### 7l — the spatial index: BUILT, MEASURED, REVERTED. And it found the real bottleneck.
+
+`nearest_nodes` was still O(nodes), so it was replaced with loft's `spatial<T[x,y]>` — an expanding-box
+query plus an exact re-rank, tie-breaking by lowest node index explicitly (Morton order does not give it
+for free, and anchors feed the Viterbi). **It worked: routes byte-identical on all four border corridors
+and all three `match_parity` lengths.** It is still reverted, because it is a large net loss:
+
+| 40-point sketch, native, quiet box | before | with spatial index |
+|---|---|---|
+| build_graph | 70 ms | **345 ms** (+275, ~5×) |
+| match | 259 ms | **~260 ms** — *no change* |
+| total | 350 ms | **~635 ms** (+81%) |
+
+Two things paid for by building it, both worth more than the change would have been:
+
+1. **33,948 radix-tree inserts per corridor is not free** — it costs ~275 ms, five times the entire graph
+   build. An index that must be built per corridor has to earn that back, and this one earned nothing.
+2. **`nearest_nodes` was NOT the bottleneck.** §7j's one-pass top-K had already made the scan cheap; what
+   is left in anchoring is `denoise_anchor` running a **full `dijkstra_win` from point i−1 to point i+1
+   for every interior point** — 38 extra Dijkstras on a 40-point sketch, on top of pass 2's 39. *The scan
+   was the visible thing; the search behind it was the expensive thing.*
+
+**So the next attack on the search is `denoise_anchor`'s per-point Dijkstra, not its nearest-node lookup.**
+Ideas worth measuring before building: reuse one search per pair of points instead of one per interior
+point, or bound the anchor search radius (it only needs the best node near point i, not a full path from
+i−1 to i+1).
+
+⚠ And a note for anyone reaching for `spatial<T[x,y]>` elsewhere: it is sound but **not wired to its own
+exact queries**. `loft2/src/spatial.rs` carries exact `nearest`/`within`, but it is `#![allow(dead_code)]`
+and nothing references `spatial::` — only `radix_db`'s surface is reachable from loft. The outward walk
+`xs[(x,y)..:n]` is `Near`, which loft's own source calls approximate: *"never for a correct radius or
+k-NN"*. Only the BOX slice is sound, and it returns a superset that the caller must filter
+(`tools/spatial_probe.loft` asserts exactly that).
 
 ## 7i. Attacking the corridor read and the graph build directly (2026-07-22)
 

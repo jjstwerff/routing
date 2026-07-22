@@ -81,10 +81,13 @@ is now corridor 20 · build_graph 93 · match 88.
 Then **§7k**: `EdgeCosts` indexed by WAY rather than by edge — five arrays of
 37.6k entries (~188k appends) collapsed to ~7.1k, free in the hot loop because it already loads the edge
 record. **cold match 1831 → 1539 ms**, warm 395 → 358.
-**Next:** `nearest_nodes` is still O(nodes) per call. loft's `spatial<T[x,y]>` would make it O(log n),
-but a Morton walk returns Z-order, NOT distance order — so an exact replacement needs an expanding-box
-query plus an exact re-rank, with the candidate SET and its tie-breaking identical. The border gate +
-`match_parity` are its acceptance.
+**§7l — the spatial index was built, measured and REVERTED** (routes were byte-identical; it was a net
+loss: +275 ms of per-corridor index build for **zero** match improvement). Its value was finding the real
+bottleneck: **`nearest_nodes` is not it.** After §7j's one-pass top-K the scan is cheap; what remains in
+anchoring is `denoise_anchor` running a **full `dijkstra_win` from point i−1 to i+1 for EVERY interior
+point** — 38 extra Dijkstras on a 40-point sketch, on top of pass 2's 39.
+**Next:** attack that, not the lookup. And note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT
+wired to the stdlib (`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
 
 **What to do next, in the order the evidence favours:**
 
