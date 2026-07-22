@@ -11,7 +11,7 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 The **standalone/serverless browser app runs in a real browser** (`browser/store-app.*`, plan of record
 `PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
 kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched route, and needs **no
-server**. **As of 2026-07-22, `PLAN-PERF.md` steps 1–16 and 20–22 are done; 14–15, 18 and 19 remain.**
+server**. **As of 2026-07-22, `PLAN-PERF.md` steps 1–16 and 20–22 are done; 15, 18 and 19 remain.**
 
 Three structural changes got it there, and each is worth more than its number:
 1. **loft owns the loop** (steps 4–8) — `loft_start` once, never returns; the stores, corridor `Graph`
@@ -22,6 +22,9 @@ Three structural changes got it there, and each is worth more than its number:
    (was 4.25 MB per view). A per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
 3. **The match ladder is live** (step 22) — a cell-tube corridor tried first, escalating to the fat bbox
    when a margin-relative gate rejects it. ~65% fewer ways when accepted.
+4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is already an interleaved
+   `Int32Array`, so the renderer reads coordinates straight out of wasm memory instead of materialising a
+   viewport as 239k JS objects. This was the fix "pre-project into typed arrays" would have missed.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
 at 1.1–1.5× spread: **view 946 → 134 ms**, **pan frame 76 → 21 ms**, **cold match 6370 → 3327 ms**,
