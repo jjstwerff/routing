@@ -403,15 +403,18 @@ struct GNode { const lat: float, const lon: float }
 // only ever reads it.
 struct GEdge {
   const a: integer, const b: integer, const length: float,
-  const hw: text, const surface: text, const tracktype: text,
-  const bicycle: text, const access: text,
-  const oneway: text, const onewaybike: text,   // direction restriction (a→b is the way's digitised sense)
-  const svc: text,                        // service= subtag (driveway/alley/parking_aisle)
-  const cycleway: text, const cyclestreet: text, // on-road cycle infrastructure (lane/track) / fietsstraat
-  const name: text,                        // road identity (for same-road out-and-back detection)
+  // The SOURCE WAY, not a copy of its tags. Every edge of a way carries identical tags, so copying all
+  // eleven into each of ~37.6k edge records was the single largest cost in a cold match: `add_edge` was
+  // ~108 ms of build_graph's ~163 ms (PLAN-PERF §7i), and neither the per-edge geodesic (~6 ms) nor the
+  // CSR build (~6 ms) came close. Tags are now read through `g.ways[e.w]`.
+  const w: integer,
 }
+
 pub struct Graph {
-  index: hash<CoordIdx[coord]>,   // "lat,lon" → node idx (dedup)
+  // One entry per SOURCE WAY, so an edge names its tags instead of copying them (see GEdge.w). ~7.1k
+  // records for a corridor that has ~37.6k edges — the whole point.
+  wtags: vector<WayTags>,
+  index: hash<CoordIdx[coord]>,   // packed fixed-point coord → node idx (dedup)
   nodes: vector<GNode>,
   edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
   // CSR adjacency (FLAT vectors — not nested, so no O(n^2) interpreter trap): the arcs leaving node
@@ -455,9 +458,36 @@ fn node_idx(g: Graph, lat: float, lon: float) -> integer {
   idx
 }
 
-fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: text, tracktype: text, bicycle: text, access: text, oneway: text, onewaybike: text, svc: text, cycleway: text, cyclestreet: text, name: text) {
-  g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype, bicycle: bicycle, access: access, oneway: oneway, onewaybike: onewaybike, svc: svc, cycleway: cycleway, cyclestreet: cyclestreet, name: name }];
+fn add_edge(g: Graph, a: integer, b: integer, length: float, w: integer) {
+  g.edges += [GEdge { a: a, b: b, length: length, w: w }];
 }
+
+// The `??` fallback for the source-way read in build_graph. Unreachable (the index is the loop's own),
+// but the read must be total.
+fn empty_source_way() -> Way {
+  Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+        onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }
+}
+
+// An edge's tags, WITHOUT geometry. Deliberately not `Way`: a Way carries its `coords`, so reading one
+// per edge copies a coordinate vector — measured, that made `precompute_edges` (37.6k edge reads) more
+// than twice as slow and gave back everything build_graph had saved. WayTags is 11 text handles, so a
+// read is a handful of word copies.
+struct WayTags {
+  const highway: text, const surface: text, const tracktype: text, const bicycle: text,
+  const access: text, const oneway: text, const onewaybike: text, const svc: text,
+  const cycleway: text, const cyclestreet: text, const name: text,
+}
+
+// A FUNCTION, not a constant: loft rejects struct-valued constants (they cannot be materialised at each
+// use site — it says so, and names this fix).
+fn empty_tags() -> WayTags {
+  WayTags { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+            onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "" }
+}
+
+// The tags behind an edge.
+fn etags(g: Graph, e: GEdge) -> WayTags { g.wtags[e.w] ?? empty_tags() }
 
 // Union pre-built per-tile graphs into one corridor graph (PLAN-PERF §7a(2), step 19b).
 //
@@ -479,8 +509,12 @@ fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: 
 // union merges exactly the nodes a global build would. `tools/tile_border_gate.sh` is the acceptance:
 // four corridors spanning 4-14 tiles, routes byte-identical.
 pub fn union_graphs(parts: vector<Graph>) -> Graph {
-  g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
   for p in parts {
+    // Each part indexes its OWN tag table, so concatenate them and shift this part's edge references by
+    // however many entries are already in the union.
+    wbase = len(g.wtags);
+    for pw in p.wtags { g.wtags += [pw]; }
     // Each part's node indices are local to it; map them into the union as we go.
     remap: vector<integer> = [];
     for i in 0..len(p.nodes) {
@@ -491,10 +525,7 @@ pub fn union_graphs(parts: vector<Graph>) -> Graph {
       ra = remap[e.a] ?? -1;
       rb = remap[e.b] ?? -1;
       if ra >= 0 && rb >= 0 && ra != rb {
-        g.edges += [GEdge { a: ra, b: rb, length: e.length, hw: e.hw, surface: e.surface,
-                            tracktype: e.tracktype, bicycle: e.bicycle, access: e.access,
-                            oneway: e.oneway, onewaybike: e.onewaybike, svc: e.svc,
-                            cycleway: e.cycleway, cyclestreet: e.cyclestreet, name: e.name }];
+        g.edges += [GEdge { a: ra, b: rb, length: e.length, w: wbase + e.w }];
       }
     }
   }
@@ -508,9 +539,14 @@ pub fn union_graphs(parts: vector<Graph>) -> Graph {
 pub fn build_graph_streamed(ways: vector<Way>, on_tick: fn(integer)) -> Graph { build_graph_impl(ways, on_tick) }
 pub fn build_graph(ways: vector<Way>) -> Graph { build_graph_impl(ways, drop_tick) }
 fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
-  g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
   nw = 0;
-  for w in ways {
+  for wi in 0..len(ways) {
+    w = ways[wi] ?? empty_source_way();
+    g.wtags += [WayTags { highway: w.highway, surface: w.surface, tracktype: w.tracktype,
+                          bicycle: w.bicycle, access: w.access, oneway: w.oneway,
+                          onewaybike: w.onewaybike, svc: w.svc, cycleway: w.cycleway,
+                          cyclestreet: w.cyclestreet, name: w.name }];
     nw += 1;
     if nw % TICK_EVERY == 0 { on_tick(nw); }
     prev = -1;
@@ -519,7 +555,7 @@ fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
       ni = node_idx(g, p.lat, p.lon);
       if prev >= 0 && prev != ni {
         d = geodesic_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
-        add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype, w.bicycle, w.access, w.oneway, w.onewaybike, w.svc, w.cycleway, w.cyclestreet, w.name);
+        add_edge(g, prev, ni, d, wi);
       }
       prev = ni;
     }
@@ -842,8 +878,8 @@ fn is_cycle_infra(hw: text, cycleway: text, cyclestreet: text) -> boolean {
 
 // Deviation weight for an edge: normally DEV_K, but reduced on cycle infrastructure for a cycling
 // profile so the route is willing to leave the drawn line to pick up a cycle route (see the constant).
-fn dev_weight(profile: text, e: GEdge) -> float {
-  if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) {
+fn dev_weight(profile: text, t: WayTags) -> float {
+  if profile.starts_with("cycling") && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) {
     return DEV_K * CYCLE_INFRA_DEV_FACTOR;
   }
   DEV_K
@@ -853,12 +889,12 @@ fn dev_weight(profile: text, e: GEdge) -> float {
 // ILLEGAL off-limits. Both non-zero tiers are finite, so a stretch with no better option still
 // bridges rather than gapping; their sizes make a bike path normally win over walking, and walking
 // normally win over a genuinely-illegal way.
-fn edge_surcharge(profile: text, e: GEdge) -> float {
+fn edge_surcharge(profile: text, t: WayTags) -> float {
   if profile.starts_with("cycling") {
-    if bike_never(e.hw, e.bicycle, e.access, e.svc) { return ILLEGAL_PER_M; }
-    if bike_dismount(e.hw, e.bicycle) { return DISMOUNT_PER_M; }
+    if bike_never(t.highway, t.bicycle, t.access, t.svc) { return ILLEGAL_PER_M; }
+    if bike_dismount(t.highway, t.bicycle) { return DISMOUNT_PER_M; }
   } else if profile.starts_with("walking") || profile.starts_with("running") {
-    if foot_never(e.hw, e.access) { return ILLEGAL_PER_M; }
+    if foot_never(t.highway, t.access) { return ILLEGAL_PER_M; }
   }
   0.0
 }
@@ -916,7 +952,13 @@ fn edge_name_between(g: Graph, u: integer, v: integer) -> text {
   if u < 0 || v < 0 { return ""; }
   s0 = g.adj_head[u] ?? 0;
   s1 = g.adj_head[u + 1] ?? 0;
-  for k in s0..s1 { if (g.adj_to[k] ?? -1) == v { return g.edges[g.adj_edge[k] ?? 0].name; } }
+  for k in s0..s1 {
+    if (g.adj_to[k] ?? -1) == v {
+      ne = g.edges[g.adj_edge[k] ?? 0] ?? GEdge { a: 0, b: 0, length: 0.0, w: 0 };
+      nt = etags(g, ne);               // bound, not `etags(…).name` — see docs/loft-feedback.md
+      return nt.name;
+    }
+  }
   ""
 }
 // GEdge index between adjacent nodes u,v (or -1). Same CSR walk as edge_name_between, but returns the
@@ -1026,15 +1068,28 @@ struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur:
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
   ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
   cyc = profile.starts_with("cycling");
+  // PER WAY, not per edge. Every one of these depends only on the way's TAGS — `way_penalty` alone is
+  // ~40 string comparisons — and a corridor has ~7.1k ways behind ~37.6k edges, so computing them per
+  // edge did the same string work five times over. The per-edge pass below is then five array reads.
+  wpen: vector<float> = []; wdw: vector<float> = []; wsur: vector<float> = [];
+  wafwd: vector<boolean> = []; wabwd: vector<boolean> = [];
+  for wi in 0..len(g.wtags) {
+    t = g.wtags[wi] ?? empty_tags();
+    p = way_penalty(profile, t.highway, t.surface, t.tracktype);
+    if cyc && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
+    wpen += [p];
+    wdw += [dev_weight(profile, t)];
+    wsur += [edge_surcharge(profile, t)];
+    wafwd += [dir_allowed(profile, t.oneway, t.onewaybike, true)];
+    wabwd += [dir_allowed(profile, t.oneway, t.onewaybike, false)];
+  }
   for ei in 0..len(g.edges) {
     e = g.edges[ei];
-    p = way_penalty(profile, e.hw, e.surface, e.tracktype);
-    if cyc && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
-    ec.pen += [p];
-    ec.dw += [dev_weight(profile, e)];
-    ec.sur += [edge_surcharge(profile, e)];
-    ec.afwd += [dir_allowed(profile, e.oneway, e.onewaybike, true)];
-    ec.abwd += [dir_allowed(profile, e.oneway, e.onewaybike, false)];
+    ec.pen += [wpen[e.w] ?? 0.0];
+    ec.dw += [wdw[e.w] ?? DEV_K];
+    ec.sur += [wsur[e.w] ?? 0.0];
+    ec.afwd += [wafwd[e.w] ?? true];
+    ec.abwd += [wabwd[e.w] ?? true];
   }
   ec
 }
@@ -1196,7 +1251,8 @@ fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i:
           e = g.edges[ei];
           lenm = lenm + e.length;
           penm = penm + (ec.pen[ei] ?? 0.0) * e.length;
-          c = road_class(e.hw);
+          qt = etags(g, e);          // bound, not `etags(g, e).highway` — see the note in docs/loft-feedback.md
+          c = road_class(qt.highway);
           cm[c] = (cm[c] ?? 0.0) + e.length;
         }
       }
@@ -1491,16 +1547,17 @@ pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> te
         mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
         mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
         dev = point_trace_m(mlat, mlon, trace);
-        pen = way_penalty(profile, e.hw, e.surface, e.tracktype);
-        if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
-        sur = edge_surcharge(profile, e);
-        cpm = 1.0 + dev_weight(profile, e) * dev + pen;
+        et = etags(g, e);
+        pen = way_penalty(profile, et.highway, et.surface, et.tracktype);
+        if profile.starts_with("cycling") && is_cycle_infra(et.highway, et.cycleway, et.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
+        sur = edge_surcharge(profile, et);
+        cpm = 1.0 + dev_weight(profile, et) * dev + pen;
         if cpm < 0.1 { cpm = 0.1; }
         cpm = cpm + sur;
         total = total + cpm * e.length;
         tier = "-   ";
         if sur >= ILLEGAL_PER_M { tier = "ILL "; } else if sur > 0.0 { tier = "walk"; }
-        out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {e.hw} / {dash(e.svc)} / {dash(e.access)} / {dash(e.oneway)} / {dash(e.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
+        out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {et.highway} / {dash(et.svc)} / {dash(et.access)} / {dash(et.oneway)} / {dash(et.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
       }
     } else {
       out = out + "{d0:6.0}  {seglen:4.0}       -      -    -          -   (jump — no direct edge)\n";
