@@ -39,8 +39,16 @@ and nothing since — were gated on a 26-sketch corpus with **0 worse accepted**
 2. **loft is out of the view path** (steps 9–13) — JS reads the layout store from wasm memory through
    @PLN105's `expose` bridge; `view` emits roads only, **no layout text at all** (was 4.25 MB/view). A
    per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
-3. **The match ladder** (step 22) — cell-tube corridor first, escalating to the fat bbox when a
-   margin-relative gate rejects it. ~65% fewer ways when accepted.
+3. **The match ladder** (step 22, and §7p) — cell-tube corridor first, escalating to the fat bbox when a
+   margin-relative gate rejects it. ~65% fewer ways when accepted. **Both consumers now run it**: the
+   browser kernel and, since §7p, `server/server.loft`'s TILE branch — slotted inside that branch so the
+   server's widening loop and its tiles-replace / Overpass-accumulates policy are untouched, with the
+   **Overpass path deliberately left OFF the ladder** (the corpus does not cover it). `tier_ok` +
+   `TIER_*` + `DEV_MARGIN_K` live in `routing_kernel` for that reason — the server must not pull in
+   `map_kernel`'s basemap deps to reach a corridor-quality gate.
+   ⚠ The gate's K was swept on `cycling_road`; the server defaults to `walking_paved`, so it was
+   **re-swept before wiring** (§7p): K=6 gives 0 worse there too, first bad acceptance at K=9. Worth
+   ~13% of a server tile match — less than on cycling, so size it before spending.
 4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is *already* an interleaved
    `Int32Array`, so the renderer reads coordinates straight out of wasm memory instead of materialising a
    viewport as 239k JS objects. This is the fix "pre-project into typed arrays" would have missed — it
