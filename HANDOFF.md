@@ -25,10 +25,12 @@ Three structural changes got it there, and each is worth more than its number:
 4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is already an interleaved
    `Int32Array`, so the renderer reads coordinates straight out of wasm memory instead of materialising a
    viewport as 239k JS objects. This was the fix "pre-project into typed arrays" would have missed.
+   Streets can NOT follow (the matcher iterates the roads store, and loft cannot iterate a pinned one —
+   ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 134 ms**, **pan frame 76 → 21 ms**, **cold match 6370 → 3327 ms**,
-**warm match ~880 → 644 ms**. JS now retains **27,118** objects for geometry, not 239,135 (§6c).
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 3327 ms**,
+**warm match ~880 → 644 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
 
@@ -70,9 +72,10 @@ fine**, and `release`/`expose` brackets it.
 
 **What to do next, in the order the evidence favours:**
 
-1. **Step 15 — per-tile rasters.** ⚠ **Re-size it first.** Step 14 (§6c) took the view to **134 ms** and
-   the pan frame to **21 ms**, so 15's "pan <16 ms" is a small step now, not the main event. The largest
-   remaining slice of a pan frame is buildings (37% of 21 ms).
+1. **Step 15 — per-tile rasters.** ⚠ **Re-size it first.** Step 14 (§6c) took the view to **126 ms** and
+   the pan frame to **20 ms**, so 15's "pan <16 ms" is a small step now, not the main event. A frame is
+   now RASTERISATION, not projection (projection is 4% of it) — which is what 15 actually targets. The
+   largest remaining slice is buildings (36% of 20 ms).
    **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
    a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
    is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
