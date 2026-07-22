@@ -1,20 +1,35 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Blockers re-validated 2026-07-22** against
-the installed loft **2026.7.2** (reinstalled 09:01) — see §7c: **nothing is blocked upstream any more.**
-Step 18's copy cost is gone (@PLN108 landed and is active — flat vs heap and vs thread count), and step 9's
-hang is root-caused with a working in-language fix (§7d). All four gates pass on 2026.7.2 unchanged,
-including through the @PLN110 len/size flip. **Plan of record for app performance.** It
-does not supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against
-everything else.
+**Status (2026-07-22):** steps **1–16 and 20–22 IMPLEMENTED**; **open: 14–15** (render budget, pure JS),
+**18** (`par`), **19** (persist the graph). **Nothing is blocked upstream** — re-validated against the
+installed loft **2026.7.2**, see §7c. All five gates pass on it (`test`, `test-native`, `test-wasm`,
+`test-map`, `match_parity.sh`), including through the breaking @PLN110 `len`/`size` flip.
+**Plan of record for app performance.** It does not supersede `PLAN-MATCH` (the matcher's own ladder) —
+it measures it and ranks it against everything else.
 
-**What landed** (all at `CPU_THROTTLE=4`, route proven byte-identical by `tools/match_parity.sh`):
-a click moving a point **4481 → 711 ms**; a repeat match **5274 → 339 ms** (15.6×); stores loaded **once
-per session** (2 fetches for 16 commands, was ~2/command); a real 40-point route's worst frozen frame
-**11095 → 744 ms** — the route now **streams per stretch**, arriving in travel order.
-**Open:** the view path (9–13 — unblocked, see §7d for the fix step 9 needs), the render budget
-(14–15, ~13 fps panning, independent of loft), `par` (17–18 — unblocked 2026-07-22), the cold match (19–22).
+**Where it stands** — `CPU_THROTTLE=4`, medians of 6, spreads 1.1×, route proven byte-identical by
+`tools/match_parity.sh` at every step:
+
+| interaction | before | now | |
+|---|---|---|---|
+| **view** (pan past the box) | 946 ms | **277 ms** | 3.4× — §7g(2) |
+| **cold match** (first click / corridor miss) | 6370 ms | **3327 ms** | 1.96× — §7h(2) |
+| **warm match** (one point moved — what users do) | ~880 ms | **644 ms** | 1.5× |
+| repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
+| layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
+
+The two structural wins behind those: **loft owns the loop** (one `loft_start` per session, stores decoded
+once — steps 4–8), and **loft is out of the view path entirely** (JS reads the layout store through
+@PLN105's bridge; `view` emits roads only — steps 9–13).
+
+**Open, in the order the evidence favours:**
+- **14–15 — the render budget.** Now the largest slice of a view after `storeRead`; pure JS, nobody blocking.
+- **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
+- **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
+  **re-sized against 3327 ms, not 5899** (§7a says to do exactly this).
+- **The cold match still blocks ~3.4 s in one frozen gap** — the responsiveness problem is now that gap,
+  not the total.
 
 **Target device is a phone.** Judge every number in the 4× column; the desktop column is only there to
 show how badly a desktop profile flatters us.
@@ -53,7 +68,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
-| **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
+| **16** ⚠ | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | **HALF DONE.** The *frozen frame* half is delivered and measured (40-point route: 39 stretches, worst gap **11095 → 384 ms**) — the `frame_yield()`s are what buy it. The *presentation* half is **NOT**: nothing renders the `STRETCH` lines. `runKernel` resolves the whole response at `#EOR` and `loadMatch` draws only the final `ROUTE`, so there is no "first segment on screen", and the line does not grow. See §6b(2). | **responsiveness only, not presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
@@ -323,6 +338,28 @@ Same invariant as §1 — *work ∝ change* — applied to the frame. R is indep
 any time.
 
 ---
+
+## 6b(2). The growing line is EMITTED but not RENDERED (found 2026-07-22)
+
+**Read this before trusting §6b, DESIGN §5 or PLAN-MATCH's "the line grows in travel order".** The kernel
+half shipped in step 16 and works: each `SubPath` is emitted as `STRETCH i;…` the moment it is matched,
+with a `frame_yield()` between, and that is what turned a 40-point route's worst frozen gap from
+**11095 ms into 384 ms**.
+
+**The browser half was never built.** `runKernel(blob)` resolves a single promise when it sees `#EOR`, so
+JS receives the *whole* response at once; `map.loadMatch(text)` then parses the final `ROUTE` line and
+draws it. Nothing in `map.mjs` or `store-kernel.mjs` reads a `STRETCH` line — only the profiler counts
+them. So the yields deliver **responsiveness** (the page keeps painting during a match), not
+**progressive arrival** (a line that grows as it is matched).
+
+That distinction matters because the two are argued for separately: §6b's "it mimics the journey" and
+DESIGN §5's travel-order requirement are about what the *user sees*, and the user currently sees nothing
+until the match completes. The ordering work was not wasted — it is a precondition, and the emit is
+already there in the right order — but the claim is a design intent, not a delivered behaviour.
+
+**To finish it:** `runKernel` needs an incremental callback (it already receives each line; it just
+buffers them), and `map` needs to append a stretch to the route and re-render. Small, and independent of
+loft. Worth pairing with steps 14–15, since both are the render path.
 
 ## 6b. The match arc — a line that GROWS, on all the cores
 

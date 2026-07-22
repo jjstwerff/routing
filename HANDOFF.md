@@ -10,64 +10,82 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 
 The **standalone/serverless browser app runs in a real browser** (`browser/store-app.*`, plan of record
 `PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
-kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the viewport (`view <bbox>`) and the
-matched route (`match <sketch>`), and needs **no server** — JS does pixels, loft does the route. **As of
-2026-07-17 the app's performance work is live** (`PLAN-PERF.md`, §0 = an executable step list; **1–16
-done, 17–22 open**). The headline change: the kernel used to run the one-shot model loft explicitly
-rejected — `loft_start` per request, fresh Stores each call — which meant a **full match on every click**
-and a phone **frozen 4.2 s** at a time. It now runs loft's intended model: `loft_start` once, never
-returns, looping on `host_input()` and `frame_yield()`ing, holding the stores + corridor Graph +
-MatchState across commands. Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop
-flatters ~4×**): a click moving a point **4481 → 711 ms**, a repeat match **5274 → 339 ms**, stores loaded
-**once per session**, and a real 40-point route's worst frozen frame **11095 → 744 ms** because the route
-now **streams per stretch, in travel order** (see `DESIGN.md` §5 — that ordering is load-bearing, not
-cosmetic). Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`).
+kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched route, and needs **no
+server**. **As of 2026-07-22, `PLAN-PERF.md` steps 1–16 and 20–22 are done; 14–15, 18 and 19 remain.**
+
+Three structural changes got it there, and each is worth more than its number:
+1. **loft owns the loop** (steps 4–8) — `loft_start` once, never returns; the stores, corridor `Graph`
+   and `MatchState` live across commands. It used to run the one-shot model loft explicitly *rejected*,
+   which meant a full match per click and a phone frozen 4.2 s at a time.
+2. **loft is out of the view path** (steps 9–13) — JS reads the layout store straight from wasm memory
+   through @PLN105's `expose` bridge; `view` emits roads only and serialises **no layout text at all**
+   (was 4.25 MB per view). A per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
+3. **The match ladder is live** (step 22) — a cell-tube corridor tried first, escalating to the fat bbox
+   when a margin-relative gate rejects it. ~65% fewer ways when accepted.
+
+Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
+at 1.1× spread: **view 946 → 277 ms**, **cold match 6370 → 3327 ms**, **warm match ~880 → 644 ms**.
+Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
+only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
+
+⚠ **One documented behaviour is not delivered:** the route is emitted per stretch in travel order, but
+nothing *renders* it that way — `runKernel` returns the whole response at `#EOR` and only the final
+`ROUTE` is drawn. The `frame_yield()`s buy responsiveness (worst frozen gap 11095 → 384 ms), not a
+growing line. See `PLAN-PERF` §6b(2); `DESIGN.md` §5 and `PLAN-MATCH` describe the intent, not the
+current behaviour.
 
 ---
 
 ## 1a. Resume here (2026-07-22)
 
-- **Read first:** `PLAN-PERF.md` §0 (the step list), §7c (blocker state), §7d(2) (the `expose` diagnosis)
-  and §7e (what the latest measurement contradicts). `CLAUDE.md` § "Read the reference before you write".
-- **Toolchain:** installed loft is **2026.7.2** (reinstalled 2026-07-22 09:01 — the @PLN110 `len`/`size`
-  flip release: `len(text)` is now CHARACTERS, `size(text)` is BYTES, breaking). **All four gates pass on
-  it unchanged** (`make test`, `test-native`, `test-wasm`, `test-map`) — routing absorbed the flip with no
-  source edits.
-- **Instruments:** `tools/map_profile.sh` (**`CPU_THROTTLE=4`**, the phase profiler), `tools/match_parity.sh`
-  (the route-identity gate), `tools/expose_probe.sh` (step 9's observable), `tools/par_copy_probe.loft`
-  (step 18's), `tools/loop_probe.sh` and `tools/read_probe.sh`.
-- **Nothing is blocked upstream any more** (re-validated 2026-07-22, `PLAN-PERF` §7c):
-  - **Step 18 (`par`) unblocked** — @PLN108's copy elision is live and default-on in 2026.7.2. The probe is
-    flat (1–3 ms) across 0/61/122 MB of heap and 1/8/16 threads; it was 214 ms / 162 ms on 2026.7.1.
-  - **Steps 9 and 10 are DONE; 11–13 are next.** The `expose` hang was root-caused (`expose` pins the
-    store read-only, and **iterating** a store-backed hash claims a cursor record *inside that store*,
-    which the pin rejects — reads are fine). Step 9 landed as a release/load-or-emit/expose bracket;
-    step 10 wired loft's own `readLoftValue` (vendored as `browser/loft-deliver.js`) plus
-    `browser/loft-store.mjs`, which indexes the pre-flattened collection so JS can reach ONE tile
-    instead of materialising all 1089. **JS now reads a tile exactly as loft reads it** —
-    `tools/deliver_probe.sh` diffs the JS walk against `tools/tile_lookup.loft` for the same tkey.
-    **Next: step 11** — read AREAS only via `flatElement`/`flatScalar`, beside the text path, and compare
-    counts in the gate; then 12–13 switch the render one kind at a time and delete the text emit.
-  - **Both bridge probes are now in `make test-map`.** Wired there deliberately: every instrument bug
-    found on 2026-07-22 was a probe no gate ran. *A probe outside a gate is a comment.* Note CI has no
-    chromium, so it runs neither `test-map` nor these — they are local-only.
-- **No warm-match regression** (`PLAN-PERF` §7e). A "warm 1.79× cold" reading was raised and **retracted
-  the same day**: the profiler's `matchColdFull` stopped being cold when step 6 landed the persistent
-  session, so it was measuring the nothing-changed case under a stale name. Calibrated, warm ÷ TRUE cold
-  is **0.14× in the browser and 0.16× native** — step 8 confirmed on both backends. The harness is fixed
-  (kernel `reset` command + `matchTrueCold`/`matchRepeat`) and `tools/match_session_probe.loft` is the
-  native ground truth to check it against.
-- **The biggest remaining user-visible cost is the COLD match: ~6.1 s on a phone, of which ~3.0 s is one
-  frozen frame** — newly visible, because nothing measured it until the probes were fixed. The **warm**
-  path (the common interaction) blocks only **451 ms**. The cold freeze lives in the rebuild phase
-  (`tiles_corridor_ways_streamed` + `build_graph_streamed`, *before* the first stretch exists), so step
-  16's streaming cannot reach it — **steps 19 (persist the graph) and 20 (cell-tube corridor, landed and
-  inert) are the remedies**, both already in the plan.
-- **Three profiler sections were measuring an unannounced cold rebuild** because each inherited the
-  previous probe's corridor. All now `reset` and declare their entry state (`PLAN-PERF` §7e). If you take
-  one habit from this: **a probe that depends on session state must set that state itself.**
-- **Branch state:** `standalone-app` is **64 commits ahead of `main`** (last merge PR #18, 2026-07-11),
-  pushed, all gates green. A PR is due.
+- **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list. Then §7g(2)
+  (the viewport filter), §7h(2) (the match ladder), §6b(2) (a documented behaviour that is NOT delivered).
+  `CLAUDE.md` § "Read the reference before you write" — the rule that would have saved this session hours.
+- **Toolchain:** installed loft is **2026.7.2** (@PLN110 `len`/`size` flip: `len(text)` is CHARACTERS,
+  `size(text)` is BYTES — breaking). Routing absorbed it with **no source edits**; all five gates pass.
+- **Gates** — `make test`, `test-native`, `test-wasm`, `test-map` (browser: render + both @PLN105 bridge
+  probes), and **`tools/match_parity.sh`** (route identity — the one that matters most).
+  ⚠ **CI has no chromium**, so it runs neither `test-map` nor the bridge gates. They are local-only.
+- **Instruments** (all durable, all in `tools/`): `map_profile.sh` (**always `CPU_THROTTLE=4`**),
+  `match_parity.sh`, `corpus_tube.loft` (the ladder's gate sweep + cost model), `match_session_probe.loft`
+  (native ground truth for the four match interactions), `deliver_probe.sh` + `expose_probe.sh` (the
+  bridge), `tile_overhang.loft` + `tile_bbox_probe.loft` (tile geometry), `tile_lookup.loft`,
+  `par_copy_probe.loft`, `expose_iter_probe.loft`.
+
+**Nothing is blocked upstream.** Both 2026-07-17 blockers cleared on 2026.7.2 (§7c): @PLN108's par-copy
+elision is live (probe flat 1–3 ms vs 214 ms), and the `expose` hang was root-caused — `expose` pins the
+store read-only and **iterating** a store-backed hash claims a cursor record *inside it*; **reads are
+fine**, and `release`/`expose` brackets it.
+
+**What to do next, in the order the evidence favours:**
+
+1. **Steps 14–15 — the render budget.** Now the biggest remaining slice of a view (~74 ms render +
+   127 ms `storeRead` of a 277 ms view). Pure JS, nothing blocking. **Pair it with §6b(2)**: the route is
+   emitted per stretch but never rendered that way, and both are the same code path.
+2. **Step 18 — `par` over the stretches.** Unblocked; read §6b B, **not** step 17's row (17's conclusion
+   was a mis-read and is kept only as the record of one).
+3. **Step 19 — persist the built graph.** ⚠ **Re-size it first.** Its "~41% of a cold match" premise
+   predates steps 20–22; the cold match is now 3327 ms, not 5899. §7a says to do exactly this, and it is
+   the riskiest row in the plan (a border-node splice that can silently alter a route).
+4. **The cold match still blocks ~3.4 s in ONE frozen gap** — the responsiveness problem is now that gap,
+   not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
+   `build_graph`, before the first stretch exists).
+
+**Two things NOT done that a reader might assume are:**
+- **`server/server.loft` is not on the match ladder** (step 22 wired only `lib/map_kernel`). The server
+  keeps its own `covered()` + corridor logic and an Overpass path the corpus does not cover.
+- **The growing line is not rendered** — see §6b(2).
+
+**Traps this session paid for, so you do not have to:**
+- **A probe outside a gate is a comment.** Four instrument bugs were found in one day; every one was a
+  probe no gate ran, silently invalidated by a later step. All bridge probes are now in `make test-map`.
+- **A profile without its spread is not a measurement.** Sibling-tree builds put this box at load average
+  25 mid-session and produced a 2.0× spread that read as a regression. Check `uptime` first.
+- **A corpus average is not a claim about a specific interaction.** Step 22's first gate won on corpus
+  aggregate and made the app's own sketch 1.7× slower (§7h). The app's sketch is now IN the corpus.
+- **Store-format changes fail SILENTLY** — an old-schema store gives no output, no error, exit 1. And the
+  file size can be byte-identical after adding fields; read a field to verify, not `ls`.
+
 - **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
 
 ---

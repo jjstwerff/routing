@@ -133,22 +133,31 @@ session's design work and each would have sent the work at the wrong target:
   **full match on every click**, when `match_incremental`/`covered()` exist and `server.loft` already used
   them) plus a synchronous call on the UI thread (a phone **frozen 4.2 s** per click, 3 frames of 253).
   Fixed in PLAN-PERF steps 4–8; don't re-derive it.
-- **Where it stands (2026-07-17, steps 1–16 done).** Measured at `CPU_THROTTLE=4`:
-  a click that moves a point **4481 → 711 ms**; a repeat match **5274 → 339 ms** (15.6×); each store
-  loaded **once per session** (2 fetches for 16 commands, was ~2 per command); and a real 40-point route's
-  worst frozen frame **11095 → 744 ms**, because the route now **streams per stretch**. Route proven
+- **Where it stands (2026-07-22; steps 1–16 and 20–22 done, 14–15 / 18 / 19 open).** `CPU_THROTTLE=4`,
+  medians of 6 at 1.1× spread: **view 946 → 277 ms**, **cold match 6370 → 3327 ms**, **warm match
+  ~880 → 644 ms**. loft now serialises **no layout text at all** (was 4.25 MB per view). Route proven
   byte-identical throughout by `tools/match_parity.sh` (5 cases, 3 distinct routes) — that gate is the
   point, not the speed.
-- **Still open, but nothing is blocked upstream** (re-validated 2026-07-22 on loft **2026.7.2**): the view
-  path (steps 9–13 — `expose` pins a store read-only and **iterating** it then panics, but reads are fine
-  and `release`/`expose` bracketing is the fix; see `PLAN-PERF` §7d(2)), the render budget (~13 fps
-  panning, independent of loft), and `par` (step 18 — @PLN108's copy elision is live and default-on, so
-  the per-worker heap copy that blocked it is gone). **The top remaining user-visible cost is the COLD
-  match — ~6.1 s on a phone** (steps 19–22); a "warm regression" scare was retracted the same day, and
-  `PLAN-PERF` §7e is worth reading for *why*: a probe named `matchColdFull` stopped being cold when step 6
-  landed the session, so it measured the nothing-changed case under a stale name. **Calibrate an
-  instrument before believing a ratio that says a subsystem is broken** —
-  `tools/match_session_probe.loft` is the native ground truth for the match interactions.
+- **loft is OUT of the view path** (steps 9–13). JS reads the layout store straight from wasm memory via
+  @PLN105's `expose` bridge (`browser/loft-deliver.js` is loft's own reader, vendored verbatim;
+  `loft-store.mjs` is our side), and `view` emits roads only. Two rules the bridge cost us a day to learn:
+  **`expose` pins the store read-only and loft then cannot ITERATE it** (reads are fine — bracket the walk
+  in `release`/`expose`), and **`expose` is O(collection) per call**, so calling it per frame is not
+  viable. Both filed in `docs/loft-feedback.md`.
+- **The viewport filter is exact, and the obvious version is a bug** (`PLAN-PERF` §7g). Features are keyed
+  by their FIRST VERTEX and never clipped, overhanging their cell by up to 16 cells — an `ox`/`oy` screen
+  provably drops features (measured: 54 of 33 481). `PTile` therefore carries its own sealed feature
+  extent, and a viewport reads **6% of the tiles**. Re-run `tools/tile_overhang.loft` after any tile
+  regeneration; the margin is a property of the DATA.
+- **Nothing is blocked upstream** (re-validated 2026-07-22 on loft 2026.7.2). **The remaining
+  user-visible cost is the cold match's ~3.4 s FROZEN GAP**, not its total — it sits in the corridor read
+  + `build_graph`, before the first stretch exists, so step 16's yields cannot reach it.
+- **Four instrument bugs were found in one day, and every one was a probe no gate ran.** *A probe outside
+  a gate is a comment* — all bridge probes are now in `make test-map`. The companions: **a profile without
+  its spread is not a measurement** (sibling builds put this box at load 25 and produced a fake
+  regression — check `uptime`), and **a corpus average is not a claim about a specific interaction**
+  (step 22's first gate won on aggregate and made the app's own sketch 1.7× slower; that sketch is now in
+  the corpus). `PLAN-PERF` §7e/§7h are the write-ups.
 - **The invariant to design against:** *every interaction does work proportional to what CHANGED, never
   to the size of the data. Never do everything again; build from what you have.* Every measured cost is
   one violation of it.

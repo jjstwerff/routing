@@ -19,9 +19,11 @@ The touch points in code: `match_for` / the widen loop in `server/server.loft`, 
 > big search cheaper?" and answers with an escalation ladder. The app-level measurement changed the
 > question. Two facts this document predates:
 >
-> 1. **The route is already per-stretch, and it now STREAMS.** `subs` is one sub-path per stretch, each
->    independent, and they are emitted as they are matched — the line grows in travel order. So the
->    user-facing cost is *time to the first stretch* (~96 ms on a phone), not time to the whole route.
+> 1. **The route is already per-stretch, and it now STREAMS — from the KERNEL.** `subs` is one sub-path
+>    per stretch, each independent, and they are emitted as they are matched, in travel order.
+>    ⚠ **But nothing renders them** (2026-07-22): the browser receives the whole response at `#EOR` and
+>    draws only the final `ROUTE`, so "time to the first stretch" is not yet a user-facing number — the
+>    user-facing cost is still time to the whole route. See `PLAN-PERF` §6b(2).
 >    A cheaper ladder tier improves the total; it does not create the responsiveness, and the ladder is
 >    the only lever here that can return a WORSE route.
 > 2. **The numbers below came from a 3-point sketch** (2 huge stretches, widest corridor) — the
