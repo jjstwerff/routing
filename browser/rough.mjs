@@ -58,6 +58,10 @@ export const HIT_SEGMENT_PX = 9;
 // breaks the moment the map moves under it, and a point is a thing, not a place.
 export const DOUBLE_CLICK_MS = 250;
 
+// Below this a shift-drag is a stray shift-click, not a box — it leaves the selection alone rather than
+// clearing it (ported from rough.js).
+export const BOX_MIN_PX = 5;
+
 // Distance from (px,py) to the segment a→b, and how far along it the foot lands (t in 0..1, clamped to the
 // ends so a point beyond the segment measures to the nearer endpoint). Pure, and pure SCREEN space — see
 // nearestSegment for why that matters.
@@ -177,6 +181,7 @@ export class RoughLayer {
     this._lastPress = null;         // { id, t } — the last press that landed on a point (E4's dblclick)
     this._deleteBtn = opts.deleteButton || null;
     this._snack = opts.snackbar || null;   // { el, label, button } — the bulk-delete undo offer (E6)
+    this._boxEl = opts.boxElement || null;  // the shift-drag rubber band (E7, desktop)
     this._snackTimer = null;
     // Undo lives INSIDE the layer, hanging off the commit chokepoint, so every gesture is undoable by
     // construction. Wiring it externally would make "remember to also record undo" a per-gesture duty —
@@ -290,6 +295,40 @@ export class RoughLayer {
     this.map.requestRender();
     return this;
   }
+
+  // Select the contiguous range SPANNING every point inside the box (E7, desktop). Deliberately a span,
+  // not a set: the selection model is a contiguous range (E5), so a point between the first and last hits
+  // is selected even if the box missed it. That is what makes box-select and tap-first/tap-last the same
+  // selection, reachable two ways, rather than two selection models to keep in step.
+  selectBox(x0, y0, x1, y1) {
+    const lox = Math.min(x0, x1), hix = Math.max(x0, x1);
+    const loy = Math.min(y0, y1), hiy = Math.max(y0, y1);
+    const px = this._screen();
+    let first = -1, last = -1;
+    for (let i = 0; i < px.length; i++) {
+      if (px[i].x >= lox && px[i].x <= hix && px[i].y >= loy && px[i].y <= hiy) { if (first < 0) first = i; last = i; }
+    }
+    if (first < 0) return this.clearSelection();
+    this._anchorA = this.points[first].id;
+    this._anchorB = last > first ? this.points[last].id : null;
+    this._syncSelection();
+    this.map.requestRender();
+    return this;
+  }
+
+  // The rubber-band rectangle is a DOM element, not a canvas draw: it is transient desktop chrome, and
+  // routing it through the render path would put editor state in the renderer and re-bake it every frame.
+  _drawBox() {
+    const el = this._boxEl, g = this._g;
+    if (!el || !g || g.kind !== 'box') return;
+    el.style.left = `${Math.min(g.x0, g.x1)}px`;
+    el.style.top = `${Math.min(g.y0, g.y1)}px`;
+    el.style.width = `${Math.abs(g.x1 - g.x0)}px`;
+    el.style.height = `${Math.abs(g.y1 - g.y0)}px`;
+    el.classList.remove('hidden');
+  }
+
+  _hideBox() { if (this._boxEl) this._boxEl.classList.add('hidden'); }
 
   // The ids in the selected index range, in sketch order. Empty when nothing is selected. Order-free: it
   // does not matter which end was tapped first.
@@ -434,7 +473,15 @@ export class RoughLayer {
   //     point it just made, which is why insert-and-position is one gesture: the sweep IS a drag whose
   //     point did not exist yet. `created` is the only thing that differs afterwards (see pointerUp).
   //   on the MAP → pan, or (if it never moves past the slop) a tap that appends.
-  pointerDown(x, y, t) {
+  pointerDown(x, y, t, shift) {
+    // Shift wins over everything under the cursor: a box-drag that started on the line would otherwise
+    // insert a point instead of selecting. Desktop-only — there is no shift on a phone, which is why the
+    // tap-first/tap-last range (E5) stays the primary model and this is a convenience on top.
+    if (shift) {
+      this._g = { kind: 'box', x0: x, y0: y, t0: t, x1: x, y1: y };
+      this._drawBox();
+      return;
+    }
     const hit = this.hitTest(x, y);
     if (hit && hit.kind === 'segment') {
       const ll = this.map.unproject(x, y);
@@ -452,6 +499,7 @@ export class RoughLayer {
   pointerMove(x, y) {
     const g = this._g;
     if (!g) return;
+    if (g.kind === 'box') { g.x1 = x; g.y1 = y; this._drawBox(); return; }
     // The same slop guards both gestures, for the same reason: a fingertip is never still, and neither a
     // tap nor a point-selection should turn into a drag because the hand wobbled two pixels.
     if (!g.moved && !g.panning && Math.hypot(x - g.x0, y - g.y0) <= PAN_SLOP_PX) return;
@@ -474,6 +522,15 @@ export class RoughLayer {
     const g = this._g;
     if (!g) return;
     this._g = null;
+    if (g.kind === 'box') {
+      this._hideBox();
+      // A stray shift-click is not an empty box: clearing the selection on it would make shift a way to
+      // lose the range you just built.
+      if (Math.abs(g.x1 - g.x0) >= BOX_MIN_PX || Math.abs(g.y1 - g.y0) >= BOX_MIN_PX) {
+        this.selectBox(g.x0, g.y0, g.x1, g.y1);
+      }
+      return;
+    }
     if (g.kind === 'move') {
       // ONE committed edit for the whole gesture. A press on an existing point that never moved is NOT an
       // edit — committing it would re-match for nothing and, from E6, push an undo step that undoes
@@ -520,7 +577,7 @@ export class RoughLayer {
     cv.addEventListener('pointerdown', (e) => {
       if (e.button !== undefined && e.button !== 0) return;
       const p = at(e);
-      this.pointerDown(p.x, p.y, e.timeStamp);
+      this.pointerDown(p.x, p.y, e.timeStamp, e.shiftKey);
       cv.style.cursor = 'grabbing';
       e.preventDefault();                                   // no text selection / native image drag
     });

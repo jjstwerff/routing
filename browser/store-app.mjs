@@ -156,6 +156,7 @@ const rough = new RoughLayer(map, {
   snackbar: { el: document.getElementById('undo-snackbar'),
               label: document.getElementById('undo-snack-label'),
               button: document.getElementById('undo-snack-btn') },
+  boxElement: document.getElementById('select-box'),
 });
 
 // Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen
@@ -930,6 +931,21 @@ window.__perfHooks = {
     await timeMatch(pts);
     const last = pts[pts.length - 1];
     return timeMatch([...pts, [last[0] + 0.004, last[1] + 0.004]]);
+  },
+  // INSERT and DELETE an interior point — the two edits the rough editor added (PLAN-EDIT E2/E4).
+  // `matchWarm` covers a MOVE, and the whole editor rests on the claim that insert and delete ride the
+  // same incremental path rather than falling back to a cold rebuild. That was measured once during
+  // design (PLAN-EDIT §2, P5) and is here so the verdict can be RE-CHECKED instead of re-derived: a probe
+  // outside a gate is a comment. Same shape as matchWarm — establish the sketch, then time ONE edit.
+  async matchInsert(pts) {
+    await timeMatch(pts);
+    const mid = [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2];
+    return timeMatch([pts[0], mid, ...pts.slice(1)]);
+  },
+  async matchDelete(pts) {
+    const mid = [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2];
+    await timeMatch([pts[0], mid, ...pts.slice(1)]);
+    return timeMatch(pts);
   },
 };
 

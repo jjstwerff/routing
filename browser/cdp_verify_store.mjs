@@ -416,6 +416,50 @@ else if (!back.hidden) { console.log('  FAIL: the snackbar stayed up after its o
 else if (!(back.route >= 2)) { console.log(`  FAIL: the route did not re-match after the undo (${back.route} pts)`); ok = false; }
 else console.log(`  ✓ a bulk delete offers "${snack.label}Undo" and one tap restores all 5, re-matching (${back.route} pts) (E6)`);
 
+// 7c9. PLAN-EDIT E7 — shift+drag box select (desktop), with the real SHIFT modifier.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const q1 = await ptAt(1), q3 = await ptAt(3);
+const bx0 = Math.min(q1.x, q3.x) - 25, by0 = Math.min(q1.y, q3.y) - 25;
+const bx1 = Math.max(q1.x, q3.x) + 25, by1 = Math.max(q1.y, q3.y) + 25;
+await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: bx0, y: by0, button: 'left', clickCount: 1, buttons: 1, modifiers: 8 });
+for (let i = 1; i <= 6; i++) {
+  await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bx0 + ((bx1 - bx0) * i) / 6, y: by0 + ((by1 - by0) * i) / 6, button: 'left', buttons: 1, modifiers: 8 });
+  await sleep(16);
+}
+const midBox = JSON.parse(await ev(`JSON.stringify({ shown: !document.getElementById('select-box').classList.contains('hidden'),
+  w: document.getElementById('select-box').style.width })`));
+await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bx1, y: by1, button: 'left', buttons: 0, modifiers: 8 });
+await sleep(400);
+const boxed = JSON.parse(await ev(`JSON.stringify({ sel: window.__rough.selectedIds().length,
+  n: window.__rough.points.length, label: document.getElementById('rough-delete').textContent,
+  hidden: document.getElementById('select-box').classList.contains('hidden') })`));
+if (!midBox.shown) { console.log('  FAIL: the rubber band never appeared during the shift-drag'); ok = false; }
+else if (boxed.n !== 5) { console.log(`  FAIL: the box-drag changed the sketch (${boxed.n} points, want 5)`); ok = false; }
+else if (boxed.sel !== 3) { console.log(`  FAIL: the box selected ${boxed.sel} points, not the 3-point span`); ok = false; }
+else if (!boxed.hidden) { console.log('  FAIL: the rubber band stayed up after release'); ok = false; }
+else console.log(`  ✓ shift+drag boxes a ${boxed.sel}-point range ("${boxed.label}"), band ${midBox.w} wide then hidden (E7)`);
+
+// 7c10. PLAN-EDIT §2 P5 as a STANDING measurement, not a design-time probe.
+//
+// The whole editor rests on insert and delete riding the same incremental path as a move rather than
+// falling back to a cold rebuild. It was measured once while designing; here it is re-checked on every
+// gate run, because a probe outside a gate is a comment. Unthrottled the margin is large (a cold match is
+// ~10× a warm one), so the threshold is deliberately loose — this catches a STRUCTURAL regression, not
+// a few ms of noise on a loaded box.
+const SK = '[[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]]';
+const p5 = JSON.parse(await ev(`(async () => { const K = window.__perfHooks;
+  if (!K.matchInsert || !K.matchDelete) return JSON.stringify({ err: 'hooks missing' });
+  const cold = (await K.matchTrueCold(${SK})).kernel;
+  const ins = (await K.matchInsert(${SK})).kernel;
+  const del = (await K.matchDelete(${SK})).kernel;
+  return JSON.stringify({ cold: Math.round(cold), ins: Math.round(ins), del: Math.round(del) }); })()`));
+if (p5.err) { console.log(`  FAIL: ${p5.err} — PLAN-EDIT §2 P5 is no longer measurable`); ok = false; }
+else if (!(p5.ins < p5.cold * 0.6 && p5.del < p5.cold * 0.6)) {
+  console.log(`  FAIL: insert ${p5.ins}ms / delete ${p5.del}ms vs cold ${p5.cold}ms — they no longer ride the incremental path (PLAN-EDIT §2 P5)`); ok = false;
+} else console.log(`  ✓ insert ${p5.ins}ms and delete ${p5.del}ms stay WARM against a ${p5.cold}ms cold match (P5)`);
+
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
 // with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the

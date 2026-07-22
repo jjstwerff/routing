@@ -320,7 +320,50 @@ the matching; it is false on a phone.
   exactly; a bulk delete shows *"Deleted 3 · Undo"* and one tap on the snackbar's own button restores all
   five.
 
-### E7 — box select + gates
+### E7 — box select + gates ✅ **DONE**
+- **Built.** Shift+drag rubber-band select (desktop). Shift **wins over the hit test**, so a box started on
+  the sketch line selects instead of inserting. It selects the contiguous range **spanning** the points
+  inside the box — a span, not a set, because the selection model *is* a contiguous range (E5): box-select
+  and tap-first/tap-last are the same selection reachable two ways, not two models to keep in step. A box
+  containing nothing clears; a sub-`BOX_MIN_PX` shift-*click* leaves the selection alone, so shift is never
+  a way to lose the range you just built. The band is a DOM element, not a canvas draw — transient desktop
+  chrome has no business in the render path.
+- **`matchInsert` / `matchDelete` added to `__perfHooks`, and §2's P5 is now a GATE.** The editor rests on
+  insert and delete riding the same incremental path as a move rather than falling back to a cold rebuild;
+  that was measured once while designing, and is now re-checked on every gate run — a probe outside a gate
+  is a comment. Standing result: **insert 75 ms · delete 84 ms · cold 379 ms** (unthrottled), i.e. ~20% of
+  a cold match. The threshold is deliberately loose (< 60% of cold): it catches a structural regression,
+  not noise on a loaded box. `cdp_profile.mjs` reports both rows beside warm and cold.
+- **Checked.** Unit: the box selects the spanning range; an empty box clears but a stray shift-click does
+  not; a box-drag never pans, inserts or appends even when it *starts on the line*; the band shows,
+  positions, normalises a backwards drag, and hides; a boxed range bulk-deletes in **one** undo step, and
+  selecting by box records **no** history. Browser, with the real SHIFT modifier: shift+drag boxes a
+  3-point range, the band appears mid-drag and is hidden after.
+
+### E7 — the closing measurement
+
+`CPU_THROTTLE=4`, medians of 6, **spreads quoted because a profile without them is not a measurement**.
+⚠ Taken at load average ~4 with a sibling tree's `rustc` at 145% — the match rows are tight enough to
+trust, the `view` row (1.9×) is not.
+
+| | median | spread | |
+|---|---|---|---|
+| view (kernel) | 64 ms | 1.9× | ⚠ noisy — do not quote |
+| match, true cold | 1535 ms | 1.2× | vs **1450** on record |
+| match, repeat (nothing changed) | 183 ms | 1.1× | the floor |
+| **match, warm (point MOVED)** | **347 ms** | 1.2× | vs **343** on record |
+| **match, INSERT an interior point** | **323 ms** | 1.1× | new (E2) |
+| **match, DELETE an interior point** | **370 ms** | 1.2× | new (E4) |
+
+**The editor did not move the matcher**: warm 347 against 343 recorded, cold 1535 against 1450, both
+inside the noise at this load. And P5 holds at the target device — insert and delete are **20% / 23% of a
+cold match**, squarely in the warm band, exactly as the design-time probe claimed.
+
+⚠ **One honest gap.** The render-budget row reports `rough 0 ms · 0 drawn` — the probe runs with an
+**empty sketch**, so it proves the row exists, *not* that drawing the sketch is free. It cannot plausibly
+matter (a handful of points against the frame's 3,170 label vertices), but nobody has measured it, and
+"it cannot matter" is the sentence this repo has been burned by before. Seed the budget probe with a
+sketch if the sketch ever grows teeth.
 - **Build.** Shift+drag box select (desktop only, least load-bearing). Add `matchInsert` / `matchDelete` to
   `__perfHooks` so §2's P5 becomes a standing measurement. Re-record the PLAN-PERF pixel hashes.
 - **Check.** `make test`, `test-native`, `test-wasm`, `test-map` green; `tools/match_parity.sh`
@@ -362,9 +405,33 @@ presentation; it must not move a route), and `tools/basemap_isolation_gate.sh` m
 GPX import/export, elevation, the sync server, draft-save of undo history, goal length, and any change to
 the matcher. Each is its own track. **If this work moves a matched route, it has a bug.**
 
-## 9. Definition of done
+## 9. Definition of done — ✅ **MET (2026-07-23)**
 
 `DESIGN.md` §1's primitive set works on the standalone app: **place · drag · insert (tap + sweep) · remove
 (dblclick / select+Delete) · multi-select bulk-delete · undo/redo** — every one flowing through the three
 chokepoints, the matched line read-only, the rough line drawn from the snapped origin, routes byte-identical
 to before, and each of the five §2 probes running inside a gate.
+
+Gates green at E7: `make test` · `test-native` · `test-wasm` · `test-map` · `tools/match_parity.sh`
+(byte-identical across all 5 cases / 3 distinct routes, every step).
+
+**What the design got wrong, kept because the corrections are the useful part:**
+
+| the plan said | what building it showed |
+|---|---|
+| add an overlay hook beside `onRender` | `onRender` had **no consumers** and was itself the bug — **fix** the seam, do not double it (E1) |
+| fill in `map.hitTest` | hit testing classifies **input**; the stub was deleted and it was built beside the tolerances (E2) |
+| port rough.js's 250 ms tap dedupe | E2's hit **priority** subsumed it, and screen-keyed it was **harmful** across a pan — removed (E2) |
+| the pixel hashes will need re-recording | they **did not change** — the captures precede any sketch (E1) |
+| E2 and E3 are separate gestures | they are **one** gesture differing by a `created` flag (E3) |
+
+**And three bugs the work uncovered that predate it** — all now standing assertions: a **pan appended a
+spurious point** (P1), a **click during a match was dropped** leaving a route 1417 m stale (P4), and
+`renderSnappedDirect` drew **different overlays** than `render` (E1).
+
+## 10. What is NOT here
+
+Out of scope by §8 and still open: GPX import/export, elevation, the sync server, goal length, and
+**draft-save of the undo history** (`DESIGN.md` §10 — the history is per-session and ephemeral by design;
+persisting it is its own track). `History.exportHistory`/`importHistory` from `undo.js` were deliberately
+**not** ported, because nothing consumes them yet.

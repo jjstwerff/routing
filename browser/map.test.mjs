@@ -8,7 +8,7 @@
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
-         DOUBLE_CLICK_MS } from './rough.mjs';
+         DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
 
 let fails = 0;
@@ -1001,5 +1001,98 @@ console.log('E6 · the history is bounded, and the oldest state falls off the bo
   ok(n === 4, `it still walks back through everything it kept (${n} undos)`);
 }
 
-console.log(fails ? `\nM0+M1+E0-E6 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E6 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag, delete, range-delete and undo hold');
+// --- PLAN-EDIT E7: shift-drag box select (desktop) ---------------------------------------------------
+
+const stubBox = () => ({ style: {}, classList: { _h: true, add() { this._h = true; }, remove() { this._h = false; } } });
+const boxAround = (m, r, idxs, pad = 20) => {
+  const px = idxs.map((i) => m.project(r.points[i].lat, r.points[i].lon));
+  return { x0: Math.min(...px.map((p) => p.x)) - pad, y0: Math.min(...px.map((p) => p.y)) - pad,
+           x1: Math.max(...px.map((p) => p.x)) + pad, y1: Math.max(...px.map((p) => p.y)) + pad };
+};
+
+console.log('\nE7 · a shift-drag box selects the range SPANNING the points inside it');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const ids = r.points.map((p) => p.id);
+  const b = boxAround(m, r, [1, 3]);
+  r.pointerDown(b.x0, b.y0, 1000, true);
+  r.pointerMove(b.x1, b.y1);
+  r.pointerUp();
+  ok(r.selectedIds().join() === ids.slice(1, 4).join(), `the box selects points 1..3 (${r.selectedIds().length})`);
+  // A span, not a set: the model is a contiguous range, so box-select and tap-first/tap-last produce the
+  // SAME selection reachable two ways rather than two models to keep in step.
+  ok(r.points[2].selected === true, 'including a point the box happened to enclose anyway');
+}
+
+console.log('E7 · a box that misses everything clears; a stray shift-click does not');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const b = boxAround(m, r, [0, 2]);
+  r.pointerDown(b.x0, b.y0, 1000, true); r.pointerMove(b.x1, b.y1); r.pointerUp();
+  ok(r.selectedIds().length === 3, 'a range is selected');
+
+  const far = emptySpot(r) || { x: 5, y: 5 };
+  r.pointerDown(far.x + 4000, far.y + 4000, 2000, true);           // a box over empty space
+  r.pointerMove(far.x + 4200, far.y + 4200);
+  r.pointerUp();
+  ok(r.selectedIds().length === 0, 'a box containing no points clears the selection');
+
+  r.pointerDown(b.x0, b.y0, 3000, true); r.pointerMove(b.x1, b.y1); r.pointerUp();
+  ok(r.selectedIds().length === 3, 'selected again');
+  r.pointerDown(300, 300, 4000, true);
+  r.pointerMove(300 + BOX_MIN_PX - 1, 300);                        // a shift-CLICK, not a box
+  r.pointerUp();
+  ok(r.selectedIds().length === 3, `a sub-${BOX_MIN_PX}px shift-drag leaves the selection alone (${r.selectedIds().length})`);
+}
+
+console.log('E7 · a box-drag never pans, inserts, or appends');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const cam = { ...m.camera };
+  const n = r.points.length;
+  // Start the box ON the sketch line: shift must win over the hit test, or this would insert a point.
+  const a = m.project(r.points[0].lat, r.points[0].lon), b2 = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown((a.x + b2.x) / 2, (a.y + b2.y) / 2, 1000, true);
+  r.pointerMove(b2.x + 30, b2.y + 30);
+  r.pointerUp();
+  ok(r.points.length === n, `no point was inserted or appended (${r.points.length})`);
+  ok(m.camera.lat === cam.lat && m.camera.lon === cam.lon, 'and the camera did not move');
+}
+
+console.log('E7 · the rubber band shows during the drag and goes away after');
+{
+  const m = freshMap();
+  const box = stubBox();
+  const r = new RoughLayer(m, { bind: false, boxElement: box });
+  for (const [lat, lon] of FIVE) r.append(lat, lon);
+  ok(box.classList._h === true, 'hidden at rest');
+  r.pointerDown(100, 120, 1000, true);
+  r.pointerMove(260, 300);
+  ok(box.classList._h === false, 'visible while dragging');
+  ok(box.style.left === '100px' && box.style.top === '120px' && box.style.width === '160px' && box.style.height === '180px',
+     `and positioned from the drag (${box.style.left},${box.style.top} ${box.style.width}×${box.style.height})`);
+  r.pointerMove(40, 60);                                            // drag back past the origin
+  ok(box.style.left === '40px' && box.style.width === '60px', `it normalises a backwards drag (${box.style.left} ${box.style.width})`);
+  r.pointerUp();
+  ok(box.classList._h === true, 'hidden again on release');
+}
+
+console.log('E7 · a boxed range bulk-deletes like any other, in ONE undo step');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const depth = r.history.depth;
+  const b = boxAround(m, r, [1, 3]);
+  r.pointerDown(b.x0, b.y0, 1000, true); r.pointerMove(b.x1, b.y1); r.pointerUp();
+  ok(r.history.depth === depth, 'selecting by box records no history — it is not a mutation');
+  r.deleteSelected();
+  ok(r.points.length === 2, `the boxed range is gone (${r.points.length} left)`);
+  ok(r.history.depth === depth + 1, 'the delete is ONE undo step');
+  ok(r.undo() && r.points.length === 5, 'and one undo brings all three back');
+}
+
+console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');
 process.exit(fails ? 1 : 0);
