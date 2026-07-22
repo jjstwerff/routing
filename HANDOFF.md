@@ -29,8 +29,8 @@ Three structural changes got it there, and each is worth more than its number:
    ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 2721 ms**,
-**warm match ~880 → 644 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1820 ms**,
+**warm match ~880 → 526 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
 frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
@@ -71,10 +71,11 @@ elision is live (probe flat 1–3 ms vs 214 ms), and the `expose` hang was root-
 store read-only and **iterating** a store-backed hash claims a cursor record *inside it*; **reads are
 fine**, and `release`/`expose` brackets it.
 
-⚠ **`PLAN-PERF` §0 has nothing open.** 18 and 19b are both ⛔ and measured, not guessed. The cold match
-(2721 ms) is ~49% `build_graph`, ~42% the search, ~9% the corridor read — so making it materially faster
-needs a **cheaper graph build** or a **smaller corridor**, not persistence. That is a new design question,
-not a remaining step.
+⚠ **`PLAN-PERF` §0 has nothing open.** 18 and 19b are both ⛔ and measured, not guessed. The graph build
+was then attacked directly (**§7i**): edges now reference their source way instead of copying its 11 text
+tags, and `precompute_edges` computes costs **per way** rather than per edge — **cold match 2721 → 1820
+ms**, warm 644 → 526, routes byte-identical. Native split is now corridor 20 · build_graph 93 · match 115,
+so **the SEARCH is the largest slice for the first time** and is where the next attack belongs.
 
 **What to do next, in the order the evidence favours:**
 

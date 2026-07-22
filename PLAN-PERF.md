@@ -18,8 +18,8 @@ it measures it and ranks it against everything else.
 | **view** (pan past the box) | 946 ms | **126 ms** | 7.5× — §7g(2), §6c |
 | **pan frame** (camera moved, no reload) | 76 ms | **20 ms** | 3.8× — §6c |
 | JS objects retained for geometry | 239,135 | **4,609** | −98.1% — §6c |
-| **cold match** (first click / corridor miss) | 6370 ms | **2721 ms** | 2.3× — §7h(2), §7a(2) |
-| **warm match** (one point moved — what users do) | ~880 ms | **644 ms** | 1.5× |
+| **cold match** (first click / corridor miss) | 6370 ms | **1820 ms** | 3.5× — §7h(2), §7a(2), §7i |
+| **warm match** (one point moved — what users do) | ~880 ms | **526 ms** | 1.7× — §7i |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
 | layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
 
@@ -31,8 +31,9 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 - **Nothing in §0 is open.** 18 is ⛔ (`par` is a no-op in the browser, §6e) and **19b is ⛔ measured and
   rejected** (§7a(2): the union is only ~16% cheaper than building — ~8% of a cold match — for a format
   change and the plan's riskiest row). 19a landed the cheap part (−18%, routes byte-identical).
-- **The cold match is now 2721 ms and is ~49% `build_graph`, ~42% the search, ~9% the corridor read.**
-  Making it materially faster needs a cheaper graph BUILD or a smaller corridor — not persistence.
+- **The cold match is now 1820 ms** (§7i: edges reference their way instead of copying its tags; costs
+  computed per way, not per edge). Native split is now corridor 20 · build_graph 93 · match 115 — the
+  SEARCH is the largest slice for the first time.
 - **18 is ⛔ DO NOT BUILD** — `par` is a no-op in the browser (§6e), proven from the shipped wasm.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
@@ -1073,6 +1074,57 @@ is the harness that tunes and then guards that gate; it prints the §7 numbers (
 bridged_m/class_m) for both tiers per sketch.
 
 ---
+
+## 7i. Attacking the corridor read and the graph build directly (2026-07-22)
+
+With 18 and 19b both closed on measurement, the cold match was attacked where it actually is. The
+attribution came first, and it named a culprit nobody had proposed.
+
+### Where `build_graph`'s 163 ms went
+
+Measured by variant (replace one part, re-time):
+
+| component | cost |
+|---|---|
+| **`add_edge`** | **~108 ms (66%)** |
+| node hashing | ~55 ms |
+| per-edge geodesic | ~6 ms |
+| `build_adj` (the CSR passes) | ~6 ms |
+
+**Neither the trig nor the CSR mattered.** The cost was constructing ~37.6k `GEdge` records of
+**fourteen** fields — eleven of them text tags that are *identical for every edge of the same way*. A
+corridor has ~7.1k ways behind those 37.6k edges, so every tag was being copied five times over.
+
+### The fix, and two wrong turns worth keeping
+
+`GEdge` now holds `w`, an index into a per-way tag table on the `Graph`. Both wrong turns were caught by
+measuring rather than by reasoning:
+
+1. **`etags` first returned `Way`** — which carries its `coords`. Reading one per edge copied a
+   coordinate vector and `match` went 199 → 450 ms: the entire `build_graph` saving handed straight back.
+   Hence `WayTags` — 11 text handles, no geometry.
+2. **Even `WayTags` cost too much copied per edge** (~380 ms). The fix was not a cheaper copy but *not
+   copying*: `precompute_edges` now computes its five cost arrays **per WAY**, and the per-edge pass is
+   five array reads. `way_penalty` alone is ~40 string comparisons and was running 37.6k times instead of
+   7.1k — so this ended up **faster than the original**, not merely recovered.
+
+### Result
+
+Native, TUBE tier (what a cold match uses):
+
+| | corridor | build_graph | match | total |
+|---|---|---|---|---|
+| this morning | 71 | 180 | 124 | 375 ms |
+| after 19a | 29 | 153 | 130 | 311 ms |
+| **now** | **20** | **93** | **115** | **223 ms** (−41%) |
+
+Browser, `CPU_THROTTLE=4`, spreads 1.0×: **cold match 2721 → 1820 ms**, **warm match 644 → 526 ms**.
+Routes byte-identical throughout — all four tile-border fingerprints and all three `match_parity`
+lengths unchanged.
+
+⚠ Hit a loft **codegen bug** on the way: a `text` field read directly off a struct-returning call emits
+Rust returning `&str` where `String` is expected (`--native` only, and it surfaces as a rustc error
+against generated code). Bind the struct to a local first. Filed in `docs/loft-feedback.md`.
 
 ## 7a(2). Step 19 RE-MEASURED (2026-07-22) — and 19a landed without a format change
 
