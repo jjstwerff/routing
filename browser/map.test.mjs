@@ -488,5 +488,120 @@ console.log('E2 · a cancelled sweep still commits — its point is on the map e
   ok(commits.filter((c) => c === true).length === 1, 'and it is committed, so undo can take it back');
 }
 
-console.log(fails ? `\nM0+M1+E0+E1+E2 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0+E1+E2 PASS — projection, pan/zoom, the edit chokepoints, the sketch layer and insert hold');
+// --- PLAN-EDIT E3: drag a point ----------------------------------------------------------------------
+
+const sketchOf = (m, pts) => { const r = layerOn(m); for (const [lat, lon] of pts) r.append(lat, lon); return r; };
+const TRI = [[52.20, 6.85], [52.24, 6.95], [52.28, 6.88]];
+
+console.log('\nE3 · dragging a point moves it, and the line follows every frame');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, committed) => commits.push(committed) });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const mid = m.project(TRI[1][0], TRI[1][1]);
+  commits.length = 0;
+
+  r.pointerDown(mid.x, mid.y, 1000);
+  ok(commits.length === 0, 'pressing a point commits nothing yet');
+  for (let i = 1; i <= 5; i++) r.pointerMove(mid.x + i * 12, mid.y - i * 8);
+  ok(commits.length === 5 && commits.every((c) => c === false),
+     `every move is a LIVE, uncommitted edit (${commits.length} of them)`);
+  ok(r.points.length === 3, 'a drag never changes the point count');
+  const at = m.unproject(mid.x + 60, mid.y - 40);
+  ok(Math.abs(r.points[1].lat - at.lat) < 1e-9 && Math.abs(r.points[1].lon - at.lon) < 1e-9,
+     'the point sits exactly where the finger left it');
+  ok(r.points[0].lat === TRI[0][0] && r.points[2].lat === TRI[2][0], 'its neighbours did not move');
+
+  r.pointerUp();
+  ok(commits.filter((c) => c === true).length === 1, `the release commits exactly ONCE (${commits.filter((c) => c).length})`);
+}
+
+console.log('E3 · a press on a point that never moves is not an edit');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, c) => commits.push(c) });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const p0 = m.project(TRI[0][0], TRI[0][1]);
+  commits.length = 0;
+  r.pointerDown(p0.x, p0.y, 1000);
+  r.pointerMove(p0.x + PAN_SLOP_PX, p0.y);        // jitter, below the slop
+  r.pointerUp();
+  ok(commits.length === 0, `a press + ${PAN_SLOP_PX}px of jitter commits nothing (${commits.length}) — E4 makes this a selection`);
+  ok(r.points[0].lat === TRI[0][0], 'and the point did not move');
+  ok(r.points.length === 3, 'and nothing was appended');
+}
+
+console.log('E3 · a drag that starts on a point never pans the map');
+{
+  const m = freshMap();
+  const r = sketchOf(m, TRI);
+  const cam = { ...m.camera };
+  const mid = m.project(TRI[1][0], TRI[1][1]);
+  r.pointerDown(mid.x, mid.y, 1000);
+  r.pointerMove(mid.x + 120, mid.y + 90);
+  r.pointerUp();
+  ok(m.camera.lat === cam.lat && m.camera.lon === cam.lon, 'the camera is untouched — the point moved, not the map');
+}
+
+console.log('E3 · dragging an END point keeps its role; the sketch order is never reshuffled');
+{
+  const m = freshMap();
+  const r = sketchOf(m, TRI);
+  const ids = r.points.map((p) => p.id).join(',');
+  const start = m.project(TRI[0][0], TRI[0][1]);
+  // Drag the START right past the other two points. Order is positional, so it must STAY the start —
+  // a matcher trace is an ordered list, and silently re-sorting it would re-route the whole sketch.
+  r.pointerDown(start.x, start.y, 1000);
+  r.pointerMove(start.x + 400, start.y + 300);
+  r.pointerUp();
+  ok(r.points.map((p) => p.id).join(',') === ids, `the order is unchanged (${ids})`);
+  ok(r.points[0].id === Number(ids.split(',')[0]), 'the dragged point is still the START');
+}
+
+console.log('E3 · a cancelled drag keeps the point where it landed, and commits it');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, c) => commits.push(c) });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const mid = m.project(TRI[1][0], TRI[1][1]);
+  commits.length = 0;
+  r.pointerDown(mid.x, mid.y, 1000);
+  r.pointerMove(mid.x + 80, mid.y);
+  r.pointerCancel();
+  const at = m.unproject(mid.x + 80, mid.y);
+  ok(Math.abs(r.points[1].lat - at.lat) < 1e-9, 'the point stays where the finger left it');
+  ok(commits.filter((c) => c === true).length === 1, 'and the edit is committed, so undo can take it back');
+}
+
+console.log('E3 · the coalescer keeps a drag affordable — many moves, few matches');
+{
+  // The reason this matters is a measurement, not a preference: a warm match is ~545 ms throttled and a
+  // drag emits ~33 moves/s, so queueing them owes ~36 s for a 2-second drag. Here the "kernel" is a slow
+  // stub, and what is asserted is that the drag's matches COLLAPSE — and that the last one wins.
+  const m = freshMap();
+  const q = new KernelQueue();
+  const ran = [];
+  const r = new RoughLayer(m, {
+    bind: false,
+    onCommit: (pts) => q.post('match', async () => { await new Promise((res) => setTimeout(res, 12)); ran.push(pts.length > 1 ? pts[1][0] : null); }),
+  });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const mid = m.project(TRI[1][0], TRI[1][1]);
+  const MOVES = 24;
+  r.pointerDown(mid.x, mid.y, 1000);
+  for (let i = 1; i <= MOVES; i++) r.pointerMove(mid.x + i * 6, mid.y - i * 4);
+  r.pointerUp();
+  // Bounded: a drain bug must fail this test, not hang the whole suite with no output.
+  for (let i = 0; i < 200 && (q.pendingCount || ran.length < 2); i++) await new Promise((res) => setTimeout(res, 10));
+  await new Promise((res) => setTimeout(res, 60));
+  ok(q.pendingCount === 0, 'the queue drained');
+  ok(ran.length < MOVES, `${MOVES} moves produced ${ran.length} matches, not ${MOVES}`);
+  const finalLat = r.points[1].lat;
+  ok(ran[ran.length - 1] === finalLat, 'and the LAST match run is the one for the final position');
+}
+
+console.log(fails ? `\nM0+M1+E0-E3 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E3 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert and drag hold');
 process.exit(fails ? 1 : 0);

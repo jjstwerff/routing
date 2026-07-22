@@ -182,9 +182,13 @@ no visual answer to "did my click land?".
    belongs with the dispatcher. Press-on-line + drag inserts and positions in one gesture, one commit.
    ⚠ It also **subsumed E0's P2 dedupe**, which was removed as unreachable *and* harmful — see PLAN-EDIT
    E2. **E4's double-click-delete must key on the point's `id`, not a screen spot.**
-3. ⏭ **NEXT — drag to move** a point, rough line following live at 60 fps, matched route coalesced.
-   The press-on-a-point gesture is already classified and currently inert — E3 fills it in.
-4. **Delete** — double-click (behind the 250 ms dedupe) and tap-select + Delete for touch.
+3. ✅ **DONE — drag to move.** The sweep and the drag proved to be **one** gesture (they differ only in
+   whether the point existed), so they share a `move` gesture with a `created` flag. Measured **20 moves →
+   6 matches**, with the drawn route byte-identical to a re-match of the settled sketch.
+   ⚠ **A press on a point that never moves commits NOTHING** — that do-nothing press is exactly what E4
+   turns into a selection.
+4. ⏭ **NEXT — delete.** Double-click (⚠ key the detector on the point's **`id`**, not a screen spot — see
+   increment 2) and tap-select + a Delete button for touch.
 5. **Range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a primitive).
 6. Box-select last — desktop-only and the least load-bearing.
 

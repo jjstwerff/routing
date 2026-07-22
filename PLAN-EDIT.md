@@ -225,12 +225,28 @@ the matching; it is false on a phone.
   a drift back to degrees fails loudly. Browser: press-on-line + drag ⇒ **ids `5,7,6`** — spliced between
   its neighbours, at the release position.
 
-### E3 — drag a point
-- **Build.** A `pointerdown` on a point captures it; `pointermove` moves it and redraws the rough line
-  **every frame**; the matched route updates through the coalescer; `pointerup` commits.
-- **Check.** Browser: drag a mid point 40 px ⇒ the route changes, and the number of kernel match calls is
-  **< the number of move events** (the coalescer is doing its job) while the **final** route corresponds to
-  the **final** position.
+### E3 — drag a point ✅ **DONE**
+- **Built.** A press on a point captures it; `pointermove` moves it and redraws the sketch every frame;
+  the matched route trails through the coalescer; `pointerup` commits **once**.
+- **The sweep and the drag turned out to be ONE gesture.** E2's insert-then-position and E3's drag differ
+  only in whether the point existed beforehand, so they collapsed into a single `move` gesture carrying a
+  `created` flag. That flag is not decoration — it decides the release: a press on an existing point that
+  **never moved past the slop is not an edit** and must not commit, or it would re-match for nothing and
+  (from E6) push an undo step that undoes nothing. A press that *created* a point always commits.
+  ⚠ **E4 takes over exactly that do-nothing press** and turns it into a selection.
+- **`commitEdit` now uses `requestRender`, not `render`.** A drag emits `pointermove` faster than the
+  display refreshes (a 125 Hz mouse against a 60 Hz screen); rendering per *event* draws frames nobody
+  sees. In node there is no `requestAnimationFrame` and it falls through to a synchronous render, so the
+  unit tier still observes results immediately.
+- **Checked.** Unit: every move is a live *uncommitted* edit and the release commits exactly once; a drag
+  never changes the point count and never moves the neighbours; a press + slop-sized jitter commits
+  **nothing**; a drag starting on a point never pans; dragging the start *past* the other points keeps it
+  the start (order is positional — silently re-sorting a trace would re-route the whole sketch); a
+  cancelled drag keeps its point and commits. And the coalescer against a slow stub kernel: **24 moves →
+  2 matches**, the last one for the final position.
+- **Measured in the browser: 20 move events → 6 matches**, and the drawn route is **byte-identical to a
+  re-match of the settled sketch** — which is the real anti-staleness check, stronger than "the route
+  changed". On a phone the ratio only improves: slower matches coalesce more.
 
 ### E4 — delete one point
 - **Build.** Double-click a point (mouse, behind the P2 dedupe); tap-select + a **Delete** button in

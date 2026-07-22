@@ -207,7 +207,11 @@ export class RoughLayer {
   // one undo step (E6). It is passed through rather than interpreted here, because what "committed" costs
   // is the caller's business — this function's job is that NOBODY skips it.
   commitEdit(committed = true) {
-    this.map.render();
+    // requestRender, not render: a drag emits pointermove faster than the display refreshes (a 125 Hz
+    // mouse against a 60 Hz screen), and rendering per EVENT would draw frames nobody ever sees. This
+    // coalesces to one render per frame. In node there is no requestAnimationFrame and it falls through to
+    // a synchronous render, so the unit tier still observes the result immediately.
+    this.map.requestRender();
     this.onCommit(this.coords(), committed);
     return this;
   }
@@ -217,20 +221,21 @@ export class RoughLayer {
   // Screen-space and DOM-free so map.test.mjs can drive a whole gesture without a browser; `bind()` below
   // is the thin adapter that turns real pointer events into these three calls.
 
-  // One press, three possible gestures — decided here and nowhere else:
-  //   on a SEGMENT → insert a point there and let this same gesture position it (the sweep)
-  //   on a POINT   → reserved for E3's drag; inert for now, but it must NOT fall through to append, which
-  //                  would stack a second point on top of the one being pressed
-  //   on the MAP   → pan, or (if it never moves past the slop) a tap that appends
+  // One press, two possible gestures — decided here and nowhere else:
+  //   on a POINT or a SEGMENT → MOVE a point. Pressing a segment inserts one first and then moves the
+  //     point it just made, which is why insert-and-position is one gesture: the sweep IS a drag whose
+  //     point did not exist yet. `created` is the only thing that differs afterwards (see pointerUp).
+  //   on the MAP → pan, or (if it never moves past the slop) a tap that appends.
   pointerDown(x, y, t) {
     const hit = this.hitTest(x, y);
     if (hit && hit.kind === 'segment') {
       const ll = this.map.unproject(x, y);
-      this._g = { kind: 'insert', x0: x, y0: y, t0: t, pt: this.insertAt(hit.index + 1, ll.lat, ll.lon) };
+      this._g = { kind: 'move', x0: x, y0: y, t0: t, created: true, moved: false,
+                  pt: this.insertAt(hit.index + 1, ll.lat, ll.lon) };
       return;
     }
     if (hit && hit.kind === 'point') {
-      this._g = { kind: 'point', x0: x, y0: y, t0: t, index: hit.index };
+      this._g = { kind: 'move', x0: x, y0: y, t0: t, created: false, moved: false, pt: this.points[hit.index] };
       return;
     }
     this._g = { kind: 'pan', x0: x, y0: y, t0: t, grab: this.map.unproject(x, y), panning: false };
@@ -239,19 +244,20 @@ export class RoughLayer {
   pointerMove(x, y) {
     const g = this._g;
     if (!g) return;
-    if (g.kind === 'insert') {
+    // The same slop guards both gestures, for the same reason: a fingertip is never still, and neither a
+    // tap nor a point-selection should turn into a drag because the hand wobbled two pixels.
+    if (!g.moved && !g.panning && Math.hypot(x - g.x0, y - g.y0) <= PAN_SLOP_PX) return;
+    if (g.kind === 'move') {
+      g.moved = true;
       // The sketch line follows the finger EVERY frame — it is pure JS and costs nothing. The matched
       // route trails behind through the coalescer, which is DESIGN.md §1's two-tier feedback: distance is
-      // instant, the route is lag-tolerant.
+      // instant, the route is lag-tolerant. A warm match is ~545 ms and moves arrive ~33×/s, so this is
+      // the difference between a live preview and 36 seconds of queued matching for a 2-second drag.
       const ll = this.map.unproject(x, y);
       g.pt.lat = ll.lat; g.pt.lon = ll.lon;
       this.commitEdit(false);
       return;
     }
-    if (g.kind !== 'pan') return;
-    // Below the slop this is still a candidate TAP and the camera must not move — otherwise a tap's own
-    // coordinates would shift under it between press and release.
-    if (!g.panning && Math.hypot(x - g.x0, y - g.y0) <= PAN_SLOP_PX) return;
     g.panning = true;
     this.map.dragTo({ x, y }, g.grab);   // delegate: the camera is map.mjs's business, not the sketch's
   }
@@ -260,18 +266,23 @@ export class RoughLayer {
     const g = this._g;
     if (!g) return;
     this._g = null;
-    if (g.kind === 'insert') { this.commitEdit(true); return; }   // ONE committed edit for the whole sweep
-    if (g.kind === 'point') return;                               // E3 fills this in
+    if (g.kind === 'move') {
+      // ONE committed edit for the whole gesture. A press on an existing point that never moved is NOT an
+      // edit — committing it would re-match for nothing and, from E6, push an undo step that undoes
+      // nothing. (E4 turns that same do-nothing press into a selection.)
+      if (g.created || g.moved) this.commitEdit(true);
+      return;
+    }
     if (g.panning) return;                                        // P1: a pan is not an edit, and never commits
     this._tap(g.x0, g.y0);
   }
 
-  // A cancelled sweep still leaves its point on the map, so it must still be committed — dropping the
-  // commit would leave a real edit that undo could never take back.
+  // A cancelled gesture still leaves its point where the finger left it, so a real edit must still be
+  // committed — dropping it would leave a change that undo could never take back.
   pointerCancel() {
     const g = this._g;
     this._g = null;
-    if (g && g.kind === 'insert') this.commitEdit(true);
+    if (g && g.kind === 'move' && (g.created || g.moved)) this.commitEdit(true);
   }
 
   // A tap on empty map extends the sketch. A tap that lands on the sketch never reaches here — hitTest

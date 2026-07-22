@@ -239,6 +239,43 @@ else if (Math.abs(after.x - wantX) > 6 || Math.abs(after.y - wantY) > 6) {
 } else if (after.rough !== 3) { console.log(`  FAIL: the sketch rendered ${after.rough} points after the sweep`); ok = false; }
 else console.log(`  ✓ press-on-line + drag inserts ONE point between its neighbours, at the release (ids ${after.ids}) (E2)`);
 
+// 7c3. PLAN-EDIT E3 — drag a point: the route follows, and the drag does not queue a match per frame.
+//
+// Two things are asserted, and the second is the one with a number behind it: a warm match is ~545 ms
+// throttled while a drag emits ~33 moves/s, so matching per move would owe ~36 s for a two-second drag.
+// The coalescer must collapse them — AND the route that survives must be the one for where the point
+// finally landed, which is checked by re-matching the settled sketch and requiring an identical route.
+await resetSketch();
+await click(300, 220); await click(560, 400); await click(760, 200);
+await sleep(3000);
+const grab = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
+  const s = m.project(p.lat, p.lon);
+  window.__storeApp.matchRuns = 0;
+  return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y) }); })()`));
+const MOVES = 20;
+await mouse('mousePressed', grab.x, grab.y);
+for (let i = 1; i <= MOVES; i++) { await mouse('mouseMoved', grab.x + i * 5, grab.y + i * 4); await sleep(16); }
+await mouse('mouseReleased', grab.x + MOVES * 5, grab.y + MOVES * 4);
+for (let i = 0; i < 60 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
+await sleep(2000);
+const dragged = JSON.parse(await ev(`(() => { const m = window.__map0, r = window.__rough;
+  const p = r.points[1], s = m.project(p.lat, p.lon);
+  const h = m.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7);
+  return JSON.stringify({ n: r.points.length, x: Math.round(s.x), y: Math.round(s.y),
+                          runs: window.__storeApp.matchRuns, route: m.route.length, hash: h }); })()`));
+// Re-match the settled sketch: if the drag's final position was dropped, the displayed route differs.
+const reHash = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+const wx = grab.x + MOVES * 5, wy = grab.y + MOVES * 4;
+if (dragged.n !== 3) { console.log(`  FAIL: the drag changed the point count to ${dragged.n}`); ok = false; }
+else if (Math.abs(dragged.x - wx) > 6 || Math.abs(dragged.y - wy) > 6) {
+  console.log(`  FAIL: the dragged point is at (${dragged.x},${dragged.y}), not where it was released (${wx},${wy})`); ok = false;
+} else if (!(dragged.runs < MOVES)) {
+  console.log(`  FAIL: ${MOVES} move events produced ${dragged.runs} matches — the drag is matching per frame, not coalescing`); ok = false;
+} else if (dragged.hash !== reHash) {
+  console.log(`  FAIL: the drawn route is STALE — re-matching the settled sketch gives a different route (${dragged.hash} vs ${reHash})`); ok = false;
+} else console.log(`  ✓ drag: the point follows and the route is the settled sketch's, in ${dragged.runs} matches for ${MOVES} moves (E3)`);
+
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
 // with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the
