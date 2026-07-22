@@ -48,6 +48,21 @@ fn time_tier(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, tube: boolean, l
   println("#P {label} corridor={c1 - c0} build_graph={b1 - c1} match={m1 - b1} total={total}");
 }
 
+// A dense sketch: n points evenly along the same corridor. PLAN-MATCH says a REAL drawn route is ~40
+// points, and the 3-point sketch every other probe uses is the sparse extreme — anchoring is per POINT,
+// so the two sizes are different questions.
+fn dense(n: integer) -> text {
+  out = "";
+  for i in 0..n {
+    f = (i as float) / ((n - 1) as float) ?? 0.0;
+    la = 52.2412299 + f * (52.3116272 - 52.2412299);
+    lo = 6.8834496 + f * (6.9088554 - 6.8834496);
+    if i > 0 { out += ";"; }
+    out += "{la:2.7},{lo:2.7}";
+  }
+  out
+}
+
 fn main() {
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
@@ -61,4 +76,7 @@ fn main() {
   // is about. Read the medians, not the first line.
   for _ in 0..REPS { time_tier(roads, trace, true, "TUBE"); }
   for _ in 0..REPS { time_tier(roads, trace, false, "BBOX"); }
+  // The realistic case: anchoring is per POINT, so this is where nearest_nodes actually bites.
+  d40 = parse_sketch(dense(40));
+  for _ in 0..REPS { time_tier(roads, d40, true, "TUBE40"); }
 }
