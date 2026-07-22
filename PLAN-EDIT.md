@@ -1,194 +1,255 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
-# PLAN-EDIT — restore the rough-layer editing primitives
+# PLAN-EDIT — the rough-layer editor, on the canvas seam
 
-> **Status (2026-07-12):** the app is now the **standalone store app** ([PLAN-BUILD](PLAN-BUILD.md), the plan
-> of record) — `browser/index.html` is the store-app front end, not the retired tiles app this doc predates.
-> These editing primitives are still to build (PLAN-BUILD B6); they ride the same `map.mjs` seam, on the store
-> app's rough sketch (the `match` re-issue is already wired — click adds a point and re-matches).
+> **Status (2026-07-22): re-seated and open.** The 2026-07-12 version of this doc was written against
+> **Leaflet** and deferred with the note *"editing must be built once, on the canvas renderer's seam"*.
+> [PLAN-MAP](PLAN-MAP.md) has landed, so that condition is met and this doc is rewritten against
+> `browser/map.mjs` + `browser/store-app.mjs`. The **invariant survived the re-seat; the mechanisms did
+> not** — §2 and §3 record which of the old doc's claims the probes killed.
 
-**Goal.** Bring the single-file loft-native browser app (`browser/index.html`) back to the **original
-interaction design** (DESIGN.md §1): the rough sketch is edited with a **small, sharp primitive set** —
-*place · drag · insert · remove · multi-delete · undo* — and re-matches on every edit. The loft-native
-rewrite (`da2a178` "retire jco") collapsed the old multi-file app into one file and, in doing so, dropped
-every editing gesture except *place*. This plan restores the rest, faithfully, adapted to the current
-architecture (in-browser wasm match; single self-contained file).
+**Goal.** The standalone app can **append** to a sketch and nothing else. `DESIGN.md` §1 makes editing the
+rough layer *the* interaction — *"Correcting a wrong match = move the points, not the line"* — so the
+missing half is: **see the sketch · insert · drag · delete · bulk-delete · undo.**
 
-This is a **restoration, not a redesign.** Multi-select and undo are the *original* design's own primitives,
-not additions. Nothing here touches the matched line — see the invariant.
-
-> **Sequencing (2026-07-08):** deferred until after **[PLAN-MAP](PLAN-MAP.md)** lands. We are dropping
-> Leaflet for our own canvas renderer; editing must be built **once**, on that renderer's seam
-> (`project/unproject/camera/hitTest`), not on Leaflet. So E0's "point model + commit chokepoint" sits on
-> PLAN-MAP, and the gesture math below (drag/insert/`nearestSegment`) uses the seam's `project`/`hitTest`
-> instead of Leaflet's `latLngToLayerPoint`/`L.LineUtil`. The design is otherwise unchanged.
-
----
-
-## 0. Provenance — the original design and code (read these, don't reinvent)
-
-- **Design of record:** `DESIGN.md` §1 ("Core idea — sketch a shape, match it to real paths") and §2
-  ("Division of labour — JS does pixels, loft does routes"). The binding: *"Precision comes from a small,
-  sharp, predictable primitive set, not from piling on features."*
-- **Original implementation** (git `6ac2f45`, the last commit before the loft-native rewrite):
-  - `rough.js` — `RoughLayer`: draggable point markers with start/finish/mid **roles**; `dblclick`→remove;
-    tap-select of a **contiguous range**; a fat transparent **hit-line** under the sketch that catches
-    insert taps; the **press-drag sweep** (`_onLineDown`) that inserts a point on the nearest segment and
-    positions it in *one* gesture; `_nearestSegment` (screen-space); `_emit(committed)` → one `onChange`.
-  - `undo.js` — a per-session snapshot stack; `record` on committed edits only; `Ctrl+Z`/`Ctrl+Shift+Z`;
-    a **"Deleted N · Undo" snackbar** on bulk delete (`dropped >= 2`); an `applying` guard so replaying a
-    snapshot doesn't spawn a new history entry.
-  - `app.js` — wiring: `new RoughLayer(map, { onChange: (points, committed) => { …update length; if
-    (committed) undo.record(points); …send to matcher } })`; `doubleClickZoom:false`, `boxZoom:false`.
-- **What the current app has / lacks** (`browser/index.html`):
-  - Has: *place* — `map.on('click', … sketch.push(…); match())` (`:163`); `Clear`/`Demo`/profile
-    (`:370–372`); `runMatch(sketch, profile)` in wasm (`:118`); the detailed route drawn read-only (`:357`).
-  - Lacks: the sketch points are **non-interactive** `circleMarker`s (`:91`, drawn `:356`) over a flat
-    `sketch = [[lat,lon]]` array (`:134`). No drag, insert, remove, multi-select, or undo.
+This is a **port**, not a redesign. The working implementation is **`rough.js`** at the repo root (366
+lines, Leaflet, from the pre-loft-native app); `DESIGN.md` §1 is the design of record. Nothing here touches
+the matcher — §2's probe P5 proves the kernel already supports every edit shape.
 
 ---
 
 ## 1. The one principle — only the rough layer is editable
 
-**The rough sketch is the single source of truth and the ONLY editable geometry.** The matched (detailed)
-line is a **pure function of the sketch** and is **never edited directly** (DESIGN.md §1: *"Correcting a
-wrong match = move the points, not the line. The detailed route is read-only."*). To fix a wrong match you
-nudge/add/remove a **rough** point and re-match; *zoom is precision* (a fingertip covers fewer metres when
-zoomed in), and the steering falls straight out of the matcher's deviation cost — **no extra mechanism.**
-
-This is the user's "we do not edit all the points": the dense matched polyline is untouchable; you only ever
-move a handful of rough points.
+**The rough sketch is the single source of truth and the ONLY editable geometry.** The matched line is a
+pure function of the sketch and is never edited directly (`DESIGN.md` §1). To fix a wrong match you nudge a
+**rough** point and re-match; *zoom is precision*, and the steering falls out of the matcher's deviation
+cost — **no extra mechanism**.
 
 ---
 
-## 2. The invariant (Design Protocol 1) and its single chokepoint
+## 2. Probes first — five premises tested against the running app
 
-**Invariant.** *Every* editing gesture mutates the one ordered rough-point list and then flows through a
-**single commit path** that: rebuilds the sketch markers + line → runs the **same** pure
-`runMatch(points, profile)` → redraws the read-only route → (if the edit is *committed*) records one undo
-snapshot. A gesture never tested (insert-then-drag, delete-to-one-point, undo-after-bulk-delete) is correct
-because it takes the *same* path as the tested ones.
+Run before designing, because the old doc's premises were eight weeks and one renderer stale. Driver:
+`Input.dispatchMouseEvent` over CDP against `_site`, the same harness `tools/map_render_gate.sh` uses.
+**Four of five came back ⚠.** Each is now a required assertion in §6.
 
-**Re-assertion-site count — the prospective tell.** The bug this prevents: each new gesture handler
-separately remembering to "also re-match, also redraw, also record undo." That is **N silent sites** (forget
-one → a stale route or a lost undo step, no error). The original solved it with **one** `_emit(committed)` →
-`onChange`; N collapses to **1**. So the **first** step (E0) builds that chokepoint and routes the *existing*
-gestures through it — before adding any new gesture. Every later step is then "mutate the list + call
-`commitEdit(committed)`", nothing else.
+| # | premise | verdict |
+|---|---|---|
+| **P1** | *"the app appends reliably; editing is the missing half"* | ⚠ **FALSE — a pan drag appends a spurious point.** `map.mjs:654` binds `mousedown`→pan-grab, `store-app.mjs:141` binds `click`→append; a browser fires `click` after a mouseup on the same element even if the pointer moved 200 px. Measured: drag (300,200)→(500,267) ⇒ **1 rough point** and a moved camera. Invisible for two months because a rough point renders as one unlabelled 4-px dot. |
+| **P2** | *"`DOUBLE_TAP_MS` is Leaflet ceremony"* | ⚠ **FALSE — a double-click double-adds.** Two points at one spot. `rough.js`'s 250 ms / 12 px dedupe is load-bearing here too, and is a **precondition** for double-click-to-delete. |
+| **P3** | *"draw the rough layer via the `onRender` seam"* | ⚠ **FALSE — `onRender` fires with `map._origin === null`**, i.e. *outside* the step-15 snapped-origin block (`map.mjs:909`). A line drawn there sits up to one device pixel off the map under it — the exact defect `map.mjs:905` records having already been fixed once for the sketch dots. **The seam must be extended, not consumed.** |
+| **P4** | *"append is stale-free; only editing needs a chokepoint"* | ⚠ **FALSE — a click during a match is silently dropped.** `store-app.mjs:147` reads `if (sketch.length < 2 \|\| busy) return;` — the point is added, the re-match is not. Measured: 4 points, last two clicked 120 ms apart ⇒ the route ends **1417 m** from the last rough point. `busy` is also **shared with `ensureView`**, so a map load in flight swallows a match too. |
+| **P5** | *"`match_incremental` covers insert/move/delete — no kernel work"* | ✅ **TRUE.** Insert and delete stay in the warm band, far from cold. |
 
-**Over-unification guard.** Do **not** fold the matched line into the editable-point model to "unify
-geometry." It is a genuinely different family (read-only, derived). Keeping it separate is the design, not an
-omission (DESIGN.md §1).
+**P5, measured** (`CPU_THROTTLE=4`, medians of 5, against the app's own `__perfHooks` baselines):
 
-**Precondition already met.** Editing needs matching to be *local, stable, deterministic* (DESIGN.md §1
-binding 2, §5) so nudging one point changes the route predictably. The existing deviation-dominated matcher
-already provides this; we rebuild-per-edit (sub-second) and do **not** need incremental match (PLAN-BROWSER
-Phase 4.2) for the restore.
+| | cold | repeat | warm (move) | **insert** | **delete** |
+|---|---|---|---|---|---|
+| ms | 1695 | 385 | 545 | **422** | **357** |
 
----
+⚠ **The numbers are not publishable — the box was at load average 10 and the spreads are 1.24–2.44×**
+(`CLAUDE.md`: *a profile without its spread is not a measurement*). The **verdict** survives the noise —
+insert/delete sit at ~¼ of cold, in the same band as a move — but re-record the ms on a quiet box before
+quoting them. The quiet-box references are cold **1450** / warm **343** (HANDOFF §1).
 
-## 3. Failure paths (enumerated before coding — where the invariant earns its keep)
-
-1. **Stale route / lost undo** — a gesture mutates points but skips re-match or undo. → the single
-   `commitEdit` chokepoint (E0) makes this structurally impossible.
-2. **Editing the matched line** — a click on the blue route must do nothing. → route polyline stays
-   `interactive:false`; only rough markers + the hit-line are interactive.
-3. **`dblclick`-to-delete vs. Leaflet** — double-click zooms, and the map-click double-tap dedupe could
-   swallow it. → `doubleClickZoom:false`; delete handler on the *marker*, not the map.
-4. **Insert picks the wrong segment** — nearest segment must be judged in **screen pixels** (what the user
-   saw), not lat/lon. → port `_nearestSegment` using `latLngToLayerPoint` + `L.LineUtil.closestPointOnSegment`.
-5. **Sweep leaks a stray point** — the press-drag on the line must not also fire a map-click append. →
-   `L.DomEvent.stop` + a `_suppressClick` guard (as in `_onLineDown`).
-6. **Drag re-matches every frame** — acceptable as a *live preview* (`committed:false`, no undo record); the
-   **commit** (undo step) happens once on `dragend`. Keep the wasm match sub-second (it is).
-7. **Delete below 2 points** — match must degrade to the current "sketch N pt — add ≥2" state, not throw.
-8. **Touch has no `dblclick`/right-click** — provide tap-select + a **Delete** button (mouse users get
-   `dblclick` too). Bulk delete is button/`Delete`-key driven.
-9. **Undo replay spawns history** — applying a snapshot via `setPoints` must be wrapped by the `applying`
-   guard so it doesn't record itself.
-10. **Standalone vs served** — every gesture must work from `file://` (no server) and when served; the demo
-    route still seeds the sketch. Gates run both (E6).
+*A note on how P5 was nearly reported backwards.* The first run labelled a **warm repeat** "cold", making
+insert/delete look like cold fallbacks. `store-app.mjs:862` documents that exact trap — *"two different
+interactions wearing each other's names"* — and the app already ships the honest baselines
+(`matchTrueCold` issues `reset`). **Use `__perfHooks`; do not hand-roll a baseline.** What `__perfHooks`
+genuinely lacks is `matchInsert` / `matchDelete`, which E7 adds.
 
 ---
 
-## 4. Steps (ordered, falsifier-first — each has a Build and a Check)
+## 3. What did NOT survive the re-seat — the mechanism was Leaflet's, not the design's
 
-> Each step is small and independently verifiable. E0 is the cheapest falsifier: it proves the chokepoint
-> **before** any new gesture exists, by keeping today's behaviour byte-identical while restructuring.
+**The "two stacked polylines" are not the load-bearing trick.** `rough.js` draws a fat `opacity: 0`,
+`weight: 18` hit line under a `interactive: false` visible line. On a **canvas there is no hit testing at
+all** — a transparent stroke is not a tap target, it is nothing. Porting the stacked pair literally
+produces a decoration that catches no events.
 
-### E0 — Point model + single commit chokepoint  *(the invariant probe)*
-- **Build.** Replace `sketch = [[lat,lon]]` + non-interactive `circleMarker`s with an ordered list of point
-  objects `{ id, marker }` (roles start/finish/mid, like `rough.js`), and one function
-  `commitEdit(committed)` that: reads the marker LatLngs → sets the sketch line + a fat transparent
-  **hit-line** → `runMatch(points, profile)` → redraw the read-only route → `if (committed) undoRecord()`.
-  Route the *existing* gestures — map-click *append*, `Clear`, `Demo`, profile-change — through it. No new
-  gesture yet.
-- **Check.** The demo route and a follow-up click produce a match **byte-identical** to today's (reuse the
-  standalone gate's native-equality assertion), and a grep shows **exactly one** edit→`runMatch` call site.
+What actually transfers is the **tolerance and the priority order**, which the stacked pair was merely
+Leaflet's way of expressing:
 
-### E1 — Drag a point → move it
-- **Build.** Markers `draggable:true`; `drag` → `commitEdit(false)` (live re-match preview); `dragend` →
-  `commitEdit(true)` (one undo step). Line follows live.
-- **Check.** Headless (CDP): drag a mid point ~40 px; the route re-matches, the summary changes, and exactly
-  **one** committed edit is recorded.
-
-### E2 — Remove one point
-- **Build.** `marker.on('dblclick', …)` → remove + `commitEdit(true)` (mouse). Disable `doubleClickZoom`.
-  Add a tap-select highlight + a **"Delete point"** button (hidden until a point is selected) for touch.
-- **Check.** Double-click a mid point → it's gone, route re-matches; delete down to 1 point → status shows
-  "add ≥2", no throw.
-
-### E3 — Insert a point on a segment (tap + press-drag sweep)
-- **Build.** Port `_onLineDown`: the interactive **hit-line** catches `pointerdown`; insert at
-  `_nearestSegment` (screen-space) with `_insertNoEmit`, then `pointermove` positions it live
-  (`commitEdit(false)`), `pointerup` commits once (`commitEdit(true)`). A plain tap (no drag) inserts at the
-  press. Guard the trailing map click (`L.DomEvent.stop` + `_suppressClick`).
-- **Check.** Press on a segment and drag → **one** point inserted between the correct neighbours and
-  positioned where released; a plain tap on the line inserts exactly one; each is a single undo step.
-
-### E4 — Multi-select + bulk delete  *(the edit-existing-route lever, DESIGN.md §1)*
-- **Build.** Tap-select a **contiguous range** (tap first + last point); the Delete button / `Delete` key
-  removes the range; end survivors become the new start/finish (`deleteSelected` + roles recompute).
-  Desktop `Shift`-drag **box-select** (port `_boxBegin/_boxMove/_boxEnd`) optional within this step;
-  `boxZoom:false`.
-- **Check.** Select a 3-point range, delete → those 3 gone, route re-matches, ends re-roled, **one** undo
-  step (a bulk delete).
-
-### E5 — Undo / redo
-- **Build.** Port `undo.js`: snapshot stack, `record` on `commitEdit(true)`, `Ctrl+Z`/`Ctrl+Shift+Z`
-  (+`Ctrl+Y`); apply via `setPoints` under the `applying` guard; **"Deleted N · Undo" snackbar** on
-  `dropped >= 2`. Seed with the initial state.
-- **Check.** move → insert → delete, then `Ctrl+Z` ×3 returns to the start state (route re-matches each
-  time); a bulk delete shows the snackbar and one tap restores.
-
-### E6 — Gates + standalone rebuild + isolation
-- **Build.** Extend `browser/cdp_verify*.mjs` / the app gates (`tools/browser_app_test.sh`,
-  `tools/standalone_app_test.sh`) with new `window.__edit` hooks exercising drag/insert/remove/undo; rebuild
-  `standalone.html`; re-run the S0 isolation gate.
-- **Check.** Gates green in **both** served and standalone (`file://`, network off); the route stays
-  byte-identical to native for the demo; `tools/basemap_isolation_gate.sh` still PASS (editing is pure
-  presentation — routing untouched).
-
----
-
-## 5. Port vs. adapt (single-file loft-native ≠ the old multi-file app)
-
-| Original (`6ac2f45`) | Now (`browser/index.html`) |
+| `rough.js` (Leaflet) | here (canvas) |
 |---|---|
-| `onChange → routing.ws.sendPoints` (server match over WS) | `commitEdit → runMatch(points, profile)` in wasm |
-| Multi-file `app.js`/`rough.js`/`undo.js` | one `<script type="module">` (inline the classes) |
-| `.rough-pt` / `#rough-delete` / `.snackbar` CSS | port the CSS into the `<style>` block |
-| rough length via `geo.formatDistance` | keep the existing status summary (matched len + ms + source) |
-| live-sync, GPX, elevation (other tracks) | **out of scope** — restore editing only |
+| `HIT_WEIGHT = 18` transparent polyline | segment hit if perpendicular screen distance **≤ 9 px** |
+| `TOUCH_BOX = 30` marker icon | point hit if within **15 px** of the point |
+| z-order: marker above hit line above map | explicit order: **point → segment → empty map** |
+| `interactive: false` on the visible line | (nothing — a canvas stroke never receives events) |
+| `L.LineUtil.closestPointOnSegment` | our own point-to-segment, in **screen** px via `seam.project` |
 
-**Explicitly out of scope** (do not build here — avoid re-inflating the surface): the optional sync server
-(PLAN-BROWSER Phase 6), GPX import/export (Phase 5.2), elevation (Phase 5.1), incremental match (Phase 4.2),
-draft-save of undo history (DESIGN.md §10). Each is its own track.
+This is the over-unification guard of Design Protocol 1 applied to a *port*: the elegant-looking mechanism
+was an artifact of the old substrate. Keep the constants, discard the trick.
+
+**Also dead:** `map.mjs`'s `hitTest(x, y)` is a **stub returning `null`** (`map.mjs:1500`) and `seam`
+exposes it. The old doc said the editor "rides the seam"; in fact the editor must **build** it.
 
 ---
 
-## 6. Definition of done
+## 4. The invariant, and the three points that enforce it
 
-The app matches DESIGN.md §1's primitive set on both the served and standalone builds: place · drag · insert
-(tap + sweep) · remove (dblclick / select+Delete) · multi-select bulk-delete · undo/redo — all flowing
-through the single `commitEdit` chokepoint, with the matched line read-only, routing provably isolated, and
-the demo route still byte-identical to native.
+**Invariant.** *Every pointer event enters the app at exactly one place and leaves as at most one sketch
+mutation; every sketch mutation leaves at exactly one place; and the sketch is the only state in between.*
+A gesture never tested (insert-then-drag, delete-to-one-point, drag-during-a-match) is correct because it
+is **a sketch mutation like every other**, and there is only one road in and one road out.
+
+The old doc named **one** chokepoint (commit). P1 and P4 prove that is **necessary but not sufficient** —
+both failures happen where no commit exists yet: one in input dispatch, one in scheduling. The pipeline is
+`pointer → gesture → sketch → commit → schedule → match → render`, and it needs its **two ends and its
+throttle** pinned:
+
+1. **Input (`onPointer`)** — one `pointerdown`/`move`/`up` handler owns the canvas. It hit-tests, classifies
+   the gesture (**pan · move-point · insert-sweep · delete · append**), and *delegates* pan to the camera.
+   Nothing else binds a pointer or click listener. → kills **P1**, **P2**.
+2. **Commit (`commitEdit(committed)`)** — the only function that reads the sketch, redraws it, requests a
+   match and (if `committed`) records undo. Every gesture ends here; nothing else calls the matcher.
+3. **Schedule (`requestMatch`)** — **at most one match in flight and at most one pending; a new request
+   REPLACES the pending one.** → kills **P4**, and makes a live drag affordable.
+
+**Re-assertion-site count.** Today input has **N = 2** owners (`map.mjs` pan, `store-app.mjs` append) that
+do not know about each other, and commit has **N = 2** (the click listener and the `__match` hook). Both
+are **silent** when they disagree — P1 is a wrong point, P4 is a stale route, neither throws. Each new
+gesture would add another site to both. The design drives **N → 1 at each end**, so a forgotten
+re-assertion becomes impossible rather than merely unlikely.
+
+**Over-unification guard.** Two absorptions to refuse:
+- **Do not fold pan/zoom into the sketch model.** The dispatcher *classifies* a drag as pan, then hands it
+  to `map.panTo` — one classifier, two owners. Camera state is not sketch state.
+- **Do not fold the matched line into the editable-point model.** It is read-only and derived
+  (`DESIGN.md` §1). Keeping it separate is the design, not an omission.
+
+**Why the schedule chokepoint is not over-engineering.** A warm match is **545 ms throttled**. A 60 fps
+drag emits ~33 commits per second of movement. Queue them and a 2-second drag owes **66 matches ≈ 36 s**;
+drop them (today's `busy`) and the route is stale on release. Coalescing to *latest-wins* gives ~2 matches
+per second of drag and a guaranteed-correct final one. This is `DESIGN.md` §1's own **two-tier feedback**:
+the **rough line and its length follow the finger every frame** (pure JS, free), the **matched route is
+lag-tolerant**. The old doc's *"drag re-matches every frame — acceptable"* was written when a server did
+the matching; it is false on a phone.
+
+---
+
+## 5. Failure paths (enumerated before coding)
+
+| | failure | disarmed by |
+|---|---|---|
+| 1 | a pan appends a point (**measured, P1**) | chokepoint 1: a drag past the slop radius is a pan, and a pan never commits |
+| 2 | a double-click double-adds (**measured, P2**) | 250 ms / 12 px dedupe in chokepoint 1 — and it is what makes dblclick-delete possible |
+| 3 | the rough line sits a device pixel off the map (**measured, P3**) | draw inside the snapped-origin block, beside `drawRoute` — **not** via `onRender` |
+| 4 | an edit during a match is dropped → stale route (**measured, P4**) | chokepoint 3: latest-wins pending slot, never a drop |
+| 5 | the rough line is baked into the block raster and goes stale on every point move | it is an **overlay**, drawn per frame; it never touches `_drawBase` and never calls `invalidateBlocks()` |
+| 6 | a drag queues 33 matches/second | chokepoint 3 + rough-line-only live feedback |
+| 7 | insert picks the wrong segment | nearest segment judged in **screen pixels** (what the user saw), not degrees |
+| 8 | delete below 2 points | `commitEdit` matches only at `≥ 2`; below that it clears the route and says so — no throw |
+| 9 | touch has no dblclick or right-click | tap-select + a **Delete** button (+ `Delete`/`Backspace` on desktop) |
+| 10 | a match in flight when the sketch changes blends two routes into `_stretches` | `beginStretches()` already restarts a pass (`map.mjs:553`, gated in `map.test.mjs`); the coalescer must call it per accepted match, and a superseded match's stretches must be discarded by generation number |
+| 11 | `map.points` and `sketch` are two copies of one truth (**exists today**: `store-app.mjs:145` rebuilds `map.points` from `sketch` every click, so resetting `map.points` silently does nothing) | one `RoughLayer` owns the ordered list; `map` holds a reference, never a copy |
+| 12 | the sketch is lost on a pan because points are stored in screen space | points are `{id, lat, lon}`; screen space exists only inside a gesture |
+
+---
+
+## 6. Steps — each one commit, one observable, gates green
+
+> **E0 is the falsifier and ships first**: it fixes two measured live bugs (P1, P4) while adding **no**
+> gesture, so its check is "today's behaviour, minus the defects". E1 is what answers the user's actual
+> complaint (you cannot see your sketch), and can follow the same day.
+
+### E0 — the three chokepoints *(no new gesture)*
+- **Build.** `browser/rough.mjs`: a `RoughLayer` owning `[{id, lat, lon}]`, plus `onPointer` (input),
+  `commitEdit(committed)` (commit) and `requestMatch` (latest-wins scheduler, generation-numbered). Move
+  the canvas `click`→append out of `store-app.mjs` and the pan binding out of `map.mjs`'s
+  `enableInteraction` into the one dispatcher. Give the match its **own** in-flight slot, separate from
+  `ensureView`'s `busy`.
+- **Check.** A pan drag adds **0** points (P1); a double-click adds **1** (P2); four clicks 120 ms apart
+  leave the route ending **< 50 m** from the last point (P4); `tools/match_parity.sh` byte-identical; a
+  grep shows exactly **one** call site each for the matcher and for pointer binding.
+
+### E1 — the sketch is visible *(the original complaint)*
+- **Build.** Draw, in the overlay pass inside the snapped-origin block beside `drawRoute()`: the dashed
+  line `#2b6cff`, `weight 3`, `opacity 0.9`, dash `6 7`, round cap/join; then the points — start/finish
+  18 px, mid 14 px, roles recomputed from index. Extend the render seam with an **overlay hook that fires
+  inside** the snapped block (P3), and leave `onRender` alone for anything genuinely unsnapped.
+- **Check.** `map.test.mjs`: the overlay callback observes a non-null `_origin` (P3 as a standing
+  assertion). Browser: 3 clicks ⇒ a 3-point dashed line; pixel hashes in PLAN-PERF §6c/§6d **re-recorded**
+  (they change deliberately — `storeRenderParity` compares object-vs-store paths, so it stays green).
+
+### E2 — hit test + insert (tap and sweep)
+- **Build.** `map.hitTest(x, y)` → `{kind: 'point'|'segment'|null, index, t}`, screen-space, priority
+  point (15 px) → segment (9 px). Press on a segment inserts at `index+1` **uncommitted**, `pointermove`
+  positions it live, `pointerup` commits once — insert+position in **one** gesture, **one** undo step. A
+  plain tap on the line inserts at the press point.
+- **Check.** Unit: hit priority and `nearestSegment` against a hand-plotted polyline, including the case a
+  degrees-space test would get wrong (a segment near-vertical at high latitude). Browser: press-drag on a
+  segment ⇒ exactly one point, between the right neighbours, at the release position.
+
+### E3 — drag a point
+- **Build.** A `pointerdown` on a point captures it; `pointermove` moves it and redraws the rough line
+  **every frame**; the matched route updates through the coalescer; `pointerup` commits.
+- **Check.** Browser: drag a mid point 40 px ⇒ the route changes, and the number of kernel match calls is
+  **< the number of move events** (the coalescer is doing its job) while the **final** route corresponds to
+  the **final** position.
+
+### E4 — delete one point
+- **Build.** Double-click a point (mouse, behind the P2 dedupe); tap-select + a **Delete** button in
+  `index.html` (touch); `Delete`/`Backspace` and `Esc` on desktop.
+- **Check.** Browser: double-click a mid point ⇒ gone, route re-matches; delete to 1 point ⇒ HUD says
+  "add ≥2", no throw, no route (failure path 8).
+
+### E5 — multi-select a range + bulk delete
+- **Build.** Port `_toggleSelect` / `_selectedIds` / `deleteSelected`: tap first + last of a stretch selects
+  the contiguous range; the button deletes the lot; survivors at the ends re-role.
+- **Check.** Select a 3-point range, delete ⇒ those 3 gone, ends re-roled, **one** undo step.
+
+### E6 — undo / redo
+- **Build.** Port `undo.js`: per-session snapshot stack, recorded **only** on `commitEdit(true)`;
+  `Ctrl+Z`/`Ctrl+Shift+Z`/`Ctrl+Y`; an `applying` guard so replay does not record itself; the
+  **"Deleted N · Undo" snackbar** on a bulk delete (`DESIGN.md` §1 makes undo a primitive, not an extra).
+- **Check.** move → insert → delete, then `Ctrl+Z` ×3 returns to the start state and the route re-matches
+  each time; a bulk delete shows the snackbar and one tap restores.
+
+### E7 — box select + gates
+- **Build.** Shift+drag box select (desktop only, least load-bearing). Add `matchInsert` / `matchDelete` to
+  `__perfHooks` so §2's P5 becomes a standing measurement. Re-record the PLAN-PERF pixel hashes.
+- **Check.** `make test`, `test-native`, `test-wasm`, `test-map` green; `tools/match_parity.sh`
+  byte-identical throughout; PLAN-PERF's warm/cold rows re-measured on a **quiet** box.
+
+---
+
+## 7. Test plan — two tiers, and every probe becomes a gate
+
+`CLAUDE.md`: **a probe outside a gate is a comment.** All five §2 probes graduate into the gates below;
+none stays a script.
+
+**Tier 1 — `browser/map.test.mjs` (DOM-free, stub canvas, milliseconds).** Everything that is pure logic,
+including the branches a browser is bad at reaching:
+- point-to-segment distance and hit **priority** (point beats segment beats empty) at several zooms;
+- `nearestSegment` in screen space, incl. the degrees-space trap;
+- sketch mutations: insert at index, delete, delete-to-1, delete-to-0, role recomputation;
+- the **coalescer**: N requests during one in-flight match ⇒ exactly **1** pending, latest wins, generation
+  number rejects a superseded match's stretches (failure path 10);
+- the **double-tap dedupe** (250 ms / 12 px) as a pure predicate;
+- undo stack: only committed edits recorded, replay does not re-record.
+
+**Tier 2 — `browser/cdp_verify_store.mjs` (real Chromium, real `Input.dispatchMouseEvent`).** The gate that
+already exists (*"✓ the click path works: 3 clicks → 3 rough points, route 28 pts"*) grows one assertion
+per gesture, plus the four regressions as permanent guards:
+- **P1** a pan drag adds 0 points · **P2** a double-click adds 1 · **P4** rapid clicks leave a fresh route
+  (< 50 m from the last point) · **P3** the overlay hook sees a snapped origin;
+- insert-on-segment · drag-a-point · double-click-delete · range bulk-delete · `Ctrl+Z`;
+- the drag assertion counts kernel calls, so a regression to per-frame matching **fails** rather than
+  merely being slow.
+
+**Tier 3 — unchanged invariants.** `tools/match_parity.sh` must stay byte-identical (this work is pure
+presentation; it must not move a route), and `tools/basemap_isolation_gate.sh` must stay PASS.
+
+---
+
+## 8. Out of scope
+
+GPX import/export, elevation, the sync server, draft-save of undo history, goal length, and any change to
+the matcher. Each is its own track. **If this work moves a matched route, it has a bug.**
+
+## 9. Definition of done
+
+`DESIGN.md` §1's primitive set works on the standalone app: **place · drag · insert (tap + sweep) · remove
+(dblclick / select+Delete) · multi-select bulk-delete · undo/redo** — every one flowing through the three
+chokepoints, the matched line read-only, the rough line drawn from the snapped origin, routes byte-identical
+to before, and each of the five §2 probes running inside a gate.

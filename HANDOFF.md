@@ -100,13 +100,22 @@ this is a missing half of the product, not a nice-to-have. Raised by the maintai
 commit. The working implementation is the **server/database client**: **`rough.js` at the repo root**
 (366 lines, Leaflet), alongside `geo.js` / `routes.js` / `ws.js` / `controls.js`.
 
+📐 **The design is written: [`PLAN-EDIT.md`](PLAN-EDIT.md)** (re-seated on the canvas seam 2026-07-22, with
+the probes below). Read it before starting — it supersedes the sketch in this section, and its §2 records
+**four premises of this section that probing killed.**
+
 ### What `rough.js` does (the spec to match)
 
-Two **stacked polylines** — this is the load-bearing trick:
+Two **stacked polylines**:
 - a **fat transparent hit line** — `weight 18`, `opacity 0`, `interactive: true` — a finger-friendly tap
   target, and
 - the **visible dashed sketch line** on top — `color #2b6cff`, `weight 3`, `opacity 0.9`,
   `dashArray "6 7"`, round cap/join, **`interactive: false` so taps fall through to the hit line**.
+
+⚠ **That pair is Leaflet's mechanism, NOT the design** (PLAN-EDIT §3). A canvas has **no hit testing at
+all**, so a transparent stroke catches nothing — porting the stack literally yields a decoration. What
+transfers is the **tolerance** (segment ≤ 9 px, point ≤ 15 px) and the **priority order** (point → segment
+→ empty map), which the stacked pair was only Leaflet's way of spelling.
 
 Interactions (from its own header):
 - **sweep from a segment** — press ON the line and drag: inserts a point there *and positions it in ONE
@@ -123,17 +132,26 @@ Interactions (from its own header):
 draws `this.points` as 4-px red dots (`#c0392b`, white stroke). No line, no hit target, no
 insert / drag / delete.
 
-### Three things to know before starting
+### Things to know before starting (probed 2026-07-22 — details in PLAN-EDIT §2)
 
 1. ⚠ **Do NOT draw the rough layer in `_drawBase`.** It would be baked into the step-15 block raster
    cache and go stale the moment a point moves. Draw it in the **overlay pass**, beside `drawRoute` —
    inside the snapped-origin block, for the same reason the route and the sketch dots are (§6d).
-2. **The matcher already supports reshaping.** `match_incremental` diffs the trace and recomputes only
-   the edited window — exactly what an insert/move/delete produces — and a warm edit is **343 ms**. No
-   kernel work is needed.
+   ⚠ **And not via `onRender` either** — measured: it fires with `map._origin === null`, i.e. *outside*
+   the snapped block, so a line drawn there sits a device pixel off. The seam needs **extending**.
+2. ✅ **The matcher already supports reshaping** — the one premise that survived. `match_incremental`
+   covers **insert and delete**, not just move: measured at `CPU_THROTTLE=4`, insert **422 ms** and delete
+   **357 ms** against a **1695 ms** cold, in the same band as a move. No kernel work is needed. (Spreads
+   were 1.24–2.44× at load 10 — re-record on a quiet box; use `__perfHooks`, never a hand-rolled baseline.)
 3. **The pixel hash WILL change**, deliberately, when the line is added. `storeRenderParity` compares the
    object path against the store path (both change identically) so it stays green, but the hash VALUES
    quoted in §6c/§6d become stale and should be re-recorded.
+4. ⚠ **`hitTest` is a stub** returning `null` (`map.mjs:1500`) and `seam` exports it. The editor **builds**
+   the seam it was said to ride.
+5. ⚠ **Two live bugs sit in the append path and must be fixed first** (PLAN-EDIT E0), because owning input
+   dispatch is what fixes them: **a pan drag appends a spurious point**, and **a click during a match is
+   silently dropped** (measured: the route ended 1417 m from the last rough point). Both are invisible
+   today precisely because the sketch has no line — which is why the fix and the line are one task.
 
 ### The gate to build on
 
@@ -149,13 +167,21 @@ Extend that with the same shape for insert-on-line, drag-a-point and double-clic
 the only reason the append path is known to work* — the rough points draw as isolated dots, so there is
 no visual answer to "did my click land?".
 
-### Suggested increments
+### Increments — see PLAN-EDIT §6 for each step's Build and Check
 
-1. The **visible line + hit line** (restores the ability to see a sketch at all — the original complaint).
-2. **Insert on tap/press** of the hit line.
-3. **Drag to move** a point, line following live.
-4. **Double-click to delete**, with the 250 ms dedupe.
-5. Box-select last — desktop-only and the least load-bearing.
+0. **The three chokepoints**, no new gesture — input dispatch, commit, and a latest-wins match scheduler.
+   Ships first because it is the cheapest falsifier *and* it fixes the two live bugs above.
+1. The **visible line + points** (restores the ability to see a sketch at all — the original complaint).
+2. **`hitTest` + insert** on tap/press-sweep.
+3. **Drag to move** a point, rough line following live at 60 fps, matched route coalesced.
+4. **Delete** — double-click (behind the 250 ms dedupe) and tap-select + Delete for touch.
+5. **Range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a primitive).
+6. Box-select last — desktop-only and the least load-bearing.
+
+⚠ **A drag cannot re-match per frame.** A warm match is ~545 ms throttled and ~33 move events arrive per
+second; queueing a 2-second drag owes ~36 s of matching, and today's `busy` flag would instead *drop* them
+all. `DESIGN.md` §1's two-tier feedback is the answer: the **rough line is instant** (pure JS), the
+**matched route is lag-tolerant** — one match in flight, one pending, latest wins.
 
 ---
 
