@@ -59,7 +59,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
-| **22** | `server` + kernel | Wire the §3 gate + escalation; fat corridor stays the floor. **Thresholds tuned** — PLAN-MATCH §3: `bridges == 0 && dev_max <= 900` (cycling_road); PEN_TOL unusable on this corpus. | corpus: 0 worse-accepted; re-run `tools/corpus_tube.loft` after wiring | **⚠ route-affecting — the only one** |
+| **22** ⛔ | `server` + kernel | Wire the §3 gate + escalation. **ATTEMPTED 2026-07-22 and REVERTED — the gate as specified makes the app's cold match 1.7× SLOWER.** `dev_max` is a property of the SKETCH, not of the corridor tier, so an absolute `DEV_TOL` rejects tube results that are *identical in quality* to bbox's and then pays for both. **Do not re-wire it with a constant threshold; see §7h for the measurement and the two candidate redesigns.** | corpus: 0 worse-accepted **and** ladder cost < bbox-only **on the sketches the app actually runs** | **⚠ route-affecting — the only one** |
 
 **Steps 2 and 3 are probes and come first**: each is an afternoon and each gates a block (2 → steps
 4–8; 3 → steps 9–12). If a probe fails, that block is fiction and the fallback is named in its phase.
@@ -955,6 +955,63 @@ proves the filter exact — a dropped feature shows up as a count mismatch immed
 
 Regeneration is ~21 s: `loft --native-release --lib lib client/basemap/build_store.loft <6 fixtures>
 browser/stores/enschede.layout.store` (fixtures are gitignored; they are present locally at ~170 MB).
+
+## §7h — Step 22 attempted and REVERTED: an absolute `DEV_TOL` is the wrong gate (2026-07-22)
+
+**Status: wired, measured, reverted. The tree is clean and the ladder is not live.** PLAN-MATCH §3's
+threshold is correctly *tuned* (0 worse accepted) and still makes the app **slower**. Both are true, and
+the second was invisible until the ladder was costed rather than just validated.
+
+**The corpus said go.** `tools/corpus_tube.loft` now simulates the ladder and times both tiers:
+
+```
+GATE DEV_TOL=900: accepted=13 escalated=12 WORSE_ACCEPTED=0
+COST bbox_only=15552ms ladder=8272ms  (53% of bbox-only)
+```
+
+**The app said stop.** Wired into `do_match_session_streamed`, the profiler's cold match went
+**5899 → 10064 ms** at `CPU_THROTTLE=4`. On the profiler's own sketch:
+
+```
+tube: ways=7138  bridged=0  devmax=1047  ms=245
+bbox: ways=13077 bridged=0  devmax=1047  ms=538
+GATE=ESCALATE  ladder_ms=783  bbox_only_ms=538      ← 1.46x SLOWER for an IDENTICAL result
+```
+
+**The mechanism.** `dev_max` measures how far the matched route sits from the **drawn sketch** — mostly a
+property of *where the user drew*, not of which corridor was used. A line drawn 1 km from any road has
+`dev_max ≈ 1000` under **both** tiers. The gate then reads a large `dev_max` as "the cheap corridor
+clipped something" when it actually means "this sketch is far from the network", escalates, and pays the
+fat tier to produce the same answer. In the corpus, **8 of the 12 escalations have `t_devmax ==
+b_devmax`** (rows 0, 13, 15, 19, 20, 21, 22, 23) — pure loss, by construction.
+
+The corpus average hid this because the *accepted* sketches happen to be the expensive ones (9606, 8066,
+9477 ways) while the escalations are mostly sparse. So the aggregate wins while the sketches the app
+actually runs lose. **An average over a synthetic corpus is not a claim about a specific interaction** —
+the same lesson as §7e, one level up.
+
+**Two candidate redesigns, neither tuned yet:**
+
+1. **Drop `DEV_TOL`; gate on `bridged_m == 0` alone.** §3's own finding 1 says connectivity does most of
+   the work (2 of 3 worse cases). Costs: i=7 would be accepted (dev 1003 vs bbox's 484) — 1 worse
+   accepted in 25. Cheap to evaluate: re-run the corpus with `DEV_TOL` at infinity.
+2. **Make the deviation test SCALE-RELATIVE — the more principled one.** The tube keeps tiles within
+   `corridor_margin(pts)` of the polyline, so `dev_max > margin` means the route is straying to where the
+   tube's ways run out, while `dev_max <= margin` means it sits comfortably inside and nothing was
+   clipped. That tests the *corridor*, which is what the gate is for, instead of the sketch. It also
+   self-scales per sketch, so no constant is fitted to a corpus.
+
+**Whichever is chosen, the acceptance criterion must change too.** "0 worse accepted" is necessary and
+not sufficient; the gate must also be shown to cost less **on the sketches the app runs**, not only in
+corpus aggregate. The step-22 row now says so.
+
+**What was kept:** `tools/corpus_tube.loft` gained the ladder simulation, per-tier timing, and the
+`WORSE_ACCEPTED` / `COST` lines — that harness is what caught this, and it is what will tune either
+redesign. The kernel wiring itself is reverted; `tools/match_parity.sh` is byte-identical again.
+
+**A note in the ladder's favour, so it is not written off:** on `match_parity`'s case C the tube was
+accepted and produced a byte-identical route from **4501 ways instead of 11287**. The tier is genuinely
+good; only the gate is wrong.
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 

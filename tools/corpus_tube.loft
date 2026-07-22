@@ -13,6 +13,8 @@ use routing_kernel::(GeoPoint, Way, TTile, MatchState, MatchQuality,
                      tiles_corridor_ways, tiles_corridor_ways_tube, build_graph, corridor_margin,
                      match_state_new, match_incremental, match_state_result, match_quality, path_length_m);
 
+DEV_TOL = 900.0;   // PLAN-MATCH §3, tuned on this corpus (cycling_road only)
+
 // A deterministic spread over the enschede block: start cell, direction, bend, density.
 fn sketch_at(i: integer) -> vector<GeoPoint> {
   la0 = 52.190 + ((i % 5) as float) * 0.030;
@@ -55,16 +57,32 @@ fn main() {
   profile = a[1] ?? "cycling_road";
 
   n_same = 0; n_diff = 0; n_empty = 0; wb_tot = 0; wt_tot = 0;
+  // PLAN-PERF §0 step 22 — simulate the LADDER the gate would drive, and time it. The question step 22
+  // has to answer before anything route-affecting is wired is not "does the gate reject the worse ones"
+  // (PLAN-MATCH §3 tuned that) but "does the ladder actually cost less than always using bbox?" — an
+  // escalation pays the tube AND the bbox, so a high escalation rate can make the ladder SLOWER.
+  n_accept = 0; n_escal = 0; n_worse_accepted = 0;
+  ms_bbox_only = 0; ms_ladder = 0;
   for i in 0..25 {
     pts = sketch_at(i);
     m = corridor_margin(pts);
+    tb0 = now();
     wb = tiles_corridor_ways(roads, pts, m);
+    tb1 = now();
+    tt0 = now();
     wt = tiles_corridor_ways_tube(roads, pts, m);
+    tt1 = now();
     wb_tot += len(wb); wt_tot += len(wt);
     if len(wb) == 0 { n_empty += 1; }
     else {
+      qb0 = now();
       qb = quality_of(wb, pts, profile);
+      qb1 = now();
+      qt0 = now();
       qt = quality_of(wt, pts, profile);
+      qt1 = now();
+      bbox_ms = (tb1 - tb0) + (qb1 - qb0);       // corridor read + build_graph + match, per tier
+      tube_ms = (tt1 - tt0) + (qt1 - qt0);
       same = qb.len_m == qt.len_m && qb.dev_max == qt.dev_max && qb.pen_m == qt.pen_m
              && qb.bridged_m == qt.bridged_m && class_text(qb.class_m) == class_text(qt.class_m);
       // The TUBE's own gate inputs — all the gate can see at runtime. It never sees bbox's numbers;
@@ -77,9 +95,25 @@ fn main() {
       verdict = "SAME";
       if !same { if worse { verdict = "WORSE"; } else { verdict = "OK-DIFF"; } }
       if same { n_same += 1; } else { n_diff += 1; }
-      println("ROW i={i} pts={len(pts)} ways={len(wt)} t_bridged={qt.bridged_m:1.0} t_devmax={qt.dev_max:1.0} t_devmean={qt.dev_mean:1.0} t_penshare={t_pen_share:1.3} | b_bridged={qb.bridged_m:1.0} b_devmax={qb.dev_max:1.0} | {verdict}");
+
+      // THE GATE (PLAN-MATCH §3, tuned): connected AND faithful, judged on the tube's OWN numbers.
+      accept = qt.bridged_m == 0.0 && qt.dev_max <= DEV_TOL;
+      ms_bbox_only += bbox_ms;
+      if accept {
+        n_accept += 1;
+        ms_ladder += tube_ms;
+        if worse { n_worse_accepted += 1; }      // the safety number step 22 must keep at 0
+      } else {
+        n_escal += 1;
+        ms_ladder += tube_ms + bbox_ms;          // escalation pays BOTH tiers
+      }
+      gate = "ACCEPT";
+      if !accept { gate = "escalate"; }
+      println("ROW i={i} pts={len(pts)} ways={len(wt)} t_bridged={qt.bridged_m:1.0} t_devmax={qt.dev_max:1.0} t_devmean={qt.dev_mean:1.0} t_penshare={t_pen_share:1.3} | b_bridged={qb.bridged_m:1.0} b_devmax={qb.dev_max:1.0} | {verdict} | {gate} tube={tube_ms}ms bbox={bbox_ms}ms");
     }
   }
   println("CORPUS {n_same + n_diff} matched ({n_empty} empty corridors skipped): identical={n_same} diverged={n_diff}");
   println("WAYS bbox={wb_tot} tube={wt_tot} dropped={wb_tot - wt_tot} ({((wb_tot - wt_tot) as float) * 100.0 / (wb_tot as float):1.0}%)");
+  println("GATE DEV_TOL={DEV_TOL}: accepted={n_accept} escalated={n_escal} WORSE_ACCEPTED={n_worse_accepted}");
+  println("COST bbox_only={ms_bbox_only}ms ladder={ms_ladder}ms  ({(ms_ladder as float) * 100.0 / (ms_bbox_only as float):1.0}% of bbox-only)");
 }

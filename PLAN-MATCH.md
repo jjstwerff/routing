@@ -146,6 +146,15 @@ Sweeping the gate over the tube's OWN numbers — all it can see at runtime:
 overturned a 3-sketch conclusion once (PLAN-PERF §7b), so treat 900 as the current best estimate, not a
 constant — and re-run the sweep when the corpus grows or the profile changes.
 
+> ⛔ **SUPERSEDED 2026-07-22 — do not wire `DEV_TOL` as an absolute threshold.** The tuning above is
+> correct on its own terms (0 worse accepted) and still makes the app **1.7× slower**: `dev_max` measures
+> distance from the DRAWN SKETCH, so it is large whenever the user drew far from any road — under *both*
+> tiers. The gate then reads "far from the network" as "the cheap corridor clipped something", escalates,
+> and pays twice for an identical route. **8 of the 12 corpus escalations have `t_devmax == b_devmax`.**
+> Measured, reverted, and written up in PLAN-PERF §7h, with two candidate redesigns — gate on
+> `bridged_m == 0` alone, or make the deviation test relative to `corridor_margin` (which tests the
+> CORRIDOR rather than the sketch, and needs no fitted constant).
+
 > The gate can only make us *escalate* (spend more), never accept something a wider tier would improve
 > on. So mistuning it costs speed, never the wanted route — the fat corridor (§5, tier 3) is always the
 > floor.
