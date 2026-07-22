@@ -4,7 +4,7 @@
 // PLAN-BUILD B5–B7 — the standalone base-map + routing app. Fetches the two loft stores, runs the
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
-import { RouteMap, parseView, areasFromStore } from './map.mjs';
+import { RouteMap, parseView, areasFromStore, areaRenderList } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 
@@ -42,6 +42,23 @@ async function ensureView() {
   const t0 = performance.now();
   const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
   map.loadView(text);
+  // PLAN-PERF §0 step 12 — AREAS now render from the exposed store, not from loft's text. The text emit
+  // stays and is still parsed above; it is the running parity gate until step 13 deletes it, so a
+  // divergence shows up on every view rather than only when someone runs the probe.
+  //
+  // The read happens AFTER the kernel call by necessity, not by preference: the kernel unpins the store
+  // while it walks the layout and re-pins on the way out (step 9's bracket), so the handle is only valid
+  // once the command has returned. Both the handle and `memory()` are re-fetched every time — a
+  // memory.grow during the view detaches the old buffer and moves the store.
+  const parity = { text: map.areas.length, store: -1 };
+  const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+  if (h) {
+    const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
+    const storeAreas = areaRenderList(areasFromStore(kernel.memory(), h, { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] },
+                                                     { flatCount, flatField }));
+    parity.store = storeAreas.length;
+    map.areas = storeAreas;
+  }
   loadedBox = box;
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
@@ -50,7 +67,8 @@ async function ensureView() {
   // __perfHooks.timedView after it is warm, so the profiler cannot see the load unless we record it here.
   const ms = performance.now() - t0;
   window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum,
-                        firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms };
+                        firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms,
+                        areaParity: parity, areaSource: h ? 'store' : 'text' };
   busy = false;
   if (again) { again = false; ensureView(); }
 }

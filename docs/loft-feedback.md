@@ -1696,3 +1696,58 @@ a gate that would have caught the fallback. `tools/par_copy_probe.loft` is now G
 offered as the consumer-side smoke test.
 
 **Step 18 is unblocked** — `par` over the stretches is designable again.
+
+---
+
+## 2026-07-22 — `expose` RE-FLATTENS the whole collection on every call, and the pin forces you to call it repeatedly
+
+**Installed loft 2026.7.2.** This is the sequel to the iteration finding above, and the two compound: that
+one says you must `release` before loft touches the store, this one says re-`expose`ing afterwards is
+**O(collection)**. Together they make a per-frame bridge cost proportional to the data, which is exactly
+what the consumer adopted the bridge to escape.
+
+### What the contract implies vs what it costs
+
+`BROWSER_INTEROP.md:297` and the stdlib comment both frame `expose` as the *long-lived* variant —
+*"pins the value's store; read it each frame"* — which reads as **expose once, hold it, JS reads for
+free**. That is true only if loft never touches the store again. A consumer that still iterates it (here:
+`do_view_bbox` walks the layout to emit its text, during the additive overlap of a migration) must
+bracket every command as `release` → walk → `expose`. And each `expose` runs the full Phase 3 pipeline
+again (`ffi_deliver.rs:56` → `collect_keyed` → `build_hash_sorted_vec`): a fresh **key-sorted
+materialisation of every element**, a scratch record allocation, and a descriptor-JSON rebuild.
+
+### Measured (A/B on the same binary, same store, same harness)
+
+Enschede layout store: 20 MB, **1089 `PTile`s, ~230k nested features**. Headless Chromium at
+`CPU_THROTTLE=4`, medians of 6, via `tools/map_profile.sh`. The only difference is the two-line bracket:
+
+| | with `release`/`expose` per view | without | delta |
+|---|---|---|---|
+| **empty-bbox view** — emits NOTHING, so this is scan + bracket only | **483 ms** | 253 ms | **+230 ms** |
+| full view, kernel | **1141 ms** | 721 ms | +420 ms |
+| full view, total | **1447 ms** | 927 ms | **+56%** |
+| wasm binary | 1 098 479 B | 1 048 840 B | +48 KB |
+
+The empty-bbox row is the clean one: it emits no features, so ~230 ms is the bracket alone. **Not a
+leak** — wasm working set was 254.9 MB with the bracket vs 265.1 MB without, i.e. no growth attributable
+to the repeated scratch allocations.
+
+### Ask (either one removes it; the second is better)
+
+1. **Make re-`expose` cheap on an unmodified store** — cache the flattening and the descriptor, and
+   invalidate on write. A `release`/`expose` pair that brackets a pure read would then cost ~nothing,
+   which is what the "read it each frame" contract already implies to a reader.
+2. **Let loft ITERATE a pinned store.** The bracket exists only because a read-only iteration claims a
+   cursor record inside the pinned store (the finding above). Fix that and the consumer never releases,
+   so the re-flattening never happens — one `expose` per session, as the docs suggest.
+
+Failing both, the docs should say plainly that `expose` is **O(collection) per call**, so a consumer can
+see that bracketing it per frame is not viable.
+
+### Consequence for routing
+
+Absorbed deliberately and temporarily: PLAN-PERF steps 11–12 land the store-read path *beside* the text
+path, so the overlap pays both. **Step 13 deletes the text emit**, after which nothing in loft iterates
+the layout, the bracket collapses to a single `expose` at load, and this cost goes to zero. Recorded so
+the interim number is not mistaken for a regression in the bridge itself — the bridge is fine; calling it
+per frame is what costs.

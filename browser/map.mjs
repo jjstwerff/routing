@@ -140,6 +140,16 @@ export function areasFromStore(mem, handle, fbox, deps) {
   return out;
 }
 
+// PLAN-PERF §0 step 12 — turn raw store hits into the render list, mirroring `parseAreas`'s TAIL so the
+// substitution is total: the same <3-vertex drop and the same `minZoom`, which `render()` requires (an
+// area without it compares `z >= undefined` and silently never draws). Kept separate from
+// `areasFromStore` so step 11's gate can still see the UNFILTERED hits and check them against loft's `A=`.
+export function areaRenderList(raw) {
+  const out = [];
+  for (const a of raw) if (a.ring.length >= 3) out.push({ cover: a.cover, ring: a.ring, minZoom: areaMinZoom(a.ring) });
+  return out;
+}
+
 export function parseAreas(txt) {                   // `cover;lat,lon;…`
   const areas = [];
   for (const line of (txt || '').split('\n')) {

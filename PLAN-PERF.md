@@ -49,7 +49,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **9** ✅ | `client/web_basemap_kernel.loft`, `browser/store-kernel.mjs` | `expose(EXPOSE_LAYOUT, layout)` per view command, **wrapped in the release/expose bracket** — loft's own `do_view_bbox` ITERATES the layout and an exposed store rejects the iteration cursor's claim (§7d(2)). The bare one-liner this row used to specify hangs the app; the additive form is `release` → load/emit → `expose`. Also added `loft_host_release` to the shim (a new host import `release` pulls in). | **DONE** — `tools/expose_probe.sh` green: `descLen=1955`, **17 descriptor nodes** naming `PTile`/`Area`/`Building`/`Line`/`Label`/`Poi`/`Coord`, `storeBase=29126376 rec=1 pos=8`, bracket balanced. View output **byte-identical** (`A=2252 B=16646 L=1231 P=4460 labels=1441 R=3112`); all five gates green. | none |
 | **10** ✅ | `browser/loft-deliver.js` (vendored), `browser/loft-store.mjs`, `store-app.mjs`, `build-site.mjs` | Wire loft's own `readLoftValue` (vendored verbatim from loft `40daabd0`; the release does not install it) + a routing-side `flat*` accessor layer that indexes the pre-flattened keyed collection, so a caller can reach ONE element instead of materialising all 1089. `loft_host_deliver` was NOT needed — `expose` is the path, and `deliver` is its one-shot sibling. | **DONE** — `tools/deliver_probe.sh`: JS and loft agree on the whole line for tile 2047399103 — `ox=68300000 oy=521650000 areas=4 buildings=1 lines=0 labels=1 pois=0 ring0=17` — plus an interned text decoded (`"Meddelerweg"`) and the cheap `flatScalar` screen proven to agree with the full walk. | none |
 | **11** ✅ | `browser/map.mjs`, `store-app.mjs` | `areasFromStore()` — reads **areas only** (not the other four kinds) through the bridge, mirroring `emit_areas` + `ring_hits` exactly, **beside** the text path. | **DONE** — `tools/deliver_probe.sh`: **A=2252 emitted · 2252 store hits · 2252 renderable · 2252 text-parsed**, 0 cover mismatches, 0 ring-length mismatches, `maxCoordDelta ≈ 5e-7` — *exactly* half a unit in loft's last printed decimal, so the geometry is identical and only the TEXT side is lossy. Zero order mismatches also proves the pre-flattened array is key-ordered the way `for t in layout` walks. | none (text still drives render) |
-| **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
+| **12** ✅ | `browser/map.mjs`, `store-app.mjs`, `cdp_verify_store.mjs` | Switch render to the store-read areas (`areaRenderList` mirrors `parseAreas`'s tail — same <3-vertex drop, same `minZoom`); keep the text emit as the **parity gate**, now asserted on the app's own view in `make test-map`, not only in the probe. | **DONE** — `✓ areas render from the store, 2252 == loft's 2252 text areas`; `# view:` counts unchanged. **⚠ Interim cost measured, see §7f: view total 927 → 1447 ms** — not step 12's read, but step 9's per-view `expose`, which re-flattens all 1089 tiles. Step 13 removes it. | **render source** |
 | **13** | ×4 + kernel | Repeat 11–12 per kind (buildings, lines, labels, pois); then delete the layout text emit. | counts identical per kind; serialize → ~0 | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
@@ -809,6 +809,40 @@ areas exactly (11). **Step 12 can switch the render source for areas.** Two thin
   move where areas come from — it slightly *improves* their precision. Harmless at these zooms, but it
   means the render is not expected to be pixel-identical, so the parity gate must stay a tolerance check
   and must not become a screenshot diff.
+
+## §7f — The bridge's interim cost: `expose` is O(collection) PER CALL (2026-07-22)
+
+**Steps 9–12 made `view` slower, on purpose and temporarily. Do not read the number as a regression in
+the bridge, and do not "fix" it before step 13.**
+
+`view` total went **927 → 1447 ms** at `CPU_THROTTLE=4`. The obvious suspect — step 12's store read
+added on top of the still-running text parse — is **not** the cause. A/B on the same binary, removing
+only step 9's two-line `release`/`expose` bracket:
+
+| | with bracket | without | delta |
+|---|---|---|---|
+| **empty-bbox view** (emits NOTHING — scan + bracket only) | **483 ms** | 253 ms | **+230 ms** |
+| view, kernel | 1141 ms | 721 ms | +420 ms |
+| view, total | 1447 ms | 927 ms | +56% |
+| wasm binary | 1 098 479 B | 1 048 840 B | +48 KB |
+
+The empty-bbox row isolates it: no features are emitted, so ~230 ms is the bracket itself. **`expose`
+re-runs Phase 3 on every call** — `collect_keyed` → `build_hash_sorted_vec` rebuilds a key-sorted
+materialisation of all 1089 tiles, allocates a scratch record, and re-serialises the descriptor
+(`ffi_deliver.rs:56`). Not a leak: wasm working set was 254.9 MB with the bracket vs 265.1 MB without.
+
+**Why it is unavoidable right now, and why 13 ends it.** The bracket exists because loft cannot iterate a
+store it has pinned (§7d(2)), and `do_view_bbox` iterates the layout to emit its text. So every view must
+unpin and re-pin. **Once step 13 deletes the layout text emit, nothing in loft walks the layout** — the
+bracket collapses to one `expose` at load, and this cost goes to zero. That makes 13 worth more than its
+own row claims: it removes the serialize (~658 ms), the JS parse (~202 ms) *and* this ~420 ms.
+
+Filed upstream in `docs/loft-feedback.md` (2026-07-22) with two asks — cache the flattening on an
+unmodified store, or let loft iterate a pinned one (which removes the need to release at all).
+
+**A consequence to design for in 13:** `areasFromStore` scans all 1089 tiles because `emit_areas` does.
+When loft stops iterating, JS becomes the only thing that does — so the tile-level pre-filter deliberately
+skipped in step 11 (a behaviour change needing its own equality proof) becomes the next real win.
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 
