@@ -6,141 +6,113 @@ added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` 
 
 ---
 
-## 1. Where things stand (one paragraph)
+## 1. Where things stand
 
 The **standalone/serverless browser app runs in a real browser** (`browser/store-app.*`, plan of record
 `PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
-kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched route, and needs **no
-server**. **As of 2026-07-22, `PLAN-PERF.md` steps 1–16 and 20–22 are done; 15, 18 and 19 remain.**
+kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched route, and needs **no server**.
 
-Three structural changes got it there, and each is worth more than its number:
-1. **loft owns the loop** (steps 4–8) — `loft_start` once, never returns; the stores, corridor `Graph`
-   and `MatchState` live across commands. It used to run the one-shot model loft explicitly *rejected*,
-   which meant a full match per click and a phone frozen 4.2 s at a time.
-2. **loft is out of the view path** (steps 9–13) — JS reads the layout store straight from wasm memory
-   through @PLN105's `expose` bridge; `view` emits roads only and serialises **no layout text at all**
-   (was 4.25 MB per view). A per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
-3. **The match ladder is live** (step 22) — a cell-tube corridor tried first, escalating to the fat bbox
-   when a margin-relative gate rejects it. ~65% fewer ways when accepted.
-4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is already an interleaved
+**`PLAN-PERF.md` §0 has nothing open** (2026-07-22). Steps 1–16 and 20–22 are done; **18 and 19b are ⛔
+closed on measurement, not skipped** (see §2 below).
+
+### The numbers, `CPU_THROTTLE=4` (≈ a phone — always profile with it; desktop flatters ~4×)
+
+Quiet box, medians of 6, spreads 1.0–1.1×:
+
+| interaction | before | now | |
+|---|---|---|---|
+| **view** (pan past the loaded box) | 946 ms | **146 ms** | 6.5× |
+| **pan frame** (camera moved, no reload) | 76 ms | **0.6 ms** | 127× |
+| **cold match** (first click / corridor miss) | 6370 ms | **1450 ms** | 4.4× |
+| **warm match** (one point moved — what users do) | ~880 ms | **343 ms** | 2.6× |
+| JS objects retained for geometry | 239,135 | **4,609** | −98% |
+
+**Every shipped change is route-identical**, proven by `tools/match_parity.sh` and (for anything touching
+the graph) `tools/tile_border_gate.sh`. The two route-AFFECTING changes ever accepted — step 22's ladder
+and nothing since — were gated on a 26-sketch corpus with **0 worse accepted**.
+
+### The six structural changes behind those numbers
+
+1. **loft owns the loop** (steps 4–8) — `loft_start` once, never returns; stores, corridor `Graph` and
+   `MatchState` live across commands. It used to run the one-shot model loft explicitly *rejected*: a
+   full match per click, a phone frozen 4.2 s at a time.
+2. **loft is out of the view path** (steps 9–13) — JS reads the layout store from wasm memory through
+   @PLN105's `expose` bridge; `view` emits roads only, **no layout text at all** (was 4.25 MB/view). A
+   per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
+3. **The match ladder** (step 22) — cell-tube corridor first, escalating to the fat bbox when a
+   margin-relative gate rejects it. ~65% fewer ways when accepted.
+4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is *already* an interleaved
    `Int32Array`, so the renderer reads coordinates straight out of wasm memory instead of materialising a
-   viewport as 239k JS objects. This was the fix "pre-project into typed arrays" would have missed.
-   Streets can NOT follow (the matcher iterates the roads store, and loft cannot iterate a pinned one —
-   ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
+   viewport as 239k JS objects. This is the fix "pre-project into typed arrays" would have missed — it
+   would have been a cheaper copy, not no copy. Streets cannot follow (the matcher *iterates* the roads
+   store and loft cannot iterate a pinned one — ~230 ms per re-expose), so they parse into a flat column.
+5. **Block raster cache** (step 15, §6d) — the base map is baked into 512-px world-pixel blocks and a pan
+   blits them. ⚠ It **snaps the render origin** to a whole device pixel and can never be pixel-identical
+   (Chromium's rasterisation is not invariant to canvas dimensions — *proven*, §6d), so its gate is three
+   equalities plus a bounded delta. **Anything replacing layer data must call `map.invalidateBlocks()`.**
+6. **The matcher's own cost, attacked directly** (§7i–§7m) — edges reference their source way instead of
+   copying its 11 text tags; costs computed per way, not per edge; the node-dedup key is a packed i64
+   rather than formatted text; `nearest_nodes` is one pass, not four; anchor candidates are memoised.
+   Cold match 3327 → 1450 ms across those, every one route-identical.
 
-Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1450 ms**,
-**warm match ~880 → 343 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
-frame is **0.6 ms** (§6d).
-Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
-only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
-
-✅ **The growing line is delivered** (2026-07-22, closing the one documented behaviour that was not).
-The route was already *emitted* per stretch in travel order, but nothing *rendered* it that way —
-`runKernel` returned the whole response at `#EOR` and only the final `ROUTE` was drawn, so the
-`frame_yield()`s bought responsiveness (worst frozen gap 11095 → 384 ms) and no growing line. Now
-`runKernel` takes an opt-in line sink drained per yield in a microtask (before paint), and `map`
-accumulates stretches by slot and re-strokes the route so far. `DESIGN.md` §5 and `PLAN-MATCH` again
-describe the actual behaviour. See `PLAN-PERF` §6b(2) — including what its gate then surfaced:
-`remove_spurs` prunes ~60% of the raw stitch, so the line visibly tightens when the match completes.
-**And §6b(3)**, from profiling it straight after shipping: step 22's ladder emits the route **twice** when
-it rejects the tube tier (78 stretches on a 40-point sketch, not 39), which was both a stale number in
-step 16's row and a live rendering defect — now fixed and gated DOM-free in `map.test.mjs`.
+✅ **The growing line is delivered** (§6b(2)) — the route was *emitted* per stretch in travel order but
+nothing *rendered* it that way. `runKernel` now takes an opt-in line sink drained per yield in a
+microtask (before paint); `map` accumulates stretches by slot. `DESIGN.md` §5 and `PLAN-MATCH` describe
+actual behaviour again. Two things its gate then surfaced: `remove_spurs` prunes ~60% of the raw stitch
+(the line visibly tightens at the end), and step 22's ladder **emits the route twice** when it rejects the
+tube tier (§6b(3)) — which was both a stale number in step 16's row and a live rendering defect.
 
 ---
 
-## 1a. Resume here (2026-07-22)
+## 2. What is CLOSED (and the one that is only DEFERRED) — do not re-open without new evidence
 
-- **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list. Then §7g(2)
-  (the viewport filter), §7h(2) (the match ladder), §6b(2) (the growing line — delivered, and what its
-  gate then surfaced about `remove_spurs`).
-  `CLAUDE.md` § "Read the reference before you write" — the rule that would have saved this session hours.
-- **Toolchain:** installed loft is **2026.7.2** (@PLN110 `len`/`size` flip: `len(text)` is CHARACTERS,
-  `size(text)` is BYTES — breaking). Routing absorbed it with **no source edits**; all five gates pass.
-- **Gates** — `make test`, `test-native`, `test-wasm`, `test-map` (browser: render + both @PLN105 bridge
-  probes), and **`tools/match_parity.sh`** (route identity — the one that matters most).
-  ⚠ **CI has no chromium**, so it runs neither `test-map` nor the bridge gates. They are local-only.
-- **Instruments** (all durable, all in `tools/`): `map_profile.sh` (**always `CPU_THROTTLE=4`**),
-  `match_parity.sh`, `corpus_tube.loft` (the ladder's gate sweep + cost model), `match_session_probe.loft`
-  (native ground truth for the four match interactions), `deliver_probe.sh` + `expose_probe.sh` (the
-  bridge), `tile_overhang.loft` + `tile_bbox_probe.loft` (tile geometry), `tile_lookup.loft`,
-  `par_copy_probe.loft`, `expose_iter_probe.loft`.
+Six things were investigated and **not shipped**. Each is closed by a measurement, with the probe kept so
+the verdict can be re-checked rather than re-derived. *This section exists because the expensive mistake
+is re-opening a door someone already measured shut* — and, for the one that is only **deferred**, walking
+past it after it has quietly opened.
 
-**Nothing is blocked upstream.** Both 2026-07-17 blockers cleared on 2026.7.2 (§7c): @PLN108's par-copy
-elision is live (probe flat 1–3 ms vs 214 ms), and the `expose` hang was root-caused — `expose` pins the
-store read-only and **iterating** a store-backed hash claims a cursor record *inside it*; **reads are
-fine**, and `release`/`expose` brackets it.
+| | verdict | evidence |
+|---|---|---|
+| **18 — `par` over the stretches** | ⏸ **DEFERRED, not dead — loft plans browser `par`** | Today the app's wasm has `shared=false` and Rust's no-threads std linked in (WASM-single compiles `threading` OFF → Tier 1 sequential), so `par` is a literal no-op. **But the maintainer confirms loft has a PLAN for browser `par`; it is queued behind another bug.** So this is waiting on a capability, not blocked by a wall — and `tools/wasm_threads.mjs` (in `make test-map`) is the alarm: it **fails the day the kernel wasm gains threads**, which is the signal to build step 18. §6b B's determinism design (order the source before par; hash iteration is unordered; `gen` is loop-carried; keep reductions out of the workers) is kept for exactly that day. ⚠ Still check the DEPLOY side then: Tier 2 needs COEP/COOP headers, and GitHub Pages cannot set them — a service-worker COEP shim may be needed. |
+| **19b — persist the graph per tile** | ⛔ **not worth it** | The union is only ~13–21% cheaper than building: it must still hash ~34k part-nodes against a build's 44.7k vertices, copy every edge and rebuild the CSR, and the parts duplicate just 1.5% of their nodes so no cleverer format helps. ~8% of a cold match for a store-format change, a redeploy and the plan's riskiest row (§7a(2)). |
+| **`spatial<T[x,y]>` for `nearest_nodes`** | ⛔ **built, measured, reverted** | Correct (routes byte-identical) but a net loss: **+275 ms** of per-corridor index build for **zero** match improvement. Its value was finding that `nearest_nodes` was not the bottleneck at all (§7l). |
+| **Pruning the anchor search** | ⛔ **corpus-rejected** | −28% at a 400 m cap but routes get *longer* by up to 62%; the corpus's own `dev_max` reaches ~1056 m so any useful cap severs legitimate paths, and every cap loose enough to preserve routes is inside the ~3.4% noise floor (§7n). |
+| **Sharing anchor searches across a span** | ⛔ **corpus-rejected** | SPAN=2 verified to reproduce today's behaviour exactly; every span ≥3 was WORSE — sketch 11 gained **855 m of bridging**, sketch 19 grew **+79%** — because a block path optimised end-to-end stops passing close to the intermediate taps (§7o). |
+| **A cheaper `denoise_anchor`** | ⛔ **both levers closed** | Narrowing each search (§7n) and sharing searches (§7o) are both rejected. Its ~131 ms is the honest cost of centring each anchor on its own neighbourhood; anything cheaper is a **different matcher**, not a faster one. `tools/corpus_anchor.loft` is the gate for whoever disagrees. |
 
-⚠ **`PLAN-PERF` §0 has nothing open.** 18 and 19b are both ⛔ and measured, not guessed. The graph build
-was then attacked directly (**§7i**): edges now reference their source way instead of copying its 11 text
-tags, and `precompute_edges` computes costs **per way** rather than per edge — **cold match 2721 → 1820
-ms**, warm 644 → 526, routes byte-identical. Then the SEARCH (**§7j**): `nearest_nodes` allocated a graph-sized vector and ran
-4 full scans over every node, ~3x per sketch point — **anchoring cost more than routing**. One pass
-keeping the best K, identical tie-breaking, identical routes: **warm match 526 → 395 ms**. Native split
-is now corridor 20 · build_graph 93 · match 88.
-Then **§7k**: `EdgeCosts` indexed by WAY rather than by edge — five arrays of
-37.6k entries (~188k appends) collapsed to ~7.1k, free in the hot loop because it already loads the edge
-record. **cold match 1831 → 1539 ms**, warm 395 → 358.
-**§7l — the spatial index was built, measured and REVERTED** (routes were byte-identical; it was a net
-loss: +275 ms of per-corridor index build for **zero** match improvement). Its value was finding the real
-bottleneck: **`nearest_nodes` is not it.** After §7j's one-pass top-K the scan is cheap; what remains in
-anchoring is `denoise_anchor` running a **full `dijkstra_win` from point i−1 to i+1 for EVERY interior
-point** — 38 extra Dijkstras on a 40-point sketch, on top of pass 2's 39.
-**§7m** then attributed the anchor pass (dijkstra 131 ms · the two nearest lookups 82 ms · closest ~0)
-and removed the recomputation: the two lookups are the SAME function on the same points, so they are now
-memoised (flat + lazy, so a warm edit never pays for points it did not touch). Cold 1539 → 1450, warm
-358 → 343, routes byte-identical.
-⚠ **What is left is NOT a refactor.** `dijkstra_win` is 131 ms of the anchor pass — one full search per
-interior point — and sharing or bounding those searches changes WHICH ANCHOR is chosen, hence the route.
-That is a §7h-class change needing the 26-sketch corpus as its gate ("0 worse accepted"), not a
-fingerprint. **§7n attempted it and REJECTED it**: a deviation prune on the anchor search is −28% at a cap
-of 400 m but makes routes *longer* by up to 62%, and every cap loose enough to preserve routes is inside
-the ~3.4% run-to-run noise. The corpus's own `dev_max` reaches ~1056 m, so any useful cap severs
-legitimate paths. **A geometric prune is closed** (§7n). And so is the other lever: **§7o** shared one
-search across a span of taps (overlapping blocks; SPAN=2 verified to reproduce today's behaviour exactly)
-and every span ≥3 was WORSE on the corpus — sketch 11 gained 855 m of bridging, sketch 19 grew 79% —
-because a block path optimised end-to-end stops passing close to the intermediate taps. **Both levers on
-`denoise_anchor` are now closed by measurement**; its ~131 ms is the honest cost of centring each anchor
-on its own neighbourhood. `tools/corpus_anchor.loft` is the gate for whoever wants to reopen it.
-Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdlib
-(`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
+---
 
-**What to do next, in the order the evidence favours:**
+## 3. Resume here (2026-07-22)
 
-1. **Steps 14–15 are DONE — the render path is finished.** A pan frame is **0.6 ms** (was 76) and a view
-   **146 ms** (was 946). What is left is all in the MATCH. Before touching the renderer read `PLAN-PERF`
-   §6d: the block cache is ON, it **snaps the render origin** to a whole device pixel, and it can never be
-   pixel-identical (Chromium's rasterisation is not invariant to canvas dimensions — proven, not assumed),
-   so its gate is three equalities plus a bounded delta. **Anything that replaces layer data must call
-   `map.invalidateBlocks()`** or the map shows stale tiles that panning does not repair.
-   **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
-   a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
-   is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
-   buffer** (re-derive the view every frame; never cache it across a match), and the gate is a **canvas
-   pixel hash**, because counts cannot see a ring read at a wrong offset.
-2. **Step 18 — ⛔ DO NOT BUILD.** `par` is a **no-op in the browser** (`PLAN-PERF` §6e), proven from the
-   app's own wasm: `shared=false`, Rust's no-threads std linked in, loft's WASM (single) profile compiles
-   `threading` OFF → Tier 1 sequential. Tier 2 needs COEP/COOP headers GitHub Pages cannot set. Its verify
-   line was "~3× **native**" — the server, not this plan's subject. `tools/wasm_threads.mjs` gates it and
-   FAILS the day browser threads arrive, which is when to revisit. §6b B's determinism design is still
-   correct and kept for that day.
-3. **Step 19 — RE-MEASURED, and 19a is done** (`PLAN-PERF` §7a(2)). The re-sizing found the opposite of
-   what §7a expected: `build_graph` is **~50%** of a cold match, not ~41% — steps 20–22 shrank the
-   corridor read further than the graph build. **19a** removed the TEXT node key (`"{lat},{lon}"`
-   formatted per vertex) for a packed i64: cold match **3327 → 2721 ms** browser, routes byte-identical,
-   no format change. **19b is ⛔ MEASURED AND REJECTED** (§7a(2)): `tools/union_probe.loft` simulated it
-   with in-memory parts and the union is only **~13–21% cheaper** than building — it must still hash ~34k
-   part-nodes against a build's 44.7k vertices, copy every edge and rebuild the CSR — so it is worth ~8%
-   of a cold match (~215 ms of 2721) for a store-format change, a redeploy, and the plan's riskiest row.
-   Kept: `tools/tile_border_gate.sh` (in `make test-native`) and the reference `union_graphs`, whose route
-   identity that gate asserts. Re-run `union_probe` first if it is ever reopened.
-4. **The cold match still blocks ~3.4 s in ONE frozen gap** — the responsiveness problem is now that gap,
-   not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
-   `build_graph`, before the first stretch exists).
+- **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
+  the matcher work. Then `CLAUDE.md` § "Read the reference before you write".
+- **Toolchain:** installed loft is **2026.7.2**. Routing absorbed the @PLN110 `len`/`size` flip with no
+  source edits.
+- **Gates** — `make test`, `test-native` (now includes **`tools/tile_border_gate.sh`**), `test-wasm`,
+  `test-map` (browser render + the @PLN105 bridge probes + the step-18 threading tripwire), and
+  **`tools/match_parity.sh`**. ⚠ **CI has no chromium**, so `test-map` and the bridge gates are local-only.
+- **Instruments** (durable, in `tools/`): `map_profile.sh` (**always `CPU_THROTTLE=4`**),
+  `match_parity.sh`, `tile_border_gate.sh` + `tile_border_probe.loft` (routes across tile borders,
+  order-insensitivity), `corpus_anchor.loft` (§7 quality per sketch — the gate for ROUTE-AFFECTING
+  changes), `corpus_tube.loft`, `match_phase_probe.loft` (cold-match split, 3-point **and** 40-point),
+  `union_probe.loft`, `nodekey_probe.loft`, `spatial_probe.loft`, `wasm_threads.mjs`,
+  `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`.
 
-**One thing NOT done that a reader might assume is:**
-- **`server/server.loft` is not on the match ladder** (step 22 wired only `lib/map_kernel`). The server
-  keeps its own `covered()` + corridor logic and an Overpass path the corpus does not cover.
+**Nothing is blocked upstream.**
+
+### Where the remaining time actually is
+
+Native cold-match split (TUBE tier, the one a cold match uses): **corridor 20 · build_graph 93 ·
+match 88**. In the browser a cold match is 1450 ms and a warm one 343 ms.
+
+- **The warm match is the interaction users perform**, and it is now 343 ms. Most of it is the anchor
+  pass, whose two levers are closed (§2).
+- **The cold match's remaining bulk is `build_graph`** (93 of 201 native). Persisting it is rejected
+  (§7a(2)); what is left would be making the build itself cheaper, and `add_edge`'s record construction
+  is already down from 14 fields to 4.
+- **A dense sketch is the honest case.** `match_phase_probe` runs a 40-point sketch as well as the
+  3-point one: on 40 points the SEARCH is ~75% of a cold match, where on 3 points it is ~35%. Anchoring
+  is per POINT — measure the case you intend to improve.
 
 **Traps this session paid for, so you do not have to:**
 - **A probe outside a gate is a comment.** Four instrument bugs were found in one day; every one was a
@@ -156,7 +128,7 @@ Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdl
 
 ---
 
-## 2. What works / is merged to `main`
+## 4. What works / is merged to `main`
 
 - **Tile-block matching** — `server/server.loft` binds the block once (`store_persist_bind`) and reads
   its corridor via `tiles_corridor_ways` per request, Overpass fallback when outside coverage. Verified
@@ -200,7 +172,7 @@ Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdl
 - **Pipeline tools** — `tools/gen-tiles.loft` (block generator) + `tools/geojson2overpass.py`
   (converter), rescued from scratch so the data pipeline is portable.
 
-## 3. Open PRs
+## 5. Open PRs
 
 - **#8** `ci-wasm-note` — corrects the CI comment to point at loft#521 (my first note wrongly blamed
   "wasmtime 46"). Safe to merge when green.
@@ -208,7 +180,7 @@ Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdl
 
 ---
 
-## 4. External dependency states (loft) — the real gating
+## 6. External dependency states (loft) — the real gating
 
 | issue | what | state | effect here |
 |---|---|---|---|
@@ -225,7 +197,7 @@ fetches one by URL, which is what the PLAN-BUILD store app runs on (`browser/sto
 
 ---
 
-## 5. The tile data + how to regenerate it
+## 7. The tile data + how to regenerate it
 
 - The block **`soverijssel.tiles`** (21 MB, southern-Overijssel, 1215 tiles) is **gitignored** (`*.tiles`)
   — it does not travel. The server matches from it if present in the launch dir, else Overpass.
@@ -250,7 +222,7 @@ fetches one by URL, which is what the PLAN-BUILD store app runs on (`browser/sto
 
 ---
 
-## 6. Environment to resume
+## 8. Environment to resume
 
 - **loft** as a sibling checkout at `../loft`, built: `cargo build --release` (needs **mold** on Linux;
   `export SDKROOT=$(xcrun --show-sdk-path)` on macOS). Point the app at it via `LOFT=../loft/target/release/loft`.
@@ -265,7 +237,7 @@ fetches one by URL, which is what the PLAN-BUILD store app runs on (`browser/sto
 
 ---
 
-## 7. Next steps (from PLAN-APP §10/§11)
+## 9. Next steps (from PLAN-APP §10/§11)
 
 Do in this order; **O** and the doc/tooling are done or in-flight.
 
@@ -294,7 +266,7 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 
 ---
 
-## 8. Gotchas / things that cost time (don't relearn these)
+## 10. Gotchas / things that cost time (don't relearn these)
 
 - **`store_persist_bind` (mmap write) is native-only** — but reading a store in wasm now works:
   **`store_load(r, path)`** is the heap reader for a browser / wasm target (verified byte-for-byte under
@@ -315,7 +287,7 @@ Do in this order; **O** and the doc/tooling are done or in-flight.
 - **Scratch is ephemeral** — anything under the session scratchpad (old experiments, the netherlands
   `.pbf`, intermediate `.tiles`) is gone on a new machine. The pipeline is now in `tools/`.
 
-## 9. Loose ends
+## 11. Loose ends
 
 - CI wasm-parity gate is informational; loft#521 is fixed on branch `tuxedo-add-to-project` — re-block it
   once the fix merges to loft `main`.
