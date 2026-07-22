@@ -317,10 +317,18 @@ window.__perfHooks = {
     // does this on every view, so this probe must too: leaving it out would report a view the app never
     // performs, which is exactly the class of instrument bug §7e was written about. Timed as its own
     // phase so the bridge's cost stays attributable instead of hiding inside `render`.
+    // ⚠ This mirrors `ensureView` EXACTLY, and had to be re-synced when §6c landed. It was still
+    // materialising all STORE_KINDS after the app had stopped, so it timed a view the app no longer
+    // performs — and worse, re-populated map.areas/buildings/… behind the app's back, which made
+    // `projectionCost` report 214,455 vertices for layers the app now retains none of. Same class of bug
+    // its own comment warns about (§7e). If ensureView's layer wiring changes, change it here too.
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (h) {
-      const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
-      for (const k of STORE_KINDS) map[k] = lists[k];
+      const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, APP_OBJECT_KINDS));
+      for (const k of APP_OBJECT_KINDS) map[k] = lists[k];
+      for (const k of STORE_GEOM_KINDS) map[k] = [];
+      map.setStoreIndex(buildIndex(kernel.memory(), h, storeLayout(h), fboxOf(bbox), STORE_GEOM_KINDS),
+                        () => kernel.memory(), h.storeBase);
     }
     const t3 = performance.now();
     map.render();
