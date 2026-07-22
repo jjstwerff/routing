@@ -797,6 +797,71 @@ window.__perfHooks = {
     map.blocked = wasBlocked; map.invalidateBlocks();
     return { total: med(runs.map((r) => r.total)), layers, projection: med(proj), verts, counts: { ...map._stats } };
   },
+  // What does drawing the SKETCH actually cost? (PLAN-EDIT E7's open gap.)
+  //
+  // `renderBudget` above reports `rough 0 ms · 0 drawn`, because it renders whatever is on screen and the
+  // profiler's session never draws a sketch. That proves the ROW exists, not that the sketch is free —
+  // and "a handful of points cannot matter" is exactly the kind of sentence this repo has been burned by.
+  // So seed a sketch of each size and read the same layer timer the other rows come from.
+  //
+  // 0 is the baseline the profiler currently reports; 3 is the app's own demo sketch; 40 is the honest
+  // dense case (PLAN-MATCH: a realistically drawn route is ~40 points) — the same pair
+  // `match_phase_probe` uses, so the render and match sides stay comparable.
+  //
+  // The points are spread across the viewport rather than bunched, so they genuinely project on-screen
+  // and rasterise: a sketch parked off-camera would measure the early-out, not the drawing.
+  // ⚠ AMPLIFIED, because the first version of this probe was a blind instrument. Timing one sketch draw
+  // per frame reported `0.00 ms` for 40 points and `0.10 ms` for 3 — a smaller sketch costing MORE, which
+  // is impossible and therefore a reading of the clock, not of the code: `performance.now()` is clamped to
+  // ~100 µs in Chromium and a single overlay draw lands under that floor. Drawing it REPS times per sample
+  // and dividing puts the measurement well above the floor, where the sizes order monotonically and the
+  // number means something. (engineering-rigor: a probe that will not converge is a tool problem first.)
+  async roughBudget(n, sizes = [0, 3, 40]) {
+    const REPS = 200;
+    const saved = map.points;                  // test-only swap; restored in the finally below
+    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+    const out = {};
+    try {
+      for (const k of sizes) {
+        const pts = [];
+        for (let i = 0; i < k; i++) {
+          const f = k === 1 ? 0.5 : i / (k - 1);
+          const g = map.unproject(map.width * (0.08 + 0.84 * f),
+                                  map.height * (0.5 + 0.38 * Math.sin(f * 7)));
+          pts.push({ id: i + 1, lat: g.lat, lon: g.lon });
+        }
+        map.points = pts;
+        const drawn = map.drawRough();
+        const time = () => {
+          const runs = [];
+          for (let i = 0; i < n; i++) {
+            const t0 = performance.now();
+            for (let r = 0; r < REPS; r++) map.drawRough();
+            runs.push((performance.now() - t0) / REPS);
+          }
+          return med(runs);
+        };
+        const ms = time();
+        // Attribute it three ways rather than reporting one number nobody can act on. The shadow was the
+        // obvious suspect (a canvas shadow is an offscreen blur per fill) and measuring said otherwise —
+        // so the line/dots split is what actually tells you which way the cost scales.
+        map._roughNoShadow = true;
+        const msNoShadow = time();
+        map._roughNoShadow = false;
+        map._roughNoLine = true;
+        const msDotsOnly = time();
+        map._roughNoLine = false;
+        out[k] = { ms, msNoShadow, msDotsOnly, drawn, reps: REPS };
+      }
+    } finally {
+      map._roughNoShadow = false;
+      map._roughNoLine = false;
+      map.points = saved;
+      map.invalidateBlocks();
+      map.render();
+    }
+    return out;
+  },
   // §6b(2)'s observable: do the STRETCH lines reach JS *while the match runs*, or only at the end?
   //
   // Step 16 made loft EMIT per stretch, but `runKernel` buffered the whole response, so JS learned

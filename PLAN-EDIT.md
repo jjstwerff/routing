@@ -359,11 +359,30 @@ trust, the `view` row (1.9×) is not.
 inside the noise at this load. And P5 holds at the target device — insert and delete are **20% / 23% of a
 cold match**, squarely in the warm band, exactly as the design-time probe claimed.
 
-⚠ **One honest gap.** The render-budget row reports `rough 0 ms · 0 drawn` — the probe runs with an
-**empty sketch**, so it proves the row exists, *not* that drawing the sketch is free. It cannot plausibly
-matter (a handful of points against the frame's 3,170 label vertices), but nobody has measured it, and
-"it cannot matter" is the sentence this repo has been burned by before. Seed the budget probe with a
-sketch if the sketch ever grows teeth.
+### E7 — the sketch's own render cost, now measured (`__perfHooks.roughBudget`)
+
+The render-budget row reports `rough 0 ms · 0 drawn` because the profiler's session never draws a sketch —
+it proves the row exists, not that the sketch is free. The doc first said drawing it *"cannot plausibly
+matter"*; **measuring it said otherwise**, so the claim is retracted and the number recorded.
+
+`CPU_THROTTLE=4`, the `drawRough` overlay amplified ×200 per sample (one draw sits under
+`performance.now()`'s ~100 µs clamp — the first cut of this probe was a **blind instrument**: it reported a
+40-point sketch costing *less* than a 3-point one, which is impossible and so a reading of the clock, not
+the code):
+
+| sketch | overlay | share of a ~27 ms frame | attribution |
+|---|---|---|---|
+| 0 points | 0 µs | 0% | — |
+| 3 points (the demo) | ~11 µs | 0.04% | negligible |
+| **40 points (dense)** | **~2.6 ms** | **~10%** | **dots ~74%, line ~23%, shadow within noise** |
+
+So a **realistically dense sketch is ~10% of a frame**, not free — and the cost is the **dots**, ~49 µs
+each, not the drop shadow the obvious guess blamed (measuring it is why the guess didn't ship as fact).
+It has not hurt anything: the block-cache gate is unmoved and every gesture stays responsive, because the
+sketch is an OVERLAY (§7g), redrawn per frame but never baked. The lever, if a 100-point import ever makes
+it bite, is the dots — a cheaper marker (no per-dot shadow/stroke state change, or a single batched path)
+before the dashed line. `roughBudget` is the gate that would show it. ⚠ Its synthetic path zig-zags harder
+than a real drawn route, so the **line** figure is an upper bound; the **dot** figure is honest.
 - **Build.** Shift+drag box select (desktop only, least load-bearing). Add `matchInsert` / `matchDelete` to
   `__perfHooks` so §2's P5 becomes a standing measurement. Re-record the PLAN-PERF pixel hashes.
 - **Check.** `make test`, `test-native`, `test-wasm`, `test-map` green; `tools/match_parity.sh`
