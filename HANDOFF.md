@@ -146,8 +146,8 @@ insert / drag / delete.
 3. **The pixel hash WILL change**, deliberately, when the line is added. `storeRenderParity` compares the
    object path against the store path (both change identically) so it stays green, but the hash VALUES
    quoted in §6c/§6d become stale and should be re-recorded.
-4. ⚠ **`hitTest` is a stub** returning `null` (`map.mjs:1500`) and `seam` exports it. The editor **builds**
-   the seam it was said to ride.
+4. ✅ **`hitTest` was a stub** returning `null` with `seam` exporting it. E2 **deleted** it and built the
+   real one on `RoughLayer`, where the tolerances live — hit testing classifies input.
 5. ✅ **Two live bugs in the append path — FIXED by E0.** A pan drag appended a spurious point, and a
    click during a match was silently dropped (the route ended **1417 m** from the last rough point; it now
    ends **15 m** away). Both were invisible precisely because the sketch has no line yet. All three
@@ -177,8 +177,13 @@ no visual answer to "did my click land?".
    was **fixed** rather than doubled — it had no consumers and is advertised as PLAN-EDIT's seam, so it now
    fires inside the block. `renderSnappedDirect` learned the same overlays (it and `render()` were already
    drawing different pictures). The §6c/§6d pixel hashes did **not** go stale after all — see PLAN-EDIT E1.
-2. ⏭ **NEXT — `hitTest` + insert** on tap/press-sweep.
-3. **Drag to move** a point, rough line following live at 60 fps, matched route coalesced.
+2. ✅ **DONE — `hitTest` + insert.** Lives on `RoughLayer` (screen-space, point 15 px beats segment 9 px);
+   `map.hitTest`'s always-null stub was **deleted**, not filled — hit testing classifies input, so it
+   belongs with the dispatcher. Press-on-line + drag inserts and positions in one gesture, one commit.
+   ⚠ It also **subsumed E0's P2 dedupe**, which was removed as unreachable *and* harmful — see PLAN-EDIT
+   E2. **E4's double-click-delete must key on the point's `id`, not a screen spot.**
+3. ⏭ **NEXT — drag to move** a point, rough line following live at 60 fps, matched route coalesced.
+   The press-on-a-point gesture is already classified and currently inert — E3 fills it in.
 4. **Delete** — double-click (behind the 250 ms dedupe) and tap-select + Delete for touch.
 5. **Range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a primitive).
 6. Box-select last — desktop-only and the least load-bearing.

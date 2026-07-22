@@ -198,14 +198,32 @@ the matching; it is false on a phone.
   a sketch present would shift both sides equally — the printed value depends on gate ORDER, the verdict
   does not. Nothing to re-record.
 
-### E2 — hit test + insert (tap and sweep)
-- **Build.** `map.hitTest(x, y)` → `{kind: 'point'|'segment'|null, index, t}`, screen-space, priority
-  point (15 px) → segment (9 px). Press on a segment inserts at `index+1` **uncommitted**, `pointermove`
-  positions it live, `pointerup` commits once — insert+position in **one** gesture, **one** undo step. A
-  plain tap on the line inserts at the press point.
-- **Check.** Unit: hit priority and `nearestSegment` against a hand-plotted polyline, including the case a
-  degrees-space test would get wrong (a segment near-vertical at high latitude). Browser: press-drag on a
-  segment ⇒ exactly one point, between the right neighbours, at the release position.
+### E2 — hit test + insert (tap and sweep) ✅ **DONE**
+- **Built.** `RoughLayer.hitTest(x, y)` → `{kind:'point'|'segment', index, d, t}` or null, screen-space,
+  priority **point (15 px) → segment (9 px)**, over pure `pointToSegment` / `nearestSegment`. Press on a
+  segment inserts at `index+1` **uncommitted**, `pointermove` repositions it live, `pointerup` commits
+  **once** — insert-and-position is one gesture and one edit. A plain tap on the line inserts at the press;
+  a press on a *point* is inert (reserved for E3) and, critically, does **not** fall through to append.
+  A cancelled sweep still commits — its point is on the map either way.
+- **The stub was deleted, not filled.** `map.hitTest` returned `null` and `seam` exported it, but hit
+  testing decides *which gesture a press is* — it is input classification, so it belongs beside the
+  tolerances in `rough.mjs`. Filling in the stub would have left the geometry in one file and the decision
+  in another; keeping it would have left a second `hitTest` answering `null` forever in the file the header
+  comment points readers at.
+- ⚠ **E2 SUBSUMED the P2 dedupe, and E0's port of it had to be removed.** A tap appends a point **at** the
+  press, so the second click of a double-click lands within `HIT_POINT_PX` (15) of it and resolves to that
+  **point** — and 15 > `DOUBLE_TAP_PX` (12), so the timer could never fire first. It was not merely dead
+  but **harmful**: it keyed on *screen* position, which a pan invalidates, so tap → flick → tap-the-same-spot
+  inside 250 ms swallowed a legitimate point that no longer had anything under it. P2 is now enforced by
+  **priority**, which is stronger (it holds at any delay). **E4's double-click-to-delete needs its own
+  detector keyed on the point's `id`, not a screen spot** — the same reason in reverse.
+- **Checked.** Unit: `pointToSegment` incl. both clamped ends and a zero-length segment; priority (a press
+  satisfying *both* tests resolves to the point); both tolerance boundaries; a one-point sketch has no
+  segment; the sweep inserts once, uncommitted, follows the finger, and commits exactly once; a second
+  press at the same spot hits the **new point**, so the line cannot be double-inserted; and the
+  screen-vs-degrees case — an L-shaped sketch where degrees picks segment 0 and screen picks segment 1, so
+  a drift back to degrees fails loudly. Browser: press-on-line + drag ⇒ **ids `5,7,6`** — spliced between
+  its neighbours, at the release position.
 
 ### E3 — drag a point
 - **Build.** A `pointerdown` on a point captures it; `pointermove` moves it and redraws the rough line

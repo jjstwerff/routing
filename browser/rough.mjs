@@ -32,17 +32,36 @@
 // Touch slop: a finger jitters by a pixel or two on a tap, so a gesture is only a pan once it has moved
 // past this. Below it the camera does not move at all, which keeps a tap's coordinates exact.
 export const PAN_SLOP_PX = 4;
-// Ported from rough.js: collapse the second click of a same-spot double-click so a double-tap does not
-// drop two stacked points. Measured to be needed here too (P2), and it is the precondition for E4's
-// double-click-to-delete — that gesture is unreachable while the first click of it appends a point.
-export const DOUBLE_TAP_MS = 250;
-export const DOUBLE_TAP_PX = 12;
+// P2 — "a double-click must not drop two stacked points" — is now enforced by hit PRIORITY, not by a
+// timer. E0 ported rough.js's 250 ms / 12 px dedupe for it; E2's hitTest made that dedupe unreachable and
+// then harmful, so it is gone:
+//
+//   unreachable — a tap appends a point AT the press, so the second click of a double-click lands within
+//     HIT_POINT_PX (15) of it and resolves to that POINT. 15 > 12, so the dedupe could never fire first.
+//   harmful — it keyed on SCREEN position, which a pan invalidates. Tap, flick the map, tap the same spot
+//     inside 250 ms and the dedupe swallowed a legitimate point that no longer had anything under it.
+//
+// E4's double-click-to-delete will need its own detector, keyed on the POINT's id rather than a screen
+// spot — the same reason in reverse.
 
-// Is this tap the second of a double-click at the same spot? Pure, so map.test.mjs can pin the boundary
-// without a browser. `prev` is the previous accepted tap ({t, x, y}) or null.
-export function isDoubleTap(prev, t, x, y) {
-  if (!prev) return false;
-  return (t - prev.t) < DOUBLE_TAP_MS && Math.hypot(x - prev.x, y - prev.y) < DOUBLE_TAP_PX;
+// Hit tolerances in SCREEN pixels, deliberately LARGER than the dot is drawn (map.mjs's ROUGH_DOT): how
+// big a thing looks and how big it is to a fingertip are different questions. Ported from rough.js, where
+// Leaflet expressed the same two numbers as a 30-px touch box around a 14-px dot and an 18-px transparent
+// line under a 3-px one. Those stacked polylines do not survive onto a canvas — a transparent stroke
+// catches nothing when there is no hit testing to catch it — but the tolerances and the priority do
+// (PLAN-EDIT §3).
+export const HIT_POINT_PX = 15;
+export const HIT_SEGMENT_PX = 9;
+
+// Distance from (px,py) to the segment a→b, and how far along it the foot lands (t in 0..1, clamped to the
+// ends so a point beyond the segment measures to the nearer endpoint). Pure, and pure SCREEN space — see
+// nearestSegment for why that matters.
+export function pointToSegment(px, py, ax, ay, bx, by) {
+  const vx = bx - ax, vy = by - ay;
+  const len2 = vx * vx + vy * vy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (py - ay) * vy) / len2));
+  const dx = px - (ax + t * vx), dy = py - (ay + t * vy);
+  return { d: Math.hypot(dx, dy), t };
 }
 
 // CHOKEPOINT 3 — every command to the kernel goes through here.
@@ -107,7 +126,6 @@ export class RoughLayer {
     this.points = [];
     map.points = this.points;
     this._seq = 0;
-    this._lastTap = null;
     this._g = null;                 // the in-progress gesture, or null when no pointer is down
     if (opts.bind !== false) this.bind();
   }
@@ -125,9 +143,62 @@ export class RoughLayer {
 
   clear() {
     this.points.length = 0;         // in place: the renderer holds this same array
-    this._lastTap = null;
     this.commitEdit(true);
     return this;
+  }
+
+  // Insert a point between `index-1` and `index`, WITHOUT committing. The sweep commits once on release,
+  // so "drop a point on the line and drag it where you meant" is a single edit — and, from E6, a single
+  // undo step rather than two.
+  insertAt(index, lat, lon) {
+    const pt = { id: ++this._seq, lat, lon };
+    this.points.splice(index, 0, pt);
+    this.commitEdit(false);
+    return pt;
+  }
+
+  // ---- hit testing ---------------------------------------------------------------------------------
+
+  // Every rough point in screen pixels. One projection pass per hit test — a sketch is a handful of
+  // points, so there is nothing here worth caching and invalidating.
+  _screen() {
+    const out = new Array(this.points.length);
+    for (let i = 0; i < this.points.length; i++) out[i] = this.map.project(this.points[i].lat, this.points[i].lon);
+    return out;
+  }
+
+  // The segment (i → i+1) nearest to (x, y): { index, d, t }, or null when there is no segment yet. No
+  // tolerance is applied — hitTest does that. An insert goes at index + 1.
+  //
+  // ⚠ SCREEN space, never degrees. A degree of longitude is not a degree of latitude on the ground, and
+  // Mercator's y is not even linear in latitude, so "nearest" judged in degrees can name a DIFFERENT
+  // segment than the one the user watched themselves tap. map.test.mjs pins a case where the two disagree.
+  nearestSegment(x, y) {
+    const px = this._screen();
+    if (px.length < 2) return null;
+    let best = null;
+    for (let i = 0; i < px.length - 1; i++) {
+      const r = pointToSegment(x, y, px[i].x, px[i].y, px[i + 1].x, px[i + 1].y);
+      if (!best || r.d < best.d) best = { index: i, d: r.d, t: r.t };
+    }
+    return best;
+  }
+
+  // What is under (x, y)? { kind: 'point'|'segment', index, d, t? } or null.
+  //
+  // POINTS WIN OVER SEGMENTS, and the order is load-bearing rather than cosmetic: every point lies ON the
+  // line, so segment-first would make each point unreachable — and pressing a point would insert a second
+  // one on top of it instead of grabbing it. Grabbing the specific thing beats grabbing the general one.
+  hitTest(x, y) {
+    const px = this._screen();
+    let best = null;
+    for (let i = 0; i < px.length; i++) {
+      const d = Math.hypot(x - px[i].x, y - px[i].y);
+      if (d <= HIT_POINT_PX && (!best || d < best.d)) best = { kind: 'point', index: i, d };
+    }
+    if (best) return best;
+    const seg = this.nearestSegment(x, y);
+    return seg && seg.d <= HIT_SEGMENT_PX ? { kind: 'segment', index: seg.index, d: seg.d, t: seg.t } : null;
   }
 
   // CHOKEPOINT 2 — the only path from a sketch mutation to the world.
@@ -146,13 +217,38 @@ export class RoughLayer {
   // Screen-space and DOM-free so map.test.mjs can drive a whole gesture without a browser; `bind()` below
   // is the thin adapter that turns real pointer events into these three calls.
 
+  // One press, three possible gestures — decided here and nowhere else:
+  //   on a SEGMENT → insert a point there and let this same gesture position it (the sweep)
+  //   on a POINT   → reserved for E3's drag; inert for now, but it must NOT fall through to append, which
+  //                  would stack a second point on top of the one being pressed
+  //   on the MAP   → pan, or (if it never moves past the slop) a tap that appends
   pointerDown(x, y, t) {
-    this._g = { x0: x, y0: y, t0: t, grab: this.map.unproject(x, y), panning: false };
+    const hit = this.hitTest(x, y);
+    if (hit && hit.kind === 'segment') {
+      const ll = this.map.unproject(x, y);
+      this._g = { kind: 'insert', x0: x, y0: y, t0: t, pt: this.insertAt(hit.index + 1, ll.lat, ll.lon) };
+      return;
+    }
+    if (hit && hit.kind === 'point') {
+      this._g = { kind: 'point', x0: x, y0: y, t0: t, index: hit.index };
+      return;
+    }
+    this._g = { kind: 'pan', x0: x, y0: y, t0: t, grab: this.map.unproject(x, y), panning: false };
   }
 
   pointerMove(x, y) {
     const g = this._g;
     if (!g) return;
+    if (g.kind === 'insert') {
+      // The sketch line follows the finger EVERY frame — it is pure JS and costs nothing. The matched
+      // route trails behind through the coalescer, which is DESIGN.md §1's two-tier feedback: distance is
+      // instant, the route is lag-tolerant.
+      const ll = this.map.unproject(x, y);
+      g.pt.lat = ll.lat; g.pt.lon = ll.lon;
+      this.commitEdit(false);
+      return;
+    }
+    if (g.kind !== 'pan') return;
     // Below the slop this is still a candidate TAP and the camera must not move — otherwise a tap's own
     // coordinates would shift under it between press and release.
     if (!g.panning && Math.hypot(x - g.x0, y - g.y0) <= PAN_SLOP_PX) return;
@@ -164,15 +260,23 @@ export class RoughLayer {
     const g = this._g;
     if (!g) return;
     this._g = null;
-    if (g.panning) return;               // P1: a pan is not an edit and NEVER commits
-    this._tap(g.x0, g.y0, g.t0);
+    if (g.kind === 'insert') { this.commitEdit(true); return; }   // ONE committed edit for the whole sweep
+    if (g.kind === 'point') return;                               // E3 fills this in
+    if (g.panning) return;                                        // P1: a pan is not an edit, and never commits
+    this._tap(g.x0, g.y0);
   }
 
-  pointerCancel() { this._g = null; }
+  // A cancelled sweep still leaves its point on the map, so it must still be committed — dropping the
+  // commit would leave a real edit that undo could never take back.
+  pointerCancel() {
+    const g = this._g;
+    this._g = null;
+    if (g && g.kind === 'insert') this.commitEdit(true);
+  }
 
-  _tap(x, y, t) {
-    if (isDoubleTap(this._lastTap, t, x, y)) { this._lastTap = null; return; }   // P2
-    this._lastTap = { t, x, y };
+  // A tap on empty map extends the sketch. A tap that lands on the sketch never reaches here — hitTest
+  // resolved it to a point or a segment first, which is what keeps a double-click from double-adding.
+  _tap(x, y) {
     const ll = this.map.unproject(x, y);
     this.append(ll.lat, ll.lon);
   }

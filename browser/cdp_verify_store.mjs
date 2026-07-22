@@ -210,6 +210,35 @@ const afterDbl = await nPts();
 if (afterDbl !== 1) { console.log(`  FAIL: a double-click produced ${afterDbl} points (want 1) — the 250ms dedupe is not holding`); ok = false; }
 else console.log('  ✓ a double-click drops exactly 1 point (P2)');
 
+// 7c2. PLAN-EDIT E2 — press ON the line and drag: one gesture inserts a point AND positions it.
+//
+// Driven with real mouse events, because the whole gesture only exists in the browser: the press must
+// resolve to a segment, the move must carry the new point, and the release must leave exactly one extra
+// point between the right neighbours. The unit tier pins the geometry; this pins that the wiring is real.
+await resetSketch();
+await click(260, 180); await click(720, 460);
+await sleep(2500);
+const sweep = JSON.parse(await ev(`(() => {
+  const m = window.__map0, r = window.__rough;
+  const a = m.project(r.points[0].lat, r.points[0].lon), b = m.project(r.points[1].lat, r.points[1].lon);
+  return JSON.stringify({ n: r.points.length, midx: Math.round((a.x + b.x) / 2), midy: Math.round((a.y + b.y) / 2) });
+})()`));
+await mouse('mousePressed', sweep.midx, sweep.midy);
+for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', sweep.midx + i * 12, sweep.midy - i * 9); await sleep(16); }
+await mouse('mouseReleased', sweep.midx + 72, sweep.midy - 54);
+await sleep(300);
+const after = JSON.parse(await ev(`(() => {
+  const m = window.__map0, r = window.__rough;
+  const p = r.points, s = p.length === 3 ? m.project(p[1].lat, p[1].lon) : null;
+  return JSON.stringify({ n: p.length, x: s ? Math.round(s.x) : -1, y: s ? Math.round(s.y) : -1,
+                          ids: p.map((q) => q.id).join(','), rough: m._stats.rough }); })()`));
+const wantX = sweep.midx + 72, wantY = sweep.midy - 54;
+if (after.n !== 3) { console.log(`  FAIL: the sweep left ${after.n} points (want 3) — press-on-segment did not insert`); ok = false; }
+else if (Math.abs(after.x - wantX) > 6 || Math.abs(after.y - wantY) > 6) {
+  console.log(`  FAIL: the inserted point sits at (${after.x},${after.y}), not where the drag released (${wantX},${wantY})`); ok = false;
+} else if (after.rough !== 3) { console.log(`  FAIL: the sketch rendered ${after.rough} points after the sweep`); ok = false; }
+else console.log(`  ✓ press-on-line + drag inserts ONE point between its neighbours, at the release (ids ${after.ids}) (E2)`);
+
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
 // with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the

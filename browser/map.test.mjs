@@ -7,7 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
-import { RoughLayer, KernelQueue, isDoubleTap, PAN_SLOP_PX, DOUBLE_TAP_MS, DOUBLE_TAP_PX } from './rough.mjs';
+import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX } from './rough.mjs';
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { fails++; console.error('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };
@@ -180,31 +180,42 @@ console.log('\nE0 · a PAN never appends a point, a TAP always does  (PLAN-EDIT 
   r.pointerUp();
   ok(r.points.length === 1, `a tap appends exactly one point (${r.points.length})`);
 
-  // Jitter below the slop is still a tap — a finger is never perfectly still.
+  // Jitter below the slop is still a tap — a finger is never perfectly still. Tapped well clear of the
+  // existing point, since a press ON a point is a grab, not an append (E2).
   const before = m.camera.lat;
-  r.pointerDown(500, 400, 9000);
-  r.pointerMove(500 + PAN_SLOP_PX, 400);
+  r.pointerDown(200, 150, 9000);
+  r.pointerMove(200 + PAN_SLOP_PX, 150);
   r.pointerUp();
   ok(r.points.length === 2, `${PAN_SLOP_PX}px of jitter is still a tap (${r.points.length} points)`);
   ok(m.camera.lat === before, 'and it did not pan the camera');
 }
 
-console.log('E0 · the double-tap dedupe collapses the 2nd click  (PLAN-EDIT §2 P2)');
+console.log('E0/E2 · a double-click drops ONE point — enforced by hit PRIORITY, not a timer  (PLAN-EDIT §2 P2)');
 {
-  ok(isDoubleTap(null, 0, 0, 0) === false, 'the first tap of a session is never a double');
-  ok(isDoubleTap({ t: 0, x: 100, y: 100 }, DOUBLE_TAP_MS - 1, 100, 100), 'same spot, just inside the window → double');
-  ok(!isDoubleTap({ t: 0, x: 100, y: 100 }, DOUBLE_TAP_MS, 100, 100), `at exactly ${DOUBLE_TAP_MS}ms it is a fresh tap`);
-  ok(!isDoubleTap({ t: 0, x: 100, y: 100 }, 50, 100 + DOUBLE_TAP_PX, 100), `${DOUBLE_TAP_PX}px away is a fresh tap, however fast`);
-
-  const r = layerOn(freshMap());
-  const tap = (x, y, t) => { r.pointerDown(x, y, t); r.pointerUp(); };
-  tap(400, 300, 0);
-  tap(401, 301, 60);                       // the 2nd click of a double-click
+  // E0 ported rough.js's 250 ms / 12 px dedupe for this. E2's hitTest made it unreachable (a tap appends a
+  // point AT the press, so the second click lands within HIT_POINT_PX=15 of it and resolves to that POINT
+  // — 15 > 12, so the timer could never fire first) and then harmful (it keyed on SCREEN position, which a
+  // pan invalidates). The dedupe is gone; these assertions pin the behaviour it used to be credited with.
+  const m = freshMap();
+  const r = layerOn(m);
+  const tap = (x, y) => { r.pointerDown(x, y, 0); r.pointerUp(); };
+  tap(400, 300);
+  tap(401, 301);                           // the 2nd click of a double-click
   ok(r.points.length === 1, `a double-click drops ONE point, not two (${r.points.length})`);
-  tap(401, 301, 400);                      // a deliberate later tap at the same spot still lands
-  ok(r.points.length === 2, `a tap after the window still appends (${r.points.length})`);
-  tap(600, 300, 430);                      // fast, but far away — a different place, not a double
-  ok(r.points.length === 3, `a fast tap ELSEWHERE appends (${r.points.length})`);
+  tap(401, 301);                           // and a later one at the same spot is STILL a grab, not an add
+  ok(r.points.length === 1, `a repeat tap on a point never appends, whatever the delay (${r.points.length})`);
+  tap(600, 300);                           // clear of every point → a genuine new point
+  ok(r.points.length === 2, `a tap ELSEWHERE appends (${r.points.length})`);
+
+  // The case that proves the timer had to go rather than merely being redundant: tap, pan the map, then
+  // tap the SAME SCREEN SPOT. Nothing is under the cursor any more, so this is a legitimate new point —
+  // a screen-keyed dedupe would have swallowed it.
+  const n = r.points.length;
+  r.pointerDown(250, 520, 0); r.pointerMove(350, 600); r.pointerUp();   // pan, started clear of every point
+  const moved = m.project(r.points[n - 1].lat, r.points[n - 1].lon);
+  ok(Math.round(moved.x) !== 600, `the pan carried the point off (600,300) → (${Math.round(moved.x)},${Math.round(moved.y)})`);
+  tap(600, 300);
+  ok(r.points.length === n + 1, `a tap at the same screen spot AFTER a pan still appends (${r.points.length})`);
 }
 
 console.log('E0 · the sketch is ONE array, shared with the renderer  (failure path 11)');
@@ -350,5 +361,132 @@ console.log('E1 · the sketch is drawn, and the route stays read-only beneath it
   ok(order.join(',') === 'route,rough', `the sketch draws ABOVE the route (${order.join(' → ')})`);
 }
 
-console.log(fails ? `\nM0+M1+E0+E1 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0+E1 PASS — projection, pan/zoom, the edit chokepoints and the sketch layer hold');
+// --- PLAN-EDIT E2: hit test + insert -----------------------------------------------------------------
+
+console.log('\nE2 · point-to-segment geometry');
+{
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  let r = pointToSegment(5, 3, 0, 0, 10, 0);
+  ok(near(r.d, 3) && near(r.t, 0.5), `a perpendicular foot inside the segment (d=${r.d}, t=${r.t})`);
+  r = pointToSegment(-4, 0, 0, 0, 10, 0);
+  ok(near(r.d, 4) && near(r.t, 0), `beyond the start clamps to the start (d=${r.d}, t=${r.t})`);
+  r = pointToSegment(14, 3, 0, 0, 10, 0);
+  ok(near(r.d, 5) && near(r.t, 1), `beyond the end clamps to the end (d=${r.d}, t=${r.t})`);
+  r = pointToSegment(3, 4, 7, 7, 7, 7);
+  ok(near(r.d, 5) && near(r.t, 0), `a zero-length segment measures to the point itself (d=${r.d})`);
+}
+
+console.log('E2 · "nearest" is judged in SCREEN pixels, and degrees would get it WRONG');
+{
+  // The trap this pins: a degree of longitude is not a degree of latitude on the ground, and Mercator's y
+  // is not linear in latitude either. An L-shaped sketch and a press placed so the two metrics DISAGREE —
+  // if hitTest ever drifts back to degrees, this is the test that says so, in the direction a user would
+  // notice (the point lands on the wrong leg).
+  const m = new RouteMap(stubCanvas(), { lat: 52.025, lon: 6.05, zoom: 13, interactive: false });
+  const r = layerOn(m);
+  for (const [lat, lon] of [[52.00, 6.00], [52.00, 6.10], [52.05, 6.10]]) r.append(lat, lon);
+  const press = { lat: 52.030, lon: 6.060 };
+
+  // What DEGREES would say: segment 0 is the horizontal leg (lat 52.00), segment 1 the vertical (lon 6.10).
+  const degD0 = Math.abs(press.lat - 52.00), degD1 = Math.abs(press.lon - 6.10);
+  const degWinner = degD0 < degD1 ? 0 : 1;
+
+  const s = m.project(press.lat, press.lon);
+  const hit = r.nearestSegment(s.x, s.y);
+  ok(degWinner === 0, `degrees would pick segment 0 (${degD0.toFixed(3)}° vs ${degD1.toFixed(3)}°)`);
+  ok(hit.index === 1, `screen space picks segment ${hit.index} — the leg actually nearer on screen`);
+  ok(hit.index !== degWinner, 'the two metrics DISAGREE here, which is the whole point of the case');
+}
+
+console.log('E2 · hitTest: points beat segments, and both respect their tolerance');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  for (const [lat, lon] of [[52.20, 6.85], [52.24, 6.95]]) r.append(lat, lon);
+  const px = [m.project(52.20, 6.85), m.project(52.24, 6.95)];
+  const mid = { x: (px[0].x + px[1].x) / 2, y: (px[0].y + px[1].y) / 2 };
+
+  ok(r.hitTest(px[0].x, px[0].y).kind === 'point', 'dead on a point → point');
+  ok(r.hitTest(mid.x, mid.y).kind === 'segment', 'mid-segment → segment');
+  // Every point lies ON the line, so a press near a point satisfies BOTH tests. Point must win, or a point
+  // could never be grabbed — pressing it would insert a second point on top of it instead.
+  const onPt = r.hitTest(px[0].x + 2, px[0].y + 2);
+  ok(onPt.kind === 'point' && onPt.index === 0, 'a press that satisfies both tests resolves to the POINT');
+
+  // Tolerance boundaries, on the perpendicular so only the segment test can fire.
+  const dx = px[1].x - px[0].x, dy = px[1].y - px[0].y, len = Math.hypot(dx, dy);
+  const nx = -dy / len, ny = dx / len;
+  const off = (k) => r.hitTest(mid.x + nx * k, mid.y + ny * k);
+  ok(off(HIT_SEGMENT_PX - 0.5)?.kind === 'segment', `${HIT_SEGMENT_PX - 0.5}px off the line still hits it`);
+  ok(off(HIT_SEGMENT_PX + 1.5) === null, `${HIT_SEGMENT_PX + 1.5}px off the line hits nothing`);
+  ok(r.hitTest(px[0].x + HIT_POINT_PX - 1, px[0].y)?.kind === 'point', `${HIT_POINT_PX - 1}px from a point still hits it`);
+  ok(r.hitTest(px[0].x, px[0].y + 200) === null, 'far from everything → null');
+  // A one-point sketch has no segment at all; a press must not throw or invent one.
+  const solo = layerOn(freshMap());
+  solo.append(52.2, 6.9);
+  ok(solo.nearestSegment(0, 0) === null, 'a one-point sketch has no nearest segment');
+}
+
+console.log('E2 · the SWEEP: press on a segment inserts there and positions it in ONE gesture');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, committed) => commits.push(committed) });
+  for (const [lat, lon] of [[52.20, 6.85], [52.24, 6.95]]) r.append(lat, lon);
+  commits.length = 0;
+
+  const px = [m.project(52.20, 6.85), m.project(52.24, 6.95)];
+  const mid = { x: (px[0].x + px[1].x) / 2, y: (px[0].y + px[1].y) / 2 };
+  r.pointerDown(mid.x, mid.y, 1000);
+  ok(r.points.length === 3, `the press inserts immediately (${r.points.length} points)`);
+  ok(commits.length === 1 && commits[0] === false, 'and the insert is UNCOMMITTED (the sweep commits once, on release)');
+
+  r.pointerMove(mid.x + 60, mid.y - 40);
+  r.pointerMove(mid.x + 90, mid.y - 55);
+  ok(r.points.length === 3, 'moving does not insert again');
+  const released = m.unproject(mid.x + 90, mid.y - 55);
+  ok(Math.abs(r.points[1].lat - released.lat) < 1e-9, 'the new point follows the finger');
+
+  r.pointerUp();
+  ok(commits.filter((c) => c === true).length === 1, `exactly ONE committed edit for the whole sweep (${commits.filter((c) => c).length})`);
+  ok(r.points[1].id !== r.points[0].id && r.points.length === 3, 'the point sits BETWEEN its two neighbours');
+  ok(r.points[0].lat === 52.20 && r.points[2].lat === 52.24, 'the original endpoints are untouched');
+}
+
+console.log('E2 · a plain tap on the line inserts once; a press on a POINT never appends');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  for (const [lat, lon] of [[52.20, 6.85], [52.24, 6.95]]) r.append(lat, lon);
+  const px = [m.project(52.20, 6.85), m.project(52.24, 6.95)];
+  const mid = { x: (px[0].x + px[1].x) / 2, y: (px[0].y + px[1].y) / 2 };
+
+  r.pointerDown(mid.x, mid.y, 1000); r.pointerUp();
+  ok(r.points.length === 3, `a tap on the line inserts exactly one (${r.points.length})`);
+
+  // The second press of a double-press lands on the point the first one just created — priority order
+  // means it hits the POINT, so the line cannot be double-inserted by a fast double-click.
+  r.pointerDown(mid.x, mid.y, 1060); r.pointerUp();
+  ok(r.points.length === 3, `a second press at the same spot hits the new POINT, not the line (${r.points.length})`);
+
+  // And a press on an existing point must not fall through to append.
+  r.pointerDown(px[0].x, px[0].y, 2000); r.pointerUp();
+  ok(r.points.length === 3, `pressing an endpoint appends nothing (${r.points.length})`);
+}
+
+console.log('E2 · a cancelled sweep still commits — its point is on the map either way');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, committed) => commits.push(committed) });
+  for (const [lat, lon] of [[52.20, 6.85], [52.24, 6.95]]) r.append(lat, lon);
+  const px = [m.project(52.20, 6.85), m.project(52.24, 6.95)];
+  commits.length = 0;
+  r.pointerDown((px[0].x + px[1].x) / 2, (px[0].y + px[1].y) / 2, 1000);
+  r.pointerCancel();
+  ok(r.points.length === 3, 'the inserted point survives the cancel');
+  ok(commits.filter((c) => c === true).length === 1, 'and it is committed, so undo can take it back');
+}
+
+console.log(fails ? `\nM0+M1+E0+E1+E2 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0+E1+E2 PASS — projection, pan/zoom, the edit chokepoints, the sketch layer and insert hold');
 process.exit(fails ? 1 : 0);

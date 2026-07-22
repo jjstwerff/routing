@@ -9,7 +9,8 @@
 // keeps the centre centred — is provable in node with no DOM (see map.test.mjs).
 //
 // Interaction (pan/wheel), the layers, and the feature catalog arrive in M1+. The seam
-// exported at the bottom (project/unproject/camera/onRender/hitTest) is what PLAN-EDIT builds on.
+// exported at the bottom (project/unproject/camera/onRender) is what PLAN-EDIT builds on. Hit testing is
+// not here: it classifies input, so it lives with the pointer dispatcher in rough.mjs.
 
 import { decodeText } from './store-geom.mjs';
 
@@ -1554,16 +1555,19 @@ export class RouteMap {
     this.camera.zoom = MIN_ZOOM;
   }
 
-  hitTest(/* x, y */) { return null; }         // stub — PLAN-EDIT fills this in
-
-  // The seam PLAN-EDIT rides (never reaches into internals).
+  // The seam the editor rides (never reaches into internals).
+  //
+  // `hitTest` deliberately does NOT live here. It was stubbed on this class returning null, but hit
+  // testing is input CLASSIFICATION — it decides which gesture a press is — so it belongs with the one
+  // dispatcher that owns pointer input, next to the tolerances it applies (rough.mjs, PLAN-EDIT E2).
+  // Keeping the stub would have left a second hitTest that answers `null` forever, in the file a reader
+  // is told to look in.
   get seam() {
     return {
       project: (lat, lon) => this.project(lat, lon),
       unproject: (x, y) => this.unproject(x, y),
       camera: this.camera,
       onRender: (cb) => this.onRender(cb),
-      hitTest: (x, y) => this.hitTest(x, y),
     };
   }
 }
