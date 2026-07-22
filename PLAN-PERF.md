@@ -18,7 +18,7 @@ it measures it and ranks it against everything else.
 | **view** (pan past the box) | 946 ms | **126 ms** | 7.5× — §7g(2), §6c |
 | **pan frame** (camera moved, no reload) | 76 ms | **20 ms** | 3.8× — §6c |
 | JS objects retained for geometry | 239,135 | **4,609** | −98.1% — §6c |
-| **cold match** (first click / corridor miss) | 6370 ms | **3327 ms** | 1.96× — §7h(2) |
+| **cold match** (first click / corridor miss) | 6370 ms | **2721 ms** | 2.3× — §7h(2), §7a(2) |
 | **warm match** (one point moved — what users do) | ~880 ms | **644 ms** | 1.5× |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
 | layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
@@ -28,9 +28,10 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 @PLN105's bridge; `view` emits roads only — steps 9–13).
 
 **Open, in the order the evidence favours:**
-- **19 — persist the built graph** (⚠ re-size it first). The render path is done — steps 14–15 took a pan
-  frame **76 → 0.6 ms** and a view **946 → 146 ms** — so everything left is in the MATCH, and the target
-  is the cold match's **~3.4 s frozen gap** in the corridor read + `build_graph`.
+- **19b — persist the built graph.** Re-sized (§7a(2)): `build_graph` is ~49% of a cold match, **~1.3 s
+  of the browser's 2721 ms** — the largest single slice left. **19a is done** (integer node key, −18%,
+  routes byte-identical). 19b is still a store-format change plus a border splice that can silently alter
+  a route: the riskiest row in the plan.
 - **18 is ⛔ DO NOT BUILD** — `par` is a no-op in the browser (§6e), proven from the shipped wasm.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
@@ -1068,6 +1069,58 @@ for itself. It is a genuine ~66% way reduction (and ~2–3× on the corridor rea
 step 22's gate can accept it per-segment and fall back to bbox when it cannot. `tools/corpus_tube.loft`
 is the harness that tunes and then guards that gate; it prints the §7 numbers (dev_max/dev_mean/pen_m/
 bridged_m/class_m) for both tiers per sketch.
+
+---
+
+## 7a(2). Step 19 RE-MEASURED (2026-07-22) — and 19a landed without a format change
+
+§7a said to re-size step 19 before building it. Done, with a new instrument
+(`tools/match_phase_probe.loft`), and it changed what to build.
+
+### Where a cold match actually goes
+
+Native, medians, the app's own sketch:
+
+| tier | corridor | **build_graph** | match | total |
+|---|---|---|---|---|
+| **TUBE** — the tier a cold match uses (step 22) | 71 ms | **180 ms** | 124 ms | 375 ms |
+| BBOX — what it escalates to when the gate rejects | 121 ms | 394 ms | 199 ms | 735 ms |
+
+**`build_graph` is ~50% of a cold match — MORE than §7a's recorded ~41%, not less.** Steps 20–22 shrank
+the corridor READ further than they shrank the graph build, so its share rose while the total fell.
+Step 19's premise is *stronger* than when it was written. That is the opposite of what §7a expected, and
+is exactly why it said to re-measure.
+
+### 19a — the text node key, removed. No format change, no risk.
+
+`node_idx` deduped nodes with a TEXT key, `"{lat},{lon}"`, formatted **per vertex of every way** — ~45k
+float→string conversions plus text hashing per cold match. Now the fixed-point degrees packed into one
+i64.
+
+**Safe only because the text key was INJECTIVE, which was checked, not assumed.** Had loft's float
+formatting been rounding, the text key would have been silently snapping nearby nodes together — that
+snapping would be load-bearing, and swapping keys would change routes.
+`tools/nodekey_probe.loft` asks the real corridor: **44,739 vertices → 33,948 distinct nodes under BOTH
+keyings.** Route fingerprints byte-identical across all 5 `match_parity` cases.
+
+| | before | after | |
+|---|---|---|---|
+| cold match, native | 375 ms | **311 ms** | −17% |
+| **cold match, browser** (`CPU_THROTTLE=4`) | 3327 ms | **2721 ms** | −18% |
+| build_graph, native | 180 ms | 153 ms | |
+| corridor read, native | 71 ms | 29 ms | the text keys left ~34k live strings per graph; heap pressure slowed the allocating work around them |
+
+### 19b — persisting the graph: still the only thing left, and still the riskiest row
+
+Measured and **rejected** as a cheaper alternative: blanking the 11 text tags each `GEdge` copies moves
+`build_graph` only 171 → 146 ms, so the tags are ~15% and not the cost. What remains is the fundamental
+hash-insert / vector-append / CSR work, and **only persisting the graph removes it**.
+
+**Re-sized:** `build_graph` is now ~49% of a 311 ms native cold match, i.e. **~1.3 s of the browser's
+2721 ms**. Still the largest single slice, and everything §7a says about the cost stands — a `TTile`
+format change, regenerating and redeploying both stores, and a border-node splice on exact-integer
+coordinates that **can silently alter a route across a tile edge**. The prize is real and so is the risk;
+what has changed is that the cheap 18% is now banked and no longer entangled with it.
 
 ---
 

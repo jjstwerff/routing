@@ -29,7 +29,7 @@ Three structural changes got it there, and each is worth more than its number:
    ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 3327 ms**,
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 2721 ms**,
 **warm match ~880 → 644 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
 frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
@@ -90,9 +90,12 @@ fine**, and `release`/`expose` brackets it.
    line was "~3× **native**" — the server, not this plan's subject. `tools/wasm_threads.mjs` gates it and
    FAILS the day browser threads arrive, which is when to revisit. §6b B's determinism design is still
    correct and kept for that day.
-3. **Step 19 — persist the built graph.** ⚠ **Re-size it first.** Its "~41% of a cold match" premise
-   predates steps 20–22; the cold match is now 3327 ms, not 5899. §7a says to do exactly this, and it is
-   the riskiest row in the plan (a border-node splice that can silently alter a route).
+3. **Step 19 — RE-MEASURED, and 19a is done** (`PLAN-PERF` §7a(2)). The re-sizing found the opposite of
+   what §7a expected: `build_graph` is **~50%** of a cold match, not ~41% — steps 20–22 shrank the
+   corridor read further than the graph build. **19a** removed the TEXT node key (`"{lat},{lon}"`
+   formatted per vertex) for a packed i64: cold match **3327 → 2721 ms** browser, routes byte-identical,
+   no format change. **19b** (persist the graph) is what remains: ~1.3 s of 2721, still a store-format
+   change + a border splice that can silently alter a route — the riskiest row in the plan.
 4. **The cold match still blocks ~3.4 s in ONE frozen gap** — the responsiveness problem is now that gap,
    not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
    `build_graph`, before the first stretch exists).
