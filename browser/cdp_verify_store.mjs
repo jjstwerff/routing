@@ -109,5 +109,15 @@ else if (!sp.streetsFlat || !sp.streetsFlat.n) { console.log('  FAIL: streets di
 else console.log(`  ✓ store-backed render is pixel-identical (${sp.store}) for ${sp.kinds.join(', ')} — ${JSON.stringify(sp.indexed)} indexed`);
 if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.streetsFlat.n} roads, ${sp.streetsFlat.verts} vertices, 0 boxed pairs)`);
 
+// 6. PLAN-PERF §0 step 15 / §6d — the block raster cache. Currently OFF in the app; the gate drives it
+// explicitly so it cannot rot while disabled.
+const br = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.blockRaster()))()')) || 'null');
+if (!br) { console.log('  FAIL: blockRaster hook missing'); ok = false; }
+else if (br.roundTrip !== 0) { console.log(`  FAIL: an offscreen round-trip is not exact (${br.roundTrip} px) — the platform assumption broke`); ok = false; }
+else if (br.coldVsWarm !== 0) { console.log(`  FAIL: a CACHED block frame differs from a freshly baked one (${br.coldVsWarm} px) — the cache is stale`); ok = false; }
+else if (br.labelDiffs.places || br.labelDiffs.streets || br.labelDiffs.buildings) { console.log('  FAIL: a label pass differs under block rendering —', JSON.stringify(br.labelDiffs)); ok = false; }
+else if (br.vsSnappedMaxDelta > 16) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > 16), not just by rasterisation rounding`); ok = false; }
+else console.log(`  ✓ block cache: cached==baked, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm / ${br.coldMs}ms cold, ${br.blocks} blocks`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

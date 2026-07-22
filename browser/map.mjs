@@ -429,6 +429,11 @@ const POI_STYLES = {                                // color · minZoom · glyph
   ruins: { color: '#7a5230', z: 13, shape: 'square', r: 3 }, monument: { color: '#7a5230', z: 13, shape: 'triangle', r: 3.5 }, information: { color: '#4a90d9', z: 15, shape: 'square', r: 2.5 },
 };
 const POI_FALLBACK = { color: '#777777', z: 15, shape: 'circle', r: 2.5 };
+// A glyph is drawn from its CENTRE, so culling on the bare viewport rect throws away the half that
+// overhangs the edge — the marker vanishes instead of half-showing. Pad by the largest radius (4.5) plus
+// its 1 px halo stroke, rounded up. Found by §6d's block bisect: a block extends past the viewport, so it
+// kept those glyphs and the direct render did not, and the two differed in a band along every edge.
+const POI_EDGE_PAD = 8;
 
 // The camera centre that puts geographic `latlon` under screen point `mouse` (CSS px) at `zoom`.
 // Pan is "hold the grabbed lat/lon under the cursor"; zoom-about-a-point is "hold the cursor's
@@ -686,7 +691,7 @@ export class RouteMap {
   // Labels and the route are NOT baked, on purpose: label collision is resolved against the whole viewport
   // and would be wrong per block, and the route changes without the base map changing.
   renderBlocked() {
-    const B = BLOCK, M = BLOCK_MARGIN, z = this.camera.zoom;
+    const B = this.blockSize || BLOCK, M = BLOCK_MARGIN, z = this.camera.zoom;
     const o = this._originWorld();
     const ox = Math.round(o.x * this.dpr) / this.dpr, oy = Math.round(o.y * this.dpr) / this.dpr;
     const ctx = this.ctx, W = this.width, H = this.height;
@@ -694,6 +699,12 @@ export class RouteMap {
     this._blockStats = { areas: 0, lines: 0, buildings: 0, streets: 0, pois: 0 };
     this._buildingLabels = [];                             // accumulated across this frame's blocks
     const cache = this._blocks || (this._blocks = new Map());
+    // The blit takes a SUB-RECTANGLE of the block (its interior, inside the bleed margin). With smoothing
+    // on, Chromium filters at the sub-rect edges even at 1:1 scale, which shows up as antialiasing-
+    // magnitude drift spread across the frame. A whole-canvas round-trip is exact (see
+    // `offscreenRoundTrip`), so this is the difference between that control and the block path.
+    const smooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
     const bx0 = Math.floor(ox / B), bx1 = Math.floor((ox + W) / B);
     const by0 = Math.floor(oy / B), by1 = Math.floor((oy + H) / B);
     let baked = 0;
@@ -702,6 +713,10 @@ export class RouteMap {
         const key = bx + ',' + by;
         let cv = cache.get(key);
         if (!cv) { cv = this._bakeBlock(bx, by); cache.set(key, cv); baked++; }
+        // Label anchors are cached WITH the block. Only a bake produces them, so a fully-cached frame
+        // would otherwise reset the list and never refill it — every building label would vanish on the
+        // second frame of a pan. The bisect never saw this because it cleared the cache every time.
+        if (cv.__labels) for (const L of cv.__labels) this._buildingLabels.push(L);
         // Counts are SUMMED over blocks, so a feature spanning two blocks counts twice. That is a real
         // description of the drawing done, and deliberately NOT comparable to the direct path's counts —
         // which is why the blocked-vs-direct gate compares PIXELS, not counts.
@@ -711,6 +726,7 @@ export class RouteMap {
                       bx * B - ox, by * B - oy, B, B);
       }
     }
+    ctx.imageSmoothingEnabled = smooth;
     this._blocksBaked = baked;
     if (cache.size > BLOCK_CACHE_MAX) {                    // crude cap: drop everything but what is on screen
       for (const k of [...cache.keys()]) {
@@ -718,14 +734,18 @@ export class RouteMap {
         if (kx < bx0 || kx > bx1 || ky < by0 || ky > by1) cache.delete(k);
       }
     }
-    return { ox, oy };
+    // `{x, y}`, not `{ox, oy}`: the caller assigns this straight to `_origin`, which `_flatK` and
+    // `_viewAt` read as .x/.y. Returning the wrong key names made every overlay projection NaN — labels
+    // and the route silently vanished from a blocked frame, which the per-layer bisect found as 34,414
+    // differing pixels in the street-label pass alone.
+    return { x: ox, y: oy };
   }
 
   // Bake one block: an offscreen canvas of BLOCK+2*MARGIN, drawn with the world-pixel origin moved to the
   // block's top-left minus the margin. Every base layer is drawn by the SAME methods the direct path uses
   // — that shared code is what makes "the cache changed nothing" a checkable claim rather than a hope.
   _bakeBlock(bx, by) {
-    const B = BLOCK, M = BLOCK_MARGIN, S = B + 2 * M;
+    const B = this.blockSize || BLOCK, M = BLOCK_MARGIN, S = B + 2 * M;
     const cv = (typeof document !== 'undefined' && document.createElement)
       ? document.createElement('canvas') : { getContext: () => null, width: 0, height: 0 };
     cv.width = Math.round(S * this.dpr); cv.height = Math.round(S * this.dpr);
@@ -737,7 +757,8 @@ export class RouteMap {
     this.ctx = c2; this.width = S; this.height = S;
     this._origin = { x: bx * B - M, y: by * B - M };
     this._noVertexCull = true; this._baking = true;
-    try { cv.__stats = this._drawBase(this.camera.zoom); }
+    const labelMark = this._buildingLabels.length;
+    try { cv.__stats = this._drawBase(this.camera.zoom); cv.__labels = this._buildingLabels.slice(labelMark); }
     finally { this._baking = false; this._noVertexCull = false; this._origin = null; this.ctx = savedCtx; this.width = savedW; this.height = savedH; }
     return cv;
   }
@@ -759,8 +780,7 @@ export class RouteMap {
       // nothing to do with caching.
       this._noVertexCull = true;
       try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
-      this.drawRoute();
-      this.layoutLabels();
+      if (!this._skipOverlays) { this.drawRoute(); this.layoutLabels(); }
     } finally { this._origin = null; }
     return this;
   }
@@ -775,27 +795,35 @@ export class RouteMap {
   // blocks is drawn by both but labelled once.
   _pushBuildingLabel(name, x, y, seq) {
     const K = this._flatK();
+    const B = this.blockSize || BLOCK;
     if (this._baking
-        && (x < BLOCK_MARGIN || x >= BLOCK_MARGIN + BLOCK || y < BLOCK_MARGIN || y >= BLOCK_MARGIN + BLOCK)) return;
+        && (x < BLOCK_MARGIN || x >= BLOCK_MARGIN + B || y < BLOCK_MARGIN || y >= BLOCK_MARGIN + B)) return;
     this._buildingLabels.push({ name, wx: x + K.cx - K.hw, wy: y + K.cy - K.hh, seq });
   }
 
   // The baked layers, in z-order. Shared by the direct render and by every block bake.
   _drawBase(z) {
+    // `_onlyLayer` restricts the base to one kind. It exists for the §6d bisect: when two renders differ
+    // over the whole canvas, drawing one layer at a time is what says WHICH one diverges, instead of
+    // guessing from a hash.
+    const only = this._onlyLayer;
+    const want = (k) => (only === '__none__' ? false : (!only || only === k));
     let areasN = 0;
-    if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
-    else {
-      const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
-      for (let i = 0; i < this.areas.length; i++) {
-        const a = this.areas[i];
-        if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
-        this.drawArea(a); areasN++;
+    if (want('areas')) {
+      if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
+      else {
+        const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+        for (let i = 0; i < this.areas.length; i++) {
+          const a = this.areas[i];
+          if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+          this.drawArea(a); areasN++;
+        }
       }
     }
-    const lnN = this.drawLines();
-    const bN = this.drawBuildings();
-    const sN = this.drawStreets();
-    const poiN = this.drawPois();
+    const lnN = want('lines') ? this.drawLines() : 0;
+    const bN = want('buildings') ? this.drawBuildings() : 0;
+    const sN = want('streets') ? this.drawStreets() : 0;
+    const poiN = want('pois') ? this.drawPois() : 0;
     return { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN };
   }
 
@@ -826,11 +854,14 @@ export class RouteMap {
     if (snapOrigin) this._origin = snapOrigin;
     let rtN = 0, lab;
     try {
-      rtN = this.drawRoute();                  // matched route, above the base map
-      mark('route');
-      lab = this.layoutLabels();
-      mark('labels');
+      if (!this._skipOverlays) {
+        rtN = this.drawRoute();                // matched route, above the base map
+        mark('route');
+        lab = this.layoutLabels();
+        mark('labels');
+      }
     } finally { if (snapOrigin) this._origin = null; }
+    lab = lab || { placeLabels: 0, streetLabels: 0, buildingLabels: 0 };
     this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     if (t) this._layerMs = t.ms;
     // M0 probe: optional test dots (empty once real layers are loaded).
@@ -1164,7 +1195,8 @@ export class RouteMap {
       const sn = Math.sin(clampLat(lat) * Math.PI / 180);
       const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
       const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
-      if (x < 0 || x > this.width || y < 0 || y > this.height) continue;
+      if (x < -POI_EDGE_PAD || x > this.width + POI_EDGE_PAD
+       || y < -POI_EDGE_PAD || y > this.height + POI_EDGE_PAD) continue;
       const r = st.r || 2.5;
       ctx.beginPath();
       if (st.shape === 'square') ctx.rect(x - r, y - r, 2 * r, 2 * r);
@@ -1283,7 +1315,8 @@ export class RouteMap {
     const st = POI_STYLES[p.kind] || POI_FALLBACK;
     if (this.camera.zoom < st.z) return false;
     const s = this.project(p.at[0], p.at[1]);
-    if (s.x < 0 || s.x > this.width || s.y < 0 || s.y > this.height) return false;
+    if (s.x < -POI_EDGE_PAD || s.x > this.width + POI_EDGE_PAD
+     || s.y < -POI_EDGE_PAD || s.y > this.height + POI_EDGE_PAD) return false;
     const ctx = this.ctx, r = st.r || 2.5;
     ctx.beginPath();
     if (st.shape === 'square') ctx.rect(s.x - r, s.y - r, 2 * r, 2 * r);
@@ -1318,6 +1351,7 @@ export class RouteMap {
 
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
   // labels along the centreline, repeated, skipping any candidate overlapping an already-placed label.
+  // `_onlyLabels` restricts the label pass to one kind, for the §6d bisect.
   layoutLabels() {
     const ctx = this.ctx, z = this.camera.zoom, placed = [];
     const fits = (x, y, w, h) => {
@@ -1325,7 +1359,9 @@ export class RouteMap {
       for (const q of placed) if (!(r < q[0] || l > q[2] || b < q[1] || t > q[3])) return false;
       placed.push([l, t, r, b]); return true;
     };
+    const onlyL = this._onlyLabels;
     let placeLabels = 0;
+    if (onlyL && onlyL !== 'places') { /* bisect: skip */ } else
     for (const p of [...this.places].sort((a, b) => b.rank - a.rank)) {
       if (z < (RANK_MINZOOM[p.rank] ?? 14)) continue;
       const s = this.project(p.at[0], p.at[1]);
@@ -1336,8 +1372,8 @@ export class RouteMap {
       this._label(p.name, s.x, s.y, font, '#3a3a3a');
       placeLabels++;
     }
-    const streetLabels = z >= STREET_MINZOOM ? this._streetLabels(fits) : 0;
-    const buildingLabels = this._buildingLabelPass(fits);
+    const streetLabels = (z >= STREET_MINZOOM && (!onlyL || onlyL === 'streets')) ? this._streetLabels(fits) : 0;
+    const buildingLabels = (!onlyL || onlyL === 'buildings') ? this._buildingLabelPass(fits) : 0;
     return { placeLabels, streetLabels, buildingLabels };
   }
   _streetLabels(fits) {

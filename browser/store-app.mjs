@@ -394,7 +394,8 @@ window.__perfHooks = {
   // guesses because of it. This returns the differing-pixel count and their bounding box, which separates
   // the candidate causes at a glance: a seam is a thin line on a block boundary, a label is a small
   // scattered box, a bad origin is the whole canvas.
-  renderDiff(a, b) {
+  renderDiff(a, b, inset) {
+    const IN = inset || 0;
     const c = document.getElementById('map'), ctx = c.getContext('2d');
     a(); const A = ctx.getImageData(0, 0, c.width, c.height).data.slice();
     b(); const B = ctx.getImageData(0, 0, c.width, c.height).data;
@@ -403,36 +404,152 @@ window.__perfHooks = {
     for (let i = 0; i < A.length; i += 4) {
       if (A[i] === B[i] && A[i + 1] === B[i + 1] && A[i + 2] === B[i + 2]) continue;
       const px = (i / 4) % c.width, py = ((i / 4) / c.width) | 0;
+      // `inset` ignores a border. A path clipped by the canvas edge can rasterise differently from the
+      // same path continuing past it, so an edge band is a DIFFERENT claim from an interior difference —
+      // and only the interior one would mean the cache is drawing the map wrong.
+      if (IN && (px < IN || py < IN || px >= c.width - IN || py >= c.height - IN)) continue;
       n++;
       if (px < mnx) mnx = px; if (px > mxx) mxx = px;
       if (py < mny) mny = py; if (py > mxy) mxy = py;
       cols.set(px, (cols.get(px) || 0) + 1);
     }
     const hot = [...cols.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6);
-    return { diff: n, total: c.width * c.height, box: n ? [mnx, mny, mxx, mxy] : null, hotCols: hot };
+    let maxDelta = 0;
+    for (let i = 0; i < A.length; i += 4) {
+      for (let k = 0; k < 3; k++) { const d = Math.abs(A[i + k] - B[i + k]); if (d > maxDelta) maxDelta = d; }
+    }
+    // A sample of ACTUAL differing pixels with both colours. Counts and boxes narrow the search; the
+    // colours end it — "#a5c8e8 vs #f2efe9" is a missing feature, "#a5c8e8 vs #a5c8e7" is antialiasing.
+    const samples = [];
+    for (let i = 0; i < A.length && samples.length < 14; i += 4) {
+      if (A[i] === B[i] && A[i + 1] === B[i + 1] && A[i + 2] === B[i + 2]) continue;
+      const px = (i / 4) % c.width, py = ((i / 4) / c.width) | 0;
+      if (samples.length && samples[samples.length - 1].y === py && px - samples[samples.length - 1].x < 30) continue;
+      const hex = (o) => '#' + [0, 1, 2].map((k) => o[k].toString(16).padStart(2, '0')).join('');
+      samples.push({ x: px, y: py, a: hex([A[i], A[i + 1], A[i + 2]]), b: hex([B[i], B[i + 1], B[i + 2]]) });
+    }
+    return { diff: n, total: c.width * c.height, box: n ? [mnx, mny, mxx, mxy] : null, hotCols: hot, maxDelta, samples };
   },
+  // §6d: WHICH layer diverges? Draw one at a time, both ways, and diff. A whole-canvas difference with
+  // identical counts is uninformative on its own; per-layer it is a name.
+  blockBisect() {
+    const M = map, out = {};
+    const runs = ['areas', 'lines', 'buildings', 'streets', 'pois'];
+    M._skipOverlays = true;
+    for (const layer of runs) {
+      M._onlyLayer = layer;
+      out[layer] = this.renderDiff(
+        () => { M.blocked = false; M.renderSnappedDirect(); },
+        () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    }
+    M._onlyLayer = null;
+    out.baseAll = this.renderDiff(
+      () => { M.blocked = false; M.renderSnappedDirect(); },
+      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    // Labels, one pass at a time, on an EMPTY base — so a label difference cannot hide inside the map.
+    M._skipOverlays = false;
+    M._onlyLayer = '__none__';
+    for (const kind of ['places', 'streets', 'buildings']) {
+      M._onlyLabels = kind;
+      out['label:' + kind] = this.renderDiff(
+        () => { M.blocked = false; M.renderSnappedDirect(); },
+        () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    }
+    M._onlyLabels = null; M._onlyLayer = null;
+    out.withOverlays = this.renderDiff(
+      () => { M.blocked = false; M.renderSnappedDirect(); },
+      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    // CONTROL: one block big enough to cover the whole viewport. If a difference survives this, it is
+    // NOT a seam — it is something about baking offscreen at all.
+    M.blockSize = 2048;
+    M._onlyLayer = 'pois'; M._skipOverlays = true;
+    out['CONTROL pois 1block'] = this.renderDiff(
+      () => { M.blocked = false; M.renderSnappedDirect(); },
+      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    M._onlyLayer = null;
+    out['CONTROL base 1block'] = this.renderDiff(
+      () => { M.blocked = false; M.renderSnappedDirect(); },
+      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    M._skipOverlays = false;
+    out['CONTROL all 1block'] = this.renderDiff(
+      () => { M.blocked = false; M.renderSnappedDirect(); },
+      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); });
+    M.blockSize = null;
+    M.blocked = false; M.render();
+    return out;
+  },
+  // THE control for §6d: is an offscreen round-trip pixel-exact AT ALL?
+  //
+  // Draws the identical frame into an offscreen canvas of exactly the viewport size, same origin, and
+  // blits it at (0,0). No blocks, no margins, no offset, nothing to get wrong — if this differs, then no
+  // raster cache of any design can be pixel-identical, and step 15's gate must become a BOUNDED
+  // difference rather than equality. That is a fact about the platform, not about the cache.
+  offscreenRoundTrip(pad) {
+    const P = pad || 0;
+    const M = map, c = document.getElementById('map');
+    const direct = () => { M.blocked = false; M.renderSnappedDirect(); };
+    const viaOffscreen = () => {
+      // `pad` grows the offscreen and shifts the origin by the same amount, so every feature keeps its
+      // sub-pixel phase and only the CANVAS GEOMETRY changes. pad 0 is the identity control.
+      const cv = document.createElement('canvas');
+      cv.width = c.width + 2 * P * M.dpr; cv.height = c.height + 2 * P * M.dpr;
+      const c2 = cv.getContext('2d');
+      c2.setTransform(M.dpr, 0, 0, M.dpr, 0, 0);
+      c2.fillStyle = '#f2efe9'; c2.fillRect(0, 0, M.width + 2 * P, M.height + 2 * P);
+      const saved = M.ctx, sw = M.width, sh = M.height;
+      M.ctx = c2; M.width = sw + 2 * P; M.height = sh + 2 * P;
+      const o = M._originWorld.call({ camera: M.camera, width: sw, height: sh });
+      M._origin = { x: Math.round(o.x * M.dpr) / M.dpr - P, y: Math.round(o.y * M.dpr) / M.dpr - P };
+      try {
+        M._noVertexCull = true;
+        try { M._drawBase(M.camera.zoom); } finally { M._noVertexCull = false; }
+        M.drawRoute(); M.layoutLabels();
+      } finally { M._origin = null; M.ctx = saved; M.width = sw; M.height = sh; }
+      const ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, M.width, M.height);
+      ctx.drawImage(cv, P * M.dpr, P * M.dpr, c.width, c.height, 0, 0, M.width, M.height);
+    };
+    return this.renderDiff(direct, viaOffscreen);
+  },
+  // PLAN-PERF §0 step 15's gate. Three claims, and only two of them can be equality:
+  //
+  //   1. a CACHED frame equals a freshly baked one — exact. This is the cache's own correctness, and it
+  //      is the one a bisect that clears the cache every time will never check (building-label anchors
+  //      are produced only by a bake, so a warm frame lost every one of them until they were cached too).
+  //   2. every LABEL pass is exact — structural, and the check that caught the `{ox,oy}` vs `{x,y}`
+  //      origin-key bug that made overlays project to NaN.
+  //   3. blocked vs a direct render at the same snapped origin is BOUNDED, not equal — Chromium's
+  //      rasterisation is not invariant to canvas dimensions, and a bleed margin necessarily changes
+  //      them. Proven by `offscreenRoundTrip(pad)`: pad 0 is exact, pad 32 differs by 5,026 px at
+  //      maxDelta 15 with identical geometry and identical sub-pixel phase. So this asserts a small
+  //      per-channel delta, which is what "no structural difference" actually looks like here.
   blockRaster() {
-    const fp = () => { const c = document.getElementById('map');
-                       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-                       let h = 0x811c9dc5;
-                       for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); }
-                       return (h >>> 0).toString(16); };
-    map.blocked = false; map.render();
-    const plain = fp();
-    map.renderSnappedDirect();
-    const snapped = fp(), snappedCounts = { ...map._stats };
-    map.blocked = true;
-    map._blocks = new Map(); map._blockZoom = null;        // force a cold bake
-    const t0 = performance.now(); map.render(); const cold = performance.now() - t0;
-    const blockedHash = fp(), baked = map._blocksBaked;
-    const warm = [];
-    for (let i = 0; i < 6; i++) { const t = performance.now(); map.render(); warm.push(performance.now() - t); }
-    map.blocked = false; map.render();
-    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
-    return { plain, snapped, blocked: blockedHash, cacheExact: blockedHash === snapped,
-             snappedCounts, blockedCounts: { ...map._stats },
-             snapChangedPixels: snapped !== plain, coldMs: cold, blocksBaked: baked,
-             warmMs: med(warm), cached: map._blocks ? map._blocks.size : 0 };
+    const M = map;
+    const cold = () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); };
+    const warm = () => { M.blocked = true; M.render(); };
+    const snap = () => { M.blocked = false; M.renderSnappedDirect(); };
+    const coldVsWarm = this.renderDiff(cold, warm);
+    const labels = {};
+    M._skipOverlays = false; M._onlyLayer = '__none__';
+    for (const kind of ['places', 'streets', 'buildings']) {
+      M._onlyLabels = kind;
+      labels[kind] = this.renderDiff(snap, cold).diff;
+    }
+    M._onlyLabels = null; M._onlyLayer = null;
+    const vsSnapped = this.renderDiff(snap, cold);
+    const roundTrip = this.offscreenRoundTrip(0).diff;
+    // The numbers the step exists for.
+    M.blocked = true; M._blocks = new Map(); M._blockZoom = null;
+    const t0 = performance.now(); M.render(); const coldMs = performance.now() - t0;
+    const w = [];
+    for (let i = 0; i < 6; i++) { const t = performance.now(); M.render(); w.push(performance.now() - t); }
+    const blocks = M._blocks.size;
+    M.blocked = false; M.render();
+    const med = (a) => { const s2 = [...a].sort((x, y) => x - y); return s2[Math.floor(s2.length / 2)]; };
+    return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip,
+             vsSnapped: vsSnapped.diff, vsSnappedMaxDelta: vsSnapped.maxDelta,
+             pct: +(vsSnapped.diff / vsSnapped.total * 100).toFixed(2),
+             coldMs: +coldMs.toFixed(1), warmMs: +med(w).toFixed(2), blocks };
   },
   // PLAN-PERF §6c — does the store-backed render path draw EXACTLY what the object path drew?
   //
