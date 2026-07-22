@@ -132,7 +132,8 @@ export class RoughLayer {
     map.points = this.points;
     this._seq = 0;
     this._g = null;                 // the in-progress gesture, or null when no pointer is down
-    this._selected = null;          // the selected point's id, or null
+    this._anchorA = null;           // selection is a contiguous RANGE between two anchor ids (E5)
+    this._anchorB = null;
     this._lastPress = null;         // { id, t } — the last press that landed on a point (E4's dblclick)
     this._deleteBtn = opts.deleteButton || null;
     this._syncSelection();
@@ -152,6 +153,10 @@ export class RoughLayer {
 
   clear() {
     this.points.length = 0;         // in place: the renderer holds this same array
+    this._anchorA = null;
+    this._anchorB = null;
+    this._lastPress = null;
+    this._syncSelection();
     this.commitEdit(true);
     return this;
   }
@@ -170,43 +175,94 @@ export class RoughLayer {
     const i = this.points.findIndex((p) => p.id === id);
     if (i < 0) return this;
     this.points.splice(i, 1);
-    if (this._selected === id) this._selected = null;
+    if (this._anchorA === id) this._anchorA = null;
+    if (this._anchorB === id) this._anchorB = null;
     this._syncSelection();
     this.commitEdit(true);
     return this;
   }
 
-  deleteSelected() { return this._selected === null ? this : this.removeId(this._selected); }
+  // Remove the whole selected range — DESIGN.md §1's "biggest lever when editing a route someone else
+  // already made". Whatever survives at the ends simply becomes the new start/finish, because roles are
+  // positional; there is no re-roling step to forget.
+  deleteSelected() {
+    const sel = new Set(this.selectedIds());
+    if (!sel.size) return this;
+    // Compact IN PLACE. rough.js could write `this._pts = this._pts.filter(…)` because its markers were
+    // Leaflet's; here the renderer holds this exact array by reference, and replacing it would leave
+    // map.points pointing at the pre-delete sketch — failure path 11, silently and only on bulk delete.
+    let w = 0;
+    for (let i = 0; i < this.points.length; i++) if (!sel.has(this.points[i].id)) this.points[w++] = this.points[i];
+    this.points.length = w;
+    this._anchorA = null;
+    this._anchorB = null;
+    this._syncSelection();
+    this.commitEdit(true);       // ONE committed edit however many points went
+    return this;
+  }
 
   // ---- selection -----------------------------------------------------------------------------------
   //
+  // Selection is a contiguous RANGE between two anchors: tap the first and last point of a stretch (the
+  // touch-first model — no keyboard, no lasso). Anchors are ids, not indices, so they survive a splice.
+  //
   // Selection is NOT a sketch mutation: it changes no geometry, so it must never reach commitEdit and
-  // never re-match. It only redraws and re-labels the Delete button. Keeping that distinction is what
-  // stops "I tapped a point to look at it" from costing a match.
+  // never re-match. It only redraws and re-labels the Delete button. That is what stops "I tapped a point
+  // to look at it" from costing a match.
+
+  // Drop anchors whose point no longer exists, promoting B if only A died. Called before every read and
+  // every change, so the selection is SELF-HEALING rather than depending on each mutation to remember.
+  //
+  // Earned: `clear()` did not reset the anchors, so a stale anchor from an earlier sketch made the next
+  // tap look like the second end of a range whose first end no longer existed — `selectedIds` then found
+  // index -1 and returned nothing, and selecting a point silently did nothing at all. A dangling anchor
+  // must not be able to swallow a selection, whichever mutation left it behind.
+  _pruneAnchors() {
+    const live = (id) => id !== null && this.points.some((p) => p.id === id);
+    if (!live(this._anchorA)) { this._anchorA = live(this._anchorB) ? this._anchorB : null; this._anchorB = null; }
+    else if (!live(this._anchorB)) this._anchorB = null;
+  }
 
   select(id) {
-    this._selected = this._selected === id ? null : id;   // tapping the same point again deselects
+    this._pruneAnchors();
+    if (this._anchorA === null) { this._anchorA = id; this._anchorB = null; }
+    else if (this._anchorB === null) {
+      if (id === this._anchorA) this._anchorA = null;      // tapping the lone anchor again deselects
+      else this._anchorB = id;                             // a second tap closes the range
+    } else { this._anchorA = id; this._anchorB = null; }    // tapping once a range exists starts fresh
     this._syncSelection();
     this.map.requestRender();
     return this;
   }
 
   clearSelection() {
-    if (this._selected === null) return this;
-    this._selected = null;
+    if (this._anchorA === null && this._anchorB === null) return this;
+    this._anchorA = null;
+    this._anchorB = null;
     this._syncSelection();
     this.map.requestRender();
     return this;
   }
 
-  get selected() { return this._selected; }
+  // The ids in the selected index range, in sketch order. Empty when nothing is selected. Order-free: it
+  // does not matter which end was tapped first.
+  selectedIds() {
+    this._pruneAnchors();
+    if (this._anchorA === null) return [];
+    const ia = this.points.findIndex((p) => p.id === this._anchorA);
+    const ib = this._anchorB === null ? ia : this.points.findIndex((p) => p.id === this._anchorB);
+    return this.points.slice(Math.min(ia, ib), Math.max(ia, ib) + 1).map((p) => p.id);
+  }
 
-  // The renderer draws a point's selection ring from a flag ON THE POINT: the layer owns the data, map.mjs
-  // owns the pixels. Selection is by id, so a splice can never make it point at the wrong element.
+  // The renderer draws a point's ring from a flag ON THE POINT: the layer owns what is selected, map.mjs
+  // owns what selected looks like.
   _syncSelection() {
-    let live = false;
-    for (const p of this.points) { p.selected = p.id === this._selected; if (p.selected) live = true; }
-    if (this._deleteBtn) this._deleteBtn.classList.toggle('hidden', !live);
+    const sel = new Set(this.selectedIds());
+    for (const p of this.points) p.selected = sel.has(p.id);
+    if (this._deleteBtn) {
+      this._deleteBtn.classList.toggle('hidden', sel.size === 0);
+      this._deleteBtn.textContent = sel.size > 1 ? `Delete ${sel.size} points` : 'Delete point';
+    }
   }
 
   // ---- hit testing ---------------------------------------------------------------------------------
@@ -380,7 +436,7 @@ export class RoughLayer {
         const tag = (e.target && e.target.tagName) || '';
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         if (e.key === 'Delete' || e.key === 'Backspace') {
-          if (this._selected === null) return;
+          if (this._anchorA === null) return;
           e.preventDefault();
           this.deleteSelected();
         } else if (e.key === 'Escape') this.clearSelection();

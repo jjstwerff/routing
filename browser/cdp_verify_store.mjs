@@ -294,7 +294,7 @@ await sleep(3000);
 const midAt = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
   const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y), id: p.id }); })()`));
 await click(midAt.x, midAt.y, 120);
-const sel = JSON.parse(await ev(`JSON.stringify({ selected: window.__rough.selected,
+const sel = JSON.parse(await ev(`JSON.stringify({ selected: window.__rough.selectedIds()[0],
   btn: document.getElementById('rough-delete').classList.contains('hidden'), n: window.__rough.points.length })`));
 await click(midAt.x, midAt.y, 120);          // the second click of a double-click, inside 250 ms
 await sleep(2500);
@@ -327,6 +327,39 @@ if (one.n !== 1) { console.log(`  FAIL: the Delete button left ${one.n} points (
 else if (one.route !== 0) { console.log(`  FAIL: a 1-point sketch still shows a ${one.route}-pt route — it is stale`); ok = false; }
 else if (!/add ≥2/.test(one.hud)) { console.log(`  FAIL: the HUD does not say a point is missing — "${one.hud}"`); ok = false; }
 else console.log(`  ✓ the Delete button works and 1 point degrades cleanly: "${one.hud}" (E4)`);
+
+// 7c6. PLAN-EDIT E5 — select a contiguous RANGE and bulk-delete it.
+//
+// DESIGN.md §1 calls this "the biggest lever when editing a route someone else already made": tap the
+// first and last point of a stretch, then delete the lot; whatever survives at the ends becomes the new
+// start/finish. Driven with real clicks so the range comes from the hit test, not from an API call.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const before5 = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  ids: window.__rough.points.map((p) => p.id) })`));
+const ptAt = async (i) => JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[${i}];
+  const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y) }); })()`));
+const a5 = await ptAt(1), b5 = await ptAt(3);
+await click(a5.x, a5.y, 400);                 // 400 ms apart, so neither pair reads as a double-click
+await click(b5.x, b5.y, 400);
+const ranged = JSON.parse(await ev(`JSON.stringify({ sel: window.__rough.selectedIds(),
+  label: document.getElementById('rough-delete').textContent,
+  hidden: document.getElementById('rough-delete').classList.contains('hidden') })`));
+await ev("document.getElementById('rough-delete').click();");
+await sleep(3000);
+const bulk = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  ids: window.__rough.points.map((p) => p.id), route: window.__map0.route.length,
+  sel: window.__rough.selectedIds().length, shared: window.__map0.points === window.__rough.points,
+  hidden: document.getElementById('rough-delete').classList.contains('hidden') })`));
+const wantSurvivors = `${before5.ids[0]},${before5.ids[4]}`;
+if (before5.n !== 5) { console.log(`  FAIL: expected a 5-point sketch, got ${before5.n}`); ok = false; }
+else if (ranged.sel.length !== 3) { console.log(`  FAIL: tapping two points selected ${ranged.sel.length}, not the 3-point range`); ok = false; }
+else if (ranged.hidden || ranged.label !== 'Delete 3 points') { console.log(`  FAIL: the button reads "${ranged.label}" (hidden=${ranged.hidden})`); ok = false; }
+else if (bulk.n !== 2 || bulk.ids.join() !== wantSurvivors) { console.log(`  FAIL: bulk delete left [${bulk.ids}] (want [${wantSurvivors}])`); ok = false; }
+else if (!bulk.shared) { console.log('  FAIL: bulk delete REPLACED the shared points array — the renderer now holds the pre-delete sketch'); ok = false; }
+else if (!(bulk.route >= 2) || bulk.sel !== 0 || !bulk.hidden) { console.log(`  FAIL: after the bulk delete route=${bulk.route} sel=${bulk.sel} hidden=${bulk.hidden}`); ok = false; }
+else console.log(`  ✓ tap-first + tap-last selects 3, "${ranged.label}" removes them, ends re-role, route re-matches (${bulk.route} pts) (E5)`);
 
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared

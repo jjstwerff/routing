@@ -192,8 +192,13 @@ no visual answer to "did my click land?".
    **not** a mutation — it never re-matches. Down to 1 point degrades to *"add ≥2"* with an empty route.
    ⚠ The gate had a hidden **ordering dependency** (the P1 test pans, so later tests ran wherever the map
    had drifted); `resetSketch` now restores the camera too.
-5. ⏭ **NEXT — range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a
-   primitive). E4's single `_selected` id generalises to rough.js's two-anchor contiguous range.
+5. ✅ **DONE — range multi-select + bulk delete.** Tap first + last of a stretch; the button reads
+   *"Delete 3 points"*; survivors re-role for free (roles are positional). ⚠ The bulk delete **compacts the
+   shared array in place** — `filter()` would leave the renderer holding the pre-delete sketch.
+   The browser gate caught a real bug the unit tier missed: `clear()` left stale anchors, so selecting a
+   point in a *later* sketch silently did nothing. Anchors are now pruned before every read and change.
+6. ⏭ **NEXT — undo/redo** (`DESIGN.md` §1 makes undo a primitive, with a snackbar on bulk delete). Every
+   gesture already commits **exactly once**, and `commitEdit`'s `committed` flag is what a history records.
 6. Box-select last — desktop-only and the least load-bearing.
 
 ⚠ **A drag cannot re-match per frame.** A warm match is ~545 ms throttled and ~33 move events arrive per

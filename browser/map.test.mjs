@@ -623,7 +623,7 @@ console.log('\nE4 · a press selects; a second press on the SAME point deletes i
   commits.length = 0;
 
   r.pointerDown(mid.x, mid.y, 1000); r.pointerUp();
-  ok(r.selected === midId, 'the first press selects the point');
+  ok(r.selectedIds().join() === String(midId), 'the first press selects the point');
   ok(commits.length === 0, 'selecting is NOT a sketch mutation — no commit, no re-match');
   ok(r.points[1].selected === true && r.points[0].selected === false, 'the renderer sees the flag on the right point');
 
@@ -631,7 +631,7 @@ console.log('\nE4 · a press selects; a second press on the SAME point deletes i
   ok(r.points.length === 2, `the second press within ${DOUBLE_CLICK_MS}ms deletes it (${r.points.length} points)`);
   ok(!r.points.some((p) => p.id === midId), 'and it is the point that was pressed that went');
   ok(commits.filter((c) => c === true).length === 1, 'the delete is ONE committed edit');
-  ok(r.selected === null, 'and the selection is cleared with it');
+  ok(r.selectedIds().length === 0, 'and the selection is cleared with it');
 }
 
 console.log('E4 · the double-click detector keys on the POINT, not on a screen position');
@@ -645,7 +645,7 @@ console.log('E4 · the double-click detector keys on the POINT, not on a screen 
   const before = m.project(r.points[1].lat, r.points[1].lon);
   const id = r.points[1].id;
   r.pointerDown(before.x, before.y, 1000); r.pointerUp();
-  ok(r.selected === id, 'selected');
+  ok(r.selectedIds().join() === String(id), 'selected');
 
   // Ask hitTest where the empty map is rather than guessing: picking a spot by eye once landed 0.6 px off
   // a segment and the "pan" inserted a point instead.
@@ -669,7 +669,7 @@ console.log('E4 · two presses on DIFFERENT points never delete');
   r.pointerDown(a.x, a.y, 1000); r.pointerUp();
   r.pointerDown(b.x, b.y, 1050); r.pointerUp();
   ok(r.points.length === 3, `nothing was deleted (${r.points.length} points)`);
-  ok(r.selected === r.points[1].id, 'the second point is simply the one now selected');
+  ok(r.selectedIds().length === 2, 'the two presses form a contiguous RANGE instead (E5)');
 }
 
 console.log('E4 · a slow second press deselects rather than deleting');
@@ -680,7 +680,7 @@ console.log('E4 · a slow second press deselects rather than deleting');
   r.pointerDown(p.x, p.y, 1000); r.pointerUp();
   r.pointerDown(p.x, p.y, 1000 + DOUBLE_CLICK_MS, 0); r.pointerUp();
   ok(r.points.length === 3, `at exactly ${DOUBLE_CLICK_MS}ms it is not a double-click (${r.points.length} points)`);
-  ok(r.selected === null, 'and pressing the selected point again deselects it');
+  ok(r.selectedIds().length === 0, 'and pressing the selected point again deselects it');
 }
 
 console.log('E4 · Delete / Backspace / Escape, and the Delete button');
@@ -702,7 +702,7 @@ console.log('E4 · Delete / Backspace / Escape, and the Delete button');
   const q = m.project(r.points[0].lat, r.points[0].lon);
   r.pointerDown(q.x, q.y, 2000); r.pointerUp();
   r.clearSelection();
-  ok(r.selected === null && r.points.length === 2, 'Escape clears the selection and deletes nothing');
+  ok(r.selectedIds().length === 0 && r.points.length === 2, 'Escape clears the selection and deletes nothing');
   ok(r.deleteSelected() === r && r.points.length === 2, 'deleting with nothing selected is a no-op, not a throw');
 }
 
@@ -723,5 +723,138 @@ console.log('E4 · deleting down to 1 point and to 0 degrades, it does not throw
   ok(r.points.length === 1, 'the sketch is reusable afterwards');
 }
 
-console.log(fails ? `\nM0+M1+E0-E4 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E4 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag and delete hold');
+// --- PLAN-EDIT E5: range multi-select + bulk delete --------------------------------------------------
+
+const FIVE = [[52.20, 6.85], [52.21, 6.87], [52.22, 6.89], [52.23, 6.91], [52.24, 6.93]];
+const pressPoint = (m, r, i, t) => { const s = m.project(r.points[i].lat, r.points[i].lon); r.pointerDown(s.x, s.y, t); r.pointerUp(); };
+
+console.log('\nE5 · tapping the first and last point of a stretch selects the CONTIGUOUS range');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const ids = r.points.map((p) => p.id);
+  pressPoint(m, r, 1, 1000);
+  ok(r.selectedIds().join() === String(ids[1]), 'the first tap selects one point');
+  pressPoint(m, r, 3, 2000);
+  ok(r.selectedIds().join() === ids.slice(1, 4).join(), `the second tap fills in everything between (${r.selectedIds().length} points)`);
+  ok(r.points[2].selected === true, 'including the point nobody tapped');
+  ok(r.points[0].selected === false && r.points[4].selected === false, 'and nothing outside the range');
+}
+
+console.log('E5 · the range is the same whichever end you tap first');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  const ids = r.points.map((p) => p.id);
+  pressPoint(m, r, 3, 1000);
+  pressPoint(m, r, 1, 2000);
+  ok(r.selectedIds().join() === ids.slice(1, 4).join(), `tapping last→first gives the same range (${r.selectedIds().length})`);
+}
+
+console.log('E5 · a tap once a range exists starts a fresh single selection');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  pressPoint(m, r, 0, 1000);
+  pressPoint(m, r, 4, 2000);
+  ok(r.selectedIds().length === 5, 'the whole sketch is selected');
+  pressPoint(m, r, 2, 3000);
+  ok(r.selectedIds().join() === String(r.points[2].id), 'and the next tap starts over with one point');
+}
+
+console.log('E5 · bulk delete removes the range, re-roles the ends, and is ONE edit');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, c) => commits.push(c) });
+  for (const [lat, lon] of FIVE) r.append(lat, lon);
+  const ids = r.points.map((p) => p.id);
+  const shared = m.points;
+  pressPoint(m, r, 1, 1000);
+  pressPoint(m, r, 3, 2000);
+  commits.length = 0;
+  r.deleteSelected();
+
+  ok(r.points.length === 2, `the three selected points are gone (${r.points.length} left)`);
+  ok(r.points.map((p) => p.id).join() === `${ids[0]},${ids[4]}`, 'the survivors are the two outside the range');
+  ok(commits.length === 1 && commits[0] === true, `deleting 3 points is ONE committed edit (${commits.length})`);
+  ok(r.selectedIds().length === 0, 'and the selection is cleared');
+  // Roles are positional, so the survivors ARE the new start/finish with no re-roling step to forget.
+  ok(m.drawRough() === 2, 'the sketch still renders, now as start + finish');
+  // The trap rough.js could ignore and this cannot: a filter() would have replaced the array and left
+  // map.points pointing at the pre-delete sketch.
+  ok(m.points === shared && m.points === r.points && m.points.length === 2,
+     'the renderer still shares the SAME array — bulk delete compacted it in place (failure path 11)');
+}
+
+console.log('E5 · the Delete button counts the range, and Delete/Escape drive it');
+{
+  const m = freshMap();
+  const btn = { classList: { _hidden: true, toggle(_c, on) { this._hidden = on; } }, textContent: '' };
+  const r = new RoughLayer(m, { bind: false, deleteButton: btn });
+  for (const [lat, lon] of FIVE) r.append(lat, lon);
+  pressPoint(m, r, 1, 1000);
+  ok(btn.textContent === 'Delete point', `one point reads "${btn.textContent}"`);
+  pressPoint(m, r, 3, 2000);
+  ok(btn.textContent === 'Delete 3 points', `a range reads "${btn.textContent}"`);
+  r.clearSelection();
+  ok(btn.classList._hidden === true, 'Escape hides it again');
+  ok(r.points.length === 5, 'and deletes nothing');
+}
+
+console.log('E5 · deleting a range down to one point, and selecting the lot');
+{
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  pressPoint(m, r, 0, 1000);
+  pressPoint(m, r, 3, 2000);
+  r.deleteSelected();
+  ok(r.points.length === 1, `four gone, one survivor (${r.points.length})`);
+  const solo = r.points[0].id;
+  pressPoint(m, r, 0, 3000);
+  ok(r.selectedIds().join() === String(solo), 'the survivor can still be selected');
+  r.deleteSelected();
+  ok(r.points.length === 0 && r.selectedIds().length === 0, 'and deleted, leaving an empty sketch');
+}
+
+console.log('E5 · a stale anchor can never swallow a selection  (found by the browser gate)');
+{
+  // The bug this pins was real and silent: clear() did not reset the anchors, so on the NEXT sketch the
+  // first tap looked like the second end of a range whose first end no longer existed — selectedIds found
+  // index -1, returned nothing, and selecting a point did nothing at all. Anchors are now pruned before
+  // every read and every change, so no mutation can leave one dangling.
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  pressPoint(m, r, 1, 1000);
+  ok(r.selectedIds().length === 1, 'a point is selected in the first sketch');
+  r.clear();
+  ok(r.selectedIds().length === 0, 'clear() drops the selection with the points');
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  pressPoint(m, r, 1, 2000);
+  ok(r.selectedIds().join() === String(r.points[1].id), 'and the first tap of the NEXT sketch selects normally');
+
+  // The same, without clear(): rebuild the layer's list by deleting everything one at a time.
+  const r2 = sketchOf(freshMap(), TRI);
+  pressPoint(freshMap(), r2, 0, 1000);
+  while (r2.points.length) r2.removeId(r2.points[0].id);
+  ok(r2.selectedIds().length === 0, 'emptying the sketch point by point leaves no dangling anchor');
+}
+
+console.log('E5 · a deleted anchor cannot resurrect a stale range');
+{
+  // Anchors are ids, and a single-point delete clears whichever anchor named it. Without that, the range
+  // would be computed from an id that is no longer in the list — selectedIds would find index -1 and the
+  // NEXT tap would select a wrong span.
+  const m = freshMap();
+  const r = sketchOf(m, FIVE);
+  pressPoint(m, r, 1, 1000);
+  pressPoint(m, r, 3, 2000);
+  r.removeId(r.points[3].id);                 // drop one END of the range
+  ok(r.selectedIds().length === 1 || r.selectedIds().length === 0, `the range collapsed rather than dangling (${r.selectedIds().length})`);
+  pressPoint(m, r, 0, 3000);
+  const sel = r.selectedIds();
+  ok(sel.every((id) => r.points.some((p) => p.id === id)), 'every selected id is still a live point');
+}
+
+console.log(fails ? `\nM0+M1+E0-E5 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E5 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag, delete and range-delete hold');
 process.exit(fails ? 1 : 0);

@@ -273,10 +273,29 @@ the matching; it is false on a phone.
   **byte-identical to a re-match of the settled sketch**, which is location-independent in a way that
   "the route is non-empty" is not.
 
-### E5 — multi-select a range + bulk delete
-- **Build.** Port `_toggleSelect` / `_selectedIds` / `deleteSelected`: tap first + last of a stretch selects
-  the contiguous range; the button deletes the lot; survivors at the ends re-role.
-- **Check.** Select a 3-point range, delete ⇒ those 3 gone, ends re-roled, **one** undo step.
+### E5 — multi-select a range + bulk delete ✅ **DONE**
+- **Built.** Selection generalised from E4's single id to a **contiguous range between two anchor ids**:
+  tap the first and last point of a stretch and everything between is selected (order-free — either end
+  first). A tap once a range exists starts fresh. `deleteSelected` removes the lot as **one** committed
+  edit; the survivors at the ends simply *become* the new start/finish, because roles are positional and
+  there is no re-roling step to forget. The button counts: *"Delete 3 points"*.
+- ⚠ **The bulk delete compacts the array IN PLACE.** `rough.js` could write `this._pts = this._pts.filter(…)`
+  because its points were Leaflet markers; here the renderer holds *this exact array* by reference, so
+  replacing it would leave `map.points` pointing at the pre-delete sketch — failure path 11, silently and
+  only on bulk delete. Both tiers assert the array identity survives.
+- ⚠ **The browser gate caught a real bug the unit tier had missed.** `clear()` did not reset the anchors,
+  so on the *next* sketch the first tap looked like the second end of a range whose first end no longer
+  existed: `selectedIds` found index −1, returned nothing, and **selecting a point silently did nothing**.
+  Fixed at the source rather than per call site — `_pruneAnchors()` runs before every read and every
+  change, so no mutation can leave a dangling anchor, whichever one left it behind. (E4's browser
+  assertions were what failed; the unit tier had only ever exercised `removeId`, which clears explicitly.)
+- **Checked.** Unit: the range fills in the point nobody tapped and nothing outside it; tapping last→first
+  gives the same range; a tap after a range starts over; bulk delete leaves exactly the outside survivors
+  in **one** commit with the selection cleared and **the same array**; the button reads "Delete point" vs
+  "Delete 3 points"; `Esc` hides it and deletes nothing; a range down to one point and then to zero; a
+  deleted anchor collapses rather than dangling; and the stale-anchor case above, both via `clear()` and by
+  emptying the sketch point by point. Browser: five clicks, tap-first + tap-last selects **3**,
+  *"Delete 3 points"* removes them, the ends re-role and the route re-matches to **41 pts**.
 
 ### E6 — undo / redo
 - **Build.** Port `undo.js`: per-session snapshot stack, recorded **only** on `commitEdit(true)`;
