@@ -29,8 +29,8 @@ Three structural changes got it there, and each is worth more than its number:
    ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1539 ms**,
-**warm match ~880 → 358 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1450 ms**,
+**warm match ~880 → 343 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
 frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
@@ -86,8 +86,16 @@ loss: +275 ms of per-corridor index build for **zero** match improvement). Its v
 bottleneck: **`nearest_nodes` is not it.** After §7j's one-pass top-K the scan is cheap; what remains in
 anchoring is `denoise_anchor` running a **full `dijkstra_win` from point i−1 to i+1 for EVERY interior
 point** — 38 extra Dijkstras on a 40-point sketch, on top of pass 2's 39.
-**Next:** attack that, not the lookup. And note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT
-wired to the stdlib (`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
+**§7m** then attributed the anchor pass (dijkstra 131 ms · the two nearest lookups 82 ms · closest ~0)
+and removed the recomputation: the two lookups are the SAME function on the same points, so they are now
+memoised (flat + lazy, so a warm edit never pays for points it did not touch). Cold 1539 → 1450, warm
+358 → 343, routes byte-identical.
+⚠ **What is left is NOT a refactor.** `dijkstra_win` is 131 ms of the anchor pass — one full search per
+interior point — and sharing or bounding those searches changes WHICH ANCHOR is chosen, hence the route.
+That is a §7h-class change needing the 26-sketch corpus as its gate ("0 worse accepted"), not a
+fingerprint. Everything in §7i–§7m was route-identical; this one cannot be.
+Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdlib
+(`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
 
 **What to do next, in the order the evidence favours:**
 

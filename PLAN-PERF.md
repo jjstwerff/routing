@@ -18,8 +18,8 @@ it measures it and ranks it against everything else.
 | **view** (pan past the box) | 946 ms | **126 ms** | 7.5× — §7g(2), §6c |
 | **pan frame** (camera moved, no reload) | 76 ms | **20 ms** | 3.8× — §6c |
 | JS objects retained for geometry | 239,135 | **4,609** | −98.1% — §6c |
-| **cold match** (first click / corridor miss) | 6370 ms | **1539 ms** | 4.1× — §7h(2), §7a(2), §7i–k |
-| **warm match** (one point moved — what users do) | ~880 ms | **358 ms** | 2.5× — §7i–k |
+| **cold match** (first click / corridor miss) | 6370 ms | **1450 ms** | 4.4× — §7h(2), §7a(2), §7i–m |
+| **warm match** (one point moved — what users do) | ~880 ms | **343 ms** | 2.6× — §7i–m |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
 | layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
 
@@ -1164,10 +1164,43 @@ Two things paid for by building it, both worth more than the change would have b
    for every interior point** — 38 extra Dijkstras on a 40-point sketch, on top of pass 2's 39. *The scan
    was the visible thing; the search behind it was the expensive thing.*
 
-**So the next attack on the search is `denoise_anchor`'s per-point Dijkstra, not its nearest-node lookup.**
-Ideas worth measuring before building: reuse one search per pair of points instead of one per interior
-point, or bound the anchor search radius (it only needs the best node near point i, not a full path from
-i−1 to i+1).
+### 7m — the anchor pass, attributed and half of it removed
+
+Attribution over 40 anchors on a realistic sketch, before touching anything:
+
+| | cost |
+|---|---|
+| **`dijkstra_win`** | **131 ms (61%)** |
+| `nearest_node1` | 41 ms |
+| `nearest_nodes` | 41 ms |
+| `closest_node_on_path` | ~0 ms |
+
+**The two lookups are the same function on the same points.** For point *j*, `nearest_nodes(ct[j])` was
+computed once as the source `a` while anchoring point *j+1*, and again as the target set `ctgt` while
+anchoring point *j−1* — so half of that 82 ms was recomputation. Now memoised, **flat** (nested
+collections are the O(n²) trap the CSR comment warns about) and **lazy** (a warm match recomputes only
+the edited window, so eagerly filling all *m* points would have slowed the interaction users actually
+perform — the exact regression it was meant to avoid).
+
+| | before | after |
+|---|---|---|
+| 40-point match (native) | 259 ms | **~215 ms** |
+| 3-point match (native) | 66 ms | 67 ms — unchanged, one interior point, nothing to reuse |
+| **cold match (browser)** | 1539 ms | **1450 ms** |
+| **warm match (browser)** | 358 ms | **343 ms** |
+
+Routes byte-identical. Quiet box, spreads 1.0×.
+
+### What is left, and why it is NOT a refactor
+
+`dijkstra_win` is 131 ms of the anchor pass: one full search from point *i−1* to *i+1* for **every**
+interior point, on top of pass 2's search per stretch. Sharing those searches between neighbours, or
+bounding them, changes **which anchor is chosen** and therefore the route.
+
+**That makes it a §7h-class change, not an optimisation** — it needs the 26-sketch corpus as its gate
+(`tools/corpus_tube.loft`), judged on the §7 quality numbers with "0 worse accepted", exactly as step 22
+was. It was deliberately not attempted here: every change in §7i–§7m has been route-identical and provable
+by fingerprint, and this one cannot be.
 
 ⚠ And a note for anyone reaching for `spatial<T[x,y]>` elsewhere: it is sound but **not wired to its own
 exact queries**. `loft2/src/spatial.rs` carries exact `nearest`/`within`, but it is `#![allow(dead_code)]`
