@@ -608,11 +608,14 @@ export class RouteMap {
     mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     let areasN = 0;
-    const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
-    for (let i = 0; i < this.areas.length; i++) {
-      const a = this.areas[i];
-      if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
-      this.drawArea(a); areasN++;
+    if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
+    else {
+      const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+      for (let i = 0; i < this.areas.length; i++) {
+        const a = this.areas[i];
+        if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+        this.drawArea(a); areasN++;
+      }
     }
     mark('areas');
     const lnN = this.drawLines();              // streams / rails / barriers, above terrain
@@ -743,10 +746,13 @@ export class RouteMap {
 
   // The screen rect in FIXED POINT (deg * 1e7), matching the index's stored bounds so the per-feature
   // test is integer compare — no conversion per feature, and the same rectangle `_screen` computes.
+  // Scaled, NOT rounded outward. Flooring/ceiling would make this a slightly larger rectangle than
+  // `_screen`, and the two paths would then disagree about features whose bounds sit within 1e-7° of the
+  // padded edge. Such a feature lies >60 px off-screen and paints nothing either way, so the pixels are
+  // safe regardless — but the DRAW COUNTS would differ, and the gate compares those too.
   _screenFixed() {
     const w = this._screen();
-    return { mnla: Math.floor(w.mnla * 1e7), mxla: Math.ceil(w.mxla * 1e7),
-             mnlo: Math.floor(w.mnlo * 1e7), mxlo: Math.ceil(w.mxlo * 1e7) };
+    return { mnla: w.mnla * 1e7, mxla: w.mxla * 1e7, mnlo: w.mnlo * 1e7, mxlo: w.mxlo * 1e7 };
   }
 
   // --- The geometry screen (PLAN-PERF §0 step 14 / §6 R) ---------------------------------------------
@@ -871,6 +877,92 @@ export class RouteMap {
     return n;
   }
 
+  // Areas, read straight out of the store. Draw ORDER is what makes this pixel-identical as much as the
+  // geometry is: areas overdraw each other, and the index pushes them in the same tile-then-element order
+  // `viewFromStore` did, so the same polygon ends up on top.
+  //
+  // `minZoom` is recomputed here rather than stored, from the SAME degree values `areaMinZoom` used — the
+  // bounds are converted to degrees BEFORE subtracting, because (a-b)/1e7 and a/1e7-b/1e7 are not the same
+  // double and a band edge would then flip for an area sitting exactly on a threshold.
+  _drawAreasFromStore(z) {
+    const col = this._sidx.areas, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
+    const cache = this._textCache || (this._textCache = new Map());
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const len = col.len[i];
+      if (len < 3) continue;                                 // areaRenderList's drop, applied at draw
+      const diag = Math.hypot(col.bb[o4 + 1] / 1e7 - col.bb[o4] / 1e7, col.bb[o4 + 3] / 1e7 - col.bb[o4 + 2] / 1e7);
+      const mz = diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
+      if (z < mz) continue;
+      const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+      this._pathFlat(s, len);
+      ctx.closePath();
+      ctx.fillStyle = COVER_COLORS[decodeText(mem, sb, col.sRec[i], cache)] || COVER_FALLBACK;
+      ctx.fill();
+      n++;
+    }
+    return n;
+  }
+
+  // Streams / rails / barriers from the store — same zoom gate, same style table, same `_inView` drop.
+  _drawLinesFromStore(z) {
+    const col = this._sidx.lines, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
+    const cache = this._textCache || (this._textCache = new Map());
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const st = LINE_STYLES[decodeText(mem, sb, col.sRec[i], cache)];
+      if (!st || z < st.minZoom) continue;
+      const len = col.len[i];
+      if (len < 2) continue;
+      const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+      if (!this._inViewFlat(s, len)) continue;
+      ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
+      this._pathFlat(s, len); ctx.stroke();
+      n++;
+    }
+    ctx.setLineDash([]);
+    return n;
+  }
+
+  // POI glyphs from the store. A poi's Coord is INLINE in its element, so the index stored the point in
+  // its own bounds and there is no ring to walk — project the one pair and reuse drawPoi's exact tests.
+  _drawPoisFromStore() {
+    const col = this._sidx.pois, mem = this._smem();
+    const K = this._flatK(), sb = this._sb, ctx = this.ctx, z = this.camera.zoom;
+    const cache = this._textCache || (this._textCache = new Map());
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const st = POI_STYLES[decodeText(mem, sb, col.sRec[i], cache)] || POI_FALLBACK;
+      if (z < st.z) continue;
+      const o4 = i * 4;
+      const lat = col.bb[o4] / 1e7, lon = col.bb[o4 + 2] / 1e7;
+      const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+      const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+      const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+      if (x < 0 || x > this.width || y < 0 || y > this.height) continue;
+      const r = st.r || 2.5;
+      ctx.beginPath();
+      if (st.shape === 'square') ctx.rect(x - r, y - r, 2 * r, 2 * r);
+      else if (st.shape === 'triangle') { ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); }
+      else ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.setLineDash([]); ctx.fillStyle = st.color; ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1;
+      ctx.fill(); ctx.stroke();
+      n++;
+    }
+    return n;
+  }
+
   // M3 + B5: roads by class — Carto casing + core, drawn back-to-front (minor→motorway) so higher classes
   // overlap lower ones cleanly. Each class carries its own colour, base width, dash and min-zoom (paths
   // only appear zoomed in). Returns the count drawn in view; stashes them for the label pass.
@@ -901,6 +993,7 @@ export class RouteMap {
 
   // M3b: stroked lines (streams/rails/barriers), per-kind Carto style, zoom-gated + culled.
   drawLines() {
+    if (this._sidx && this._sidx.lines) return this._drawLinesFromStore(this.camera.zoom);
     if (!this.lines.length) return 0;
     const z = this.camera.zoom, ctx = this.ctx; let n = 0;
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -932,7 +1025,10 @@ export class RouteMap {
     ctx.fill(); ctx.stroke();
     return true;
   }
-  drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
+  drawPois() {
+    if (this._sidx && this._sidx.pois) return this._drawPoisFromStore();
+    let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n;
+  }
 
   // The route's two-pass stroke, from already-projected pixels. Factored out so the finished route and
   // the growing one (applyStretch) are stroked by the same code and cannot drift in style.

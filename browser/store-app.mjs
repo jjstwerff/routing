@@ -35,10 +35,16 @@ const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= 
 // stays until every kind is here, and only then can it be deleted (§7f: that deletion is also what
 // collapses step 9's per-view expose bracket).
 const STORE_KINDS = ['areas', 'buildings', 'lines', 'pois', 'places', 'streetLabels'];
+// What the APP still materialises as JS objects. Everything in STORE_GEOM_KINDS now renders straight out
+// of the store (§6c), so materialising it too would retain exactly the 33 MB this exists to remove. Only
+// the label kinds remain: they are 3,170 of 214,455 vertices (1.5%) and layoutLabels' collision pass is a
+// separate piece of work. `storeRenderParity()` rebuilds the full set ON DEMAND, so the gate keeps both
+// paths without the app paying for either.
+const APP_OBJECT_KINDS = ['places', 'streetLabels'];
 // PLAN-PERF §6c — the kinds the store-backed index currently covers. Grows one kind at a time, each
 // proved pixel-identical against the object path before the next is added (buildings first: 145,214 of
 // the viewport's 214,455 vertices, 68%).
-const STORE_GEOM_KINDS = ['buildings'];
+const STORE_GEOM_KINDS = ['buildings', 'areas', 'lines', 'pois'];
 
 // The viewport box in FIXED POINT (deg*1e7), built from the same 6-decimal strings the kernel parses so
 // both sides round identically — `parse_fbox` reads exactly this text.
@@ -47,7 +53,7 @@ const fboxOf = (bbox) => {
   return { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
 };
 
-let loadedBox = null, busy = false, again = false;
+let loadedBox = null, loadedBbox = null, busy = false, again = false;
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
 async function ensureView() {
@@ -74,17 +80,18 @@ async function ensureView() {
   const counts = {};
   const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
   if (h) {
-    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
-    for (const k of STORE_KINDS) { counts[k] = lists[k].length; map[k] = lists[k]; }
+    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, APP_OBJECT_KINDS));
+    for (const k of APP_OBJECT_KINDS) { counts[k] = lists[k].length; map[k] = lists[k]; }
+    for (const k of STORE_GEOM_KINDS) map[k] = [];              // never materialised — drawn from the store
     // PLAN-PERF §6c — the store-backed index, built BESIDE the object lists above and (for now) driving
     // only buildings. Additive on purpose: while both exist the gate can prove they draw the same pixels,
     // and only then does the object path go. It costs one walk of the same tiles and retains typed arrays
     // instead of 145k boxed vertex pairs.
     const idx = buildIndex(kernel.memory(), h, storeLayout(h), fboxOf(bbox), STORE_GEOM_KINDS);
     map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
-    for (const k of STORE_GEOM_KINDS) counts[k + 'Idx'] = idx[k].n;
+    for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
-  loadedBox = box;
+  loadedBox = box; loadedBbox = bbox;
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
@@ -371,20 +378,28 @@ window.__perfHooks = {
   // the pixels show that it drew somewhere else. This is the check that licenses deleting the object path.
   storeRenderParity() {
     const idx = map._sidx;
-    if (!idx) return { err: 'no store index' };
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!idx || !h || !loadedBbox) return { err: 'no store index / handle / view' };
     const fp = () => { map.render(); const c = document.getElementById('map');
                        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-                       let h = 0x811c9dc5;
-                       for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); }
-                       return { hash: (h >>> 0).toString(16), counts: { ...map._stats } }; };
+                       let hh = 0x811c9dc5;
+                       for (let i = 0; i < d.length; i++) { hh ^= d[i]; hh = Math.imul(hh, 0x01000193); }
+                       return { hash: (hh >>> 0).toString(16), counts: { ...map._stats } }; };
+    // Rebuild the OBJECT path here rather than in the app: the whole point of §6c is that the app never
+    // materialises these kinds, so the reference has to be constructed by the gate, for this one call.
+    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(loadedBbox), { flatCount, flatField }, STORE_KINDS));
+    const saved = {};
+    for (const k of STORE_KINDS) { saved[k] = map[k]; map[k] = lists[k]; }
     map._sidx = null;
     const objects = fp();
+    for (const k of STORE_KINDS) map[k] = saved[k];
     map._sidx = idx;
     const store = fp();
+    const kinds = Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined);
     return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
-             objectCounts: objects.counts, storeCounts: store.counts,
-             kinds: Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined),
-             indexed: Object.fromEntries(Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined).map((k) => [k, idx[k].n])) };
+             objectCounts: objects.counts, storeCounts: store.counts, kinds,
+             indexed: Object.fromEntries(kinds.map((k) => [k, idx[k].n])),
+             objectLists: Object.fromEntries(STORE_KINDS.map((k) => [k, lists[k].length])) };
   },
   // The descriptor's field map for PTile and everything nested under it — the reference a byte-level
   // walker has to be written against. Dumped rather than guessed: a wrong `pos` reads a neighbouring
