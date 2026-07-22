@@ -1146,6 +1146,15 @@ caught this.
 
 ## 2026-07-17 — @PLN105 `expose`/`deliver`: a store you expose becomes unreadable, and a top-level `hash` is not deliverable
 
+> **§ 1 CONFIRMED on 2026.7.2, and narrowed — see *"`expose` UN-RETRACTED"* (2026-07-22) at the end of this
+> file.** It is **iteration** that claims, not reading: `len`, point lookups and field reads all work on an
+> exposed store. `release(tag, value)` restores iteration, which is the workaround this entry lacked. The
+> "unreadable" phrasing below is too broad; everything else in § 1 holds.
+>
+> **§ 2 is SUPERSEDED** — `deliver` of a hash does fail, but `expose` does not go near that path
+> (`collect_keyed` pre-flattens it). See the RETRACTED entry below. The per-tile fallback § 2 proposes is
+> therefore unnecessary; step 9 exposes the whole layout hash.
+
 **Context.** PLAN-PERF §0 step 9 hands the browser the layout store so JS reads PTiles from wasm memory
 instead of loft serializing ~4.2 MB of text per pan (`view` = 29k lines the JS side then re-parses).
 `BROWSER_INTEROP.md` § *The binary bridge* names routing's base-map `view` as the motivating consumer, so
@@ -1446,6 +1455,13 @@ once step 2 exists. A real consumer with a 175 MB session is exactly the case wh
 
 **I filed this and retracted it within the hour. Phase 3 IS shipped. No action needed from loft.**
 
+> **SCOPE WARNING (2026-07-22).** This retraction is correct *about Phase 3* — and about nothing else. It
+> says nothing about `lock_store`, and the pin finding above stands (re-confirmed on 2026.7.2). PLAN-PERF
+> §7c read it as clearing the entire earlier entry and concluded *"step 9 is valid as written"*; step 9 was
+> then attempted on that reading and hung the app. **A retraction inherits the scope of what it actually
+> probed.** The two functions share a name in prose only: `deliver`'s loopback refuses `FlatArray`;
+> `expose` pins. Both facts are true simultaneously.
+
 **The claim** was that `deliver` rejects a `hash` in both top-level and nested position with *"type 69 …
 is a store-internal kind — not in the serializable subset (cursor-walked in a later phase)"*, so Phase 3
 (keyed collections pre-flattened) had not landed despite @PLN105 closing on it.
@@ -1555,3 +1571,128 @@ consumer smoke-test once the gate is green.
 **Step 18 stays blocked.** @PLN108 merged, but the copy-elision it promised does not manifest on the loft
 routing runs. Re-run `tools/par_copy_probe.loft` after the next release; unblock step 18 only when `ON` goes
 flat vs heap there.
+
+> **SUPERSEDED 2026-07-22 — the win is live on 2026.7.2 and step 18 is unblocked.** See
+> *"@PLN108 — the copy-elision win is ACTIVE"* below. The gate-coverage ask stands; the consumer
+> complaint does not.
+
+---
+
+## 2026-07-22 — `expose` UN-RETRACTED: it is ITERATION that claims, not reading (loft 2026.7.2)
+
+**Installed loft 2026.7.2** (`/usr/local/bin/loft`, reinstalled 2026-07-22 09:01 — the @PLN110 len/size
+flip release). All four routing gates pass on it unchanged, so this is not fallout from the flip.
+
+**This entry settles a claim that flipped twice in one hour on 2026-07-17.** The original finding
+(*"@PLN105 `expose`/`deliver`: a store you expose becomes unreadable"* § 1, above) was **CORRECT** — its
+repro, its panic text, and its named mechanism all reproduce verbatim on the current release. The
+retraction (*"RETRACTED — @PLN105 Phase 3 is not in the shipped binary"*, above) was right about its own
+subject — Phase 3 *is* shipped, `collect_keyed` *does* pre-flatten the hash — but it did **not** touch the
+pin, and PLAN-PERF §7c wrongly read it as clearing the whole entry. Step 9 was then attempted on that
+reading and hung the app (§7d).
+
+### The narrowing the original entry did not have: reads are fine
+
+Same probe shape as § 1, but each operation in its own process against the real 20 MB layout store
+(`_site/stores/enschede.layout.store`, 1089 tiles), `loft --native --lib lib`. Kept as a durable probe —
+**`tools/expose_iter_probe.loft`**, `op = read | iter | release` — so it can be re-run against each loft
+release the way `tools/par_copy_probe.loft` is:
+
+| after `expose(1, layout)` | result |
+|---|---|
+| nothing at all | ✅ |
+| `len(layout)` | ✅ `1089` |
+| `layout[2047327105]` — point lookup | ✅ `tkey=2047327105 ox=68600000` |
+| field reads + `"{t.tkey} ox={t.ox}"` text interpolation | ✅ |
+| **`for t in layout { }` — empty body** | ❌ **panic** |
+
+```
+thread panicked at src/store.rs:647:9:
+Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+```
+
+So it is **not** that "loft cannot read an exposed store" — reads, lookups and text built from its records
+all work. It is that **iterating a store-backed keyed collection CLAIMS a 546-byte cursor record inside
+that same store**, and the read-only pin rejects the claim. An *empty* loop body fails, which places the
+claim in the iteration machinery itself, not in anything the body does.
+
+Reproduces identically on `loft` (default) and `loft --native`.
+
+### `release(tag, value)` restores iteration — the workaround the original entry lacked
+
+```loft
+store_load(layout, path);
+expose(1, layout);                     // pin for JS
+release(1, layout);                    // unpin
+for t in layout { n += 1; }            // ✅ ITERATE AFTER RELEASE OK n=1089
+expose(1, layout);                     // ✅ re-expose works
+```
+
+This is what makes PLAN-PERF steps 9–13 buildable **today**, with no upstream change: bracket loft's own
+layout walk in `release` … `expose`. It also restores the safe migration order the original entry said was
+blocked — land the JS reader beside the text path, compare, then delete the text path — because during the
+overlap loft can unpin, emit, and re-pin.
+
+### Correction to our own method note (PLAN-PERF §7d)
+
+§7d says `expose` *"is a silent no-op off the `--html` target … so nothing can be learned about it from
+`loft file.loft`"*. **That is wrong, and it is why the 2026-07-17 session paid for this in the browser.**
+Only the *host-call* half is `cfg`-gated; `lock_store` runs on **every** target (`ffi_deliver.rs:80-84`):
+
+```rust
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"), not(feature = "wasm"))))]
+{
+    let _ = (tag, db_tp);
+    self.lock_store(&val);      // <- the pin, on every backend
+}
+```
+
+The whole diagnosis above came from one native run of `client/basemap_kernel.loft` — the path-loading twin
+of the browser kernel — with `expose(1, layout)` added after `store_load`. The browser hang and the native
+panic are the same event; in wasm it surfaces as a silent trap (the kernel dies mid-command, never emits
+its terminator, the page waits forever, no JS exception), which is exactly what §7d observed.
+
+**The generalisable lesson:** when a browser-only symptom has a non-browser code path underneath it, probe
+the non-browser path first. A `cfg` on *part* of a function is not a `cfg` on the function.
+
+### Ask (unchanged in substance from § 1, now with the mechanism pinned)
+
+A read-only iteration should not need to claim scratch **inside the pinned store**. Either allocate the
+cursor record outside the locked store, or let the read-only lock permit cursor claims. Failing that,
+`expose` needs documenting as *"loft must not ITERATE this store until `release`"* — reads are fine, so the
+current blanket phrasing would be both wrong and unhelpfully broad. Neither the stdlib comment
+(`default/02_files.loft:107-110`) nor `BROWSER_INTEROP.md:297` says anything about it, and the failure
+lands far from the call.
+
+### Consequence for routing
+
+**Steps 9–13 are unblocked and need nothing from loft.** Step 9's row must change, though: it is specified
+as an *additive* one-liner landing beside a still-emitting text path, and that specific shape is the one
+that cannot work — the text path iterates the layout. Use the release/expose bracket.
+
+---
+
+## @PLN108 — the copy-elision win is ACTIVE on 2026.7.2; step 18 unblocked — 2026-07-22
+
+Re-ran `tools/par_copy_probe.loft` on the installed 2026.7.2 per the previous entry's own instruction
+(*"unblock step 18 only when `ON` goes flat vs heap there"*). It is flat — and flat with the flag
+**unset**, so sharing is now the default dispatch, not an opt-in:
+
+```
+par_ms, --native, LOFT_PAR_SHARE unset:
+  heap    0 MB:  1 thr 3 · 8 thr 1 · 16 thr 1
+  heap   61 MB:  1 thr 2 · 8 thr 3 · 16 thr 3
+  heap  122 MB:  1 thr 3 · 8 thr 2 · 16 thr 3
+```
+
+Against the 2026-07-17 measurement on 2026.7.1 — 122 MB heap ≈ **214 ms** regardless of the flag, and
+1→16 threads climbing **33 → 162 ms** — the per-worker copy is gone. Upstream credit: `ae0c266b`
+(*"@PLN108 par-store single-impl"*, 2026-07-18), i.e. the fallback the previous entry suspected
+("present but not wired") was resolved by collapsing the two implementations into one.
+
+**The gate-coverage ask still stands.** Nothing in this measurement contradicts it: the win shipped
+inactive once precisely because no test asserts elision, and a single-impl refactor is not a substitute for
+a gate that would have caught the fallback. `tools/par_copy_probe.loft` is now GREEN on the release and is
+offered as the consumer-side smoke test.
+
+**Step 18 is unblocked** — `par` over the stretches is designable again.

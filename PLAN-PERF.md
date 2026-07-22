@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Blockers re-validated 2026-07-17** against
-the installed loft (rebuilt 10:39) — see §7c: only **18** is genuinely blocked (@PLN108, awaiting its PR).
-**Steps 9–13 are NOT blocked**: @PLN105 closed 2026-07-16 and steps 9–13 *are* its one open item, Phase 4,
-explicitly consumer-owned. Do not cite @PLN105 as a blocker again without re-probing. **Plan of record for app performance.** It
+**Status:** steps 1–16 IMPLEMENTED (2026-07-17); 17–22 open. **Blockers re-validated 2026-07-22** against
+the installed loft **2026.7.2** (reinstalled 09:01) — see §7c: **nothing is blocked upstream any more.**
+Step 18's copy cost is gone (@PLN108 landed and is active — flat vs heap and vs thread count), and step 9's
+hang is root-caused with a working in-language fix (§7d). All four gates pass on 2026.7.2 unchanged,
+including through the @PLN110 len/size flip. **Plan of record for app performance.** It
 does not supersede `PLAN-MATCH` (the matcher's own ladder) — it measures it and ranks it against
 everything else.
 
@@ -12,8 +13,8 @@ everything else.
 a click moving a point **4481 → 711 ms**; a repeat match **5274 → 339 ms** (15.6×); stores loaded **once
 per session** (2 fetches for 16 commands, was ~2/command); a real 40-point route's worst frozen frame
 **11095 → 744 ms** — the route now **streams per stretch**, arriving in travel order.
-**Open:** the view path (9–13, blocked upstream — see §2b and `docs/loft-feedback.md`), the render budget
-(14–15, ~13 fps panning, independent of loft), `par` (17–18), the cold match (19–22).
+**Open:** the view path (9–13 — unblocked, see §7d for the fix step 9 needs), the render budget
+(14–15, ~13 fps panning, independent of loft), `par` (17–18 — unblocked 2026-07-22), the cold match (19–22).
 
 **Target device is a phone.** Judge every number in the 4× column; the desktop column is only there to
 show how badly a desktop profile flatters us.
@@ -45,7 +46,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **6** | `client/web_basemap_kernel.loft` | Move the two `store_load_url_trusted` calls **above** the loop. | 2nd command −355 ms (view) / −14 ms (match) | **perf only** |
 | **7** | `client/web_basemap_kernel.loft` | Hold the corridor `Graph` across commands; rebuild only when the corridor changes. | 2nd match −~41% (`build_graph` gone) | **perf only** |
 | **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
-| **9** ⚠ | `client/web_basemap_kernel.loft` | `expose(1, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame). **ATTEMPTED 2026-07-17 — the one-line call BREAKS THE APP** (never becomes ready, no JS exception, baseline green without it). Reverted; observable built (`tools/expose_probe.sh` + `browser/cdp_expose.mjs`). **See §7d before retrying — do NOT just re-add the line.** | JS receives descriptor + storeBase/rec/pos | none |
+| **9** | `client/web_basemap_kernel.loft` | `expose(EXPOSE_LAYOUT, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame) — **wrapped in the release/expose bracket**, because loft's own `do_view_bbox` ITERATES the layout and an exposed store rejects the iteration cursor's claim. Root-caused 2026-07-22; see §7d for the mechanism and the exact shape. The bare one-liner this row used to specify hangs the app — the additive form is `release` → emit → `expose`, not `expose` alone. | `tools/expose_probe.sh`: JS receives descriptor + storeBase/rec/pos, app still ready, view output unchanged | none |
 | **10** | `browser/store-kernel.mjs` | Implement the `loft_host_deliver` import; wire `readLoftValue` (`doc/loft-deliver.js`). | one PTile read in JS == the kernel's text for that tile | none |
 | **11** | `browser/map.mjs` | Read **areas only** via `readLoftValue`, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
 | **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
@@ -54,12 +55,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
-| **18** ⏸ | **BLOCKED on @PLN108** — not designable yet | The blocker is neither expressiveness (17's error) nor the slice (18a's): `clone_for_worker()` **byte-copies every ACTIVE parent store per worker**, so par's cost tracks the **session's live heap** — even for a worker that touches none of it. **Measured** (`tools/par_copy_probe.loft`, filed as @PLN108's step 1): 0→122 MB of *unrelated* heap takes a fixed workload **2 → 205 ms**, and 1→16 threads takes it **36 → 178 ms** — *par gets 5× SLOWER with more threads.* Routing's match session exists to HOLD state (steps 6–8; RSS ~175 MB), so every dispatch would pay ~200 ms+ against a ~339 ms match: **the copy costs more than the work it parallelises.** @PLN108 (share read-only stores) removes exactly this; it cites routing as the consumer. **Re-design 18 only after it lands** — i.e. after @PLN108 arrives as a **merged PR**, whose own gates
-(ASan 47/47 + TSan with a firing positive control) carry the confirmation. Do **not** bench it against a
-sibling tree's live `target/release/loft`: @PLN108's S9 was itself retracted for a stale-binary error
-(`5e500930` → `1bedfe7d`), and an attempt here to reproduce the win against a 4-minute-old dev binary
-disagreed with their numbers in both directions — unanchorable either way, so nothing is concluded from it.
-Re-run `tools/par_copy_probe.loft` on the INSTALLED loft once the PR is in. | @PLN108 step 1 answered: NOT a rounding error | none (nothing to build) |
+| **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -755,16 +751,22 @@ incremental row — that is the number the app lives or dies on.
 - **Zoomed-out viewports**, where the emit re-inflates and A's win grows.
 
 
-## §7c — Blocker re-validation (2026-07-17, installed loft 2026.7.1 @ 10:39)
+## §7c — Blocker re-validation (2026-07-22, installed loft **2026.7.2** @ 09:01)
 
 CLAUDE.md's rule (*re-measure a doc's premise before building on it*) applied to this plan's own
-blockers. Two of the three were stale, in opposite directions.
+blockers. **Nothing is blocked upstream any more.** The binary moved under us again — 2026.7.2 is five
+days newer than the 2026.7.1 these blockers were measured against, and it changed both answers.
 
-| blocker | claim | verdict |
+| blocker | claim | verdict (2026-07-22) |
 |---|---|---|
-| **18** → @PLN108 | par copies the parent heap per worker | **REAL.** Measured (§ step 18). Awaiting the PR; do not bench a live sibling binary. |
-| **9–13** → @PLN105 | *"`expose` pins a store unreadable and a top-level `hash` will not deliver"* | **NOT A BLOCKER — this was wrong twice over.** |
+| **18** → @PLN108 | par copies the parent heap per worker | **GONE.** Flat 1–3 ms across 0/61/122 MB and 1/8/16 threads, flag unset. Was 214 ms / 162 ms. See the step-18 row. |
+| **9–13** → @PLN105 | *"`expose` pins a store unreadable"* | **NOT AN UPSTREAM BLOCKER, but the earlier finding was substantially RIGHT** — see §7d. `release`/`expose` bracketing makes it buildable today. |
 | **14–15** | render budget, loft-independent | unchanged; pure JS, nobody blocking |
+
+**The 2026-07-17 row for 9–13 said this was "wrong twice over". That verdict was itself wrong.** It came
+from reading the Phase-3 retraction as clearing the *whole* earlier entry, when the retraction only ever
+addressed `deliver`'s hash handling and never touched the pin. Step 9 was attempted on that reading and
+hung the app the same afternoon. See §7d and `docs/loft-feedback.md` (2026-07-22).
 
 ### Why 9–13 is not blocked
 
@@ -816,31 +818,95 @@ poll, and **no JS exception is thrown** — it is a silent hang or trap, not an 
 `git stash` + rebuild the wasm ⇒ `tools/map_profile.sh` runs green; restore + rebuild ⇒ dead again. So it
 is this line, not the harness and not a pre-existing break.
 
-**The hypothesis to test first — it would VINDICATE the claim I retracted.** `expose_value` calls
-`self.lock_store(&val)` to pin the store across frames. The very next thing the kernel does is
-`do_view_bbox(layout, roads, arg3)` — **loft reading the store it just pinned.** If the pin makes loft's
-own subsequent read fail or block, then my original *"`expose` pins a store unreadable"* was **right**, and
-my retraction of it was wrong for the second time on the same claim. I have not tested this and am not
-asserting it — but it is the cheapest cell to probe, and the retraction (`docs/loft-feedback.md`) should
-NOT be trusted as settling it. What the retraction *did* establish and does still stand: `collect_keyed`
-pre-flattens the hash, so "a hash cannot be exposed" is not the problem.
-
-**Other cells worth probing, cheapest first:**
-
-| probe | catches |
-|---|---|
-| `expose` a small **`vector`** instead of the layout hash | is it the pin, or the keyed walk? `collect_keyed` runs a full walk of a 20 MB / ~230k-feature hash at load — an infinite loop or an OOM there would look exactly like this |
-| `expose` AFTER `do_view_bbox` instead of before | orders the pin against loft's own read |
-| watch the wasm's memory + `starts` while it hangs | separates trap (dead) from loop (spinning) |
-| the loft-side test `deliver_expose_survives_cross_frame_yield_in_js` | proves the shape works upstream — diff their harness against ours |
-
 **The tooling is the deliverable of this attempt.** `tools/expose_probe.sh` → `browser/cdp_expose.mjs`
 asserts step 9's observable where the call actually lands (the host import), and will fail loudly instead
 of silently: expose called exactly once, descriptor parses (not `{__parseError}`), `storeBase`/`rec`
-nonzero (`rec == 0` is `expose_value`'s early return). It currently reports `FAIL: app never became ready`
-— which is the correct answer today.
+nonzero (`rec == 0` is `expose_value`'s early return).
 
-**Method note, since it is the third time this hour.** `expose` is a **silent no-op off the `--html`
-target** (`expose_value` is `#[cfg(target_arch = "wasm32")]`), so nothing about it can be learned from
-`loft file.loft`, and a quiet run means "wrong target", never "works". Every probe of this call must go
-through the browser.
+---
+
+### §7d(2) — DIAGNOSED 2026-07-22: it is the ITERATION, and there is a one-line fix
+
+**Status: root-caused off-browser on the installed 2026.7.2, in one native run.** The hypothesis above was
+right, and the "other cells" table was never needed. Full write-up in `docs/loft-feedback.md` (2026-07-22).
+
+**The mechanism.** `expose` pins the store read-only (`lock_store`). `do_view_bbox` then **iterates** the
+layout (`for t in layout` in `emit_areas`/`emit_buildings`/…), and **iterating a store-backed keyed
+collection claims a 546-byte cursor record inside that same store.** The pin rejects the claim:
+
+```
+thread panicked at src/store.rs:647:9:
+Claim on read-only store (size=546) (locked by: lock_store(store_nr=1, rec=1))
+```
+
+In wasm that panic is a silent trap — the kernel dies mid-command, never emits `#EOR`, the page waits
+forever. That is exactly the "never becomes ready, no JS exception" symptom above.
+
+**Reads are NOT the problem** — this is the narrowing that makes the step buildable. Each row its own
+process, real 20 MB store, `loft --native`:
+
+| after `expose(1, layout)` | result |
+|---|---|
+| `len(layout)` · `layout[key]` · field reads · text interpolation | ✅ all fine |
+| **`for t in layout { }`** — empty body | ❌ panic |
+
+**The fix — bracket loft's own walk:**
+
+```loft
+expose(EXPOSE_LAYOUT, layout);   // pin: JS reads PTiles from wasm memory
+…
+release(EXPOSE_LAYOUT, layout);  // unpin before loft iterates
+do_view_bbox(layout, roads, arg3);
+expose(EXPOSE_LAYOUT, layout);   // re-pin (verified: re-expose works)
+```
+
+Verified natively: `release` restores iteration (`ITERATE AFTER RELEASE OK n=1089`) and the subsequent
+`expose` succeeds. This also restores the **additive migration order** steps 10–13 depend on — land the JS
+reader beside the text path, compare, then delete the text path — since loft can unpin, emit, and re-pin
+during the overlap. Once step 13 deletes the text emit, nothing in loft iterates the layout and the bracket
+collapses back to a single `expose` at load.
+
+**Correction to the method note below: `expose` IS probeable off `--html`.** Only the *host-call* half of
+`expose_value` is `cfg`-gated to wasm; `lock_store` runs on **every** target (`ffi_deliver.rs:80-84`). The
+whole diagnosis came from adding one line to `client/basemap_kernel.loft` — the path-loading twin of the
+browser kernel — and running it natively against the same store files. **When a browser-only symptom has a
+non-browser code path underneath it, probe that path first; a `cfg` on part of a function is not a `cfg` on
+the function.**
+
+**Superseded method note (kept because the reasoning error is the lesson).** This section used to end with
+a rule that *every* probe of `expose` must go through the browser. That was false, and believing it is what
+made this cost an afternoon in Chromium instead of a minute at the shell. The observation behind it was
+real — `expose` printed nothing on the plain backend — but the inference was not: silence meant the *host
+call* was gated, not that the *function* was inert.
+
+## §7e — Re-measurement on 2026.7.2 (2026-07-22): two numbers do not match this plan
+
+`CPU_THROTTLE=4`, `tools/map_profile.sh`, two full runs that agree within ~5%. **What still holds:**
+
+- **The session holds** — `loft_start` entered **1× for 47 commands**, **2 store fetches for 47 commands**.
+  Steps 5–6 are live and working exactly as documented.
+- **Streaming holds** — a real 40-point route: **39 stretches, longest frozen gap 384 ms** (was 11095 ms).
+- **View** — kernel 706 ms, first view 1286 ms vs 946 ms after, i.e. the 341 ms store load is paid once.
+
+**What does NOT match, and is the next thing to chase:**
+
+| | this plan says | measured 2026-07-22 |
+|---|---|---|
+| match, one point MOVED (warm) | **711 ms**, "~10–20× cheaper" than full (step 8) | **910 ms total / 840 ms kernel** |
+| warm ÷ cold-full | ≪ 1 (that is step 8's whole point) | **1.79× — warm is SLOWER than a full rebuild** |
+
+A warm edit costing nearly twice a cold full match is an **inversion of step 8's premise**, and it is the
+one number in this plan that is now self-contradictory. Per §0 rule 5 (*a step whose number does not move
+means the model is wrong — stop and re-measure*), this is a stop-and-re-measure, not a tuning item.
+
+**Do not attribute it to the 2026.7.2 upgrade without evidence.** The old binary is gone, the probe labels
+have changed since the 4481/711 figures were recorded, and no before/after exists on one binary. It is
+equally consistent with the incremental path silently falling back to a full match. First probe:
+instrument `covered()` / `match_incremental` in `lib/map_kernel` to report which path a warm click takes.
+
+**A third number needs disambiguating rather than chasing.** The 3-point density row (5651 ms frozen gap)
+and MAIN-THREAD BLOCKING (5292 ms) both sit right on top of the C0 warm-up figure (**5941 ms, wasm memory
+growing to 188.9 MB**), and the profiler notes each `memory.grow` can copy the whole linear memory. Those
+two sections start before the plateau, so they are almost certainly measuring the grow, not the match — a
+real first-match-of-session cost, but a *different* problem from the one step 16 fixed (and the 40-point
+row, which runs after the plateau, shows 384 ms). Fix the probe's start point before reading those cells.

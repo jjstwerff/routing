@@ -139,10 +139,12 @@ session's design work and each would have sent the work at the wrong target:
   worst frozen frame **11095 → 744 ms**, because the route now **streams per stretch**. Route proven
   byte-identical throughout by `tools/match_parity.sh` (5 cases, 3 distinct routes) — that gate is the
   point, not the speed.
-- **Still open:** the view path (steps 9–13, blocked on @PLN105 — see `docs/loft-feedback.md`: `expose`
-  pins a store unreadable and a top-level `hash` will not deliver; the way through is per-tile `deliver`),
-  the render budget (~13 fps panning, independent of loft), and `par` (steps 17–18: un-share `Scratch`,
-  then parallelise — browser-gated on loft's C3).
+- **Still open, but nothing is blocked upstream** (re-validated 2026-07-22 on loft **2026.7.2**): the view
+  path (steps 9–13 — `expose` pins a store read-only and **iterating** it then panics, but reads are fine
+  and `release`/`expose` bracketing is the fix; see `PLAN-PERF` §7d(2)), the render budget (~13 fps
+  panning, independent of loft), and `par` (step 18 — @PLN108's copy elision is live and default-on, so
+  the per-worker heap copy that blocked it is gone). **New open question:** a warm match now measures
+  1.79× a cold full match, inverting step 8's premise (`PLAN-PERF` §7e).
 - **The invariant to design against:** *every interaction does work proportional to what CHANGED, never
   to the size of the data. Never do everything again; build from what you have.* Every measured cost is
   one violation of it.

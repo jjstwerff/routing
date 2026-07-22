@@ -25,22 +25,30 @@ cosmetic). Every step was gated on the route staying **byte-identical** (`tools/
 
 ---
 
-## 1a. Resume here (2026-07-17)
+## 1a. Resume here (2026-07-22)
 
-- **Read first:** `PLAN-PERF.md` §0 (the step list) and §6b (the match arc). `CLAUDE.md` § "Read the
-  reference before you write" — the two rules that would have saved this session hours.
-- **Instruments** (all new, all durable): `tools/map_profile.sh` (**`CPU_THROTTLE=4`**, the phase
-  profiler), `tools/match_parity.sh` (the route-identity gate), `tools/loop_probe.sh` and
-  `tools/read_probe.sh` (the two probes that unblocked the design).
-- **Next steps, in order:** **17** per-worker `Scratch` (un-share the one mutable the stretch loop reuses
-  — prerequisite for `par`, no behaviour change), **18** `par` over the stretches (~3× native; the
-  browser awaits loft's C3), **14–15** the render budget (~13 fps panning — lag the kernel never touches,
-  independent of loft). **9–13** (view path) are blocked upstream: see below.
-- **Blocked on loft** (`docs/loft-feedback.md`, 2026-07-17): `expose` pins a store read-only and then loft
-  **cannot read it** (`Claim on read-only store` — a hang in the browser); a top-level `hash` is **not
-  deliverable** ("store-internal kind … cursor-walked in a later phase"). The way through is **per-tile
-  `deliver`** — a `PTile` delivers fine. Also filed: a call with **too few arguments is accepted** and
-  silently corrupts the earlier ones (a fn-typed hole → SIGSEGV inside the stdlib's `len`).
+- **Read first:** `PLAN-PERF.md` §0 (the step list), §7c (blocker state), §7d(2) (the `expose` diagnosis)
+  and §7e (what the latest measurement contradicts). `CLAUDE.md` § "Read the reference before you write".
+- **Toolchain:** installed loft is **2026.7.2** (reinstalled 2026-07-22 09:01 — the @PLN110 `len`/`size`
+  flip release: `len(text)` is now CHARACTERS, `size(text)` is BYTES, breaking). **All four gates pass on
+  it unchanged** (`make test`, `test-native`, `test-wasm`, `test-map`) — routing absorbed the flip with no
+  source edits.
+- **Instruments:** `tools/map_profile.sh` (**`CPU_THROTTLE=4`**, the phase profiler), `tools/match_parity.sh`
+  (the route-identity gate), `tools/expose_probe.sh` (step 9's observable), `tools/par_copy_probe.loft`
+  (step 18's), `tools/loop_probe.sh` and `tools/read_probe.sh`.
+- **Nothing is blocked upstream any more** (re-validated 2026-07-22, `PLAN-PERF` §7c):
+  - **Step 18 (`par`) unblocked** — @PLN108's copy elision is live and default-on in 2026.7.2. The probe is
+    flat (1–3 ms) across 0/61/122 MB of heap and 1/8/16 threads; it was 214 ms / 162 ms on 2026.7.1.
+  - **Steps 9–13 unblocked** — the `expose` hang is root-caused: `expose` pins the store read-only, and
+    **iterating** a store-backed hash claims a cursor record *inside that store*, which the pin rejects
+    (`Claim on read-only store (size=546)`). **Reads are fine** — `len`, point lookups, field reads all
+    work. `release(tag, value)` restores iteration and re-`expose` works, so step 9 lands as a
+    release/emit/expose bracket. Diagnosed off-browser in one native run; see §7d(2).
+- **The open question is a NEW one** (`PLAN-PERF` §7e): a warm match (one point moved) now measures
+  **910 ms — 1.79× a cold full match**, inverting step 8's premise. Not attributable to the upgrade without
+  a before/after; first probe is whether `covered()`/`match_incremental` still take the incremental path.
+- **Branch state:** `standalone-app` is **64 commits ahead of `main`** (last merge PR #18, 2026-07-11),
+  pushed, all gates green. A PR is due.
 - **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
 
 ---
