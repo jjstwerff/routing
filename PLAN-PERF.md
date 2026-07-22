@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status (2026-07-22):** steps **1–13, 16 and 20–22 IMPLEMENTED** (16 now including its presentation half
-— §6b(2)); **open: 14–15** (render budget, pure JS),
+**Status (2026-07-22):** steps **1–14, 16 and 20–22 IMPLEMENTED** (16 including its presentation half —
+§6b(2); 14 rescoped by measurement — §6c); **open: 15** (per-tile rasters, re-size first),
 **18** (`par`), **19** (persist the graph). **Nothing is blocked upstream** — re-validated against the
 installed loft **2026.7.2**, see §7c. All five gates pass on it (`test`, `test-native`, `test-wasm`,
 `test-map`, `match_parity.sh`), including through the breaking @PLN110 `len`/`size` flip.
@@ -14,7 +14,9 @@ it measures it and ranks it against everything else.
 
 | interaction | before | now | |
 |---|---|---|---|
-| **view** (pan past the box) | 946 ms | **277 ms** | 3.4× — §7g(2) |
+| **view** (pan past the box) | 946 ms | **134 ms** | 7.1× — §7g(2), §6c |
+| **pan frame** (camera moved, no reload) | 76 ms | **21 ms** | 3.6× — §6c |
+| JS objects retained for geometry | 239,135 | **27,118** | −88.7% — §6c |
 | **cold match** (first click / corridor miss) | 6370 ms | **3327 ms** | 1.96× — §7h(2) |
 | **warm match** (one point moved — what users do) | ~880 ms | **644 ms** | 1.5× |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
@@ -25,8 +27,8 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 @PLN105's bridge; `view` emits roads only — steps 9–13).
 
 **Open, in the order the evidence favours:**
-- **14–15 — the render budget.** Now the largest slice of a view after `storeRead`; pure JS, nobody blocking.
-  §6b(2) is now delivered and shares this code path — read its two rendering decisions before starting.
+- **15 — per-tile rasters.** ⚠ **Re-size before starting:** step 14 (§6c) took the pan frame to **21 ms**
+  and the view to **134 ms**, so 15's "pan <16 ms" is now a small step, not the main event.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
   **re-sized against 3327 ms, not 5899** (§7a says to do exactly this).
@@ -68,8 +70,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **11** ✅ | `browser/map.mjs`, `store-app.mjs` | `areasFromStore()` — reads **areas only** (not the other four kinds) through the bridge, mirroring `emit_areas` + `ring_hits` exactly, **beside** the text path. | **DONE** — `tools/deliver_probe.sh`: **A=2252 emitted · 2252 store hits · 2252 renderable · 2252 text-parsed**, 0 cover mismatches, 0 ring-length mismatches, `maxCoordDelta ≈ 5e-7` — *exactly* half a unit in loft's last printed decimal, so the geometry is identical and only the TEXT side is lossy. Zero order mismatches also proves the pre-flattened array is key-ordered the way `for t in layout` walks. | none (text still drives render) |
 | **12** ✅ | `browser/map.mjs`, `store-app.mjs`, `cdp_verify_store.mjs` | Switch render to the store-read areas (`areaRenderList` mirrors `parseAreas`'s tail — same <3-vertex drop, same `minZoom`); keep the text emit as the **parity gate**, now asserted on the app's own view in `make test-map`, not only in the probe. | **DONE** — `✓ areas render from the store, 2252 == loft's 2252 text areas`; `# view:` counts unchanged. **⚠ Interim cost measured, see §7f: view total 927 → 1447 ms** — not step 12's read, but step 9's per-view `expose`, which re-flattens all 1089 tiles. Step 13 removes it. | **render source** |
 | **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
-| **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
-| **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
+| **14** ✅ | `browser/map.mjs`, **`browser/store-geom.mjs`** (new), `store-app.mjs` | **Its premise was half wrong — see §6c.** Landed as two orthogonal fixes: **14a** screen features by lat/lon bounds BEFORE projecting (the frame projected 214,455 vertices to draw ~7,000), and **14b** stop COPYING the store into JS at all — a `vector<Coord>` is already an interleaved `Int32Array`, so the renderer reads coordinates straight out of wasm memory. "Typed arrays" would have been the wrong fix: still a copy. | **DONE.** Quiet box, `CPU_THROTTLE=4`, spreads 1.1–1.5×: **view 277 → 134 ms**, **storeRead 129 → 30 ms**, **pan frame 64 → 21 ms**, retained objects **239,135 → 27,118**, JS heap 33.3 → 25.4 MB. Gated on a canvas PIXEL HASH, identical (`c85280c8`) across every variant — counts cannot see a ring read at a wrong offset. | **perf only (pixel-identical)** |
+| **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame. ⚠ **Re-size it first:** the pan frame is now **21 ms**, not 76, and 37% of it is buildings. Step 14 got most of what 15 was for. | **perf only** |
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
@@ -410,6 +412,108 @@ before, because nobody ever saw the pre-`remove_spurs` stitch. Two things follow
 - a per-stretch assembly that doubles back over half its points is a **match-quality signal** worth a
   look (PLAN-MATCH §7's numbers are computed per stretch during assembly, so they see the pre-pruned
   path). Not a defect proven here — a number that did not have a reader until now.
+
+## 6c. Steps 14–15: the split was in the wrong place (2026-07-22)
+
+Step 14 said *"pre-project geometry into typed arrays once per view, not per frame."* Half of that was
+right. The half that was wrong is the half that mattered, and the measurement is what said so.
+
+### What a frame was actually doing
+
+| | measured, app's own viewport |
+|---|---|
+| vertices projected per frame | **214,455**, to draw ~7,000 features |
+| buildings drawn / loaded | **1,895 / 16,646** — ~89% of the projection discarded |
+| projection as a share of the frame | **82%** (52 ms of 64 at `CPU_THROTTLE=4`) |
+| JS objects retained between frames | **239,135** |
+| JS heap retained | **33.3 MB** |
+| the same geometry, flat | **1.64 MB** (`Int32Array` at deg×1e7) |
+
+Two independent faults, on **orthogonal axes** — which is why fixing one did not hide the other:
+**how many** features are touched (culling), and **what it costs to touch one** (layout).
+
+### 14a — screen before projecting
+
+Every draw loop projected a feature's whole ring and only then asked `_inView`. A per-feature lat/lon
+bbox, built once per layer, screens first. Pixel-identical because `_inView` keeps a feature iff some
+VERTEX is in the padded viewport, and the screen is that same rectangle unprojected — so it is a
+conservative **superset** and can only skip work already discarded.
+
+⚠ **For areas the bbox test is the only CORRECT cull**, not merely the cheaper one. Areas are filled and
+deliberately had no cull: a polygon containing the whole viewport has no vertex on screen yet paints
+every pixel of it. Culling areas by `_inView` would erase lakes and forests exactly when zoomed inside
+one. Containment implies bbox overlap, so bounds keep them.
+
+### 14b — the split: JS was COPYING the store out
+
+`viewFromStore` re-materialised a viewport as JS objects — `readLoftValue` turning every struct into an
+object, `degRing` exploding every vertex into a boxed `[lat, lon]`. The `expose` bridge exists so JS can
+*read* the store; copying it out gave that back and cost 33 MB and a quarter-million GC-traced objects.
+
+**Converting those objects to typed arrays would have been the wrong fix** — still a copy, just a cheaper
+one. The store already holds the ideal layout, and the probe proves it rather than assuming it:
+
+```
+Coord: kind=record, size=8, fields x@0 (int), y@4 (int)
+a 74-coord ring read as Int32Array(mem.buffer, base, 74*2) vs loft's own reader: 0 mismatches
+```
+
+loft-deliver stores struct vector elements **inline** at `storeBase + vRec*8 + 8`, stride `sizeOf(elem)`,
+so **a `vector<Coord>` IS an interleaved `Int32Array`**. `browser/store-geom.mjs` therefore builds a
+per-view *index* — per feature: ring record, length, tile origin, fixed-point bounds, ~37 bytes — and each
+frame derives one `Int32Array` over wasm memory and reads coordinates where loft wrote them.
+
+### The numbers
+
+Quiet box (load 1.03), `CPU_THROTTLE=4`, medians of 6, spreads 1.1–1.5×:
+
+| | before | after | |
+|---|---|---|---|
+| **view total** | 277 ms | **134 ms** | 2.1× |
+| **storeRead** | 129 ms | **30 ms** | 4.3× — *no copy, not a faster copy* |
+| **render** (view) | 73 ms | **32 ms** | 2.3× |
+| **pan frame** | 64 ms | **21 ms** | 3.0× |
+| retained vertices | 214,455 | **22,567** | −89.5% |
+| retained objects | 239,135 | **27,118** | −88.7% |
+| JS heap | 33.3 MB | **25.4 MB** | −7.9 MB |
+
+The heap did not fall by 30 MB because 33.3 MB was never all geometry — the rest is kernel buffers, the
+view text, the descriptor and Chrome's own overhead. The 7.9 MB that went is ~38 bytes per boxed pair,
+which is what V8's packed-double representation costs.
+
+**What is still boxed is what this step cannot reach:** `streets` (19,397 vertices) arrive as roads
+**text**, not from the store, and the label kinds (3,170) feed `layoutLabels`' collision pass.
+
+### Three places where "the same pixels" needed care, not confidence
+
+- **Draw order.** Areas overdraw each other, so the index must push them in the same tile-then-element
+  order `viewFromStore` did, or a different polygon lands on top with every count still matching.
+- **`areaMinZoom`.** Recomputed from the stored bounds, converted to degrees BEFORE subtracting:
+  `(a-b)/1e7` and `a/1e7-b/1e7` are different doubles, and an area on a band threshold would flip bands.
+- **The fixed-point screen is scaled, not rounded outward.** Flooring would make it a larger rectangle
+  than `_screen`; the paths would then disagree about features within 1e-7° of the padded edge — invisible
+  in pixels (>60 px off-screen) but visible in the draw counts the gate compares.
+
+### The gate is the pixels, and it outlived the path it was comparing
+
+`storeRenderParity()` renders the same view twice — index off, index on — and compares an FNV-1a hash of
+the raw canvas bytes. Counts cannot settle it: **a ring read at a wrong offset yields plausible integers
+and a plausible count**, and only the pixels show it drew somewhere else. When the object path was
+deleted from the app, the probe was changed to rebuild it **on demand** for its one call, so the gate
+survives the deletion it licensed.
+
+⚠ **`memory.grow` DETACHES the ArrayBuffer** and the kernel grows memory while matching, so the view is
+re-derived every frame and the memory is held as a *function*, never a buffer. A cached `Int32Array`
+would read length 0 and the map would go blank after the first match.
+
+### And a fourth instrument bug, same class as the other four
+
+`timedView` kept materialising all `STORE_KINDS` after the app stopped — so it timed a view the app never
+performs and silently re-populated `map.areas/buildings/…` behind the app's back. Caught only because two
+probes contradicted each other: `layerFootprint` said 0 retained features while `projectionCost` said
+214,455 vertices. **Its own comment warned about exactly this**; the comment stayed true while the code
+went stale against the app it mirrors. *A probe that mirrors the app must be re-synced when the app moves
+— and the way you find out is by making two probes disagree.*
 
 ## 6b(3). Escalation emits the route TWICE — and step 16's headline number was stale (2026-07-22)
 

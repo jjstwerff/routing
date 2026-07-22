@@ -24,7 +24,8 @@ Three structural changes got it there, and each is worth more than its number:
    when a margin-relative gate rejects it. ~65% fewer ways when accepted.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1× spread: **view 946 → 277 ms**, **cold match 6370 → 3327 ms**, **warm match ~880 → 644 ms**.
+at 1.1–1.5× spread: **view 946 → 134 ms**, **pan frame 76 → 21 ms**, **cold match 6370 → 3327 ms**,
+**warm match ~880 → 644 ms**. JS now retains **27,118** objects for geometry, not 239,135 (§6c).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
 
@@ -66,10 +67,14 @@ fine**, and `release`/`expose` brackets it.
 
 **What to do next, in the order the evidence favours:**
 
-1. **Steps 14–15 — the render budget.** Now the biggest remaining slice of a view (~74 ms render +
-   127 ms `storeRead` of a 277 ms view). Pure JS, nothing blocking. §6b(2) is **done** and shares this
-   code path — read its two rendering decisions (work ∝ route not map; re-stroke the accumulation, or
-   every joint gets a white notch) before changing how the route is drawn.
+1. **Step 15 — per-tile rasters.** ⚠ **Re-size it first.** Step 14 (§6c) took the view to **134 ms** and
+   the pan frame to **21 ms**, so 15's "pan <16 ms" is a small step now, not the main event. The largest
+   remaining slice of a pan frame is buildings (37% of 21 ms).
+   **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
+   a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
+   is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
+   buffer** (re-derive the view every frame; never cache it across a match), and the gate is a **canvas
+   pixel hash**, because counts cannot see a ring read at a wrong offset.
 2. **Step 18 — `par` over the stretches.** Unblocked; read §6b B, **not** step 17's row (17's conclusion
    was a mis-read and is kept only as the record of one).
 3. **Step 19 — persist the built graph.** ⚠ **Re-size it first.** Its "~41% of a cold match" premise
