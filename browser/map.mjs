@@ -14,6 +14,10 @@
 import { decodeText } from './store-geom.mjs';
 
 const TILE = 256;                         // world-pixel size of one tile at zoom 0
+// Step 15's raster cache. BLOCK is the baked square in world pixels; BLOCK_MARGIN is bled around it and
+// never blitted, so a stroke crossing a block edge is antialiased outside the visible region (must exceed
+// the widest half-stroke: roads ~9 px, route halo 7 px). The cap keeps a phone's memory bounded.
+const BLOCK = 512, BLOCK_MARGIN = 32, BLOCK_CACHE_MAX = 24;
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
 const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
 const clampLat = (lat) => Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
@@ -454,6 +458,9 @@ export class RouteMap {
     this._timeLayers = false;                 // opt-in per-layer render timing (PLAN-PERF §6 R)
     this._layerMs = null;
     this._bboxCache = new WeakMap();          // layer array → per-feature lat/lon bounds (step 14)
+    // Step 15's block raster cache. OFF: the blit is 0.6 ms against a 20 ms direct frame, but the output
+    // is not yet provably equal to the direct render (PLAN-PERF §6d) — so it stays opt-in until it is.
+    this.blocked = false;
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
@@ -571,11 +578,24 @@ export class RouteMap {
   // gets identical inputs — so the pixels are unchanged, which is what the gate asserts.
   view() {
     const c = this.camera, v = this._view;
+    // Under an `_origin` override the view is not the camera's — build it fresh each time rather than
+    // poison the memo, since block rendering changes the origin per block.
+    if (this._origin) return this._viewAt(this._origin.x, this._origin.y);
     if (!v || v.width !== this.width || v.height !== this.height
         || v.camera.lat !== c.lat || v.camera.lon !== c.lon || v.camera.zoom !== c.zoom) {
       this._view = makeView({ lat: c.lat, lon: c.lon, zoom: c.zoom }, this.width, this.height);
     }
     return this._view;
+  }
+  // A view whose screen space is measured from an arbitrary world-pixel origin. `makeView` derives its
+  // origin from the camera; this is the same projection with the origin supplied instead.
+  _viewAt(ox, oy) {
+    const zoom = this.camera.zoom;
+    return {
+      camera: this.camera, width: this.width, height: this.height,
+      project(lat, lon) { const p = projectWorld(lon, lat, zoom); return { x: p.x - ox, y: p.y - oy }; },
+      unproject(sx, sy) { return unprojectWorld(ox + sx, oy + sy, zoom); },
+    };
   }
   project(lat, lon) { return this.view().project(lat, lon); }
   unproject(x, y) { return this.view().unproject(x, y); }
@@ -640,6 +660,145 @@ export class RouteMap {
     this._raf = requestAnimationFrame(() => { this._raf = 0; this.render(); });
   }
 
+  // --- Step 15: cached per-block rasters -------------------------------------------------------------
+  //
+  // A pan re-runs the whole base map for a camera that moved a few pixels — §1's invariant violated at
+  // frame scale one last time. The base layers are baked into 512-px blocks in WORLD-PIXEL space (which
+  // is camera-independent at a given zoom, so a block's content is fixed) and a pan just blits them.
+  //
+  // ⚠ THIS IS THE FIRST STEP IN §6c THAT IS NOT PIXEL-IDENTICAL, and the reason is worth stating because
+  // it is not a shortcut. Canvas rasterisation depends on a path's SUB-PIXEL PHASE. A block's raster fixes
+  // that phase when it is baked; the viewport origin (`cameraWorld - width/2`) is fractional and moves
+  // continuously, so blitting a baked block at the true fractional offset would resample it (blurring
+  // every pan) and blitting at a rounded offset shifts it by up to one device pixel. Every tile renderer
+  // faces this; all of them snap. So the ORIGIN IS SNAPPED to a whole device pixel, and the rendered image
+  // sits within one device pixel of the unsnapped projection.
+  //
+  // What is deliberately NOT snapped: `project`/`unproject` themselves. They stay exact, so the pan/zoom
+  // anchoring invariants in map.test.mjs (grabbed point stays under the cursor, wheel zoom holds its
+  // anchor) are untouched — the snap is a RENDERING decision, not a projection one.
+  //
+  // The margin is what keeps the seams invisible: a block is baked at BLOCK+2*MARGIN and only its interior
+  // is blitted, so the clip edge — where a stroke crossing a block boundary would be antialiased against
+  // nothing — falls outside the region ever shown. MARGIN must exceed the widest half-stroke drawn
+  // (roads ~9 px at high zoom, the route halo 7 px), and 32 is comfortably past that.
+  //
+  // Labels and the route are NOT baked, on purpose: label collision is resolved against the whole viewport
+  // and would be wrong per block, and the route changes without the base map changing.
+  renderBlocked() {
+    const B = BLOCK, M = BLOCK_MARGIN, z = this.camera.zoom;
+    const o = this._originWorld();
+    const ox = Math.round(o.x * this.dpr) / this.dpr, oy = Math.round(o.y * this.dpr) / this.dpr;
+    const ctx = this.ctx, W = this.width, H = this.height;
+    if (this._blockZoom !== z) { this._blocks = new Map(); this._blockZoom = z; }
+    this._blockStats = { areas: 0, lines: 0, buildings: 0, streets: 0, pois: 0 };
+    this._buildingLabels = [];                             // accumulated across this frame's blocks
+    const cache = this._blocks || (this._blocks = new Map());
+    const bx0 = Math.floor(ox / B), bx1 = Math.floor((ox + W) / B);
+    const by0 = Math.floor(oy / B), by1 = Math.floor((oy + H) / B);
+    let baked = 0;
+    for (let by = by0; by <= by1; by++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        const key = bx + ',' + by;
+        let cv = cache.get(key);
+        if (!cv) { cv = this._bakeBlock(bx, by); cache.set(key, cv); baked++; }
+        // Counts are SUMMED over blocks, so a feature spanning two blocks counts twice. That is a real
+        // description of the drawing done, and deliberately NOT comparable to the direct path's counts —
+        // which is why the blocked-vs-direct gate compares PIXELS, not counts.
+        for (const k in cv.__stats || {}) this._blockStats[k] += cv.__stats[k];
+        // Integer device-pixel destination: both origins are snapped, so this subtraction is exact.
+        ctx.drawImage(cv, M * this.dpr, M * this.dpr, B * this.dpr, B * this.dpr,
+                      bx * B - ox, by * B - oy, B, B);
+      }
+    }
+    this._blocksBaked = baked;
+    if (cache.size > BLOCK_CACHE_MAX) {                    // crude cap: drop everything but what is on screen
+      for (const k of [...cache.keys()]) {
+        const [kx, ky] = k.split(',').map(Number);
+        if (kx < bx0 || kx > bx1 || ky < by0 || ky > by1) cache.delete(k);
+      }
+    }
+    return { ox, oy };
+  }
+
+  // Bake one block: an offscreen canvas of BLOCK+2*MARGIN, drawn with the world-pixel origin moved to the
+  // block's top-left minus the margin. Every base layer is drawn by the SAME methods the direct path uses
+  // — that shared code is what makes "the cache changed nothing" a checkable claim rather than a hope.
+  _bakeBlock(bx, by) {
+    const B = BLOCK, M = BLOCK_MARGIN, S = B + 2 * M;
+    const cv = (typeof document !== 'undefined' && document.createElement)
+      ? document.createElement('canvas') : { getContext: () => null, width: 0, height: 0 };
+    cv.width = Math.round(S * this.dpr); cv.height = Math.round(S * this.dpr);
+    const c2 = cv.getContext ? cv.getContext('2d') : null;
+    if (!c2) return cv;
+    c2.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    c2.fillStyle = '#f2efe9'; c2.fillRect(0, 0, S, S);
+    const savedCtx = this.ctx, savedW = this.width, savedH = this.height;
+    this.ctx = c2; this.width = S; this.height = S;
+    this._origin = { x: bx * B - M, y: by * B - M };
+    this._noVertexCull = true; this._baking = true;
+    try { cv.__stats = this._drawBase(this.camera.zoom); }
+    finally { this._baking = false; this._noVertexCull = false; this._origin = null; this.ctx = savedCtx; this.width = savedW; this.height = savedH; }
+    return cv;
+  }
+
+  // Draw the whole map directly, but from the SNAPPED origin the blocked path uses. This is the gate's
+  // reference: it isolates the cache (does blitting baked blocks equal drawing them?) from the snap
+  // (does moving the origin to a whole device pixel change the image?), which are two different claims.
+  renderSnappedDirect() {
+    const o = this._originWorld();
+    const ox = Math.round(o.x * this.dpr) / this.dpr, oy = Math.round(o.y * this.dpr) / this.dpr;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.fillStyle = '#f2efe9'; ctx.fillRect(0, 0, this.width, this.height);
+    this._origin = { x: ox, y: oy };
+    try {
+      // The vertex cull is disabled for the BASE only, matching a block bake exactly. Leaving it off for
+      // the label pass would give the reference a different candidate SET, and `fits` is greedy — so the
+      // two paths would place different labels and differ all over the canvas for a reason that has
+      // nothing to do with caching.
+      this._noVertexCull = true;
+      try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
+      this.drawRoute();
+      this.layoutLabels();
+    } finally { this._origin = null; }
+    return this;
+  }
+
+  // A building's label anchor, recorded in WORLD PIXELS rather than screen pixels.
+  //
+  // Screen coordinates are meaningless across a block bake: each block projects from its own origin, so a
+  // centroid computed there lands wherever that block's top-left happens to be. World pixels are
+  // camera- and block-independent, and the label pass subtracts whatever origin the frame is using.
+  //
+  // While baking, only the block whose INTERIOR contains the anchor claims it — a building straddling two
+  // blocks is drawn by both but labelled once.
+  _pushBuildingLabel(name, x, y, seq) {
+    const K = this._flatK();
+    if (this._baking
+        && (x < BLOCK_MARGIN || x >= BLOCK_MARGIN + BLOCK || y < BLOCK_MARGIN || y >= BLOCK_MARGIN + BLOCK)) return;
+    this._buildingLabels.push({ name, wx: x + K.cx - K.hw, wy: y + K.cy - K.hh, seq });
+  }
+
+  // The baked layers, in z-order. Shared by the direct render and by every block bake.
+  _drawBase(z) {
+    let areasN = 0;
+    if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
+    else {
+      const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+      for (let i = 0; i < this.areas.length; i++) {
+        const a = this.areas[i];
+        if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+        this.drawArea(a); areasN++;
+      }
+    }
+    const lnN = this.drawLines();
+    const bN = this.drawBuildings();
+    const sN = this.drawStreets();
+    const poiN = this.drawPois();
+    return { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN };
+  }
+
   render() {
     const ctx = this.ctx, W = this.width, H = this.height, z = this.camera.zoom;
     // Per-layer attribution (PLAN-PERF §6 R). `render` was one 73 ms number, and steps 14/15 each bet on
@@ -655,30 +814,24 @@ export class RouteMap {
     ctx.fillRect(0, 0, W, H);
     mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
-    let areasN = 0;
-    if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
-    else {
-      const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
-      for (let i = 0; i < this.areas.length; i++) {
-        const a = this.areas[i];
-        if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
-        this.drawArea(a); areasN++;
-      }
-    }
-    mark('areas');
-    const lnN = this.drawLines();              // streams / rails / barriers, above terrain
-    mark('lines');
-    const bN = this.drawBuildings();
-    mark('buildings');
-    const sN = this.drawStreets();
-    mark('streets');
-    const poiN = this.drawPois();              // point glyphs, above roads
-    mark('pois');
-    const rtN = this.drawRoute();              // matched route, above the base map
-    mark('route');
-    const lab = this.layoutLabels();
-    mark('labels');
-    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
+    // The base map is either blitted from cached blocks (step 15) or drawn directly; the route and the
+    // labels are always drawn live on top — labels because their collision pass is viewport-wide, the
+    // route because it changes without the base map changing.
+    // When the base comes from cached blocks it is drawn from a SNAPPED origin, so the rest of the frame
+    // must use that same origin or the route and the labels sit a sub-pixel off the map under them —
+    // which is exactly what the first blockRaster() probe caught.
+    let snapOrigin = null;
+    const base = this.blocked ? ((snapOrigin = this.renderBlocked()), this._blockStats || {}) : this._drawBase(z);
+    mark('base');
+    if (snapOrigin) this._origin = snapOrigin;
+    let rtN = 0, lab;
+    try {
+      rtN = this.drawRoute();                  // matched route, above the base map
+      mark('route');
+      lab = this.layoutLabels();
+      mark('labels');
+    } finally { if (snapOrigin) this._origin = null; }
+    this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     if (t) this._layerMs = t.ms;
     // M0 probe: optional test dots (empty once real layers are loaded).
     for (const p of this.points) {
@@ -737,7 +890,7 @@ export class RouteMap {
   }
 
   _projLine(g) { const px = new Array(g.length); for (let i = 0; i < g.length; i++) px[i] = this.project(g[i][0], g[i][1]); return px; }
-  _inView(px, pad = 60) { for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
+  _inView(px, pad = 60) { if (this._noVertexCull) return true; for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
 
   // --- Drawing straight out of the store (PLAN-PERF §6c) ---------------------------------------------
   //
@@ -760,8 +913,18 @@ export class RouteMap {
   // in a last bit and show up as antialiasing noise.
   _flatK() {
     const cam = this.camera, scale = TILE * Math.pow(2, cam.zoom);
+    // `_origin` (step 15) redirects every projection to a WORLD-PIXEL origin instead of the camera —
+    // that is what lets the same draw code fill a cached block whose top-left is not the viewport's.
+    if (this._origin) return { scale, cx: this._origin.x, cy: this._origin.y, hw: 0, hh: 0 };
     const c = projectWorld(cam.lon, cam.lat, cam.zoom);
     return { scale, cx: c.x, cy: c.y, hw: this.width / 2, hh: this.height / 2 };
+  }
+
+  // The viewport's top-left in WORLD PIXELS at the current zoom. Fractional as the camera pans, which is
+  // exactly why step 15 has to snap it (see `renderBlocked`).
+  _originWorld() {
+    const c = projectWorld(this.camera.lon, this.camera.lat, this.camera.zoom);
+    return { x: c.x - this.width / 2, y: c.y - this.height / 2 };
   }
 
   // Project one feature's coordinates from the store into the reusable scratch buffer. Reads the ints
@@ -779,6 +942,7 @@ export class RouteMap {
   }
   // `_inView` on the scratch — same padded-rect test, so the same features survive.
   _inViewFlat(s, len, pad = 60) {
+    if (this._noVertexCull) return true;
     for (let k = 0; k < len; k++) {
       const x = s[2 * k], y = s[2 * k + 1];
       if (x >= -pad && x <= this.width + pad && y >= -pad && y <= this.height + pad) return true;
@@ -868,7 +1032,9 @@ export class RouteMap {
   // M3/S13 + B5: fill building footprints (only from z14, S13) and collect named ones for a label at ≥z16.
   // Returns the count drawn in view; the label candidates are consumed by layoutLabels().
   drawBuildings() {
-    this._buildingLabels = [];
+    // Not reset while BAKING: a frame's labels accumulate across its blocks (each block claims only the
+    // anchors inside its own interior, so nothing is claimed twice). renderBlocked resets per frame.
+    if (!this._baking) this._buildingLabels = [];
     if (this.camera.zoom < BUILDINGS_MINZOOM) return 0;
     if (this._sidx && this._sidx.buildings) return this._drawBuildingsFromStore();
     const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM; let n = 0;
@@ -881,7 +1047,7 @@ export class RouteMap {
       this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); n++;
       if (wantLabels && b.name) {
         let cx = 0, cy = 0; for (const p of px) { cx += p.x; cy += p.y; }        // ring centroid ≈ label anchor
-        this._buildingLabels.push({ name: b.name, x: cx / px.length, y: cy / px.length });
+        this._pushBuildingLabel(b.name, cx / px.length, cy / px.length, i);
       }
     }
     return n;
@@ -918,7 +1084,7 @@ export class RouteMap {
         if (name) {
           let cx = 0, cy = 0;
           for (let k = 0; k < len; k++) { cx += s[2 * k]; cy += s[2 * k + 1]; }
-          this._buildingLabels.push({ name, x: cx / len, y: cy / len });
+          this._pushBuildingLabel(name, cx / len, cy / len, i);
         }
       }
     }
@@ -1045,7 +1211,7 @@ export class RouteMap {
         s[w * 2] = x; s[w * 2 + 1] = y; w++;
         if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
       }
-      if (!on) { w = at; continue; }                       // `_inView` — rewind the scratch, draw nothing
+      if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
       (byClass[cls] || (byClass[cls] = [])).push(at, len);
       vis++;
     }
@@ -1209,10 +1375,18 @@ export class RouteMap {
   // B5: a horizontal label centred on each named building (≥z16), yielding to place/street labels via `fits`.
   _buildingLabelPass(fits) {
     const cands = this._buildingLabels || []; if (!cands.length) return 0;
+    // Sorted by the building's own index, NOT by arrival. `fits` is greedy first-come, so the ORDER
+    // decides which labels win a contested spot — and a blocked frame collects them block by block while
+    // a direct frame collects them in index order. Same set, same count, different winners: it is the
+    // last of the coordinate/order couplings that made the cache differ from the reference.
+    cands.sort((a, b) => a.seq - b.seq);
     const ctx = this.ctx, font = `500 10px system-ui, sans-serif`; ctx.font = font; let n = 0;
+    // Anchors are WORLD pixels (see _pushBuildingLabel) — bring them into this frame's screen space.
+    const K = this._flatK(), offX = K.cx - K.hw, offY = K.cy - K.hh;
     for (const c of cands) {
-      if (!fits(c.x, c.y, ctx.measureText(c.name).width + 6, 12)) continue;
-      this._label(c.name, c.x, c.y, font, '#6a6a6a');
+      const x = c.wx - offX, y = c.wy - offY;
+      if (!fits(x, y, ctx.measureText(c.name).width + 6, 12)) continue;
+      this._label(c.name, x, y, font, '#6a6a6a');
       n++;
     }
     return n;

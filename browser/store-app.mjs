@@ -161,6 +161,7 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // Perf hook (headless profiler, browser/cdp_profile.mjs): run a view/match with each phase timed
 // separately, so the bottleneck is ATTRIBUTED — wasm-side (store decode + text serialize) vs JS-side
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
+window.__map0 = map;   // test hook: the live RouteMap, for render-comparison probes
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
   // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
@@ -377,6 +378,61 @@ window.__perfHooks = {
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
+  },
+  // PLAN-PERF §0 step 15 — does the BLOCK CACHE change what is drawn, and what does it buy?
+  //
+  // Two separate claims, deliberately measured apart, because conflating them is how a raster cache ships
+  // with a seam nobody notices:
+  //   1. the cache is EXACT — blitting baked blocks equals drawing them, so `blocked` vs
+  //      `renderSnappedDirect` must be pixel-identical. Both use the same snapped origin, so this
+  //      isolates the caching from the snapping.
+  //   2. the SNAP is a real but bounded visual change — snapped-direct vs the ordinary render will
+  //      differ, by up to one device pixel of translation. Reported, never asserted equal, because
+  //      asserting it would be asserting something false.
+  // Then the number the step exists for: a cold pan frame (blocks bake) and a warm one (pure blit).
+  // WHERE do two renders differ? A hash says "not equal" and nothing else, and four fixes in a row were
+  // guesses because of it. This returns the differing-pixel count and their bounding box, which separates
+  // the candidate causes at a glance: a seam is a thin line on a block boundary, a label is a small
+  // scattered box, a bad origin is the whole canvas.
+  renderDiff(a, b) {
+    const c = document.getElementById('map'), ctx = c.getContext('2d');
+    a(); const A = ctx.getImageData(0, 0, c.width, c.height).data.slice();
+    b(); const B = ctx.getImageData(0, 0, c.width, c.height).data;
+    let n = 0, mnx = 1e9, mxx = -1, mny = 1e9, mxy = -1;
+    const cols = new Map();
+    for (let i = 0; i < A.length; i += 4) {
+      if (A[i] === B[i] && A[i + 1] === B[i + 1] && A[i + 2] === B[i + 2]) continue;
+      const px = (i / 4) % c.width, py = ((i / 4) / c.width) | 0;
+      n++;
+      if (px < mnx) mnx = px; if (px > mxx) mxx = px;
+      if (py < mny) mny = py; if (py > mxy) mxy = py;
+      cols.set(px, (cols.get(px) || 0) + 1);
+    }
+    const hot = [...cols.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6);
+    return { diff: n, total: c.width * c.height, box: n ? [mnx, mny, mxx, mxy] : null, hotCols: hot };
+  },
+  blockRaster() {
+    const fp = () => { const c = document.getElementById('map');
+                       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+                       let h = 0x811c9dc5;
+                       for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); }
+                       return (h >>> 0).toString(16); };
+    map.blocked = false; map.render();
+    const plain = fp();
+    map.renderSnappedDirect();
+    const snapped = fp(), snappedCounts = { ...map._stats };
+    map.blocked = true;
+    map._blocks = new Map(); map._blockZoom = null;        // force a cold bake
+    const t0 = performance.now(); map.render(); const cold = performance.now() - t0;
+    const blockedHash = fp(), baked = map._blocksBaked;
+    const warm = [];
+    for (let i = 0; i < 6; i++) { const t = performance.now(); map.render(); warm.push(performance.now() - t); }
+    map.blocked = false; map.render();
+    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+    return { plain, snapped, blocked: blockedHash, cacheExact: blockedHash === snapped,
+             snappedCounts, blockedCounts: { ...map._stats },
+             snapChangedPixels: snapped !== plain, coldMs: cold, blocksBaked: baked,
+             warmMs: med(warm), cached: map._blocks ? map._blocks.size : 0 };
   },
   // PLAN-PERF §6c — does the store-backed render path draw EXACTLY what the object path drew?
   //
