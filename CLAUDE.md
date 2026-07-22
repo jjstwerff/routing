@@ -143,8 +143,12 @@ session's design work and each would have sent the work at the wrong target:
   path (steps 9–13 — `expose` pins a store read-only and **iterating** it then panics, but reads are fine
   and `release`/`expose` bracketing is the fix; see `PLAN-PERF` §7d(2)), the render budget (~13 fps
   panning, independent of loft), and `par` (step 18 — @PLN108's copy elision is live and default-on, so
-  the per-worker heap copy that blocked it is gone). **New open question:** a warm match now measures
-  1.79× a cold full match, inverting step 8's premise (`PLAN-PERF` §7e).
+  the per-worker heap copy that blocked it is gone). **The top remaining user-visible cost is the COLD
+  match — ~6.1 s on a phone** (steps 19–22); a "warm regression" scare was retracted the same day, and
+  `PLAN-PERF` §7e is worth reading for *why*: a probe named `matchColdFull` stopped being cold when step 6
+  landed the session, so it measured the nothing-changed case under a stale name. **Calibrate an
+  instrument before believing a ratio that says a subsystem is broken** —
+  `tools/match_session_probe.loft` is the native ground truth for the match interactions.
 - **The invariant to design against:** *every interaction does work proportional to what CHANGED, never
   to the size of the data. Never do everything again; build from what you have.* Every measured cost is
   one violation of it.

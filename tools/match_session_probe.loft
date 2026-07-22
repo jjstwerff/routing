@@ -1,0 +1,74 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// The CALIBRATED reference for the four match interactions (PLAN-PERF §7e). Native, one session, honest
+// labels — the ground truth the browser profiler is checked against when its numbers look wrong.
+//
+//   loft --native --lib lib tools/match_session_probe.loft _site/stores/enschede.roads.store
+//
+//   COLD   fresh session        corridor read + build_graph + full incremental seed
+//   REPEAT identical sketch     covered() holds, match_incremental finds NOTHING changed — the floor
+//   MOVED  last point ~20 m     covered() holds, one point changed — the interaction users perform
+//   EXTEND +1 point ~500 m      covered() fails once, corridor + graph rebuilt, then covered again
+//
+// Reference numbers on loft 2026.7.2 (native, enschede roads):
+//   COLD 750 · REPEAT ~58 · MOVED ~123 · EXTEND 964 then ~85
+// So a moved point is ~6x cheaper than a cold match, and a repeat ~13x. That ratio — not the absolute
+// ms — is what steps 7-8 promised, and it is what this probe is for.
+//
+// WHY IT EXISTS: the browser profiler compared "MATCH COLD FULL" against "MATCH WARM" and reported a
+// ratio above 1, which reads as "the incremental path is broken". It was not. Since step 6 gave the app
+// a persistent session, re-sending the same sketch stopped being a cold match and became the
+// nothing-changed case, so the two probes had swapped meanings while keeping their names. Ratios are
+// only as good as the labels on them — when a browser number implies the kernel is wrong, come here
+// first and check the kernel directly, without wasm, throttling or a harness in the way.
+#cwd
+
+use map_kernel::(do_match_session, session_new, parse_sketch);
+use routing_kernel::(TTile);
+
+SKETCH  = "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554";
+MOVED   = "52.2412299,6.8834496;52.2694705,6.9164085;52.3118272,6.9090554";
+EXTEND  = "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554;52.3156272,6.9128554";
+PROFILE = "cycling_road";
+REPS    = 6;
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: match_session_probe <roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[0] ?? "");
+  s = session_new();
+
+  t0 = now();
+  do_match_session(s, roads, parse_sketch(SKETCH), PROFILE);
+  t1 = now();
+  println("#T COLD(fresh session) {t1 - t0}");
+
+  for _ in 0..REPS {
+    r0 = now();
+    do_match_session(s, roads, parse_sketch(SKETCH), PROFILE);
+    r1 = now();
+    println("#T REPEAT(identical) {r1 - r0}");
+  }
+
+  // Alternate exactly as the browser harness does: re-establish SKETCH, then time the edit.
+  for _ in 0..REPS {
+    do_match_session(s, roads, parse_sketch(SKETCH), PROFILE);
+    m0 = now();
+    do_match_session(s, roads, parse_sketch(MOVED), PROFILE);
+    m1 = now();
+    println("#T MOVED(1pt ~20m) {m1 - m0}");
+  }
+
+  // Only the FIRST extend rebuilds: afterwards the corridor covers the longer sketch too.
+  for _ in 0..REPS {
+    do_match_session(s, roads, parse_sketch(SKETCH), PROFILE);
+    e0 = now();
+    do_match_session(s, roads, parse_sketch(EXTEND), PROFILE);
+    e1 = now();
+    println("#T EXTEND(+1pt ~500m) {e1 - e0}");
+  }
+}

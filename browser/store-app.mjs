@@ -230,19 +230,30 @@ window.__perfHooks = {
     await new Promise((r) => setTimeout(r, 50));
     return { kind, total, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
-  // A COLD FULL match: a fresh sketch, matched from scratch. This is the OUTLIER — a first click, or a
-  // sketch leaving the built corridor. Named for what it is: an earlier profiler called this "match" and
-  // so measured the outlier as if it were the common case.
-  async matchColdFull(pts) {
+  // A genuinely COLD match: drop the session first, so the corridor read, build_graph and the full
+  // incremental seed are all paid. `reset` deliberately does NOT touch the stores — they stay decoded,
+  // because a real cold match never re-fetches them either (PLAN-PERF §7e).
+  //
+  // This probe exists because the OLD `matchColdFull` stopped being cold when step 6 landed the
+  // persistent session, and nothing noticed for two months: it re-sent the same sketch into a live
+  // session, so every iteration after the first measured the NOTHING-CHANGED case while still being
+  // labelled "cold". The profiler then compared it against `matchWarm` and reported a warm/cold ratio
+  // above 1 — read as a regression, when it was two different interactions wearing each other's names.
+  async matchTrueCold(pts) {
+    await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     return timeMatch(pts);
   },
-  // A WARM match: the interaction users actually perform — one more point on an existing sketch. Only
-  // the edited window changed, so it SHOULD cost ~one window (server.loft lands 40–68 ms via
-  // covered() + match_incremental). Today the app re-matches the whole sketch from scratch, so this is
-  // expected to ≈ matchColdFull — that equality IS the bug (PLAN-PERF §1), and it is the number
-  // steps 6–8 must move.
-  // MOVE an existing point ~20m. This is the edit that SHOULD be warm: the nudged point stays inside
-  // the corridor already fetched, so covered() holds and the session's graph is reused.
+  // A REPEAT match: the identical sketch, re-sent into a live session. covered() holds and
+  // match_incremental finds nothing changed, so this is the app's cheapest possible match — the floor,
+  // not the outlier. (This is what the old `matchColdFull` actually measured; kept under an honest name.)
+  async matchRepeat(pts) {
+    await timeMatch(pts);
+    return timeMatch(pts);
+  },
+  // A WARM match: the interaction users actually perform — MOVE an existing point ~20 m. The nudged
+  // point stays inside the corridor already fetched, so covered() holds and the session's graph is
+  // reused; only the edited window is re-searched. Compare against matchTrueCold (should be far
+  // cheaper) — NOT against matchRepeat, which changes nothing and is necessarily cheaper still.
   async matchWarm(pts) {
     await timeMatch(pts);                                  // establish the sketch (cold)
     const moved = pts.map((p, i) => (i === pts.length - 1 ? [p[0] + 0.0002, p[1] + 0.0002] : p));

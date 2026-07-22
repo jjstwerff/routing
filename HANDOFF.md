@@ -44,9 +44,14 @@ cosmetic). Every step was gated on the route staying **byte-identical** (`tools/
     (`Claim on read-only store (size=546)`). **Reads are fine** — `len`, point lookups, field reads all
     work. `release(tag, value)` restores iteration and re-`expose` works, so step 9 lands as a
     release/emit/expose bracket. Diagnosed off-browser in one native run; see §7d(2).
-- **The open question is a NEW one** (`PLAN-PERF` §7e): a warm match (one point moved) now measures
-  **910 ms — 1.79× a cold full match**, inverting step 8's premise. Not attributable to the upgrade without
-  a before/after; first probe is whether `covered()`/`match_incremental` still take the incremental path.
+- **No warm-match regression** (`PLAN-PERF` §7e). A "warm 1.79× cold" reading was raised and **retracted
+  the same day**: the profiler's `matchColdFull` stopped being cold when step 6 landed the persistent
+  session, so it was measuring the nothing-changed case under a stale name. Calibrated, warm ÷ TRUE cold
+  is **0.14× in the browser and 0.16× native** — step 8 confirmed on both backends. The harness is fixed
+  (kernel `reset` command + `matchTrueCold`/`matchRepeat`) and `tools/match_session_probe.loft` is the
+  native ground truth to check it against.
+- **The biggest remaining user-visible cost is the COLD match: ~6.1 s on a phone** — newly visible, because
+  nothing measured it until the probe was fixed. That is what steps 19–22 are for.
 - **Branch state:** `standalone-app` is **64 commits ahead of `main`** (last merge PR #18, 2026-07-11),
   pushed, all gates green. A PR is due.
 - **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.

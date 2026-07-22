@@ -96,7 +96,14 @@ fn main() {
         }
       }
       if ok {
-        if cmd == "match" {
+        if cmd == "reset" {
+          // Profiler hook (PLAN-PERF §7e). The session is what makes a warm edit cheap — and it is also
+          // what makes a "cold" measurement impossible once it exists: re-sending the same sketch into a
+          // live session measures the nothing-changed case, not a cold match. Dropping the session is the
+          // only way to time a genuinely cold one without also re-fetching the stores (which would charge
+          // the match a 355 ms decode it never pays in real use). Costs nothing when unused.
+          sess = session_new();
+        } else if cmd == "match" {
           // Stream the route: emit each stretch as it is matched, then hand the frame back. The page
           // draws a line that GROWS instead of freezing for the whole match (PLAN-PERF §6b A). This is
           // the only layer that may yield — frame_yield is browser-only, and map_kernel/routing_kernel

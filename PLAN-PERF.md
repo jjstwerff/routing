@@ -879,34 +879,65 @@ made this cost an afternoon in Chromium instead of a minute at the shell. The ob
 real — `expose` printed nothing on the plain backend — but the inference was not: silence meant the *host
 call* was gated, not that the *function* was inert.
 
-## §7e — Re-measurement on 2026.7.2 (2026-07-22): two numbers do not match this plan
+## §7e — Re-measurement on 2026.7.2 (2026-07-22), and the blind probe it exposed
 
-`CPU_THROTTLE=4`, `tools/map_profile.sh`, two full runs that agree within ~5%. **What still holds:**
+`CPU_THROTTLE=4`, `tools/map_profile.sh`, runs that agree within ~5%. **What still holds:**
 
 - **The session holds** — `loft_start` entered **1× for 47 commands**, **2 store fetches for 47 commands**.
   Steps 5–6 are live and working exactly as documented.
 - **Streaming holds** — a real 40-point route: **39 stretches, longest frozen gap 384 ms** (was 11095 ms).
 - **View** — kernel 706 ms, first view 1286 ms vs 946 ms after, i.e. the 341 ms store load is paid once.
 
-**What does NOT match, and is the next thing to chase:**
+### The "warm 1.79× cold" scare — RETRACTED the same day. The instrument was blind.
 
-| | this plan says | measured 2026-07-22 |
+**First reading (wrong):** warm 840 ms vs "cold" 470 ms was written up here as an *inversion of step 8's
+premise*. **There is no regression.** The probes had swapped meanings while keeping their names.
+
+**Why.** `matchColdFull` was written at step 1, when the app was stateless and every match really was
+cold. **Step 6 gave the app a persistent session and silently invalidated it**: the profiler sends the
+same sketch 6× into a session that now survives, so every iteration after the first measured the
+*nothing-changed* case — while still being labelled "cold". The ratio was warm ÷ **repeat**, which is
+*expected* to exceed 1: moving a point is more work than changing nothing.
+
+**The calibrated reading** — `tools/match_session_probe.loft`, native, honest labels, plus the corrected
+browser harness:
+
+| interaction | native | browser (phone 4×) |
 |---|---|---|
-| match, one point MOVED (warm) | **711 ms**, "~10–20× cheaper" than full (step 8) | **910 ms total / 840 ms kernel** |
-| warm ÷ cold-full | ≪ 1 (that is step 8's whole point) | **1.79× — warm is SLOWER than a full rebuild** |
+| **COLD** — session dropped: corridor + `build_graph` + full seed | 750 ms | **6119 ms** |
+| **REPEAT** — identical sketch, nothing changed (the floor) | 58 ms | 442 ms |
+| **MOVED** — one point ~20 m (what users do) | 123 ms | 844 ms |
+| **warm ÷ TRUE cold** | **0.16×** | **0.14×** |
 
-A warm edit costing nearly twice a cold full match is an **inversion of step 8's premise**, and it is the
-one number in this plan that is now self-contradictory. Per §0 rule 5 (*a step whose number does not move
-means the model is wrong — stop and re-measure*), this is a stop-and-re-measure, not a tuning item.
+Step 8's premise is **confirmed on both backends**: a moved point costs ~14% of a cold match. The two
+independent measurements agreeing to 0.02 is the calibration.
 
-**Do not attribute it to the 2026.7.2 upgrade without evidence.** The old binary is gone, the probe labels
-have changed since the 4481/711 figures were recorded, and no before/after exists on one binary. It is
-equally consistent with the incremental path silently falling back to a full match. First probe:
-instrument `covered()` / `match_incremental` in `lib/map_kernel` to report which path a warm click takes.
+**What the fix bought — a number nobody had.** A genuinely cold match on a phone is **~6.1 s**. It was
+invisible for two months because nothing measured it: the probe that claimed to had stopped being cold.
+That is now the largest user-visible cost in the app (a first click, or a sketch leaving the corridor) and
+it is exactly what steps 19–22 target — so this *strengthens* the plan's ordering rather than upsetting it.
+Do **not** compare it against the historical 4481 ms: that was a different profiler on the pre-session
+model, and no before/after exists on one binary.
 
-**A third number needs disambiguating rather than chasing.** The 3-point density row (5651 ms frozen gap)
-and MAIN-THREAD BLOCKING (5292 ms) both sit right on top of the C0 warm-up figure (**5941 ms, wasm memory
-growing to 188.9 MB**), and the profiler notes each `memory.grow` can copy the whole linear memory. Those
-two sections start before the plateau, so they are almost certainly measuring the grow, not the match — a
-real first-match-of-session cost, but a *different* problem from the one step 16 fixed (and the 40-point
-row, which runs after the plateau, shows 384 ms). Fix the probe's start point before reading those cells.
+**The instrument changes** (all landed):
+- `client/web_basemap_kernel.loft` — a `reset` command drops the session so a cold match can be timed
+  without also re-fetching the stores (which would charge it a 355 ms decode it never really pays).
+- `browser/store-app.mjs` — `matchTrueCold` (resets first), `matchRepeat` (honest name for what
+  `matchColdFull` actually measured), `matchWarm` unchanged.
+- `browser/cdp_profile.mjs` — reports warm ÷ TRUE-cold as the headline, prints warm ÷ repeat with an
+  explicit *"expected to be >1, do not read as a regression"*, and carries the native reference inline.
+- `tools/match_session_probe.loft` — the native ground truth to check the browser against.
+
+**The lesson, and it is the reusable half.** A probe's *name* is an assertion about the state it runs in,
+and a later step can falsify that assertion without touching the probe. Step 6 was additive and correct;
+it still broke a measurement two files away. **When a ratio implies a subsystem is broken, calibrate the
+instrument before believing it** — here, reading the harness took two minutes and the native probe ten,
+against a wrong entry in this plan that would have sent someone into `match_incremental` after a bug that
+does not exist.
+
+**Still genuinely open — the C0 confound.** The 3-point density row (5651 ms frozen gap) and MAIN-THREAD
+BLOCKING (5292 ms) both sit on top of the C0 warm-up figure (**5941 ms, wasm memory growing to 188.9 MB**),
+and each `memory.grow` can copy the whole linear memory. Those two sections start before the plateau, so
+they are probably measuring the grow, not the match — the 40-point row, which runs after it, shows 384 ms.
+Fix the probe's start point before reading those cells. Same class of fault as the one above: a section
+measuring something other than its title.

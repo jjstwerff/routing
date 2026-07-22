@@ -59,8 +59,9 @@ const probe = `(async () => {
   out.warmView = K.warmup ? await K.warmup('view', 6) : null;
   out.warmMatch = K.warmup ? await K.warmup('match', 8) : null;
   const SKETCH = [[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]];
-  out.matchCold = []; out.matchWarm = [];
-  for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchColdFull(SKETCH));
+  out.matchCold = []; out.matchWarm = []; out.matchRepeat = [];
+  if (K.matchTrueCold) for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchTrueCold(SKETCH));
+  if (K.matchRepeat) for (let i = 0; i < ${N}; i++) out.matchRepeat.push(await K.matchRepeat(SKETCH));
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.matchExtend = [];
   if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
@@ -111,11 +112,17 @@ if (res.warmMatch) {
   console.log('   → a session\'s FIRST matches are the slowest: each memory.grow can copy the whole');
   console.log('     linear memory. Real user cost, not noise — measurement below starts after this.');
 }
-console.log('\n  raw match_cold kernel per run: ' + res.matchCold.map((r) => Math.round(r.kernel)).join(', '));
-console.log('  raw match_warm kernel per run: ' + (res.matchWarm || []).map((r) => Math.round(r.kernel)).join(', '));
-console.log('\n=== MATCH COLD FULL — same command x' + res.matchCold.length + ' (ms) ===');
+console.log('\n  raw match_cold   kernel per run: ' + res.matchCold.map((r) => Math.round(r.kernel)).join(', '));
+console.log('  raw match_repeat kernel per run: ' + (res.matchRepeat || []).map((r) => Math.round(r.kernel)).join(', '));
+console.log('  raw match_warm   kernel per run: ' + (res.matchWarm || []).map((r) => Math.round(r.kernel)).join(', '));
+console.log('\n=== MATCH TRUE COLD (session dropped first — corridor + build_graph + full seed) — x' + res.matchCold.length + ' (ms) ===');
 console.log('             median   min–max   spread');
 for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchCold.map((r) => r[k]));
+if (res.matchRepeat?.length) {
+  console.log('\n=== MATCH REPEAT (identical sketch, live session — NOTHING changed; the floor) — x' + res.matchRepeat.length + ' (ms) ===');
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'total']) row(k, res.matchRepeat.map((r) => r[k]));
+}
 if (res.matchExtend?.length) {
   console.log('\n=== MATCH EXTEND (+1 point, ~500m — outside the corridor, cannot be warm) — x' + res.matchExtend.length + ' (ms) ===');
   console.log('             median   min–max   spread');
@@ -126,18 +133,23 @@ if (res.matchWarm?.length) {
   console.log('             median   min–max   spread');
   for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchWarm.map((r) => r[k]));
 }
-if (res.matchWarm?.length) {
+if (res.matchWarm?.length && res.matchCold?.length) {
   const c = med(res.matchCold.map((r) => r.kernel)), w = med(res.matchWarm.map((r) => r.kernel));
-  console.log('\n  ratio warm/cold  ' + (w / c).toFixed(2) + 'x   (step 7 reuses the graph: build_graph ≈41% of a match)');
-  console.log('  → warm ≈ cold means the app re-matches the WHOLE sketch when one point changed');
-  console.log('    (PLAN-PERF §1). server.loft does this incrementally in 40-68ms. Steps 6-8 move it.');
+  console.log('\n  ratio warm/TRUE-cold  ' + (w / c).toFixed(2) + 'x   (want ≪1: steps 7-8 reuse the graph and');
+  console.log('    re-search only the edited window; native reference is 123ms vs 750ms ≈ 0.16x)');
+  console.log('  → warm ≈ cold would mean the app re-matches the WHOLE sketch when one point changed.');
+  if (res.matchRepeat?.length) {
+    const rp = med(res.matchRepeat.map((r) => r.kernel));
+    console.log('  ratio warm/repeat     ' + (w / rp).toFixed(2) + 'x   (EXPECTED to be >1 — repeat changes');
+    console.log('    NOTHING, so it is the floor, not a baseline. Do not read this one as a regression.)');
+  }
 }
 if (globalThis.__db) {
   const db = globalThis.__db, dr = globalThis.__dr;
   const vk = med(res.runs.map((r) => r.kernel)), mk = med(res.matchCold.map((r) => r.kernel));
   console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
-  console.log('  match_cold_full: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
+  console.log('  match_true_cold: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
 }
 if (res.stats) {
   const ok = res.stats.starts === 1;
