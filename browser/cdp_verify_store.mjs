@@ -57,6 +57,16 @@ const s2 = JSON.parse((await ev('JSON.stringify(window.__storeApp||{})')) || '{}
 if (!s2.matchOk || !(s2.routePts > 2)) { console.log('  FAIL: match/route —', sum, JSON.stringify(s2)); ok = false; }
 else console.log(`  ✓ match drew the route (${sum}, ${s2.routePts} pts)`);
 
+// 2b. PLAN-PERF §6b(2) — and it drew it PROGRESSIVELY, on the app's own match path.
+// `growSteps` counts the times the drawn route actually advanced mid-match. This asserts on the code the
+// click handler runs (streamedMatch), not on a probe beside it: a regression that reverts the app to
+// "draw once at #EOR" while leaving the driver able to stream would still fail here. A 3-point sketch is
+// 2 stretches, so 2 advances is the whole route arriving in two visible steps.
+if (!(s2.growSteps >= 2)) { console.log(`  FAIL: the route did not grow during the match (growSteps=${s2.growSteps})`); ok = false; }
+else if (!(s2.streamedPts >= s2.routePts)) { console.log(`  FAIL: streamed ${s2.streamedPts} pts but the finished route has ${s2.routePts} — stretches lost, not stitched`); ok = false; }
+else if (JSON.stringify(s2.streamedEnds) !== JSON.stringify(s2.routeEnds)) { console.log(`  FAIL: the growing line ended somewhere else than the route — ${JSON.stringify(s2.streamedEnds)} vs ${JSON.stringify(s2.routeEnds)}`); ok = false; }
+else console.log(`  ✓ the line grew as it matched (${s2.growSteps} steps, ${s2.streamedPts} pts → ${s2.routePts} after spur removal, same endpoints)`);
+
 // 3. PLAN-PERF §6b(2) — the route ARRIVES progressively, not in one burst at #EOR.
 //
 // A count, not a timing, so it holds on a loaded machine: `deliveries` is the number of yield points at
@@ -68,7 +78,9 @@ if (!sa) { console.log('  FAIL: streamArrival hook missing'); ok = false; }
 else if (!(sa.stretches >= 2)) { console.log(`  FAIL: the match emitted ${sa.stretches} stretches — nothing to stream`, JSON.stringify(sa)); ok = false; }
 else if (sa.earlyStretches !== sa.stretches || sa.afterDone) { console.log(`  FAIL: stretches did not all arrive before the response resolved —`, JSON.stringify(sa)); ok = false; }
 else if (sa.deliveries < sa.stretches) { console.log(`  FAIL: ${sa.stretches} stretches arrived in only ${sa.deliveries} batch(es) — buffered, not streamed`, JSON.stringify(sa)); ok = false; }
+else if (!sa.contained) { console.log(`  FAIL: the finished ROUTE is not contained in the streamed stretches — the growing line drew a different path`, JSON.stringify(sa)); ok = false; }
 else console.log(`  ✓ the route streams: ${sa.stretches} stretches in ${sa.deliveries} delivery batches, all before #EOR`);
+if (sa && sa.contained) console.log(`  ✓ the streamed line CONTAINS the final route in order (${sa.streamedPts} pts streamed → ${sa.routePts} after spur removal)`);
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

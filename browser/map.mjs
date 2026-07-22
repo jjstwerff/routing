@@ -328,6 +328,41 @@ export function parseView(txt) {
   };
 }
 
+// parseStretch(line): one `STRETCH <i>;lat,lon;…` line → { i, pts }, or null for anything else.
+// The kernel emits one per matched sub-path, in travel order, the moment it lands (map_kernel's
+// emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
+// including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
+// re-match redraw correctly rather than concatenate onto the previous route.
+export function parseStretch(line) {
+  if (!line || !line.startsWith('STRETCH ')) return null;
+  const parts = line.split(';');
+  const i = +parts[0].slice(8);
+  if (!Number.isInteger(i) || i < 0) return null;
+  const pts = [];
+  for (let k = 1; k < parts.length; k++) {
+    const c = parts[k].split(','); const a = +c[0], b = +c[1];
+    if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) pts.push([a, b]);
+  }
+  return { i, pts };
+}
+
+// Concatenate stretch slots into one polyline, dropping repeated joints — the mirror of routing_kernel's
+// `push_pt`, which is how loft stitches the same sub-paths into the final ROUTE. Holes (a slot not yet
+// filled) are skipped rather than treated as a break: during streaming there are none after the first,
+// because stretches arrive in order.
+function joinStretches(slots) {
+  const out = [];
+  for (const pts of slots) {
+    if (!pts) continue;
+    for (const p of pts) {
+      const last = out[out.length - 1];
+      if (last && last[0] === p[0] && last[1] === p[1]) continue;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
 const LINE_STYLES = {                               // waterway = blue; railway = grey dashes; barriers muted
   river: { color: '#a5c8e8', width: 3, minZoom: 11 }, stream: { color: '#a5c8e8', width: 1.5, minZoom: 13 },
@@ -390,6 +425,47 @@ export class RouteMap {
   // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
   // never the line). `pts` is [[lat,lon], …]. Call render() after.
   setRoute(pts) { this.route = pts || []; return this; }
+
+  // --- The growing line (PLAN-PERF §6b(2) / §6b A) ---------------------------------------------------
+  //
+  // A match arrives one stretch at a time, in TRAVEL order, so the route draws itself along the way the
+  // user will actually go. That ordering is load-bearing, not decoration (§6b A): it is a progress
+  // indicator with no indicator, because the thing shown IS the work being done.
+  //
+  // Start a streamed match: drop the previous route and repaint ONCE, so the old line is gone before the
+  // new one starts growing. This is the only full render the stream pays.
+  beginStretches() {
+    this._stretches = [];
+    this.route = [];
+    this.render();
+    return this;
+  }
+
+  // Fold in one arrived stretch and re-stroke the route so far, on top of what is already on the canvas.
+  //
+  // Work is proportional to the ROUTE, not to the map. A full render() per stretch would redraw every
+  // area, building, road and label for a line that grew by ~50 points — the exact violation of §1 this
+  // plan exists to remove, and ~74 ms of it each time. Stroking the accumulated polyline instead costs
+  // one path over a few thousand points, and `route` stays authoritative so any later full render (a pan,
+  // or loadMatch at the end) draws it correctly and at the proper z-order.
+  //
+  // It re-strokes the WHOLE line rather than only the new piece, and that is the deliberate part: the
+  // route is drawn as a white halo under a blue core, so stroking one stretch alone paints its halo over
+  // the previous stretch's core and leaves a white notch at every joint. Stroking the accumulation has no
+  // seam. The price is that the halo composites over itself and goes opaque after ~3 stretches, where a
+  // full render leaves it at 85% — invisible in practice, and the final render restores it.
+  //
+  // Same for z-order: a streaming stretch sits ABOVE the labels, below them once the match completes.
+  // Both are transient, and paying a full re-render per stretch to avoid them is the wrong trade.
+  applyStretch(i, pts) {
+    if (!this._stretches) this._stretches = [];
+    this._stretches[i] = pts;
+    this.route = joinStretches(this._stretches);
+    if (this.route.length < 2) return this;
+    const px = this._projLine(this.route);
+    if (this._inView(px)) this._strokeRoute(px);
+    return this;
+  }
 
   // Parse the kernel's `match` output (a ROUTE line + a SUMMARY line), set the route, return the SUMMARY.
   loadMatch(text) {
@@ -607,15 +683,21 @@ export class RouteMap {
   }
   drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
 
+  // The route's two-pass stroke, from already-projected pixels. Factored out so the finished route and
+  // the growing one (applyStretch) are stroked by the same code and cannot drift in style.
+  _strokeRoute(px) {
+    const ctx = this.ctx;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
+    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+  }
+
   // Draw the matched route as a white halo + blue core, above the base map. Returns the point count drawn.
   drawRoute() {
     if (!this.route || this.route.length < 2) return 0;
     const px = this._projLine(this.route);
     if (!this._inView(px)) return 0;
-    const ctx = this.ctx;
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
-    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
-    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+    this._strokeRoute(px);
     return this.route.length;
   }
 

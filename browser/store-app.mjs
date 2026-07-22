@@ -4,7 +4,7 @@
 // PLAN-BUILD B5–B7 — the standalone base-map + routing app. Fetches the two loft stores, runs the
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
-import { RouteMap, parseView, areasFromStore, viewFromStore, viewRenderLists } from './map.mjs';
+import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 
@@ -86,6 +86,37 @@ async function ensureView() {
   if (again) { again = false; ensureView(); }
 }
 
+// Run a match and let the route DRAW ITSELF as it arrives (PLAN-PERF §6b(2)).
+//
+// The kernel emits each matched sub-path as `STRETCH i;…` and yields, so the sink below runs once per
+// stretch, mid-match, and the line grows in travel order — the direction the user will actually travel.
+// Until this existed the yields bought responsiveness only: the page kept painting, but it painted
+// nothing new until `#EOR`.
+//
+// The final ROUTE still replaces whatever streamed, so this cannot alter the delivered route — the
+// growing line is strictly a view of the same match, and `tools/match_parity.sh` is untouched by it.
+// `growSteps` records how many times the drawn route actually advanced, so the app's OWN path is
+// observable to the gate and not just the probe's.
+async function streamedMatch(spec) {
+  map.beginStretches();
+  let growSteps = 0, lastLen = 0;
+  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`, (line) => {
+    const s = parseStretch(line);
+    if (!s) return;
+    map.applyStretch(s.i, s.pts);
+    if (map.route.length > lastLen) { lastLen = map.route.length; growSteps++; }
+  });
+  // Record what the user was actually looking at just before the final ROUTE replaced it. `growSteps`
+  // alone would still pass if parseStretch mis-read the lines and the line grew as garbage, so the ENDS
+  // are captured too: loft stitches these same sub-paths into the ROUTE with push_pt + remove_spurs, both
+  // of which only ever DROP points, so a correct stream must end at the same two coordinates and carry at
+  // least as many points as the finished route.
+  const r = map.route;
+  window.__storeApp = { ...(window.__storeApp || {}), growSteps, streamedPts: r.length,
+                        streamedEnds: r.length ? [r[0], r[r.length - 1]] : null };
+  return text;
+}
+
 // Rough sketch: each click adds a point; from the 2nd on, re-match and draw the route (read-only line).
 const sketch = [];
 canvas.addEventListener('click', async (e) => {
@@ -96,8 +127,7 @@ canvas.addEventListener('click', async (e) => {
   map.render();
   if (sketch.length < 2 || busy) return;
   busy = true; hud.textContent = 'matching…';
-  const spec = sketch.map(([a, b]) => `${a},${b}`).join(';');
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+  const text = await streamedMatch(sketch.map(([a, b]) => `${a},${b}`).join(';'));
   const sum = map.loadMatch(text);
   map.render();
   hud.textContent = sum || '(no route)';
@@ -343,8 +373,30 @@ window.__perfHooks = {
       if (done) afterDone++; else earlyStretches++;
     });
     done = true;
-    const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
-    return { n, stretches, earlyStretches, afterDone, deliveries: kernel.stats().deliveries - d0 };
+    const lines = text.split('\n');
+    const stretches = lines.filter((l) => l.startsWith('STRETCH ')).length;
+
+    // Is what the user WATCHED the route they ended up with? Point counts alone cannot say: loft stitches
+    // these same sub-paths with push_pt and then remove_spurs, and both only ever DROP points, so the
+    // finished ROUTE is shorter than the stream by construction (measured: 431 → 213 on this sketch —
+    // remove_spurs is doing real work, not rounding). The exact statement that survives that is
+    // CONTAINMENT: every point of the final route must appear in the streamed line, in the same order.
+    // If it does, the growing line is the real route plus excursions that were later pruned; if it does
+    // not, the stream drew somewhere the route never went.
+    const slots = [];
+    for (const l of lines) { const s = parseStretch(l); if (s) slots[s.i] = s.pts; }
+    const streamed = [];
+    for (const pts of slots) { if (!pts) continue; for (const p of pts) { const q = streamed[streamed.length - 1]; if (!q || q[0] !== p[0] || q[1] !== p[1]) streamed.push(p); } }
+    const route = [];
+    for (const l of lines) {
+      if (!l.startsWith('ROUTE')) continue;
+      const p = l.split(';');
+      for (let i = 1; i < p.length; i++) { const c = p[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) route.push([a, b]); }
+    }
+    let k = 0;
+    for (const p of streamed) { if (k < route.length && route[k][0] === p[0] && route[k][1] === p[1]) k++; }
+    return { n, stretches, earlyStretches, afterDone, deliveries: kernel.stats().deliveries - d0,
+             streamedPts: streamed.length, routePts: route.length, contained: k === route.length };
   },
   // Reset first: a cold match is the case that streams, and it is the one whose freeze this measures.
   async streamProgress() {
@@ -443,9 +495,10 @@ async function timeMatch(pts) {
 
 // Test hook: drive a match programmatically (headless gate), given [[lat,lon],…].
 window.__match = async (pts) => {
-  const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+  const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'));
   const sum = map.loadMatch(text); map.render();
-  window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: map.route.length };
+  const f = map.route;
+  window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: f.length,
+                        routeEnds: f.length ? [f[0], f[f.length - 1]] : null };
   return sum;
 };
