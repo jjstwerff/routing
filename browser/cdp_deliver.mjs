@@ -78,15 +78,16 @@ const rawAp = await ev('window.__perfHooks.areaParity().then(JSON.stringify)');
 if (typeof rawAp !== 'string') die(`areaParity threw: ${JSON.stringify(rawAp).slice(0, 400)}`);
 const ap = JSON.parse(rawAp);
 if (ap.err) die(`areaParity: ${ap.err}`);
-console.log('\n== step 11: do store-read areas equal the text areas? ==');
-console.log(`  loft emitted A=${ap.emitted} · store hits=${ap.jsHits} · store renderable=${ap.jsRenderable} · text parsed=${ap.textCount}`);
-console.log(`  cover mismatches=${ap.coverMismatch} ringLen mismatches=${ap.ringLenMismatch} maxCoordDelta=${ap.maxDelta} readMs=${ap.readMs}`);
+console.log('\n== steps 11-13: do the store-read layers equal loft\'s text layers? ==');
+console.log(`  ${Object.entries(ap.per).map(([k, v]) => `${k} ${v.store}/${v.text}`).join(' · ')}   (store/text)`);
+console.log(`  areas: loft emitted A=${ap.emitted} · store hits=${ap.jsHits} · cover mismatches=${ap.coverMismatch}` +
+            ` ringLen mismatches=${ap.ringLenMismatch} maxCoordDelta=${ap.maxDelta} readMs=${ap.readMs}`);
 const af = [];
-if (!ap.textCount) af.push('the text path parsed 0 areas — the viewport has nothing to compare');
+if (!ap.per.areas.text) af.push('the text path parsed 0 areas — the viewport has nothing to compare');
+for (const [k, v] of Object.entries(ap.per)) if (v.store !== v.text) af.push(`${k}: store ${v.store} != text ${v.text}`);
 // loft's own A= is the count it EMITTED, so it must equal the unfiltered store hits: same tiles, same
 // rings, same overlap test. A drift here means the two filters disagree, not that rendering differs.
 if (ap.jsHits !== ap.emitted) af.push(`store hits ${ap.jsHits} != loft's emitted A=${ap.emitted} — the overlap test diverged`);
-if (ap.jsRenderable !== ap.textCount) af.push(`renderable ${ap.jsRenderable} != text-parsed ${ap.textCount}`);
 if (ap.coverMismatch) af.push(`${ap.coverMismatch} areas disagree on cover — wrong field or wrong order`);
 if (ap.ringLenMismatch) af.push(`${ap.ringLenMismatch} areas disagree on ring length`);
 // One unit in loft's last printed decimal is 1e-6; allow exactly that, since the text side is the lossy

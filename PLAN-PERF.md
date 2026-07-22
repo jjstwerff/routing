@@ -50,7 +50,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **10** ✅ | `browser/loft-deliver.js` (vendored), `browser/loft-store.mjs`, `store-app.mjs`, `build-site.mjs` | Wire loft's own `readLoftValue` (vendored verbatim from loft `40daabd0`; the release does not install it) + a routing-side `flat*` accessor layer that indexes the pre-flattened keyed collection, so a caller can reach ONE element instead of materialising all 1089. `loft_host_deliver` was NOT needed — `expose` is the path, and `deliver` is its one-shot sibling. | **DONE** — `tools/deliver_probe.sh`: JS and loft agree on the whole line for tile 2047399103 — `ox=68300000 oy=521650000 areas=4 buildings=1 lines=0 labels=1 pois=0 ring0=17` — plus an interned text decoded (`"Meddelerweg"`) and the cheap `flatScalar` screen proven to agree with the full walk. | none |
 | **11** ✅ | `browser/map.mjs`, `store-app.mjs` | `areasFromStore()` — reads **areas only** (not the other four kinds) through the bridge, mirroring `emit_areas` + `ring_hits` exactly, **beside** the text path. | **DONE** — `tools/deliver_probe.sh`: **A=2252 emitted · 2252 store hits · 2252 renderable · 2252 text-parsed**, 0 cover mismatches, 0 ring-length mismatches, `maxCoordDelta ≈ 5e-7` — *exactly* half a unit in loft's last printed decimal, so the geometry is identical and only the TEXT side is lossy. Zero order mismatches also proves the pre-flattened array is key-ordered the way `for t in layout` walks. | none (text still drives render) |
 | **12** ✅ | `browser/map.mjs`, `store-app.mjs`, `cdp_verify_store.mjs` | Switch render to the store-read areas (`areaRenderList` mirrors `parseAreas`'s tail — same <3-vertex drop, same `minZoom`); keep the text emit as the **parity gate**, now asserted on the app's own view in `make test-map`, not only in the probe. | **DONE** — `✓ areas render from the store, 2252 == loft's 2252 text areas`; `# view:` counts unchanged. **⚠ Interim cost measured, see §7f: view total 927 → 1447 ms** — not step 12's read, but step 9's per-view `expose`, which re-flattens all 1089 tiles. Step 13 removes it. | **render source** |
-| **13** | ×4 + kernel | Repeat 11–12 per kind (buildings, lines, labels, pois); then delete the layout text emit. | counts identical per kind; serialize → ~0 | one kind per commit |
+| **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
 | **16** | `lib/routing_kernel` + kernel | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between. | first segment on screen ~96 ms; line grows ~10/s; no frozen frame | **presentation** |
@@ -843,6 +843,37 @@ unmodified store, or let loft iterate a pinned one (which removes the need to re
 **A consequence to design for in 13:** `areasFromStore` scans all 1089 tiles because `emit_areas` does.
 When loft stops iterating, JS becomes the only thing that does — so the tile-level pre-filter deliberately
 skipped in step 11 (a behaviour change needing its own equality proof) becomes the next real win.
+
+### §7f(2) — Step 13 landed; the prediction held, and the cost moved to JS (2026-07-22)
+
+| phase, `CPU_THROTTLE=4` | before the bridge | step 12 | **step 13** |
+|---|---|---|---|
+| kernel | 706 | 1141 | **63** |
+| parse | 142 | 202 | **12** |
+| **storeRead** (JS walk) | — | *(not in the probe)* | **468** |
+| render | 72 | 109 | 67 |
+| **total** | **946** | 1447 | **606** |
+| text emitted | 4.25 MB / 29 144 lines | 4.25 MB | **398 KB / 3 114 lines** |
+| empty-bbox view | 261 | 483 | **21** |
+
+**The loft side is essentially gone**: kernel 1141 → 63 ms (18×), and the `expose` bracket collapsed to
+one call per session exactly as predicted — `view` no longer touches the layout, so the pin survives.
+
+**The remaining cost is the one §7f named in advance.** `storeRead` is **468 ms of the 606**: JS walking
+all 1089 tiles and decoding six kinds, because it inherited `emit_*`'s "scan every tile" shape. That is
+now the whole view budget, and the tile-level pre-filter skipped in step 11 is the obvious next move.
+
+**Do not just write that filter — one fact has to be established first.** A tile screen on `ox`/`oy` is
+only sound if a tile's features lie within its own cell. If a ring can extend past its tile's bounds, a
+naive screen silently drops features near cell edges — and the parity gate would catch it only when the
+viewport happens to clip one. Establish the invariant (in `tools/gen-tiles.loft` / `build_store.loft`:
+are features clipped to the tile, or merely assigned to it by origin?) **before** designing the filter,
+and give the screen a margin equal to the worst overhang if features are not clipped.
+
+**Instrument note.** `timedView` did not perform the store read, so the first step-13 profile read
+`total 91 ms` — a view the app never performs. Fixed by adding a `storeRead` phase; the 180 s hard
+timeout also had to grow, because it was sized for a probe that no longer exists. Both are the §7e
+lesson again: **when a step moves work between layers, the probe that measures that work moves too.**
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 

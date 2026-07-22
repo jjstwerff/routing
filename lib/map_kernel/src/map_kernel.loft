@@ -138,6 +138,19 @@ pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: t
   emit_view(layout, roads, parse_fbox(bbox));
 }
 
+// ROADS-ONLY viewport view — what the browser front-end asks for since PLAN-PERF §0 step 13. The layout
+// is read by JS straight out of the exposed store (@PLN105), so loft neither serialises it (~658 ms of a
+// throttled view) nor WALKS it — and not walking it is what lets `expose` stay pinned for the whole
+// session instead of being released and re-flattened per view (§7f, ~420 ms more).
+//
+// Roads still come over as text: the roads store is not exposed, and `match` — not the map — is what
+// reads it. `client/basemap_kernel.loft` (native CLI) keeps calling `do_view_bbox` for the full emit,
+// and the browser keeps it reachable as `viewtext` so the parity gate has something to compare against.
+pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {
+  nr = emit_roads(roads, parse_fbox(bbox));
+  println("# view: R={nr}");
+}
+
 // Parse a rough sketch "lat,lon;lat,lon;…" into GeoPoints (bad tokens skipped).
 pub fn parse_sketch(spec: text) -> vector<GeoPoint> {
   pts: vector<GeoPoint> = [];

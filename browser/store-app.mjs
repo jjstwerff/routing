@@ -35,6 +35,13 @@ const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= 
 // collapses step 9's per-view expose bracket).
 const STORE_KINDS = ['areas', 'buildings', 'lines', 'pois', 'places', 'streetLabels'];
 
+// The viewport box in FIXED POINT (deg*1e7), built from the same 6-decimal strings the kernel parses so
+// both sides round identically — `parse_fbox` reads exactly this text.
+const fboxOf = (bbox) => {
+  const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
+  return { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
+};
+
 let loadedBox = null, busy = false, again = false;
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
@@ -48,23 +55,22 @@ async function ensureView() {
   const t0 = performance.now();
   const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
   map.loadView(text);
-  // PLAN-PERF §0 step 12 — AREAS now render from the exposed store, not from loft's text. The text emit
-  // stays and is still parsed above; it is the running parity gate until step 13 deletes it, so a
-  // divergence shows up on every view rather than only when someone runs the probe.
+  // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
+  // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
+  // because loft no longer walks it either, the `expose` pin survives the whole session (§7f).
   //
-  // The read happens AFTER the kernel call by necessity, not by preference: the kernel unpins the store
-  // while it walks the layout and re-pins on the way out (step 9's bracket), so the handle is only valid
-  // once the command has returned. Both the handle and `memory()` are re-fetched every time — a
-  // memory.grow during the view detaches the old buffer and moves the store.
-  const textCounts = { areas: map.areas.length, buildings: map.buildings.length, lines: map.lines.length,
-                       pois: map.pois.length, places: map.places.length, streetLabels: map.streetLabels.length };
-  const parity = {};
+  // The read happens AFTER the kernel call because the pin is only guaranteed once the command returns.
+  // Both the handle and `memory()` are re-fetched every time — a memory.grow during the call detaches
+  // the old buffer and moves the store.
+  //
+  // Parity moved to the gate: with no layout text there is nothing to diff against per view, so
+  // `viewParity()` below asks for `viewtext` explicitly and compares. That keeps the check honest
+  // without paying for it on every user-facing view.
+  const counts = {};
   const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
   if (h) {
-    const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
-    const fbox = { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
-    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fbox, { flatCount, flatField }, STORE_KINDS));
-    for (const k of STORE_KINDS) { parity[k] = { text: textCounts[k], store: lists[k].length }; map[k] = lists[k]; }
+    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
+    for (const k of STORE_KINDS) { counts[k] = lists[k].length; map[k] = lists[k]; }
   }
   loadedBox = box;
   map.render();
@@ -75,7 +81,7 @@ async function ensureView() {
   const ms = performance.now() - t0;
   window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum,
                         firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms,
-                        areaParity: parity, areaSource: h ? 'store' : 'text' };
+                        layerCounts: counts, areaSource: h ? 'store' : 'text' };
   busy = false;
   if (again) { again = false; ensureView(); }
 }
@@ -157,30 +163,36 @@ window.__perfHooks = {
   areaParity: async () => {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
+    // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
+    // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
+    // comparison possible after step 13 without charging every user-facing view for it.
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nviewtext\n${bbox}`);
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
-    const textAreas = parseView(text).areas;
-    // Build the fixed-point box from the SAME 6-dp strings loft parsed, so both sides round identically.
-    const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
-    const fbox = { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
+    const txt = parseView(text);
     const t0 = performance.now();
-    const all = areasFromStore(kernel.memory(), h, fbox, { flatCount, flatField });
+    const raw = viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS);
     const readMs = performance.now() - t0;
-    const js = all.filter((a) => a.ring.length >= 3);
+    const lists = viewRenderLists(raw);
+    const per = {};
+    for (const k of STORE_KINDS) per[k] = { store: lists[k].length, text: txt[k].length };
+    // Geometry is checked on AREAS only, and deliberately: it is the kind whose rings are longest and
+    // whose ordering is most likely to drift, and the check is element-wise so it also proves the
+    // pre-flattened array walks in the same key order loft's `for t in layout` does. The other kinds are
+    // count-checked — a per-kind geometry diff would be the same code five times over.
     let coverMismatch = 0, ringLenMismatch = 0, maxDelta = 0;
-    const n = Math.min(js.length, textAreas.length);
+    const n = Math.min(lists.areas.length, txt.areas.length);
     for (let i = 0; i < n; i++) {
-      if (js[i].cover !== textAreas[i].cover) coverMismatch++;
-      if (js[i].ring.length !== textAreas[i].ring.length) { ringLenMismatch++; continue; }
-      for (let k = 0; k < js[i].ring.length; k++) {
-        maxDelta = Math.max(maxDelta, Math.abs(js[i].ring[k][0] - textAreas[i].ring[k][0]),
-                                      Math.abs(js[i].ring[k][1] - textAreas[i].ring[k][1]));
+      if (lists.areas[i].cover !== txt.areas[i].cover) coverMismatch++;
+      if (lists.areas[i].ring.length !== txt.areas[i].ring.length) { ringLenMismatch++; continue; }
+      for (let k = 0; k < lists.areas[i].ring.length; k++) {
+        maxDelta = Math.max(maxDelta, Math.abs(lists.areas[i].ring[k][0] - txt.areas[i].ring[k][0]),
+                                      Math.abs(lists.areas[i].ring[k][1] - txt.areas[i].ring[k][1]));
       }
     }
     const sum = text.split('\n').find((l) => l.startsWith('# view')) || '';
     const emitted = +((sum.match(/A=(\d+)/) || [])[1] ?? -1);
-    return { emitted, jsHits: all.length, jsRenderable: js.length, textCount: textAreas.length,
+    return { emitted, jsHits: raw.areas.length, per,
              coverMismatch, ringLenMismatch, maxDelta, readMs: Math.round(readMs), summary: sum };
   },
   // Does the session's graph grow without bound as the user moves to NEW areas? server.loft replaces
@@ -252,9 +264,19 @@ window.__perfHooks = {
     const t1 = performance.now();
     map.loadView(text);
     const t2 = performance.now();
-    map.render();
+    // PLAN-PERF §0 step 13 — the layout layers come from the EXPOSED STORE, not from `text`. `ensureView`
+    // does this on every view, so this probe must too: leaving it out would report a view the app never
+    // performs, which is exactly the class of instrument bug §7e was written about. Timed as its own
+    // phase so the bridge's cost stays attributable instead of hiding inside `render`.
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (h) {
+      const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
+      for (const k of STORE_KINDS) map[k] = lists[k];
+    }
     const t3 = performance.now();
-    return { kernel: t1 - t0, parse: t2 - t1, render: t3 - t2, total: t3 - t0,
+    map.render();
+    const t4 = performance.now();
+    return { kernel: t1 - t0, parse: t2 - t1, storeRead: t3 - t2, render: t4 - t3, total: t4 - t0,
              bytes: text.length, lines: text.split('\n').length };
   },
   // Isolate the per-call store_load_url cost. TWO probes, because the two commands load DIFFERENT

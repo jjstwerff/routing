@@ -11,7 +11,10 @@
 //   node browser/cdp_profile.mjs <devtools host:port> <app url> [cpuThrottleRate]
 const [dt, app, rateArg] = process.argv.slice(2);
 const RATE = Number(rateArg || 1);
-setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 180000);
+// Generous, and overridable: at CPU_THROTTLE=4 the probe does ~6 cold matches (~6 s each) plus six
+// full views that now include the store read. 180 s used to be ample and stopped being so the moment
+// step 13 moved the layout into JS — a hard timeout is a measurement input, not a constant.
+setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, Number(process.env.PROFILE_TIMEOUT_MS || 600000));
 
 const list = await (await fetch(`http://${dt}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');
@@ -100,7 +103,7 @@ if (res.decodeBoth?.length) {
 }
 console.log('\n=== VIEW — same command x' + res.runs.length + ' in one session (ms) ===');
 console.log('             median   min–max   spread');
-for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.runs.map((r) => r[k]));
+for (const k of ['kernel', 'parse', 'storeRead', 'render', 'total']) row(k, res.runs.map((r) => r[k]));
 if (res.appFirstViewMs) {
   const w = med(res.runs.map((r) => r.total));
   console.log('\n  app FIRST view (the only truly cold one — pays the session store load): ' + fmt(res.appFirstViewMs) + 'ms');

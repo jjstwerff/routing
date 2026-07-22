@@ -24,7 +24,7 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
 use basemap::(PTile);
 use routing_kernel::(TTile, GeoPoint);
 use web::frame_yield;
@@ -117,20 +117,22 @@ fn main() {
           // must compile on every backend.
           do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
         } else {
-          // @PLN105 step 9 — hand JS a live handle to the layout store, so it can read PTiles straight
-          // out of wasm memory instead of re-parsing the text this still emits (steps 10-13 take that
-          // over one kind at a time).
+          // @PLN105 steps 9-13 — the layout store is EXPOSED to JS, which reads its PTiles straight out
+          // of wasm memory. loft no longer serialises the layout at all: `view` emits roads only.
           //
-          // The pin must NOT be in force while loft itself touches the store. `expose` locks it
-          // read-only, and BOTH things below are rejected under that lock: the (re)load writes it, and
-          // `do_view_bbox` ITERATES it — iterating a store-backed hash claims a cursor record inside the
-          // very store being pinned (`Claim on read-only store (size=546)`, PLAN-PERF §7d(2)). In wasm
-          // that rejection is a silent trap, which is what hung the first attempt at this step.
+          // The pin must not be in force while loft itself TOUCHES the store — `expose` locks it
+          // read-only, and both a (re)load (which writes) and an iteration (which claims a cursor record
+          // INSIDE the pinned store — `Claim on read-only store (size=546)`, §7d(2)) are rejected under
+          // it. In wasm that rejection is a silent trap, which is what hung step 9's first attempt.
           //
-          // So: unpin, do loft's work, re-pin. JS reads the handle BETWEEN commands, which is the only
-          // window it ever had. Once step 13 deletes the text emit, nothing in loft walks the layout any
-          // more and this collapses back to one `expose` at load.
-          if layout_pinned {
+          // Only two things still touch it, so only they unpin:
+          //   * a store (re)load — writes;
+          //   * `viewtext`, the full text emit, kept ONLY so the parity gate has a reference to compare
+          //     the JS-read layers against. The app never sends it.
+          // A plain `view` touches nothing, so the pin SURVIVES the whole session: one `expose` at load
+          // rather than one per view. That is §7f's ~420 ms, and it is why deleting the emit was worth
+          // more than the serialize time it saved.
+          if layout_pinned && (cmd == "viewtext" || layout_url != layout_at) {
             release(EXPOSE_LAYOUT, layout);
             layout_pinned = false;
           }
@@ -144,9 +146,15 @@ fn main() {
             }
           }
           if ok {
-            do_view_bbox(layout, roads, arg3);
-            expose(EXPOSE_LAYOUT, layout);
-            layout_pinned = true;
+            if cmd == "viewtext" {
+              do_view_bbox(layout, roads, arg3);
+            } else {
+              do_view_roads_bbox(roads, arg3);
+            }
+            if !layout_pinned {
+              expose(EXPOSE_LAYOUT, layout);
+              layout_pinned = true;
+            }
           }
         }
       }
