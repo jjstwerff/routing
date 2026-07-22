@@ -46,7 +46,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **6** | `client/web_basemap_kernel.loft` | Move the two `store_load_url_trusted` calls **above** the loop. | 2nd command −355 ms (view) / −14 ms (match) | **perf only** |
 | **7** | `client/web_basemap_kernel.loft` | Hold the corridor `Graph` across commands; rebuild only when the corridor changes. | 2nd match −~41% (`build_graph` gone) | **perf only** |
 | **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
-| **9** | `client/web_basemap_kernel.loft` | `expose(EXPOSE_LAYOUT, layout)` once after the session load (§2b: `expose` pins the store; JS reads it each frame) — **wrapped in the release/expose bracket**, because loft's own `do_view_bbox` ITERATES the layout and an exposed store rejects the iteration cursor's claim. Root-caused 2026-07-22; see §7d for the mechanism and the exact shape. The bare one-liner this row used to specify hangs the app — the additive form is `release` → emit → `expose`, not `expose` alone. | `tools/expose_probe.sh`: JS receives descriptor + storeBase/rec/pos, app still ready, view output unchanged | none |
+| **9** ✅ | `client/web_basemap_kernel.loft`, `browser/store-kernel.mjs` | `expose(EXPOSE_LAYOUT, layout)` per view command, **wrapped in the release/expose bracket** — loft's own `do_view_bbox` ITERATES the layout and an exposed store rejects the iteration cursor's claim (§7d(2)). The bare one-liner this row used to specify hangs the app; the additive form is `release` → load/emit → `expose`. Also added `loft_host_release` to the shim (a new host import `release` pulls in). | **DONE** — `tools/expose_probe.sh` green: `descLen=1955`, **17 descriptor nodes** naming `PTile`/`Area`/`Building`/`Line`/`Label`/`Poi`/`Coord`, `storeBase=29126376 rec=1 pos=8`, bracket balanced. View output **byte-identical** (`A=2252 B=16646 L=1231 P=4460 labels=1441 R=3112`); all five gates green. | none |
 | **10** | `browser/store-kernel.mjs` | Implement the `loft_host_deliver` import; wire `readLoftValue` (`doc/loft-deliver.js`). | one PTile read in JS == the kernel's text for that tile | none |
 | **11** | `browser/map.mjs` | Read **areas only** via `readLoftValue`, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
 | **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
@@ -827,8 +827,22 @@ nonzero (`rec == 0` is `expose_value`'s early return).
 
 ### §7d(2) — DIAGNOSED 2026-07-22: it is the ITERATION, and there is a one-line fix
 
-**Status: root-caused off-browser on the installed 2026.7.2, in one native run.** The hypothesis above was
-right, and the "other cells" table was never needed. Full write-up in `docs/loft-feedback.md` (2026-07-22).
+**Status: root-caused off-browser on the installed 2026.7.2, in one native run — and step 9 has since
+LANDED on this diagnosis and is green.** The hypothesis above was right, and the "other cells" table was
+never needed. Full write-up in `docs/loft-feedback.md` (2026-07-22).
+
+**Two things the landing turned up that the diagnosis did not predict:**
+
+1. **`release` pulls in a NEW host import** — `loft_host_release`. The shim did not provide it, so the
+   wasm failed to instantiate outright (`LinkError: Import #5 "loft_io" "loft_host_release": function
+   import requires a callable`). A loud, immediate failure, unlike the silent trap the pin causes —
+   added to `browser/store-kernel.mjs`, where it drops the stale handle.
+2. **The observable itself had never passed, and two bugs were hiding behind that.** It read
+   `window.__storeKernel`, a global the app never publishes (the handle lives on `window.__perfHooks`),
+   and it only ever called `process.exit` on the FAIL path — so the first genuine PASS hung forever on an
+   open WebSocket. Both were latent from the day it was written: a probe that has only ever failed has an
+   **untested success path**, and step 3's rule (*a probe gates a block*) is worth nothing if the gate
+   cannot report green. Fixed with the step.
 
 **The mechanism.** `expose` pins the store read-only (`lock_store`). `do_view_bbox` then **iterates** the
 layout (`for t in layout` in `emit_areas`/`emit_buildings`/…), and **iterating a store-backed keyed

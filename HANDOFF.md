@@ -39,11 +39,12 @@ cosmetic). Every step was gated on the route staying **byte-identical** (`tools/
 - **Nothing is blocked upstream any more** (re-validated 2026-07-22, `PLAN-PERF` §7c):
   - **Step 18 (`par`) unblocked** — @PLN108's copy elision is live and default-on in 2026.7.2. The probe is
     flat (1–3 ms) across 0/61/122 MB of heap and 1/8/16 threads; it was 214 ms / 162 ms on 2026.7.1.
-  - **Steps 9–13 unblocked** — the `expose` hang is root-caused: `expose` pins the store read-only, and
-    **iterating** a store-backed hash claims a cursor record *inside that store*, which the pin rejects
-    (`Claim on read-only store (size=546)`). **Reads are fine** — `len`, point lookups, field reads all
-    work. `release(tag, value)` restores iteration and re-`expose` works, so step 9 lands as a
-    release/emit/expose bracket. Diagnosed off-browser in one native run; see §7d(2).
+  - **Step 9 is DONE; 10–13 are next.** The `expose` hang was root-caused (`expose` pins the store
+    read-only, and **iterating** a store-backed hash claims a cursor record *inside that store*, which the
+    pin rejects — reads are fine). Step 9 landed as a release/load-or-emit/expose bracket and is green:
+    JS holds a live layout handle (`descLen=1955`, 17 descriptor nodes naming the layout schema) and the
+    view output is byte-identical. **Next: step 10** — implement `readLoftValue` against that descriptor
+    and read one PTile in JS, then 11–13 switch the render one kind at a time.
 - **No warm-match regression** (`PLAN-PERF` §7e). A "warm 1.79× cold" reading was raised and **retracted
   the same day**: the profiler's `matchColdFull` stopped being cold when step 6 landed the persistent
   session, so it was measuring the nothing-changed case under a stale name. Calibrated, warm ÷ TRUE cold

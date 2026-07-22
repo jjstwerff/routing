@@ -94,6 +94,15 @@ export async function createKernel(wasmUrl) {
         try { desc = JSON.parse(dec.decode(new Uint8Array(mem.buffer, descPtr, descLen))); } catch (e) { desc = { __parseError: String(e) }; }
         exposed.set(Number(tag), { storeBase, rec, pos, typeId, desc, descLen });
       },
+      // @PLN105 release(tag, value) — loft is unpinning the store, so every address handed out under
+      // `tag` is dead from here until the next expose. Drop the handle rather than leave a stale one
+      // readable: the kernel releases precisely because it is about to WRITE the store (a reload) or
+      // ITERATE it (the view walk claims a cursor record inside it), so anything JS read now would be
+      // racing loft's own mutation. `tag` arrives as a BigInt (i64), matching loft_host_expose.
+      loft_host_release: (tag) => {
+        globalThis.__releaseCalls = (globalThis.__releaseCalls || 0) + 1;
+        exposed.delete(Number(tag));
+      },
     },
     // frame_yield() — loft hands the frame back, both while idle-polling for a command and between
     // match stretches (PLAN-PERF §6b A).

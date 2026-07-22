@@ -34,6 +34,9 @@ use web::frame_yield;
 // every map line carries a type prefix (A/B/L/P/N/S/R) and the summaries are `# view:` / `SUMMARY`.
 EOR = "#EOR";
 
+// The tag JS looks the layout handle up under (`__storeKernel.exposedValue(EXPOSE_LAYOUT)`).
+EXPOSE_LAYOUT = 1;
+
 // The command loop. Today JS pushes exactly one blob per `loft_start`, so this runs a single pass and
 // then returns on the empty read — byte-identical behaviour to the one-shot form it replaces. It is a
 // loop because the loads and the state they produce are about to be hoisted ABOVE it (PLAN-PERF §0
@@ -69,6 +72,10 @@ fn main() {
   // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
   // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
   sess = session_new();
+  // Is the layout store currently PINNED by `expose` (PLAN-PERF §0 step 9)? Tracked rather than inferred,
+  // because `release` must only ever be called against a live pin — and because loft must not touch the
+  // store while one is in force (see the view branch below for why).
+  layout_pinned = false;
   while true {
     blob = host_input();
     if blob == "" {
@@ -110,6 +117,23 @@ fn main() {
           // must compile on every backend.
           do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
         } else {
+          // @PLN105 step 9 — hand JS a live handle to the layout store, so it can read PTiles straight
+          // out of wasm memory instead of re-parsing the text this still emits (steps 10-13 take that
+          // over one kind at a time).
+          //
+          // The pin must NOT be in force while loft itself touches the store. `expose` locks it
+          // read-only, and BOTH things below are rejected under that lock: the (re)load writes it, and
+          // `do_view_bbox` ITERATES it — iterating a store-backed hash claims a cursor record inside the
+          // very store being pinned (`Claim on read-only store (size=546)`, PLAN-PERF §7d(2)). In wasm
+          // that rejection is a silent trap, which is what hung the first attempt at this step.
+          //
+          // So: unpin, do loft's work, re-pin. JS reads the handle BETWEEN commands, which is the only
+          // window it ever had. Once step 13 deletes the text emit, nothing in loft walks the layout any
+          // more and this collapses back to one `expose` at load.
+          if layout_pinned {
+            release(EXPOSE_LAYOUT, layout);
+            layout_pinned = false;
+          }
           if layout_url != layout_at {
             if store_load_url_trusted(layout, layout_url) {
               layout_at = layout_url;
@@ -119,7 +143,11 @@ fn main() {
               ok = false;
             }
           }
-          if ok { do_view_bbox(layout, roads, arg3); }
+          if ok {
+            do_view_bbox(layout, roads, arg3);
+            expose(EXPOSE_LAYOUT, layout);
+            layout_pinned = true;
+          }
         }
       }
       // Terminate the response on EVERY path, errors included — a host waiting on this marker must
