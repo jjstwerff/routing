@@ -96,8 +96,12 @@ That is a §7h-class change needing the 26-sketch corpus as its gate ("0 worse a
 fingerprint. **§7n attempted it and REJECTED it**: a deviation prune on the anchor search is −28% at a cap
 of 400 m but makes routes *longer* by up to 62%, and every cap loose enough to preserve routes is inside
 the ~3.4% run-to-run noise. The corpus's own `dev_max` reaches ~1056 m, so any useful cap severs
-legitimate paths. **A geometric prune is closed** — what is left must reduce the NUMBER of anchor
-searches, not their extent. `tools/corpus_anchor.loft` is the gate to use.
+legitimate paths. **A geometric prune is closed** (§7n). And so is the other lever: **§7o** shared one
+search across a span of taps (overlapping blocks; SPAN=2 verified to reproduce today's behaviour exactly)
+and every span ≥3 was WORSE on the corpus — sketch 11 gained 855 m of bridging, sketch 19 grew 79% —
+because a block path optimised end-to-end stops passing close to the intermediate taps. **Both levers on
+`denoise_anchor` are now closed by measurement**; its ~131 ms is the honest cost of centring each anchor
+on its own neighbourhood. `tools/corpus_anchor.loft` is the gate for whoever wants to reopen it.
 Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdlib
 (`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
 

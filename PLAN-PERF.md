@@ -1225,9 +1225,43 @@ exploring much far field to cut.
 its timing line `(not golden)` for exactly this reason — *a corpus is an acceptance gate, not a
 stopwatch.*
 
-**Reverted; all 26 quality rows verified identical to baseline.** So the remaining 131 ms needs a change
-that reduces the NUMBER of anchor searches (a semantic change to how anchors are chosen), not their
-extent. A geometric prune is closed.
+**Reverted; all 26 quality rows verified identical to baseline.** A geometric prune is closed.
+
+### 7o — reducing the NUMBER of anchor searches: also measured, also REJECTED
+
+The other lever. Consecutive anchor searches overlap almost entirely (point *i* searches i−1..i+1, point
+*i+1* searches i..i+2), so one search over a longer span can supply anchors for every point it passes
+**through**. Implemented as overlapping blocks — overlapping by one point so every interior point stays
+*interior* to some block and keeps a through-path anchor, rather than degrading to plain nearest-node.
+
+**`ANCHOR_SPAN = 2` reproduces the per-point behaviour EXACTLY**, and that was verified before the value
+was touched: all 26 corpus quality rows, the four border fingerprints, and `match_parity` all unchanged.
+A refactor that cannot be shown faithful is not a baseline to sweep from.
+
+| span | same | changed-not-worse | **worse** | corpus cost |
+|---|---|---|---|---|
+| 3 | 14 | 7 | **5** | −18% |
+| 4 | 10 | 7 | **9** | −19% |
+| 6 | 10 | 8 | **8** | −22% |
+
+**0 worse accepted — so all of them fail.** The damning cases are not marginal: sketch 11 gains **855 m
+of bridging** where it had none (a connectivity gap, drawn as a straight line the user can see), and
+sketch 19's length goes 5377 → 9639 m (+79%).
+
+**The cause is structural, not a tuning problem.** A longer block is optimised end-to-end, so its path no
+longer passes close to each *intermediate* tap; those anchors land off the natural line, and pass 2 then
+has to bridge between badly-placed anchors. *The per-point search exists precisely to centre each anchor
+on its own neighbourhood* — which is the thing a shared search cannot do.
+
+Reverted (SPAN=2 machinery included: it was behaviourally identical and no faster, so keeping a constant
+that must never change would only be a trap).
+
+### Where that leaves the anchor pass
+
+Both levers on `denoise_anchor` are now closed by measurement: **narrowing** each search (§7n) and
+**sharing** searches between points (§7o). Its ~131 ms is the honest cost of centring every anchor on its
+own neighbourhood, and anything cheaper is a different matcher, not a faster one. `tools/corpus_anchor.loft`
+is the gate for whoever disagrees.
 
 ⚠ And a note for anyone reaching for `spatial<T[x,y]>` elsewhere: it is sound but **not wired to its own
 exact queries**. `loft2/src/spatial.rs` carries exact `nearest`/`within`, but it is `#![allow(dead_code)]`
