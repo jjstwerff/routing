@@ -1224,17 +1224,50 @@ pub struct MatchState {
 
 // Pass-1 anchor for ctrace index i: an endpoint snaps to its nearest node; an interior point snaps onto
 // the route PAST it (A→C, with A/C its neighbours) at the node closest to the drawn point.
-fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer) -> integer {
+// Per-POINT candidate cache for the anchor pass.
+//
+// `nearest_nodes(ct[j])` was computed TWICE for every interior point — once as the source `a` while
+// anchoring point j+1, and once as the target set `ctgt` while anchoring point j-1. Measured over a
+// 40-point sketch that is 82 ms of a 213 ms anchor pass, half of it recomputation. This memoises it.
+//
+// Flat, not `vector<vector<integer>>`: nested collections are the O(n^2) interpreter trap the Graph's own
+// CSR comment warns about. `cn[j]` is the count for point j (-1 = not computed yet) and the candidates
+// live at `cf[j*VITERBI_K + t]`.
+//
+// LAZY on purpose. A warm match recomputes only the edited window, so eagerly filling all m points would
+// make the common interaction slower — exactly the regression this is meant to avoid.
+fn cands_for(g: Graph, ct: vector<GeoPoint>, j: integer, cn: &vector<integer>, cf: &vector<integer>) -> vector<integer> {
+  out: vector<integer> = [];
+  have = cn[j] ?? -1;
+  if have >= 0 {
+    for t in 0..have { out += [cf[j * VITERBI_K + t] ?? -1]; }
+    return out;
+  }
+  p = ct[j] ?? point_none();
+  got = nearest_nodes(g, p.lat, p.lon);
+  k = len(got);
+  if k > VITERBI_K { k = VITERBI_K; }
+  for t2 in 0..k { cf[j * VITERBI_K + t2] = got[t2] ?? -1; }
+  cn[j] = k;
+  got
+}
+
+fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer,
+                  cn: &vector<integer>, cf: &vector<integer>) -> integer {
   m = len(ct);
   // Callers walk i over 0..len(ct), so ct[i] is in range on both sides of this guard and ct[i-1] is
   // reached only when i > 0 — point_none() is never taken.
-  if i <= 0 || i >= m - 1 { return nearest_node1(g, ct[i] ?? point_none()); }
-  a = nearest_node1(g, ct[i - 1] ?? point_none());
-  ctgt = nearest_nodes(g, ct[i + 1].lat, ct[i + 1].lon);
+  if i <= 0 || i >= m - 1 {
+    ce = cands_for(g, ct, i, cn, cf);
+    return ce[0] ?? -1;
+  }
+  ca = cands_for(g, ct, i - 1, cn, cf);
+  a = ca[0] ?? -1;
+  ctgt = cands_for(g, ct, i + 1, cn, cf);
   win: vector<GeoPoint> = [ct[i - 1], ct[i], ct[i + 1]];
   path = dijkstra_win(g, a, ctgt, win, ec, sc, gen);
   bp = closest_node_on_path(g, path, ct[i] ?? point_none());
-  if bp < 0 { bp = nearest_node1(g, ct[i] ?? point_none()); }
+  if bp < 0 { cb = cands_for(g, ct, i, cn, cf); bp = cb[0] ?? -1; }
   bp
 }
 
@@ -1358,7 +1391,10 @@ fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean,
   anchors: vector<integer> = [];
   // Pass 1 is one search PER POINT — 40 points is 40 of them, and with no tick here a dense sketch
   // froze the page for ~8s even after the corridor read and build_graph were yielded (PLAN-PERF §6b A).
-  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; on_tick(i); }
+  cn: vector<integer> = []; cf: vector<integer> = [];
+  for _c in 0..m { cn += [-1]; }
+  for _c2 in 0..(m * VITERBI_K) { cf += [-1]; }
+  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen, cn, cf)]; on_tick(i); }
   subs: vector<SubPath> = [];
   // Report each stretch the moment it is matched, so a caller can DRAW it now instead of waiting for
   // the whole route (PLAN-PERF §6b A). `subs` is already one sub-path per stretch — the route is a
@@ -1418,10 +1454,13 @@ fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: bool
   sc = new_scratch(len(g.nodes));
   gen = 0;
   anchors: vector<integer> = [];
+  cn: vector<integer> = []; cf: vector<integer> = [];
+  for _c in 0..clenNew { cn += [-1]; }
+  for _c2 in 0..(clenNew * VITERBI_K) { cf += [-1]; }
   for i in 0..clenNew {
     if i >= lo && i <= hi {
       gen = gen + 1;
-      anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen)];
+      anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen, cn, cf)];
       on_tick(i);
     } else {
       oldIdx = i;
