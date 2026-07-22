@@ -7,6 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
+import { RoughLayer, KernelQueue, isDoubleTap, PAN_SLOP_PX, DOUBLE_TAP_MS, DOUBLE_TAP_PX } from './rough.mjs';
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { fails++; console.error('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };
@@ -153,5 +154,123 @@ console.log('§6b(2) · a restarted stretch pass REPLACES the route, never blend
   ok(m.route.length === 3 && m.route[2][0] === 52.32, `pass 2 then accumulates normally (${m.route.length} pts)`);
 }
 
-console.log(fails ? `\nM0+M1 FAIL — ${fails} check(s) failed` : '\nM0+M1 PASS — projection + pan/zoom invariants hold');
+// --- PLAN-EDIT E0: the three chokepoints -------------------------------------------------------------
+// DOM-free, because the classifier is pure screen-space arithmetic and the browser gate is an expensive
+// place to pin a boundary. The BEHAVIOURS these encode were measured in a browser first (PLAN-EDIT §2);
+// these tests are what keep them from drifting back.
+
+const layerOn = (map) => new RoughLayer(map, { bind: false });
+const freshMap = () => new RouteMap(stubCanvas(), { ...ENSCHEDE, zoom: 14, interactive: false });
+
+console.log('\nE0 · a PAN never appends a point, a TAP always does  (PLAN-EDIT §2 P1)');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  // A drag past the slop: this is a pan. It moves the camera and must leave the sketch empty.
+  const lat0 = m.camera.lat;
+  r.pointerDown(300, 200, 1000);
+  r.pointerMove(340, 230);
+  r.pointerMove(420, 280);
+  r.pointerUp();
+  ok(r.points.length === 0, `a 200-px drag appends nothing (${r.points.length} points)`);
+  ok(m.camera.lat !== lat0, 'the same drag DID pan the camera (it was delegated, not swallowed)');
+
+  // A press/release with no movement: this is a tap.
+  r.pointerDown(500, 400, 5000);
+  r.pointerUp();
+  ok(r.points.length === 1, `a tap appends exactly one point (${r.points.length})`);
+
+  // Jitter below the slop is still a tap — a finger is never perfectly still.
+  const before = m.camera.lat;
+  r.pointerDown(500, 400, 9000);
+  r.pointerMove(500 + PAN_SLOP_PX, 400);
+  r.pointerUp();
+  ok(r.points.length === 2, `${PAN_SLOP_PX}px of jitter is still a tap (${r.points.length} points)`);
+  ok(m.camera.lat === before, 'and it did not pan the camera');
+}
+
+console.log('E0 · the double-tap dedupe collapses the 2nd click  (PLAN-EDIT §2 P2)');
+{
+  ok(isDoubleTap(null, 0, 0, 0) === false, 'the first tap of a session is never a double');
+  ok(isDoubleTap({ t: 0, x: 100, y: 100 }, DOUBLE_TAP_MS - 1, 100, 100), 'same spot, just inside the window → double');
+  ok(!isDoubleTap({ t: 0, x: 100, y: 100 }, DOUBLE_TAP_MS, 100, 100), `at exactly ${DOUBLE_TAP_MS}ms it is a fresh tap`);
+  ok(!isDoubleTap({ t: 0, x: 100, y: 100 }, 50, 100 + DOUBLE_TAP_PX, 100), `${DOUBLE_TAP_PX}px away is a fresh tap, however fast`);
+
+  const r = layerOn(freshMap());
+  const tap = (x, y, t) => { r.pointerDown(x, y, t); r.pointerUp(); };
+  tap(400, 300, 0);
+  tap(401, 301, 60);                       // the 2nd click of a double-click
+  ok(r.points.length === 1, `a double-click drops ONE point, not two (${r.points.length})`);
+  tap(401, 301, 400);                      // a deliberate later tap at the same spot still lands
+  ok(r.points.length === 2, `a tap after the window still appends (${r.points.length})`);
+  tap(600, 300, 430);                      // fast, but far away — a different place, not a double
+  ok(r.points.length === 3, `a fast tap ELSEWHERE appends (${r.points.length})`);
+}
+
+console.log('E0 · the sketch is ONE array, shared with the renderer  (failure path 11)');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  ok(m.points === r.points, 'map.points IS the layer\'s array, not a rebuilt copy');
+  r.append(52.25, 6.90);
+  ok(m.points.length === 1 && m.points[0].lat === 52.25, 'an append is visible to the renderer with no re-assignment');
+  r.clear();
+  ok(m.points.length === 0 && m.points === r.points, 'a clear empties it IN PLACE (the reference survives)');
+}
+
+console.log('E0 · commitEdit is the only exit, and reports whether the edit is committed');
+{
+  const m = freshMap();
+  const seen = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, committed) => seen.push({ n: pts.length, committed }) });
+  r.pointerDown(300, 300, 0); r.pointerUp();
+  r.append(52.3, 6.9);
+  r.clear();
+  ok(seen.length === 3, `three mutations → three commits (${seen.length})`);
+  ok(seen.every((s) => s.committed === true), 'a discrete edit is committed');
+  ok(seen[0].n === 1 && seen[1].n === 2 && seen[2].n === 0, `each commit carries the sketch AT THAT MOMENT (${seen.map((s) => s.n).join(',')})`);
+  const shape = seen[1] && r.coords();
+  ok(Array.isArray(shape) && shape.every((p) => p.length === 2), 'coords() hands the matcher [[lat,lon],…]');
+}
+
+console.log('E0 · the kernel queue serializes, and coalesces per key — latest wins  (PLAN-EDIT §2 P4)');
+{
+  const q = new KernelQueue();
+  const log = [];
+  const job = (tag, ms) => () => new Promise((res) => setTimeout(() => { log.push(tag); res(tag); }, ms));
+
+  // Three matches posted while the first is still running: the middle one is SUPERSEDED, never dropped
+  // silently, and the last one is the one that runs.
+  const p1 = q.post('match', job('m1', 30));
+  const p2 = q.post('match', job('m2', 1));
+  const p3 = q.post('match', job('m3', 1));
+  ok(q.pendingCount === 1, `three posts under one key leave ONE pending (${q.pendingCount})`);
+  const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+  ok(r1 === 'm1' && r3 === 'm3', `the running job and the LATEST both complete (${r1}, ${r3})`);
+  ok(r2 === undefined, 'the superseded job resolves undefined — settled, not left hanging');
+  ok(log.join(',') === 'm1,m3', `m2 never ran (${log.join(',')})`);
+
+  // Different keys do not coalesce with each other: a view must not eat a match. This is the exact
+  // conflation the old shared `busy` boolean made, and P4's stale route was the result.
+  log.length = 0;
+  await Promise.all([q.post('view', job('v', 5)), q.post('match', job('m', 1))]);
+  ok(log.join(',') === 'v,m', `a view and a match both run, in order (${log.join(',')})`);
+
+  // Serialization: two jobs never overlap, whatever their durations.
+  let live = 0, overlapped = false;
+  const watch = (ms) => async () => { live++; if (live > 1) overlapped = true; await new Promise((r) => setTimeout(r, ms)); live--; };
+  await Promise.all([q.post('a', watch(20)), q.post('b', watch(1)), q.post('c', watch(1))]);
+  ok(!overlapped, 'no two jobs are ever in flight at once (runKernel has one resolve slot)');
+}
+
+console.log('E0 · a superseded job\'s isCurrent() goes false, so its stretches can be discarded  (failure path 10)');
+{
+  const q = new KernelQueue();
+  let checkAfterNext = null;
+  await q.post('match', async (isCurrent) => { checkAfterNext = isCurrent; ok(isCurrent(), 'a running job sees itself as current'); });
+  await q.post('match', async () => {});
+  ok(checkAfterNext && checkAfterNext() === false, 'once a later job has run, the earlier job\'s isCurrent() is false');
+}
+
+console.log(fails ? `\nM0+M1+E0 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0 PASS — projection, pan/zoom and the edit chokepoints hold');
 process.exit(fails ? 1 : 0);

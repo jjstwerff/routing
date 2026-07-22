@@ -152,15 +152,24 @@ the matching; it is false on a phone.
 > gesture, so its check is "today's behaviour, minus the defects". E1 is what answers the user's actual
 > complaint (you cannot see your sketch), and can follow the same day.
 
-### E0 — the three chokepoints *(no new gesture)*
-- **Build.** `browser/rough.mjs`: a `RoughLayer` owning `[{id, lat, lon}]`, plus `onPointer` (input),
-  `commitEdit(committed)` (commit) and `requestMatch` (latest-wins scheduler, generation-numbered). Move
-  the canvas `click`→append out of `store-app.mjs` and the pan binding out of `map.mjs`'s
-  `enableInteraction` into the one dispatcher. Give the match its **own** in-flight slot, separate from
-  `ensureView`'s `busy`.
-- **Check.** A pan drag adds **0** points (P1); a double-click adds **1** (P2); four clicks 120 ms apart
-  leave the route ending **< 50 m** from the last point (P4); `tools/match_parity.sh` byte-identical; a
-  grep shows exactly **one** call site each for the matcher and for pointer binding.
+### E0 — the three chokepoints *(no new gesture)* ✅ **DONE**
+- **Built.** `browser/rough.mjs`: `RoughLayer` owns `[{id, lat, lon}]` **and all pointer input**
+  (`pointerDown/Move/Up`, screen-space and DOM-free so the classifier is unit-testable), `commitEdit`, and
+  `KernelQueue` — one job at a time, coalescing per key. The canvas `click`→append left `store-app.mjs`
+  and the pan binding left `map.mjs`'s `enableInteraction`; pan is now the explicit `map.dragTo(mouse,
+  grab)` the dispatcher calls. `busy`/`again` are gone: **view and match are separate keys on one queue**,
+  so neither can swallow the other. `window.__match` was moved onto the queue too — a hook that reaches
+  the kernel by a private road cannot catch a scheduling bug.
+- **Measured.** P1 pan ⇒ **0** points (and the camera still pans) · P2 double-click ⇒ **1** point ·
+  P4 the route ends **15 m** from the last rough point, *was 1417 m*. `tools/match_parity.sh`
+  **byte-identical** across all 5 cases / 3 distinct routes; `make test-map` green including every bridge
+  probe.
+- **Two extra invariants the runtime cannot see**, so they are grepped in `tools/map_render_gate.sh`:
+  every pointer/click listener lives in `rough.mjs` (4, one dispatcher), and the app reaches the kernel
+  from **exactly 2** places, both inside queued jobs. A second road to either is invisible at runtime until
+  the two disagree — which is precisely how P1 and P4 survived two months.
+- ⚠ **A note for E1–E6:** `map.points` and the layer's array are now **the same array**. Mutate it in
+  place (`push`, `splice`, `length = 0`); re-assigning `map.points` re-opens failure path 11.
 
 ### E1 — the sketch is visible *(the original complaint)*
 - **Build.** Draw, in the overlay pass inside the snapped-origin block beside `drawRoute()`: the dashed

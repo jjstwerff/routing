@@ -645,32 +645,28 @@ export class RouteMap {
     this.camera.zoom = clampZoom(this.camera.zoom + dz);
     this.panTo(mouse, anchor);
   }
+  // Pan so the lat/lon `grab` (captured at pointer-down) sits under screen point `mouse`.
+  //
+  // PLAN-EDIT E0 moved pan OUT of this file's own event handlers: whether a drag pans the camera or moves
+  // a rough point is one decision, made by one hit test, so a single dispatcher (RoughLayer) classifies
+  // the gesture and calls this. The camera stays map.mjs's business — the dispatcher decides WHICH
+  // gesture, this decides what a pan MEANS. Without that split, `mousedown`→pan here and `click`→append
+  // there could both fire for one drag, and did: a pan appended a spurious point (PLAN-EDIT §2 P1).
+  dragTo(mouse, grab) { this.panTo(mouse, grab); this.requestRender(); this._fireMove(); return this; }
+
+  // Wheel zoom only. Pan and every pointer gesture belong to the input dispatcher (see `dragTo`); a wheel
+  // cannot produce a sketch mutation, so it is not part of that chokepoint and stays here.
   enableInteraction() {
     if (typeof window === 'undefined' || this._interactive) return;
     this._interactive = true;
     const cv = this.canvas;
     const posOf = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-    this._grab = null;
-    cv.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      const m = posOf(e);
-      this._grab = this.unproject(m.x, m.y);       // the lat/lon we grabbed — held under the cursor
-      cv.style.cursor = 'grabbing';
-      e.preventDefault();
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!this._grab) return;
-      this.panTo(posOf(e), this._grab);
-      this.requestRender(); this._fireMove();
-    });
-    window.addEventListener('mouseup', () => { if (this._grab) { this._grab = null; cv.style.cursor = 'grab'; } });
     cv.addEventListener('wheel', (e) => {
       e.preventDefault();
       const dz = Math.max(-1, Math.min(1, -e.deltaY * 0.005));   // ~0.5 zoom / notch, clamped per event
       this.zoomAt(posOf(e), dz);
       this.requestRender(); this._fireMove();
     }, { passive: false });
-    cv.style.cursor = 'grab';
   }
 
   onRender(cb) { this._renderCbs.push(cb); return this; }

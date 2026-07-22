@@ -148,10 +148,10 @@ insert / drag / delete.
    quoted in §6c/§6d become stale and should be re-recorded.
 4. ⚠ **`hitTest` is a stub** returning `null` (`map.mjs:1500`) and `seam` exports it. The editor **builds**
    the seam it was said to ride.
-5. ⚠ **Two live bugs sit in the append path and must be fixed first** (PLAN-EDIT E0), because owning input
-   dispatch is what fixes them: **a pan drag appends a spurious point**, and **a click during a match is
-   silently dropped** (measured: the route ended 1417 m from the last rough point). Both are invisible
-   today precisely because the sketch has no line — which is why the fix and the line are one task.
+5. ✅ **Two live bugs in the append path — FIXED by E0.** A pan drag appended a spurious point, and a
+   click during a match was silently dropped (the route ended **1417 m** from the last rough point; it now
+   ends **15 m** away). Both were invisible precisely because the sketch has no line yet. All three
+   defects are now standing assertions in `make test-map`.
 
 ### The gate to build on
 
@@ -169,9 +169,12 @@ no visual answer to "did my click land?".
 
 ### Increments — see PLAN-EDIT §6 for each step's Build and Check
 
-0. **The three chokepoints**, no new gesture — input dispatch, commit, and a latest-wins match scheduler.
-   Ships first because it is the cheapest falsifier *and* it fixes the two live bugs above.
-1. The **visible line + points** (restores the ability to see a sketch at all — the original complaint).
+0. ✅ **DONE — the three chokepoints**, no new gesture: `browser/rough.mjs` owns all pointer input and the
+   sketch, `commitEdit` is the one exit, and `KernelQueue` serializes view+match with per-key latest-wins
+   coalescing (`busy`/`again` are gone). Route byte-identical; the three defects are gated.
+1. ⏭ **NEXT — the visible line + points** (restores the ability to see a sketch at all — the original
+   complaint). Draw in the overlay pass **inside** the snapped-origin block; extend the render seam with a
+   hook that fires there, since `onRender` does not (see 1 above).
 2. **`hitTest` + insert** on tap/press-sweep.
 3. **Drag to move** a point, rough line following live at 60 fps, matched route coalesced.
 4. **Delete** — double-click (behind the 250 ms dedupe) and tap-select + Delete for touch.

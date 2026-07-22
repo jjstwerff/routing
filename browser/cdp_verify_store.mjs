@@ -127,17 +127,26 @@ else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, la
 // was never gated, and a regression in it would be invisible to this file while everything stayed green.
 // It is also hard to see by eye: the rough points render as DOTS with no line between them, so "did my
 // click land?" has no visual answer beyond a single 4-px marker.
-const click = async (x, y) => {
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0 });
-  }
-  await new Promise((r) => setTimeout(r, 250));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mouse = (type, x, y, extra = {}) =>
+  call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0, ...extra });
+const click = async (x, y, settle = 250) => { await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(settle); };
+const drag = async (x0, y0, x1, y1) => {
+  await mouse('mousePressed', x0, y0);
+  for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', x0 + ((x1 - x0) * i) / 6, y0 + ((y1 - y0) * i) / 6); await sleep(16); }
+  await mouse('mouseReleased', x1, y1);
+  await sleep(250);
 };
-await ev('window.__map0.points = []; window.__storeApp.routePts = 0;');
+// Assert on the LAYER's array, not on map.points: they are the same array by reference, and the layer is
+// what owns it (PLAN-EDIT failure path 11).
+const nPts = () => ev('window.__rough.points.length');
+const resetSketch = async () => { await ev('window.__rough.clear(); window.__storeApp.routePts = 0; window.__storeApp.matchRuns = 0;'); await sleep(200); };
+
+await resetSketch();
 const seen = [];
 for (const [x, y] of [[300, 200], [520, 330], [700, 180]]) {
   await click(x, y);
-  const st3 = JSON.parse((await ev('(() => JSON.stringify({ pts: window.__map0.points.length, route: window.__storeApp.routePts || 0 }))()')) || '{}');
+  const st3 = JSON.parse((await ev('(() => JSON.stringify({ pts: window.__rough.points.length, route: window.__storeApp.routePts || 0 }))()')) || '{}');
   seen.push(st3);
 }
 // A click must ALWAYS add a rough point; the route only appears from the 2nd click on.
@@ -145,6 +154,53 @@ const ptsOk = seen.length === 3 && seen[0].pts === 1 && seen[1].pts === 2 && see
 if (!ptsOk) { console.log('  FAIL: clicks did not add rough points —', JSON.stringify(seen)); ok = false; }
 else if (!(seen[2].route > 2)) { console.log('  FAIL: three clicks drew no route —', JSON.stringify(seen)); ok = false; }
 else console.log(`  ✓ the click path works: 3 clicks → 3 rough points, route ${seen[2].route} pts`);
+
+// 7b. PLAN-EDIT E0 / §2 P1 — a PAN DRAG must not append a point.
+// map.mjs bound mousedown→pan and store-app.mjs bound click→append, and a browser fires `click` after a
+// mouseup even if the pointer travelled 200 px: every pan silently dropped a rough point into the sketch.
+// It hid for two months because a rough point is one unlabelled dot.
+await resetSketch();
+const camBefore = await ev('JSON.stringify(window.__map0.camera)');
+await drag(300, 200, 520, 330);
+const afterPan = await nPts();
+const camAfter = await ev('JSON.stringify(window.__map0.camera)');
+if (afterPan !== 0) { console.log(`  FAIL: a pan drag appended ${afterPan} rough point(s) — pan and append are not separated`); ok = false; }
+else if (camBefore === camAfter) { console.log('  FAIL: the drag did not pan the camera either — input dispatch is broken, not just fixed'); ok = false; }
+else console.log('  ✓ a pan drag appends 0 points and DOES pan the camera (P1)');
+
+// 7c. PLAN-EDIT E0 / §2 P2 — a double-click must drop ONE point, not two.
+// This is also the precondition for E4's double-click-to-delete: that gesture is unreachable while the
+// first click of it appends a point.
+await resetSketch();
+await click(400, 300, 60);
+await click(401, 301, 400);
+const afterDbl = await nPts();
+if (afterDbl !== 1) { console.log(`  FAIL: a double-click produced ${afterDbl} points (want 1) — the 250ms dedupe is not holding`); ok = false; }
+else console.log('  ✓ a double-click drops exactly 1 point (P2)');
+
+// 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
+// `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
+// with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the
+// last rough point. The queue coalesces instead — latest wins, nothing is dropped.
+await resetSketch();
+await click(300, 200); await click(520, 330);
+await sleep(2500);
+await click(700, 180, 120);        // these two land inside the previous match
+await click(760, 420, 120);
+for (let i = 0; i < 40 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
+await sleep(1500);
+const fresh = JSON.parse(await ev(`(() => { const p = window.__rough.points, r = window.__map0.route;
+  if (!p.length || !r.length) return JSON.stringify({ gapM: -1, pts: p.length, route: r.length, runs: window.__storeApp.matchRuns });
+  const last = p[p.length - 1], end = r[r.length - 1];
+  return JSON.stringify({ gapM: Math.round(Math.hypot((last.lat - end[0]) * 111000, (last.lon - end[1]) * 68000)),
+                          pts: p.length, route: r.length, runs: window.__storeApp.matchRuns }); })()`));
+if (fresh.pts !== 4) { console.log(`  FAIL: rapid clicks lost a point (${fresh.pts} of 4)`); ok = false; }
+else if (!(fresh.gapM >= 0 && fresh.gapM < 200)) { console.log(`  FAIL: the route is STALE — it ends ${fresh.gapM} m from the last rough point (a click during a match was dropped)`); ok = false; }
+// `runs` is reported, not asserted: whether the last two clicks coalesce depends on how fast the machine
+// finishes the match between them, and a gate that asserted a coalesce count would fail on a fast box for
+// being fast. What must ALWAYS hold is freshness — the route describes the sketch that exists now. The
+// coalescing itself is pinned deterministically in map.test.mjs, where the timing is ours to choose.
+else console.log(`  ✓ a click during a match still matches: route ends ${fresh.gapM} m from the last point (${fresh.runs} match runs for 3 requests) (P4)`);
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

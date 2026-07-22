@@ -8,6 +8,7 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
+import { RoughLayer, KernelQueue } from './rough.mjs';
 
 const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
 const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
@@ -53,13 +54,21 @@ const fboxOf = (bbox) => {
   return { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
 };
 
-let loadedBox = null, loadedBbox = null, lastViewText = null, busy = false, again = false;
+let loadedBox = null, loadedBbox = null, lastViewText = null;
+// PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
+// so commands must be serialized; this does that AND coalesces per key, which the old shared `busy`
+// boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
+// flight made a click return without matching and the route silently went stale (PLAN-EDIT §2 P4).
+const jobs = new KernelQueue();
+
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
-async function ensureView() {
-  if (busy) { again = true; return; }
+//
+// The `covers` test lives INSIDE the job, so it is judged when the view actually runs rather than when it
+// was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
+function ensureView() { return jobs.post('view', ensureViewNow); }
+async function ensureViewNow() {
   if (covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
-  busy = true;
   const box = viewportBox(0.6);
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
@@ -101,8 +110,6 @@ async function ensureView() {
   window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum,
                         firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms,
                         layerCounts: counts, areaSource: h ? 'store' : 'text' };
-  busy = false;
-  if (again) { again = false; ensureView(); }
 }
 
 // Run a match and let the route DRAW ITSELF as it arrives (PLAN-PERF §6b(2)).
@@ -116,10 +123,14 @@ async function ensureView() {
 // growing line is strictly a view of the same match, and `tools/match_parity.sh` is untouched by it.
 // `growSteps` records how many times the drawn route actually advanced, so the app's OWN path is
 // observable to the gate and not just the probe's.
-async function streamedMatch(spec) {
+async function streamedMatch(spec, isCurrent) {
   map.beginStretches();
   let growSteps = 0, lastLen = 0;
   const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`, (line) => {
+    // A line sink is drained in a microtask, so one belonging to a SUPERSEDED match could still fire once
+    // a newer match has begun and blend two routes into the same stretch accumulator (PLAN-EDIT failure
+    // path 10). The generation check makes that impossible rather than unlikely.
+    if (isCurrent && !isCurrent()) return;
     const s = parseStretch(line);
     if (!s) return;
     map.applyStretch(s.i, s.pts);
@@ -136,23 +147,33 @@ async function streamedMatch(spec) {
   return text;
 }
 
-// Rough sketch: each click adds a point; from the 2nd on, re-match and draw the route (read-only line).
-const sketch = [];
-canvas.addEventListener('click', async (e) => {
-  const r = canvas.getBoundingClientRect();
-  const g = map.unproject(e.clientX - r.left, e.clientY - r.top);
-  sketch.push([g.lat, g.lon]);
-  map.points = sketch.map(([lat, lon]) => ({ lat, lon }));
-  map.render();
-  if (sketch.length < 2 || busy) return;
-  busy = true; hud.textContent = 'matching…';
-  const text = await streamedMatch(sketch.map(([a, b]) => `${a},${b}`).join(';'));
-  const sum = map.loadMatch(text);
-  map.render();
-  hud.textContent = sum || '(no route)';
-  window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: map.route.length };
-  busy = false;
-});
+// The rough sketch (PLAN-EDIT E0). The layer owns the points and ALL pointer input; this wiring is the
+// whole of the app's side of editing, and every later gesture rides it unchanged — which is the point of
+// the chokepoints: a new gesture mutates the point list and calls commitEdit, and nothing else.
+const rough = new RoughLayer(map, { onCommit: (pts) => requestMatch(pts) });
+
+// Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen
+// is what makes a delete-down-to-one-point degrade instead of lying (PLAN-EDIT failure path 8).
+function requestMatch(pts) {
+  if (pts.length < 2) {
+    map.setRoute([]); map.render();
+    hud.textContent = `sketch ${pts.length} pt — add ≥2 to route`;
+    window.__storeApp = { ...(window.__storeApp || {}), routePts: 0, summary: '' };
+    return Promise.resolve();
+  }
+  hud.textContent = 'matching…';
+  return jobs.post('match', async (isCurrent) => {
+    const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'), isCurrent);
+    // A superseded match's route must not land: the user has already edited past it, and drawing it would
+    // put a route on screen for a sketch that no longer exists. The newer job is already queued.
+    if (!isCurrent()) return;
+    const sum = map.loadMatch(text);
+    map.render();
+    hud.textContent = sum || '(no route)';
+    window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum,
+                          routePts: map.route.length, matchRuns: (window.__storeApp?.matchRuns || 0) + 1 };
+  });
+}
 
 map.onMove(ensureView);   // re-view when the camera settles outside the loaded area
 await ensureView();       // initial load
@@ -162,6 +183,11 @@ window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 // separately, so the bottleneck is ATTRIBUTED — wasm-side (store decode + text serialize) vs JS-side
 // (text parse) vs render — instead of assumed. Test-only; the app itself never calls it.
 window.__map0 = map;   // test hook: the live RouteMap, for render-comparison probes
+// Test hook: the live sketch. The gate asserts on THIS rather than on `map.points`, because they are the
+// same array by reference and the layer is what owns it — asserting on the copy is how the old gate could
+// have passed while the sketch it was meant to measure said something else (PLAN-EDIT failure path 11).
+window.__rough = rough;
+window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
   // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
@@ -923,11 +949,16 @@ async function timeMatch(pts, stream) {
 }
 
 // Test hook: drive a match programmatically (headless gate), given [[lat,lon],…].
-window.__match = async (pts) => {
-  const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'));
+//
+// Goes through the SAME queue the click path uses. It used to call the kernel directly, which could
+// overlap a view load — and `runKernel` keeps one resolve slot, so the overlap orphans a promise. A hook
+// that reaches the kernel by a private road is also a hook that cannot catch a scheduling bug.
+window.__match = (pts) => jobs.post('match', async (isCurrent) => {
+  const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'), isCurrent);
   const sum = map.loadMatch(text); map.render();
   const f = map.route;
   window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: f.length,
-                        routeEnds: f.length ? [f[0], f[f.length - 1]] : null };
+                        routeEnds: f.length ? [f[0], f[f.length - 1]] : null,
+                        matchRuns: (window.__storeApp?.matchRuns || 0) + 1 };
   return sum;
-};
+});
