@@ -28,10 +28,11 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 @PLN105's bridge; `view` emits roads only — steps 9–13).
 
 **Open, in the order the evidence favours:**
-- **19b — persist the built graph.** Re-sized (§7a(2)): `build_graph` is ~49% of a cold match, **~1.3 s
-  of the browser's 2721 ms** — the largest single slice left. **19a is done** (integer node key, −18%,
-  routes byte-identical). 19b is still a store-format change plus a border splice that can silently alter
-  a route: the riskiest row in the plan.
+- **Nothing in §0 is open.** 18 is ⛔ (`par` is a no-op in the browser, §6e) and **19b is ⛔ measured and
+  rejected** (§7a(2): the union is only ~16% cheaper than building — ~8% of a cold match — for a format
+  change and the plan's riskiest row). 19a landed the cheap part (−18%, routes byte-identical).
+- **The cold match is now 2721 ms and is ~49% `build_graph`, ~42% the search, ~9% the corridor read.**
+  Making it materially faster needs a cheaper graph BUILD or a smaller corridor — not persistence.
 - **18 is ⛔ DO NOT BUILD** — `par` is a no-op in the browser (§6e), proven from the shipped wasm.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
@@ -79,7 +80,8 @@ Rules that make these steps safe, and that every row below obeys:
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** ⛔ | `lib/routing_kernel` + kernel | **DO NOT BUILD — `par` is a NO-OP in the browser (§6e).** The app's wasm has `shared=false` and Rust's no-threads std linked in; loft's WASM (single) profile compiles `threading` OFF so `par()` runs Tier 1 (sequential), and Tier 2 needs COEP/COOP headers that GitHub Pages cannot set. Its own verify line says "~3× **native**" — i.e. the server, not this plan's subject. `tools/wasm_threads.mjs` gates the claim and fails the day it stops holding. Original note follows. **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
-| **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
+| **19a** ✅ | `lib/routing_kernel` | Replace the TEXT node-dedup key (`"{lat},{lon}"`, formatted per vertex of every way) with the fixed-point degrees packed into one i64. | **DONE** — cold match **3327 → 2721 ms** browser, 375 → 311 native; routes byte-identical (5 `match_parity` cases, and the §7a(2) border gate). Safe because the text key was proven INJECTIVE first (44,739 vertices → 33,948 distinct nodes under both keyings). No format change. | **perf only** |
+| **19b** ⛔ | `tools/gen-tiles.loft` + kernel + **regenerate the stores** | Persist the **built graph** per tile (PLAN-TILES §268) and union it at match time. | **MEASURED AND REJECTED — §7a(2).** The union is only ~13–21% cheaper than building (it must still hash ~34k part-nodes vs 44.7k vertices, copy every edge, rebuild the CSR), so 19b is worth ~8% of a cold match for a format change, a redeploy, and the plan's riskiest row. The acceptance gate and the reference `union_graphs` are kept. | **not built** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
 | **22** ✅ | kernel (`lib/map_kernel`) | Wire the §3 gate + escalation, **MARGIN-RELATIVE** (`bridged_m == 0 && dev_max <= corridor_margin * 6`) — the absolute `DEV_TOL` form was wired first and made the cold match 1.7× **slower** (§7h). Cell tube is tier 1, bbox is the floor; gated on the cold path only (`covered()` guards warm edits). | **DONE** — A/B on one quiet machine, `CPU_THROTTLE=4`, all spreads 1.1×: **cold 6370 → 3253 ms (1.96×)**, warm 880 → 584, repeat 450 → 306. Route **byte-identical on all 5 `match_parity` cases**; corpus **0 worse accepted** at K=6. ⚠ `server/server.loft` keeps its own match path and is NOT wired — see §7h. | **⚠ route-affecting — the only one** |
@@ -1133,17 +1135,42 @@ order.** That removes a canonical-node-ordering requirement the change would oth
 cross a boundary — a green run over corridors that never touch a border proves nothing. The golden check
 was verified to FIRE by perturbing one fingerprint by 1.
 
-### 19b — persisting the graph: still the only thing left, and still the riskiest row
+### 19b — MEASURED AND REJECTED. Do not build it.
 
-Measured and **rejected** as a cheaper alternative: blanking the 11 text tags each `GEdge` copies moves
-`build_graph` only 171 → 146 ms, so the tags are ~15% and not the cost. What remains is the fundamental
-hash-insert / vector-append / CSR work, and **only persisting the graph removes it**.
+Its whole case is that unioning persisted per-tile graphs is much cheaper than building one from ways.
+That had never been measured. `tools/union_probe.loft` simulates the change with in-memory parts —
+partition the corridor's ways by storing tile, build each tile's graph (the work that would become
+persisted), then time the **union alone** against a straight build of the same corridor:
 
-**Re-sized:** `build_graph` is now ~49% of a 311 ms native cold match, i.e. **~1.3 s of the browser's
-2721 ms**. Still the largest single slice, and everything §7a says about the cost stands — a `TTile`
-format change, regenerating and redeploying both stores, and a border-node splice on exact-integer
-coordinates that **can silently alter a route across a tile edge**. The prize is real and so is the risk;
-what has changed is that the cheap 18% is now banked and no longer entangled with it.
+| corridor | build | union | saving |
+|---|---|---|---|
+| 14 tiles, 7138 ways | 154–158 ms | 132 ms | ~16% |
+| 6 tiles, 4501 ways | 92 ms | 73 ms | ~21% |
+| 4 tiles, 552 ways | 16–21 ms | 14–18 ms | ~13% |
+
+**And the structural reason, so it is not just three numbers:**
+
+```
+hashed: build=44739 vertices vs union=34454 part-nodes (parts duplicate only 506)
+```
+
+The union must still hash **every part-node** to merge the parts — only **23% fewer** than the vertices a
+build hashes — and it still copies every edge and still rebuilds the CSR. All it genuinely skips is the
+per-vertex coordinate walk and one geodesic per edge. With the parts duplicating just **1.5%** of their
+nodes, **there is no headroom for a cleverer persisted format either**: any union has to merge ~34k nodes.
+
+**Sizing it.** `build_graph` is ~49% of a cold match and the union saves ~16% of that, so 19b is worth
+**~8% of a cold match — about 215 ms of the browser's 2721 ms.** In exchange for a `TTile` format change,
+regenerating and redeploying 23.5 MB of stores, a loader-side merge, and the riskiest row in the plan.
+**19a delivered 606 ms the same afternoon for a one-line key change.**
+
+⛔ **NO-GO.** Found for the cost of a probe rather than a regeneration, a redeploy, and a route-regression
+hunt. `union_graphs` is kept as the reference implementation — correct, and where a future revisit starts
+— with its route identity asserted in the border gate rather than left to rot as unexercised code.
+
+**If it is ever reopened**, re-run `tools/union_probe.loft` first: the verdict is a ratio between two
+costs, and either could move (a cheaper node hash, or a corridor small enough that the constant factors
+change the balance).
 
 ---
 

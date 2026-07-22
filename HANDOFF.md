@@ -71,6 +71,11 @@ elision is live (probe flat 1–3 ms vs 214 ms), and the `expose` hang was root-
 store read-only and **iterating** a store-backed hash claims a cursor record *inside it*; **reads are
 fine**, and `release`/`expose` brackets it.
 
+⚠ **`PLAN-PERF` §0 has nothing open.** 18 and 19b are both ⛔ and measured, not guessed. The cold match
+(2721 ms) is ~49% `build_graph`, ~42% the search, ~9% the corridor read — so making it materially faster
+needs a **cheaper graph build** or a **smaller corridor**, not persistence. That is a new design question,
+not a remaining step.
+
 **What to do next, in the order the evidence favours:**
 
 1. **Steps 14–15 are DONE — the render path is finished.** A pan frame is **0.6 ms** (was 76) and a view
@@ -94,12 +99,12 @@ fine**, and `release`/`expose` brackets it.
    what §7a expected: `build_graph` is **~50%** of a cold match, not ~41% — steps 20–22 shrank the
    corridor read further than the graph build. **19a** removed the TEXT node key (`"{lat},{lon}"`
    formatted per vertex) for a packed i64: cold match **3327 → 2721 ms** browser, routes byte-identical,
-   no format change. **19b** (persist the graph) is what remains: ~1.3 s of 2721, a store-format change
-   + a border splice that can silently alter a route. **Its acceptance gate already exists** —
-   `tools/tile_border_gate.sh` in `make test-native` — and it found the change is LESS risky than §7a
-   assumed: the matcher is **order-insensitive** (same ways reversed/rotated → byte-identical route on 4
-   corridors), so a union may renumber nodes freely and no canonical node ordering is needed. Start 19b
-   by making that gate fail.
+   no format change. **19b is ⛔ MEASURED AND REJECTED** (§7a(2)): `tools/union_probe.loft` simulated it
+   with in-memory parts and the union is only **~13–21% cheaper** than building — it must still hash ~34k
+   part-nodes against a build's 44.7k vertices, copy every edge and rebuild the CSR — so it is worth ~8%
+   of a cold match (~215 ms of 2721) for a store-format change, a redeploy, and the plan's riskiest row.
+   Kept: `tools/tile_border_gate.sh` (in `make test-native`) and the reference `union_graphs`, whose route
+   identity that gate asserts. Re-run `union_probe` first if it is ever reopened.
 4. **The cold match still blocks ~3.4 s in ONE frozen gap** — the responsiveness problem is now that gap,
    not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
    `build_graph`, before the first stretch exists).
