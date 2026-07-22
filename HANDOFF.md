@@ -39,12 +39,18 @@ cosmetic). Every step was gated on the route staying **byte-identical** (`tools/
 - **Nothing is blocked upstream any more** (re-validated 2026-07-22, `PLAN-PERF` §7c):
   - **Step 18 (`par`) unblocked** — @PLN108's copy elision is live and default-on in 2026.7.2. The probe is
     flat (1–3 ms) across 0/61/122 MB of heap and 1/8/16 threads; it was 214 ms / 162 ms on 2026.7.1.
-  - **Step 9 is DONE; 10–13 are next.** The `expose` hang was root-caused (`expose` pins the store
-    read-only, and **iterating** a store-backed hash claims a cursor record *inside that store*, which the
-    pin rejects — reads are fine). Step 9 landed as a release/load-or-emit/expose bracket and is green:
-    JS holds a live layout handle (`descLen=1955`, 17 descriptor nodes naming the layout schema) and the
-    view output is byte-identical. **Next: step 10** — implement `readLoftValue` against that descriptor
-    and read one PTile in JS, then 11–13 switch the render one kind at a time.
+  - **Steps 9 and 10 are DONE; 11–13 are next.** The `expose` hang was root-caused (`expose` pins the
+    store read-only, and **iterating** a store-backed hash claims a cursor record *inside that store*,
+    which the pin rejects — reads are fine). Step 9 landed as a release/load-or-emit/expose bracket;
+    step 10 wired loft's own `readLoftValue` (vendored as `browser/loft-deliver.js`) plus
+    `browser/loft-store.mjs`, which indexes the pre-flattened collection so JS can reach ONE tile
+    instead of materialising all 1089. **JS now reads a tile exactly as loft reads it** —
+    `tools/deliver_probe.sh` diffs the JS walk against `tools/tile_lookup.loft` for the same tkey.
+    **Next: step 11** — read AREAS only via `flatElement`/`flatScalar`, beside the text path, and compare
+    counts in the gate; then 12–13 switch the render one kind at a time and delete the text emit.
+  - **Both bridge probes are now in `make test-map`.** Wired there deliberately: every instrument bug
+    found on 2026-07-22 was a probe no gate ran. *A probe outside a gate is a comment.* Note CI has no
+    chromium, so it runs neither `test-map` nor these — they are local-only.
 - **No warm-match regression** (`PLAN-PERF` §7e). A "warm 1.79× cold" reading was raised and **retracted
   the same day**: the profiler's `matchColdFull` stopped being cold when step 6 landed the persistent
   session, so it was measuring the nothing-changed case under a stale name. Calibrated, warm ÷ TRUE cold

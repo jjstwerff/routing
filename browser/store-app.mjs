@@ -6,6 +6,7 @@
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
+import { flatCount, flatElement, flatScalar, flatFields } from './loft-store.mjs';
 
 const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
 const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
@@ -90,6 +91,32 @@ window.__perfHooks = {
     const names = e.desc && e.desc.names ? (Array.isArray(e.desc.names) ? e.desc.names : Object.values(e.desc.names)) : [];
     return { storeBase: e.storeBase, rec: e.rec, pos: e.pos, typeId: e.typeId, descLen: e.descLen,
              descNodes: nodes, sampleNames: names.slice(0, 12), wasmMB: +(kernel.memory().buffer.byteLength / 1048576).toFixed(1) };
+  },
+  // Step 10's observable: can JS actually READ a tile out of the exposed store, or does it only hold a
+  // descriptor it cannot walk? Reads tile `i` two ways — the cheap scalar screen (no ring decoded) and
+  // the full materialisation — and reports both, so the gate can check they agree with loft's own read
+  // of the same tkey. Counts, not geometry: geometry equality is step 11's job, per kind.
+  readTile: (i) => {
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!h) return { err: 'no exposed layout handle' };
+    const mem = kernel.memory();
+    const n = flatCount(mem, h);
+    if (!n) return { err: 'exposed collection is empty' };
+    const idx = ((i % n) + n) % n;
+    const scalars = { tkey: String(flatScalar(mem, h, idx, 'tkey')),
+                      ox:   String(flatScalar(mem, h, idx, 'ox')),
+                      oy:   String(flatScalar(mem, h, idx, 'oy')) };
+    const t = flatElement(mem, h, idx);
+    const names = [];
+    for (const b of t.buildings || []) if (b.name) names.push(b.name);
+    for (const l of t.labels || []) if (l.name) names.push(l.name);
+    return { tiles: n, index: idx, scalars,
+             full: { tkey: String(t.tkey), ox: String(t.ox), oy: String(t.oy) },
+             counts: { areas: (t.areas || []).length, buildings: (t.buildings || []).length,
+                       lines: (t.lines || []).length, labels: (t.labels || []).length,
+                       pois: (t.pois || []).length },
+             ringLen: (t.areas || []).length ? t.areas[0].ring.length : ((t.buildings || []).length ? t.buildings[0].ring.length : 0),
+             sampleNames: names.slice(0, 4), fields: flatFields(h).map((f) => f.name) };
   },
   // Does the session's graph grow without bound as the user moves to NEW areas? server.loft replaces
   // tile corridors for exactly this reason ("RSS and latency blow up"). Match several sketches in
