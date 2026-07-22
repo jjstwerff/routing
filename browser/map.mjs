@@ -112,32 +112,104 @@ function areaMinZoom(ring) {
 //
 // Only `ox`/`oy`/`areas` are decoded per tile — not buildings/lines/labels/pois. That per-kind read is
 // the selectivity the text path cannot express: loft has to serialise a whole viewport or nothing.
-export function areasFromStore(mem, handle, fbox, deps) {
+// `ring_hits` — a ring overlaps the box iff its own fixed-point bbox intersects it. Empty never hits.
+function ringHits(ox, oy, ring, fbox) {
+  if (!ring.length) return false;
+  let mnla = 0, mxla = 0, mnlo = 0, mxlo = 0, first = true;
+  for (const c of ring) {
+    const la = oy + c.y, lo = ox + c.x;
+    if (first) { mnla = la; mxla = la; mnlo = lo; mxlo = lo; first = false; }
+    else {
+      if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+      if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+    }
+  }
+  return mxla >= fbox.mnla && mnla <= fbox.mxla && mxlo >= fbox.mnlo && mnlo <= fbox.mxlo;
+}
+// `pt_hits` — a single Coord inside the box (inclusive, as loft's is).
+function ptHits(ox, oy, c, fbox) {
+  const la = oy + c.y, lo = ox + c.x;
+  return la >= fbox.mnla && la <= fbox.mxla && lo >= fbox.mnlo && lo <= fbox.mxlo;
+}
+const degRing = (ox, oy, ring) => ring.map((c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7]);
+const degPt = (ox, oy, c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7];
+
+// Read the requested layer kinds out of the exposed store in ONE walk over the tiles. Mirrors
+// `emit_areas`/`emit_buildings`/`emit_lines`/`emit_pois`/`emit_labels` exactly — same hit tests, same
+// per-kind shapes, and (for labels) the same split into street labels vs places by `kind == "street"`.
+//
+// One walk, not one per kind: each `flatField` decodes a tile's vector, so five separate passes would
+// re-walk 1089 tiles five times. `want` keeps the migration incremental — a kind not asked for is not
+// decoded at all, which is the selectivity the text path cannot express.
+//
+// Returns raw hits (loft's emitted set). Apply `viewRenderLists` for the render-ready lists — the
+// per-kind drops live there, mirroring the text parsers, so the gate can still compare raw against
+// loft's own `# view:` counts.
+export function viewFromStore(mem, handle, fbox, deps, want) {
   const { flatCount, flatField } = deps;
   const n = flatCount(mem, handle);
-  const out = [];
+  const out = { areas: [], buildings: [], lines: [], pois: [], places: [], streetLabels: [] };
+  const need = (k) => want.includes(k);
+  const wantLabels = need('places') || need('streetLabels');
   for (let i = 0; i < n; i++) {
     const ox = Number(flatField(mem, handle, i, 'ox'));
     const oy = Number(flatField(mem, handle, i, 'oy'));
-    const areas = flatField(mem, handle, i, 'areas') || [];
-    for (const ar of areas) {
-      const ring = ar.ring || [];
-      if (!ring.length) continue;                   // ring_hits: an empty ring never hits
-      let mnla = 0, mxla = 0, mnlo = 0, mxlo = 0, first = true;
-      for (const c of ring) {
-        const la = oy + c.y, lo = ox + c.x;
-        if (first) { mnla = la; mxla = la; mnlo = lo; mxlo = lo; first = false; }
-        else {
-          if (la < mnla) mnla = la; if (la > mxla) mxla = la;
-          if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
-        }
+    if (need('areas')) {
+      for (const a of flatField(mem, handle, i, 'areas') || []) {
+        if (ringHits(ox, oy, a.ring, fbox)) out.areas.push({ cover: a.cover, ring: degRing(ox, oy, a.ring) });
       }
-      if (mxla >= fbox.mnla && mnla <= fbox.mxla && mxlo >= fbox.mnlo && mnlo <= fbox.mxlo) {
-        out.push({ cover: ar.cover, ring: ring.map((c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7]) });
+    }
+    if (need('buildings')) {
+      for (const b of flatField(mem, handle, i, 'buildings') || []) {
+        if (ringHits(ox, oy, b.ring, fbox)) out.buildings.push({ name: b.name, ring: degRing(ox, oy, b.ring) });
+      }
+    }
+    if (need('lines')) {
+      for (const l of flatField(mem, handle, i, 'lines') || []) {
+        if (ringHits(ox, oy, l.geom, fbox)) out.lines.push({ kind: l.kind, name: l.name, geom: degRing(ox, oy, l.geom) });
+      }
+    }
+    if (need('pois')) {
+      for (const p of flatField(mem, handle, i, 'pois') || []) {
+        if (ptHits(ox, oy, p.at, fbox)) out.pois.push({ kind: p.kind, name: p.name, at: degPt(ox, oy, p.at) });
+      }
+    }
+    if (wantLabels) {
+      for (const lb of flatField(mem, handle, i, 'labels') || []) {
+        if (lb.kind === 'street') {
+          if (need('streetLabels') && ringHits(ox, oy, lb.line, fbox)) {
+            out.streetLabels.push({ label: lb.name, line: degRing(ox, oy, lb.line) });
+          }
+        } else if (need('places')) {
+          // `lb.line[0] ?? Coord{0,0}` in emit_labels — a place with no geometry tests the origin, which
+          // is outside any real viewport. Mirror it rather than skipping, so the counts agree exactly.
+          const c = (lb.line && lb.line[0]) || { x: 0, y: 0 };
+          if (ptHits(ox, oy, c, fbox)) out.places.push({ rank: Number(lb.rank), name: lb.name, at: degPt(ox, oy, c) });
+        }
       }
     }
   }
   return out;
+}
+
+// Areas-only view of `viewFromStore`, kept because step 11's gate compares the UNFILTERED area hits
+// against loft's `A=`.
+export function areasFromStore(mem, handle, fbox, deps) {
+  return viewFromStore(mem, handle, fbox, deps, ['areas']).areas;
+}
+
+// The render-ready lists: each kind's drop mirrors its text parser, so switching a kind's source cannot
+// change what draws. `parseView`'s street-label rule is the fiddly one — it needs a NON-EMPTY label as
+// well as >=2 points, where the other kinds only bound the geometry.
+export function viewRenderLists(raw) {
+  return {
+    areas: areaRenderList(raw.areas),
+    buildings: raw.buildings.filter((b) => b.ring.length >= 3),
+    lines: raw.lines.filter((l) => l.geom.length >= 2),
+    pois: raw.pois,
+    places: raw.places,
+    streetLabels: raw.streetLabels.filter((s) => s.label && s.line.length >= 2),
+  };
 }
 
 // PLAN-PERF §0 step 12 — turn raw store hits into the render list, mirroring `parseAreas`'s TAIL so the

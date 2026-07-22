@@ -4,7 +4,7 @@
 // PLAN-BUILD B5–B7 — the standalone base-map + routing app. Fetches the two loft stores, runs the
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
-import { RouteMap, parseView, areasFromStore, areaRenderList } from './map.mjs';
+import { RouteMap, parseView, areasFromStore, viewFromStore, viewRenderLists } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 
@@ -29,6 +29,12 @@ function viewportBox(pad) {
 }
 const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= o.mnlo && i.mxlo <= o.mxlo;
 
+// PLAN-PERF §0 step 13 — which layer kinds render from the EXPOSED STORE rather than from loft's text.
+// Grown one kind per commit, each proved equal to the text path before the next is added; loft's emit
+// stays until every kind is here, and only then can it be deleted (§7f: that deletion is also what
+// collapses step 9's per-view expose bracket).
+const STORE_KINDS = ['areas', 'buildings'];
+
 let loadedBox = null, busy = false, again = false;
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
@@ -50,14 +56,15 @@ async function ensureView() {
   // while it walks the layout and re-pins on the way out (step 9's bracket), so the handle is only valid
   // once the command has returned. Both the handle and `memory()` are re-fetched every time — a
   // memory.grow during the view detaches the old buffer and moves the store.
-  const parity = { text: map.areas.length, store: -1 };
+  const textCounts = { areas: map.areas.length, buildings: map.buildings.length, lines: map.lines.length,
+                       pois: map.pois.length, places: map.places.length, streetLabels: map.streetLabels.length };
+  const parity = {};
   const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
   if (h) {
     const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
-    const storeAreas = areaRenderList(areasFromStore(kernel.memory(), h, { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] },
-                                                     { flatCount, flatField }));
-    parity.store = storeAreas.length;
-    map.areas = storeAreas;
+    const fbox = { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
+    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fbox, { flatCount, flatField }, STORE_KINDS));
+    for (const k of STORE_KINDS) { parity[k] = { text: textCounts[k], store: lists[k].length }; map[k] = lists[k]; }
   }
   loadedBox = box;
   map.render();
