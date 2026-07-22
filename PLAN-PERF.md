@@ -1110,6 +1110,29 @@ keyings.** Route fingerprints byte-identical across all 5 `match_parity` cases.
 | build_graph, native | 180 ms | 153 ms | |
 | corridor read, native | 71 ms | 29 ms | the text keys left ~34k live strings per graph; heap pressure slowed the allocating work around them |
 
+### 19b's acceptance gate exists NOW — and it already de-risked the change
+
+`tools/tile_border_gate.sh` (in `make test-native`) is §268's acceptance — *"a corridor spanning ≥2 tiles
+matches identically"* — standing **before** the change it judges:
+
+```
+#B [0] ways=7138 tiles=14 route_pts=213 crossings=6 fp=13491979666115
+#B [1] ways=7138 tiles=14 route_pts=213 crossings=6 fp=13491979666115
+#B [2] ways=4501 tiles=6  route_pts=82  crossings=5 fp=2009382494520
+#B [3] ways=552  tiles=4  route_pts=70  crossings=5 fp=1467589415931
+#B ALL PASS — every corridor spans tiles, crosses borders, and is order-insensitive
+```
+
+**The matcher is ORDER-INSENSITIVE.** Feeding the same ways REVERSED and ROTATED gives a byte-identical
+route, on all four corridors. §6b B warned the chain — way order → node/edge indices → Dijkstra
+tie-breaks → a different route from identical input — and a per-tile union necessarily numbers nodes
+differently from one global build. It does not matter: **19b's risk is the node SET it merges, not the
+order.** That removes a canonical-node-ordering requirement the change would otherwise have carried.
+
+**Non-vacuity is asserted, not hoped for.** Each corridor must span ≥2 tiles *and* its route must actually
+cross a boundary — a green run over corridors that never touch a border proves nothing. The golden check
+was verified to FIRE by perturbing one fingerprint by 1.
+
 ### 19b — persisting the graph: still the only thing left, and still the riskiest row
 
 Measured and **rejected** as a cheaper alternative: blanking the 11 text tags each `GEdge` copies moves

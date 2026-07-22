@@ -94,8 +94,12 @@ fine**, and `release`/`expose` brackets it.
    what §7a expected: `build_graph` is **~50%** of a cold match, not ~41% — steps 20–22 shrank the
    corridor read further than the graph build. **19a** removed the TEXT node key (`"{lat},{lon}"`
    formatted per vertex) for a packed i64: cold match **3327 → 2721 ms** browser, routes byte-identical,
-   no format change. **19b** (persist the graph) is what remains: ~1.3 s of 2721, still a store-format
-   change + a border splice that can silently alter a route — the riskiest row in the plan.
+   no format change. **19b** (persist the graph) is what remains: ~1.3 s of 2721, a store-format change
+   + a border splice that can silently alter a route. **Its acceptance gate already exists** —
+   `tools/tile_border_gate.sh` in `make test-native` — and it found the change is LESS risky than §7a
+   assumed: the matcher is **order-insensitive** (same ways reversed/rotated → byte-identical route on 4
+   corridors), so a union may renumber nodes freely and no canonical node ordering is needed. Start 19b
+   by making that gate fail.
 4. **The cold match still blocks ~3.4 s in ONE frozen gap** — the responsiveness problem is now that gap,
    not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
    `build_graph`, before the first stretch exists).
