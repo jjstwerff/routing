@@ -33,7 +33,7 @@ const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= 
 // Grown one kind per commit, each proved equal to the text path before the next is added; loft's emit
 // stays until every kind is here, and only then can it be deleted (§7f: that deletion is also what
 // collapses step 9's per-view expose bracket).
-const STORE_KINDS = ['areas', 'buildings', 'lines', 'pois'];
+const STORE_KINDS = ['areas', 'buildings', 'lines', 'pois', 'places', 'streetLabels'];
 
 let loadedBox = null, busy = false, again = false;
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
