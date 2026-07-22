@@ -120,5 +120,369 @@ else if (br.labelDiffs.places || br.labelDiffs.streets || br.labelDiffs.building
 else if (br.vsSnappedMaxDelta > 16) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > 16), not just by rasterisation rounding`); ok = false; }
 else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm · settles in ${br.settleFrames} frames, worst ${br.worstFrameMs}ms, ${br.blocks} blocks`);
 
+// 7. THE CLICK PATH — real mouse events, not window.__match.
+//
+// Every other match assertion here drives `window.__match(...)`, which skips the canvas listener
+// entirely. So the interaction a USER performs — click to drop a rough point, from the 2nd on re-match —
+// was never gated, and a regression in it would be invisible to this file while everything stayed green.
+// It is also hard to see by eye: the rough points render as DOTS with no line between them, so "did my
+// click land?" has no visual answer beyond a single 4-px marker.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mouse = (type, x, y, extra = {}) =>
+  call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0, ...extra });
+const click = async (x, y, settle = 250) => { await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(settle); };
+const drag = async (x0, y0, x1, y1) => {
+  await mouse('mousePressed', x0, y0);
+  for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', x0 + ((x1 - x0) * i) / 6, y0 + ((y1 - y0) * i) / 6); await sleep(16); }
+  await mouse('mouseReleased', x1, y1);
+  await sleep(250);
+};
+// Assert on the LAYER's array, not on map.points: they are the same array by reference, and the layer is
+// what owns it (PLAN-EDIT failure path 11).
+const nPts = () => ev('window.__rough.points.length');
+// Reset the CAMERA as well as the sketch. The P1 assertion below deliberately pans, so without this each
+// gesture test would run wherever its predecessors left the map — and a route's length depends on where
+// you drew it. That coupling already bit once: E4's assertion failed not because the delete was broken
+// but because the clicks had drifted somewhere with a genuinely 2-point route.
+const HOME = { lat: 52.2215, lon: 6.8937, zoom: 16 };
+const resetSketch = async () => {
+  await ev(`window.__rough.clear();
+    Object.assign(window.__map0.camera, ${JSON.stringify(HOME)});
+    window.__map0.render();
+    window.__storeApp.routePts = 0; window.__storeApp.matchRuns = 0;`);
+  await sleep(400);
+};
+
+await resetSketch();
+const seen = [];
+for (const [x, y] of [[300, 200], [520, 330], [700, 180]]) {
+  await click(x, y);
+  const st3 = JSON.parse((await ev('(() => JSON.stringify({ pts: window.__rough.points.length, route: window.__storeApp.routePts || 0 }))()')) || '{}');
+  seen.push(st3);
+}
+// A click must ALWAYS add a rough point; the route only appears from the 2nd click on.
+const ptsOk = seen.length === 3 && seen[0].pts === 1 && seen[1].pts === 2 && seen[2].pts === 3;
+if (!ptsOk) { console.log('  FAIL: clicks did not add rough points —', JSON.stringify(seen)); ok = false; }
+else if (!(seen[2].route > 2)) { console.log('  FAIL: three clicks drew no route —', JSON.stringify(seen)); ok = false; }
+else console.log(`  ✓ the click path works: 3 clicks → 3 rough points, route ${seen[2].route} pts`);
+
+// 7a. PLAN-EDIT E1 — the sketch is VISIBLE: a dashed line between the points, not just isolated dots.
+//
+// Asserted by isolating the sketch's own pixels: capture a box on the segment BETWEEN two rough points,
+// re-render with the points hidden, and capture again. If the two differ, something was drawn there — and
+// the box is placed away from every point, so that something can only be the line. Comparing colours
+// instead would be fragile: the route's #1a73e8 and the sketch's #2b6cff are near-neighbours, and a 0.9
+// alpha over the map shifts both.
+const lineSeen = JSON.parse(await ev(`(() => {
+  const m = window.__map0, p = m.points, d = m.dpr, ctx = m.canvas.getContext('2d');
+  if (p.length < 2) return JSON.stringify({ err: 'need 2 points' });
+  const a = m.project(p[0].lat, p[0].lon), b = m.project(p[1].lat, p[1].lon);
+  const sum = (box) => { let s = 0; for (let i = 0; i < box.length; i++) s = (s * 31 + box[i]) >>> 0; return s; };
+  const grab = (t, half) => {
+    const x = Math.round((a.x + (b.x - a.x) * t) * d), y = Math.round((a.y + (b.y - a.y) * t) * d);
+    return ctx.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data;
+  };
+  const mids = [0.35, 0.5, 0.65];
+  const withSketch = mids.map((t) => sum(grab(t, 8)));
+  const saved = m.points;
+  m.points = []; m.render();                                  // hide ONLY the sketch; route untouched
+  const without = mids.map((t) => sum(grab(t, 8)));
+  m.points = saved; m.render();                               // restore the shared array by reference
+  const dist = Math.round(Math.hypot(b.x - a.x, b.y - a.y));
+  return JSON.stringify({ changed: mids.filter((_, i) => withSketch[i] !== without[i]).length,
+                          of: mids.length, segPx: dist, rough: m._stats.rough, shared: m.points === saved });
+})()`));
+if (lineSeen.err) { console.log(`  FAIL: could not sample the sketch line — ${lineSeen.err}`); ok = false; }
+else if (lineSeen.rough !== 3) { console.log(`  FAIL: render() drew ${lineSeen.rough} rough points (want 3)`); ok = false; }
+else if (lineSeen.changed === 0) { console.log(`  FAIL: nothing is drawn BETWEEN the rough points — the sketch is still isolated dots (segment ${lineSeen.segPx}px)`); ok = false; }
+else if (!lineSeen.shared) { console.log('  FAIL: map.points is no longer the layer\'s array after a re-render'); ok = false; }
+else console.log(`  ✓ the sketch draws a LINE: ${lineSeen.changed}/${lineSeen.of} mid-segment samples change when it is hidden (E1)`);
+
+// 7b. PLAN-EDIT E0 / §2 P1 — a PAN DRAG must not append a point.
+// map.mjs bound mousedown→pan and store-app.mjs bound click→append, and a browser fires `click` after a
+// mouseup even if the pointer travelled 200 px: every pan silently dropped a rough point into the sketch.
+// It hid for two months because a rough point is one unlabelled dot.
+await resetSketch();
+const camBefore = await ev('JSON.stringify(window.__map0.camera)');
+await drag(300, 200, 520, 330);
+const afterPan = await nPts();
+const camAfter = await ev('JSON.stringify(window.__map0.camera)');
+if (afterPan !== 0) { console.log(`  FAIL: a pan drag appended ${afterPan} rough point(s) — pan and append are not separated`); ok = false; }
+else if (camBefore === camAfter) { console.log('  FAIL: the drag did not pan the camera either — input dispatch is broken, not just fixed'); ok = false; }
+else console.log('  ✓ a pan drag appends 0 points and DOES pan the camera (P1)');
+
+// 7c. PLAN-EDIT E0 / §2 P2 — a double-click must drop ONE point, not two.
+// This is also the precondition for E4's double-click-to-delete: that gesture is unreachable while the
+// first click of it appends a point.
+await resetSketch();
+await click(400, 300, 60);
+await click(401, 301, 400);
+const afterDbl = await nPts();
+if (afterDbl !== 1) { console.log(`  FAIL: a double-click produced ${afterDbl} points (want 1) — the 250ms dedupe is not holding`); ok = false; }
+else console.log('  ✓ a double-click drops exactly 1 point (P2)');
+
+// 7c2. PLAN-EDIT E2 — press ON the line and drag: one gesture inserts a point AND positions it.
+//
+// Driven with real mouse events, because the whole gesture only exists in the browser: the press must
+// resolve to a segment, the move must carry the new point, and the release must leave exactly one extra
+// point between the right neighbours. The unit tier pins the geometry; this pins that the wiring is real.
+await resetSketch();
+await click(260, 180); await click(720, 460);
+await sleep(2500);
+const sweep = JSON.parse(await ev(`(() => {
+  const m = window.__map0, r = window.__rough;
+  const a = m.project(r.points[0].lat, r.points[0].lon), b = m.project(r.points[1].lat, r.points[1].lon);
+  return JSON.stringify({ n: r.points.length, midx: Math.round((a.x + b.x) / 2), midy: Math.round((a.y + b.y) / 2) });
+})()`));
+await mouse('mousePressed', sweep.midx, sweep.midy);
+for (let i = 1; i <= 6; i++) { await mouse('mouseMoved', sweep.midx + i * 12, sweep.midy - i * 9); await sleep(16); }
+await mouse('mouseReleased', sweep.midx + 72, sweep.midy - 54);
+await sleep(300);
+const after = JSON.parse(await ev(`(() => {
+  const m = window.__map0, r = window.__rough;
+  const p = r.points, s = p.length === 3 ? m.project(p[1].lat, p[1].lon) : null;
+  return JSON.stringify({ n: p.length, x: s ? Math.round(s.x) : -1, y: s ? Math.round(s.y) : -1,
+                          ids: p.map((q) => q.id).join(','), rough: m._stats.rough }); })()`));
+const wantX = sweep.midx + 72, wantY = sweep.midy - 54;
+if (after.n !== 3) { console.log(`  FAIL: the sweep left ${after.n} points (want 3) — press-on-segment did not insert`); ok = false; }
+else if (Math.abs(after.x - wantX) > 6 || Math.abs(after.y - wantY) > 6) {
+  console.log(`  FAIL: the inserted point sits at (${after.x},${after.y}), not where the drag released (${wantX},${wantY})`); ok = false;
+} else if (after.rough !== 3) { console.log(`  FAIL: the sketch rendered ${after.rough} points after the sweep`); ok = false; }
+else console.log(`  ✓ press-on-line + drag inserts ONE point between its neighbours, at the release (ids ${after.ids}) (E2)`);
+
+// 7c3. PLAN-EDIT E3 — drag a point: the route follows, and the drag does not queue a match per frame.
+//
+// Two things are asserted, and the second is the one with a number behind it: a warm match is ~545 ms
+// throttled while a drag emits ~33 moves/s, so matching per move would owe ~36 s for a two-second drag.
+// The coalescer must collapse them — AND the route that survives must be the one for where the point
+// finally landed, which is checked by re-matching the settled sketch and requiring an identical route.
+await resetSketch();
+await click(300, 220); await click(560, 400); await click(760, 200);
+await sleep(3000);
+const grab = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
+  const s = m.project(p.lat, p.lon);
+  window.__storeApp.matchRuns = 0;
+  return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y) }); })()`));
+const MOVES = 20;
+await mouse('mousePressed', grab.x, grab.y);
+for (let i = 1; i <= MOVES; i++) { await mouse('mouseMoved', grab.x + i * 5, grab.y + i * 4); await sleep(16); }
+await mouse('mouseReleased', grab.x + MOVES * 5, grab.y + MOVES * 4);
+for (let i = 0; i < 60 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
+await sleep(2000);
+const dragged = JSON.parse(await ev(`(() => { const m = window.__map0, r = window.__rough;
+  const p = r.points[1], s = m.project(p.lat, p.lon);
+  const h = m.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7);
+  return JSON.stringify({ n: r.points.length, x: Math.round(s.x), y: Math.round(s.y),
+                          runs: window.__storeApp.matchRuns, route: m.route.length, hash: h }); })()`));
+// Re-match the settled sketch: if the drag's final position was dropped, the displayed route differs.
+const reHash = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+const wx = grab.x + MOVES * 5, wy = grab.y + MOVES * 4;
+if (dragged.n !== 3) { console.log(`  FAIL: the drag changed the point count to ${dragged.n}`); ok = false; }
+else if (Math.abs(dragged.x - wx) > 6 || Math.abs(dragged.y - wy) > 6) {
+  console.log(`  FAIL: the dragged point is at (${dragged.x},${dragged.y}), not where it was released (${wx},${wy})`); ok = false;
+} else if (!(dragged.runs < MOVES)) {
+  console.log(`  FAIL: ${MOVES} move events produced ${dragged.runs} matches — the drag is matching per frame, not coalescing`); ok = false;
+} else if (dragged.hash !== reHash) {
+  console.log(`  FAIL: the drawn route is STALE — re-matching the settled sketch gives a different route (${dragged.hash} vs ${reHash})`); ok = false;
+} else console.log(`  ✓ drag: the point follows and the route is the settled sketch's, in ${dragged.runs} matches for ${MOVES} moves (E3)`);
+
+// 7c4. PLAN-EDIT E4 — delete a point: double-click (mouse) and select + the Delete button (touch).
+await resetSketch();
+await click(300, 220); await click(560, 400); await click(760, 200);
+await sleep(3000);
+const midAt = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
+  const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y), id: p.id }); })()`));
+await click(midAt.x, midAt.y, 120);
+const sel = JSON.parse(await ev(`JSON.stringify({ selected: window.__rough.selectedIds()[0],
+  btn: document.getElementById('rough-delete').classList.contains('hidden'), n: window.__rough.points.length })`));
+await click(midAt.x, midAt.y, 120);          // the second click of a double-click, inside 250 ms
+await sleep(2500);
+const del = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  gone: !window.__rough.points.some((p) => p.id === ${midAt.id}), route: window.__map0.route.length,
+  hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7),
+  btn: document.getElementById('rough-delete').classList.contains('hidden') })`));
+// Same anti-staleness check as E3, and for the same reason: "the route is non-empty" would pass on a
+// route left over from before the delete. Re-matching the settled sketch must reproduce it exactly.
+const delRe = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+if (sel.selected !== midAt.id) { console.log(`  FAIL: a single click did not select the point (selected=${sel.selected})`); ok = false; }
+else if (sel.btn !== false) { console.log('  FAIL: selecting a point did not reveal the Delete button'); ok = false; }
+else if (sel.n !== 3) { console.log(`  FAIL: selecting changed the sketch (${sel.n} points)`); ok = false; }
+else if (del.n !== 2 || !del.gone) { console.log(`  FAIL: the double-click left ${del.n} points, target gone=${del.gone}`); ok = false; }
+else if (!(del.route >= 2)) { console.log(`  FAIL: the route did not re-match after the delete (${del.route} pts)`); ok = false; }
+else if (del.hash !== delRe) { console.log(`  FAIL: the route after the delete is STALE — a re-match differs (${del.hash} vs ${delRe})`); ok = false; }
+else if (del.btn !== true) { console.log('  FAIL: the Delete button stayed visible after the point went'); ok = false; }
+else console.log(`  ✓ click selects (button shown), double-click deletes and re-matches to the settled sketch (${del.route} route pts) (E4)`);
+
+// 7c5. PLAN-EDIT E4 / failure path 8 — deleting below 2 points must DEGRADE, not throw.
+// The matcher needs two points; the app must say so and clear the route rather than leave a stale line
+// on screen describing a sketch that no longer exists.
+await ev('window.__rough.select(window.__rough.points[1].id);');
+await ev("document.getElementById('rough-delete').click();");
+await sleep(2000);
+const one = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hud: document.getElementById('hud').textContent })`));
+if (one.n !== 1) { console.log(`  FAIL: the Delete button left ${one.n} points (want 1)`); ok = false; }
+else if (one.route !== 0) { console.log(`  FAIL: a 1-point sketch still shows a ${one.route}-pt route — it is stale`); ok = false; }
+else if (!/add ≥2/.test(one.hud)) { console.log(`  FAIL: the HUD does not say a point is missing — "${one.hud}"`); ok = false; }
+else console.log(`  ✓ the Delete button works and 1 point degrades cleanly: "${one.hud}" (E4)`);
+
+// 7c6. PLAN-EDIT E5 — select a contiguous RANGE and bulk-delete it.
+//
+// DESIGN.md §1 calls this "the biggest lever when editing a route someone else already made": tap the
+// first and last point of a stretch, then delete the lot; whatever survives at the ends becomes the new
+// start/finish. Driven with real clicks so the range comes from the hit test, not from an API call.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const before5 = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  ids: window.__rough.points.map((p) => p.id) })`));
+const ptAt = async (i) => JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[${i}];
+  const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y) }); })()`));
+const a5 = await ptAt(1), b5 = await ptAt(3);
+await click(a5.x, a5.y, 400);                 // 400 ms apart, so neither pair reads as a double-click
+await click(b5.x, b5.y, 400);
+const ranged = JSON.parse(await ev(`JSON.stringify({ sel: window.__rough.selectedIds(),
+  label: document.getElementById('rough-delete').textContent,
+  hidden: document.getElementById('rough-delete').classList.contains('hidden') })`));
+await ev("document.getElementById('rough-delete').click();");
+await sleep(3000);
+const bulk = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  ids: window.__rough.points.map((p) => p.id), route: window.__map0.route.length,
+  sel: window.__rough.selectedIds().length, shared: window.__map0.points === window.__rough.points,
+  hidden: document.getElementById('rough-delete').classList.contains('hidden') })`));
+const wantSurvivors = `${before5.ids[0]},${before5.ids[4]}`;
+if (before5.n !== 5) { console.log(`  FAIL: expected a 5-point sketch, got ${before5.n}`); ok = false; }
+else if (ranged.sel.length !== 3) { console.log(`  FAIL: tapping two points selected ${ranged.sel.length}, not the 3-point range`); ok = false; }
+else if (ranged.hidden || ranged.label !== 'Delete 3 points') { console.log(`  FAIL: the button reads "${ranged.label}" (hidden=${ranged.hidden})`); ok = false; }
+else if (bulk.n !== 2 || bulk.ids.join() !== wantSurvivors) { console.log(`  FAIL: bulk delete left [${bulk.ids}] (want [${wantSurvivors}])`); ok = false; }
+else if (!bulk.shared) { console.log('  FAIL: bulk delete REPLACED the shared points array — the renderer now holds the pre-delete sketch'); ok = false; }
+else if (!(bulk.route >= 2) || bulk.sel !== 0 || !bulk.hidden) { console.log(`  FAIL: after the bulk delete route=${bulk.route} sel=${bulk.sel} hidden=${bulk.hidden}`); ok = false; }
+else console.log(`  ✓ tap-first + tap-last selects 3, "${ranged.label}" removes them, ends re-role, route re-matches (${bulk.route} pts) (E5)`);
+
+// 7c7. PLAN-EDIT E6 — undo/redo, driven by REAL Ctrl+Z keystrokes and the snackbar's own button.
+//
+// DESIGN.md §1 makes undo a primitive with two surfaces: Ctrl+Z on desktop, and a brief "Deleted N · Undo"
+// offer after a bulk delete on a phone (the one risky op — single edits are self-correcting).
+const key = async (k, mods = 0) => {
+  for (const type of ['keyDown', 'keyUp']) {
+    await call('Input.dispatchKeyEvent', { type, key: k, code: `Key${k.toUpperCase()}`, modifiers: mods,
+                                           windowsVirtualKeyCode: k.toUpperCase().charCodeAt(0) });
+  }
+  await sleep(600);
+};
+await resetSketch();
+for (const [x, y] of [[260, 440], [420, 340], [600, 260], [740, 180]]) await click(x, y);
+await sleep(3500);
+const base6 = JSON.parse(await ev('JSON.stringify({ n: window.__rough.points.length, ids: window.__rough.points.map((p) => p.id) })'));
+await key('z', 2);                            // Ctrl+Z  (modifiers: 2 = Ctrl)
+const u1 = await ev('window.__rough.points.length');
+await key('z', 2);
+const u2 = await ev('window.__rough.points.length');
+await key('z', 10);                           // Ctrl+Shift+Z = redo  (2|8)
+const r1 = await ev('window.__rough.points.length');
+await sleep(2000);
+const redone = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7) })`));
+const redoRe = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+if (base6.n !== 4) { console.log(`  FAIL: expected 4 points before undo, got ${base6.n}`); ok = false; }
+else if (u1 !== 3 || u2 !== 2) { console.log(`  FAIL: two Ctrl+Z gave ${u1} then ${u2} points (want 3 then 2)`); ok = false; }
+else if (r1 !== 3) { console.log(`  FAIL: Ctrl+Shift+Z redid to ${r1} points (want 3)`); ok = false; }
+else if (redone.hash !== redoRe) { console.log(`  FAIL: the route after undo/redo is STALE — a re-match differs (${redone.hash} vs ${redoRe})`); ok = false; }
+else console.log(`  ✓ Ctrl+Z walks back 4→3→2 and Ctrl+Shift+Z redoes to 3, re-matching each time (E6)`);
+
+// 7c8. The bulk-delete snackbar, and its one-tap restore.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const s1 = await ptAt(1), s3 = await ptAt(3);
+await click(s1.x, s1.y, 400);
+await click(s3.x, s3.y, 400);
+await ev("document.getElementById('rough-delete').click();");
+await sleep(2500);
+const snack = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  hidden: document.getElementById('undo-snackbar').classList.contains('hidden'),
+  label: document.getElementById('undo-snack-label').textContent })`));
+await ev("document.getElementById('undo-snack-btn').click();");
+await sleep(2500);
+const back = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hidden: document.getElementById('undo-snackbar').classList.contains('hidden') })`));
+if (snack.n !== 2) { console.log(`  FAIL: the bulk delete left ${snack.n} points (want 2)`); ok = false; }
+else if (snack.hidden || snack.label !== 'Deleted 3 · ') { console.log(`  FAIL: no snackbar after a bulk delete (hidden=${snack.hidden}, "${snack.label}")`); ok = false; }
+else if (back.n !== 5) { console.log(`  FAIL: the snackbar's Undo restored ${back.n} points (want 5)`); ok = false; }
+else if (!back.hidden) { console.log('  FAIL: the snackbar stayed up after its offer was taken'); ok = false; }
+else if (!(back.route >= 2)) { console.log(`  FAIL: the route did not re-match after the undo (${back.route} pts)`); ok = false; }
+else console.log(`  ✓ a bulk delete offers "${snack.label}Undo" and one tap restores all 5, re-matching (${back.route} pts) (E6)`);
+
+// 7c9. PLAN-EDIT E7 — shift+drag box select (desktop), with the real SHIFT modifier.
+await resetSketch();
+for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
+await sleep(3500);
+const q1 = await ptAt(1), q3 = await ptAt(3);
+const bx0 = Math.min(q1.x, q3.x) - 25, by0 = Math.min(q1.y, q3.y) - 25;
+const bx1 = Math.max(q1.x, q3.x) + 25, by1 = Math.max(q1.y, q3.y) + 25;
+await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: bx0, y: by0, button: 'left', clickCount: 1, buttons: 1, modifiers: 8 });
+for (let i = 1; i <= 6; i++) {
+  await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bx0 + ((bx1 - bx0) * i) / 6, y: by0 + ((by1 - by0) * i) / 6, button: 'left', buttons: 1, modifiers: 8 });
+  await sleep(16);
+}
+const midBox = JSON.parse(await ev(`JSON.stringify({ shown: !document.getElementById('select-box').classList.contains('hidden'),
+  w: document.getElementById('select-box').style.width })`));
+await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bx1, y: by1, button: 'left', buttons: 0, modifiers: 8 });
+await sleep(400);
+const boxed = JSON.parse(await ev(`JSON.stringify({ sel: window.__rough.selectedIds().length,
+  n: window.__rough.points.length, label: document.getElementById('rough-delete').textContent,
+  hidden: document.getElementById('select-box').classList.contains('hidden') })`));
+if (!midBox.shown) { console.log('  FAIL: the rubber band never appeared during the shift-drag'); ok = false; }
+else if (boxed.n !== 5) { console.log(`  FAIL: the box-drag changed the sketch (${boxed.n} points, want 5)`); ok = false; }
+else if (boxed.sel !== 3) { console.log(`  FAIL: the box selected ${boxed.sel} points, not the 3-point span`); ok = false; }
+else if (!boxed.hidden) { console.log('  FAIL: the rubber band stayed up after release'); ok = false; }
+else console.log(`  ✓ shift+drag boxes a ${boxed.sel}-point range ("${boxed.label}"), band ${midBox.w} wide then hidden (E7)`);
+
+// 7c10. PLAN-EDIT §2 P5 as a STANDING measurement, not a design-time probe.
+//
+// The whole editor rests on insert and delete riding the same incremental path as a move rather than
+// falling back to a cold rebuild. It was measured once while designing; here it is re-checked on every
+// gate run, because a probe outside a gate is a comment. Unthrottled the margin is large (a cold match is
+// ~10× a warm one), so the threshold is deliberately loose — this catches a STRUCTURAL regression, not
+// a few ms of noise on a loaded box.
+const SK = '[[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]]';
+const p5 = JSON.parse(await ev(`(async () => { const K = window.__perfHooks;
+  if (!K.matchInsert || !K.matchDelete) return JSON.stringify({ err: 'hooks missing' });
+  const cold = (await K.matchTrueCold(${SK})).kernel;
+  const ins = (await K.matchInsert(${SK})).kernel;
+  const del = (await K.matchDelete(${SK})).kernel;
+  return JSON.stringify({ cold: Math.round(cold), ins: Math.round(ins), del: Math.round(del) }); })()`));
+if (p5.err) { console.log(`  FAIL: ${p5.err} — PLAN-EDIT §2 P5 is no longer measurable`); ok = false; }
+else if (!(p5.ins < p5.cold * 0.6 && p5.del < p5.cold * 0.6)) {
+  console.log(`  FAIL: insert ${p5.ins}ms / delete ${p5.del}ms vs cold ${p5.cold}ms — they no longer ride the incremental path (PLAN-EDIT §2 P5)`); ok = false;
+} else console.log(`  ✓ insert ${p5.ins}ms and delete ${p5.del}ms stay WARM against a ${p5.cold}ms cold match (P5)`);
+
+// 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
+// `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared
+// with the view loader, so the drawn route silently described an older sketch: measured 1417 m from the
+// last rough point. The queue coalesces instead — latest wins, nothing is dropped.
+await resetSketch();
+await click(300, 200); await click(520, 330);
+await sleep(2500);
+await click(700, 180, 120);        // these two land inside the previous match
+await click(760, 420, 120);
+for (let i = 0; i < 40 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
+await sleep(1500);
+const fresh = JSON.parse(await ev(`(() => { const p = window.__rough.points, r = window.__map0.route;
+  if (!p.length || !r.length) return JSON.stringify({ gapM: -1, pts: p.length, route: r.length, runs: window.__storeApp.matchRuns });
+  const last = p[p.length - 1], end = r[r.length - 1];
+  return JSON.stringify({ gapM: Math.round(Math.hypot((last.lat - end[0]) * 111000, (last.lon - end[1]) * 68000)),
+                          pts: p.length, route: r.length, runs: window.__storeApp.matchRuns }); })()`));
+if (fresh.pts !== 4) { console.log(`  FAIL: rapid clicks lost a point (${fresh.pts} of 4)`); ok = false; }
+else if (!(fresh.gapM >= 0 && fresh.gapM < 200)) { console.log(`  FAIL: the route is STALE — it ends ${fresh.gapM} m from the last rough point (a click during a match was dropped)`); ok = false; }
+// `runs` is reported, not asserted: whether the last two clicks coalesce depends on how fast the machine
+// finishes the match between them, and a gate that asserted a coalesce count would fail on a fast box for
+// being fast. What must ALWAYS hold is freshness — the route describes the sketch that exists now. The
+// coalescing itself is pinned deterministically in map.test.mjs, where the timing is ours to choose.
+else console.log(`  ✓ a click during a match still matches: route ends ${fresh.gapM} m from the last point (${fresh.runs} match runs for 3 requests) (P4)`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

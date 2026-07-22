@@ -70,6 +70,9 @@ const probe = `(async () => {
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.matchExtend = [];
   if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
+  out.matchInsert = []; out.matchDelete = [];
+  if (K.matchInsert) for (let i = 0; i < ${N}; i++) out.matchInsert.push(await K.matchInsert(SKETCH));
+  if (K.matchDelete) for (let i = 0; i < ${N}; i++) out.matchDelete.push(await K.matchDelete(SKETCH));
   out.renderBudget = K.renderBudget ? await K.renderBudget(${N}) : null;
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
@@ -155,6 +158,21 @@ if (res.matchWarm?.length) {
   console.log('\n=== MATCH WARM (one point MOVED ~20m — inside the corridor) — x' + res.matchWarm.length + ' (ms) ===');
   console.log('             median   min–max   spread');
   for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchWarm.map((r) => r[k]));
+}
+// PLAN-EDIT §2 P5: the editor rests on insert and delete riding the SAME incremental path as a move
+// rather than falling back to a cold rebuild. Reported beside warm and cold so the claim is re-checkable.
+for (const [name, arr] of [['INSERT', res.matchInsert], ['DELETE', res.matchDelete]]) {
+  if (!arr?.length) continue;
+  console.log(`\n=== MATCH ${name} (one interior point ${name === 'INSERT' ? 'added' : 'removed'} — PLAN-EDIT E2/E4) — x${arr.length} (ms) ===`);
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'total']) row(k, arr.map((r) => r[k]));
+}
+if (res.matchCold?.length && res.matchInsert?.length && res.matchDelete?.length) {
+  const c = med(res.matchCold.map((r) => r.kernel));
+  const i = med(res.matchInsert.map((r) => r.kernel)), d = med(res.matchDelete.map((r) => r.kernel));
+  console.log(`\n  P5: insert ${Math.round(i)}ms and delete ${Math.round(d)}ms vs cold ${Math.round(c)}ms ` +
+              `— ${(i / c * 100).toFixed(0)}% / ${(d / c * 100).toFixed(0)}% of a cold match ` +
+              `(${i < c * 0.6 && d < c * 0.6 ? 'both WARM — the incremental path covers them' : '⚠ NOT warm — re-open PLAN-EDIT §2 P5'})`);
 }
 if (res.matchWarm?.length && res.matchCold?.length) {
   const c = med(res.matchCold.map((r) => r.kernel)), w = med(res.matchWarm.map((r) => r.kernel));

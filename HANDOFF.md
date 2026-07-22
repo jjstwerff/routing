@@ -39,8 +39,16 @@ and nothing since — were gated on a 26-sketch corpus with **0 worse accepted**
 2. **loft is out of the view path** (steps 9–13) — JS reads the layout store from wasm memory through
    @PLN105's `expose` bridge; `view` emits roads only, **no layout text at all** (was 4.25 MB/view). A
    per-tile feature extent (§7g) then lets a viewport read **6% of the tiles**.
-3. **The match ladder** (step 22) — cell-tube corridor first, escalating to the fat bbox when a
-   margin-relative gate rejects it. ~65% fewer ways when accepted.
+3. **The match ladder** (step 22, and §7p) — cell-tube corridor first, escalating to the fat bbox when a
+   margin-relative gate rejects it. ~65% fewer ways when accepted. **Both consumers now run it**: the
+   browser kernel and, since §7p, `server/server.loft`'s TILE branch — slotted inside that branch so the
+   server's widening loop and its tiles-replace / Overpass-accumulates policy are untouched, with the
+   **Overpass path deliberately left OFF the ladder** (the corpus does not cover it). `tier_ok` +
+   `TIER_*` + `DEV_MARGIN_K` live in `routing_kernel` for that reason — the server must not pull in
+   `map_kernel`'s basemap deps to reach a corridor-quality gate.
+   ⚠ The gate's K was swept on `cycling_road`; the server defaults to `walking_paved`, so it was
+   **re-swept before wiring** (§7p): K=6 gives 0 worse there too, first bad acceptance at K=9. Worth
+   ~13% of a server tile match — less than on cycling, so size it before spending.
 4. **JS stopped COPYING the store** (step 14, §6c) — a `vector<Coord>` is *already* an interleaved
    `Int32Array`, so the renderer reads coordinates straight out of wasm memory instead of materialising a
    viewport as 239k JS objects. This is the fix "pre-project into typed arrays" would have missed — it
@@ -82,15 +90,58 @@ past it after it has quietly opened.
 
 ---
 
-## 3. Resume here (2026-07-22)
+## 2a. ✅ DONE — the rough-layer editor is ported (2026-07-23)
+
+**The standalone app can now RESHAPE a sketch, not just append to it.** `DESIGN.md` §1's primitive set is
+live: **place · drag · insert (tap + sweep) · delete (double-click / select + Delete) · contiguous-range
+multi-select + bulk delete · undo/redo · shift-drag box select.** Plan of record and full write-up:
+**[`PLAN-EDIT.md`](PLAN-EDIT.md)** — steps E0–E7, all done, its §9 is the definition-of-done check.
+
+**The shape of it.** One module, `browser/rough.mjs`, owns the sketch and every input that can change it.
+Three chokepoints carry the invariant (*one road in, one road out*): **input dispatch** (one pointer
+handler classifies pan · move · box and delegates the camera to `map.dragTo`), **`commitEdit`** (the only
+path from a mutation to a redraw, a match request and an undo record), and **`KernelQueue`** (the only road
+to the kernel — one job at a time, latest-wins per key). `map.mjs` draws the sketch in the overlay pass
+inside the snapped-origin block; it owns pixels, the layer owns state.
+
+**Three defects that predate the work, found by probing and now gated:**
+- a **pan drag appended a spurious rough point** (two files bound input and neither knew about the other);
+- a **click during a match was silently dropped** — the drawn route ended **1417 m** from the last point;
+- `renderSnappedDirect` drew **different overlays** than `render`, so the two produced different pictures.
+
+**Performance is unmoved, and P5 now runs in a gate.** `CPU_THROTTLE=4`, medians of 6, spreads 1.1–1.2×
+(⚠ load ~4, a sibling tree building): warm-move **347 ms** against 343 on record, cold **1535** against
+1450. The two edits the editor added ride the same incremental path — **insert 323 ms · delete 370 ms**,
+20–23% of a cold match — and `__perfHooks.matchInsert`/`matchDelete` plus a `make test-map` assertion keep
+that verdict re-checkable instead of re-derived.
+
+⚠ **A drag cannot re-match per frame**, and this is why the queue exists: a warm match is ~350–545 ms while
+a drag emits ~33 moves/second. Measured, **20 move events → 6–8 matches**, with the drawn route
+byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier feedback is the rule — the
+**rough line is instant** (pure JS, every frame), the **matched route is lag-tolerant**.
+
+**If you extend the editor, three rules the work paid for:**
+1. `map.points` and the layer's array are **ONE array**. Mutate in place (`push`/`splice`/`length = 0`);
+   re-assigning it leaves the renderer holding the old sketch (PLAN-EDIT failure path 11).
+2. Anything keyed on a **screen position** breaks when the map moves under it. Key on the point's **`id`**.
+3. A gesture must commit **exactly once**, and only when it really changed something — that single fact is
+   what makes undo, the coalescer and the match count all come out right.
+
+
+## 3. Resume here (2026-07-23)
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
   the matcher work. Then `CLAUDE.md` § "Read the reference before you write".
 - **Toolchain:** installed loft is **2026.7.2**. Routing absorbed the @PLN110 `len`/`size` flip with no
   source edits.
 - **Gates** — `make test`, `test-native` (now includes **`tools/tile_border_gate.sh`**), `test-wasm`,
-  `test-map` (browser render + the @PLN105 bridge probes + the step-18 threading tripwire), and
+  `test-map` (browser render + the @PLN105 bridge probes + the step-18 threading tripwire + **the whole
+  rough-editor gesture suite**, driven with real `Input.dispatchMouseEvent` / keystrokes / SHIFT), and
   **`tools/match_parity.sh`**. ⚠ **CI has no chromium**, so `test-map` and the bridge gates are local-only.
+  `browser/map.test.mjs` is the DOM-free tier beneath it (projection, pan/zoom, and every editor
+  invariant that is pure logic) — it runs first inside `map_render_gate.sh` and needs no browser.
+  ⚠ `map_render_gate.sh` also **greps** what no run can see: every pointer/click listener lives in
+  `rough.mjs`, and the app reaches the kernel from exactly **two** places, both inside queued jobs.
 - **Instruments** (durable, in `tools/`): `map_profile.sh` (**always `CPU_THROTTLE=4`**),
   `match_parity.sh`, `tile_border_gate.sh` + `tile_border_probe.loft` (routes across tile borders,
   order-insensitivity), `corpus_anchor.loft` (§7 quality per sketch — the gate for ROUTE-AFFECTING
@@ -124,7 +175,11 @@ match 88**. In the browser a cold match is 1450 ms and a warm one 343 ms.
 - **Store-format changes fail SILENTLY** — an old-schema store gives no output, no error, exit 1. And the
   file size can be byte-identical after adding fields; read a field to verify, not `ls`.
 
-- **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
+- **Known-stale below:** §§4–11 predate the `lib/` package layout and the store app; treat them as
+  history. (They were §§2–9 before §§1–3 were rewritten — the range was renumbered with them.)
+  ⚠ Two things in §9 are already stale in a way that matters: **PR #8 is closed** (no PRs are open), and
+  Track 1d's "Leaflet base map" was superseded — the app has its **own canvas renderer** (PLAN-MAP), which
+  is what §§1–3 describe.
 
 ---
 

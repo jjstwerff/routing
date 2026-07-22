@@ -18,8 +18,40 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 
-# 1. Projection invariant (no browser needed).
+# 1. Projection invariant + the PLAN-EDIT E0 chokepoints (no browser needed).
 node "$here/browser/map.test.mjs" || exit 1
+
+# 1b. PLAN-EDIT E0 — the chokepoints must stay SINGULAR, which is a property of the SOURCE, not of a run.
+# A second pointer binding or a second road to the kernel is invisible at runtime until the two disagree, and
+# that is exactly how P1 (a pan appending a point) and P4 (a dropped match) survived for two months. Count
+# the sites instead: the invariant is "one road in, one road out" (PLAN-EDIT §4).
+echo "== PLAN-EDIT E0: the chokepoints are singular =="
+e0rc=0
+ptr=$(grep -cE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" "$here/browser/rough.mjs")
+stray=$(grep -nE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" \
+        "$here/browser/store-app.mjs" "$here/browser/map.mjs" || true)
+if [ -n "$stray" ]; then
+  echo "  FAIL: a pointer/click listener lives outside rough.mjs — input dispatch is no longer a chokepoint:"; echo "$stray"; e0rc=1
+elif [ "$ptr" -lt 4 ]; then
+  echo "  FAIL: rough.mjs binds $ptr pointer listeners (expected the 4 of the one dispatcher)"; e0rc=1
+else
+  echo "  ✓ every pointer/click listener is in rough.mjs ($ptr of them, one dispatcher)"
+fi
+# Reaching the kernel outside the queue re-opens P4 — and `runKernel` keeps ONE resolve slot, so a second
+# road to it does not merely race, it orphans a promise. The APP section (everything above the test-only
+# __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly two calls: the
+# `view` inside ensureViewNow and the `match` inside streamedMatch, both bodies of a queued job.
+app_end=$(grep -n 'window.__perfHooks = {' "$here/browser/store-app.mjs" | head -1 | cut -d: -f1)
+app_calls=$(head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -c 'kernel.runKernel')
+if [ "$app_calls" -ne 2 ]; then
+  echo "  FAIL: the app reaches the kernel from $app_calls places (expected 2 — ensureViewNow + streamedMatch);"
+  echo "        a third is a road around the queue, which is how a match gets dropped (P4)."
+  head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -n 'kernel.runKernel'
+  e0rc=1
+else
+  echo "  ✓ the app reaches the kernel from exactly 2 places, both inside queued jobs"
+fi
+[ $e0rc -eq 0 ] || exit 1
 
 # 1a. PLAN-PERF §6e — is the browser kernel threaded? `par` (step 18) is a no-op while it is not.
 echo "== step 18 tripwire: browser kernel threading =="

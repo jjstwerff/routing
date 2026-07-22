@@ -17,7 +17,7 @@ use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, Matc
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
                      build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
                      point_polyline_m, match_state_new, match_incremental, match_incremental_streamed,
-                     match_state_result, match_quality);
+                     match_state_result, match_quality, tier_ok, TIER_TUBE, TIER_BBOX);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
 
@@ -197,38 +197,6 @@ struct Corridor { pts: vector<GeoPoint>, margin: float }
 // to be re-earned rather than inherited from the match that first built the corridor.
 pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, mstate: MatchState, built: boolean, tier: integer }
 
-TIER_TUBE = 1;
-TIER_BBOX = 3;
-
-// PLAN-MATCH §3's acceptance gate for the cheap tier — MARGIN-RELATIVE (PLAN-PERF §7h option 2).
-//
-// Two conditions, both computable from the match already in hand:
-//   * CONNECTED — no bridged metres. This alone catches 2 of the 3 genuinely-worse corpus cases.
-//   * FAITHFUL  — the route stayed inside the corridor it was matched on: `dev_max <= margin * K`.
-//
-// The second is relative for a measured reason. An ABSOLUTE `dev_max <= 900` was wired first and made
-// the app's cold match 1.7x SLOWER (§7h): `dev_max` is distance from the DRAWN SKETCH, so it is large
-// whenever the user drew far from any road — under BOTH tiers. The gate then read "far from the network"
-// as "the cheap corridor clipped something" and paid the fat tier to reproduce an identical route; 8 of
-// 12 escalations were pure loss. Scaling by the corridor's own margin asks the question the gate is
-// actually for — *did the route stray to where the tube's ways run out?* — and needs no constant fitted
-// to a corpus, only a ratio.
-//
-// K = 6, swept on `tools/corpus_tube.loft` (26 sketches incl. the app's own, cycling_road):
-//   K=5 → 11 accepted, app sketch ESCALATES · K=6 → 13, WORSE 0 · K=8 → 16, WORSE 0 · K=9 → WORSE 1.
-// So 8 is cost-optimal and 6 is chosen anyway: §3's asymmetry — the gate can only make us ESCALATE
-// (spend more), never accept something the fat tier would improve on — makes headroom cheap and a wrong
-// acceptance the only real failure. 6 sits two full steps below the first bad acceptance and still
-// accepts the sketch the app actually runs.
-//
-// These are `cycling_road` numbers. §3's third condition (PEN_TOL) is deliberately NOT wired: on this
-// profile accepted and worse cases had fully overlapping pen_share, so it carries no signal. Expect it
-// to matter on walking/trail, where penalties dominate rather than bonuses — re-tune there.
-DEV_MARGIN_K = 6.0;
-
-fn tier_ok(q: MatchQuality, margin: float) -> boolean {
-  q.bridged_m == 0.0 && q.dev_max <= margin * DEV_MARGIN_K
-}
 
 pub fn session_new() -> MatchSession {
   MatchSession { cways: [], cg: build_graph([]), covs: [], mstate: match_state_new(), built: false, tier: TIER_BBOX }
