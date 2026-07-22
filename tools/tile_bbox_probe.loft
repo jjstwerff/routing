@@ -1,0 +1,116 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7g — would a per-tile FEATURE BBOX make the viewport filter worth building?
+//
+// §7g killed the naive `ox`/`oy` screen: features are keyed by their first vertex and never clipped, so
+// they overhang their cell by up to 16 cells. Binning by bounding box does NOT fix that either — a 9 km
+// river does not fit in a 500 m cell whichever vertex keys it. What DOES work is storing each tile's
+// ACTUAL feature extent alongside its origin: the filter then tests real geometry, exactly, with no
+// margin and no change to how features are stored.
+//
+// This probe answers whether that is worth a store-format change, BEFORE anyone makes one:
+//   * how many of the tiles does a real viewport actually need?
+//   * and does filtering on the tile bbox emit exactly the same features as scanning every tile?
+// The second question is the one that matters — a filter that is fast and wrong is worthless.
+//
+//   loft --native --lib lib tools/tile_bbox_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo>
+#cwd
+
+use basemap::(PTile, Coord);
+
+struct Box { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer }
+struct Acc { mnx: integer, mxx: integer, mny: integer, mxy: integer, n: integer }
+
+fn note(e: Acc, x: integer, y: integer) {
+  if e.n == 0 { e.mnx = x; e.mxx = x; e.mny = y; e.mxy = y; }
+  else {
+    if x < e.mnx { e.mnx = x; }
+    if x > e.mxx { e.mxx = x; }
+    if y < e.mny { e.mny = y; }
+    if y > e.mxy { e.mxy = y; }
+  }
+  e.n += 1;
+}
+
+// The tile's feature extent, in ABSOLUTE fixed-point — what the proposed PTile fields would hold.
+fn tile_extent(t: PTile, e: Acc) {
+  for ar in t.areas { for ca in ar.ring { note(e, t.ox + (ca.x as integer), t.oy + (ca.y as integer)); } }
+  for bl in t.buildings { for cb in bl.ring { note(e, t.ox + (cb.x as integer), t.oy + (cb.y as integer)); } }
+  for ln in t.lines { for cl in ln.geom { note(e, t.ox + (cl.x as integer), t.oy + (cl.y as integer)); } }
+  for lb in t.labels { for cc in lb.line { note(e, t.ox + (cc.x as integer), t.oy + (cc.y as integer)); } }
+  for po in t.pois { note(e, t.ox + (po.at.x as integer), t.oy + (po.at.y as integer)); }
+}
+
+fn ring_hits(ox: integer, oy: integer, ring: vector<Coord>, b: Box) -> boolean {
+  if len(ring) == 0 { return false; }
+  a = Acc { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0 };
+  for cr in ring { note(a, ox + (cr.x as integer), oy + (cr.y as integer)); }
+  a.mxy >= b.mnla && a.mny <= b.mxla && a.mxx >= b.mnlo && a.mnx <= b.mxlo
+}
+
+fn pt_hits(ox: integer, oy: integer, c: Coord, b: Box) -> boolean {
+  la = oy + (c.y as integer); lo = ox + (c.x as integer);
+  la >= b.mnla && la <= b.mxla && lo >= b.mnlo && lo <= b.mxlo
+}
+
+// Features of one tile that the viewport actually wants — the ground truth every policy must reproduce.
+fn tile_feature_hits(t: PTile, b: Box) -> integer {
+  n = 0;
+  for ar in t.areas { if ring_hits(t.ox, t.oy, ar.ring, b) { n += 1; } }
+  for bl in t.buildings { if ring_hits(t.ox, t.oy, bl.ring, b) { n += 1; } }
+  for ln in t.lines { if ring_hits(t.ox, t.oy, ln.geom, b) { n += 1; } }
+  for lb in t.labels { if ring_hits(t.ox, t.oy, lb.line, b) { n += 1; } }
+  for po in t.pois { if pt_hits(t.ox, t.oy, po.at, b) { n += 1; } }
+  n
+}
+
+fn parse_box(spec: text) -> Box {
+  p = spec.split(',');
+  if len(p) != 4 { return Box { mnla: -900000000, mnlo: -1800000000, mxla: 900000000, mxlo: 1800000000 }; }
+  Box { mnla: round((p[0] as float ?? 0.0) * 10000000.0) as integer,
+        mnlo: round((p[1] as float ?? 0.0) * 10000000.0) as integer,
+        mxla: round((p[2] as float ?? 0.0) * 10000000.0) as integer,
+        mxlo: round((p[3] as float ?? 0.0) * 10000000.0) as integer }
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: tile_bbox_probe <layout.store> <mnla,mnlo,mxla,mxlo>"); return; }
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+  b = parse_box(a[1] ?? "");
+
+  tiles = 0; scanned_feats = 0;
+  origin_tiles = 0; origin_feats = 0;
+  bbox_tiles = 0; bbox_feats = 0;
+  empty_tiles = 0;
+
+  for t in layout {
+    tiles += 1;
+    hits = tile_feature_hits(t, b);
+    scanned_feats += hits;                     // policy ALL: scan every tile (what the app does today)
+
+    // policy ORIGIN: the naive screen §7g killed — the tile's own cell against the box.
+    if t.oy + 50000 >= b.mnla && t.oy <= b.mxla && t.ox + 50000 >= b.mnlo && t.ox <= b.mxlo {
+      origin_tiles += 1; origin_feats += hits;
+    }
+
+    // policy BBOX: the tile's real feature extent against the box — the proposed PTile fields.
+    e = Acc { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0 };
+    tile_extent(t, e);
+    if e.n == 0 { empty_tiles += 1; }
+    else {
+      if e.mxy >= b.mnla && e.mny <= b.mxla && e.mxx >= b.mnlo && e.mnx <= b.mxlo {
+        bbox_tiles += 1; bbox_feats += hits;
+      }
+    }
+  }
+
+  println("tiles={tiles}  features_in_viewport={scanned_feats}  (empty tiles: {empty_tiles})");
+  println("policy ORIGIN (naive, UNSOUND): tiles={origin_tiles} features={origin_feats}  MISSED={scanned_feats - origin_feats}");
+  println("policy BBOX   (proposed)      : tiles={bbox_tiles} features={bbox_feats}  MISSED={scanned_feats - bbox_feats}");
+  if tiles > 0 { println("BBOX reads {bbox_tiles * 100 / tiles}% of the tiles ORIGIN reads {origin_tiles * 100 / tiles}%"); }
+}

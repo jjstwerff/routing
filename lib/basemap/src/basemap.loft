@@ -57,7 +57,21 @@ pub struct Poi      { const kind: text, const name: text, const at: Coord }     
 // never rebound — an append is a contents mutation, which const permits on a collection field.
 pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
                       const areas: vector<Area>, const buildings: vector<Building>,
-                      const lines: vector<Line>, const labels: vector<Label>, const pois: vector<Poi> }
+                      const lines: vector<Line>, const labels: vector<Label>, const pois: vector<Poi>,
+                      // The tile's ACTUAL feature extent, absolute fixed-point (PLAN-PERF §7g). A
+                      // viewport filter cannot use ox/oy: a feature is keyed by its FIRST VERTEX and
+                      // never clipped, so it overhangs its cell by up to 16 cells and an origin screen
+                      // provably drops features (measured: 54 of 33481 on one viewport). This is the
+                      // exact alternative — the union of every feature's coords — so a tile is skipped
+                      // only when its real geometry misses the box. Reading it costs 5 scalars, versus
+                      // decoding ~1500 coordinates to find out.
+                      //
+                      // NOT const: they are sealed by `seal_extents` after the geometry vectors are
+                      // grown, so the slot must still be writable then. `fcount == 0` means "no extent"
+                      // (an empty tile, or a store written before this field existed) — treat it as
+                      // "cannot skip" rather than "empty", so an old store degrades to today's full scan.
+                      fcount: integer = 0,
+                      fmnla: integer = 0, fmnlo: integer = 0, fmxla: integer = 0, fmxlo: integer = 0 }
 
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".

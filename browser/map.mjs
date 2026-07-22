@@ -149,9 +149,28 @@ export function viewFromStore(mem, handle, fbox, deps, want) {
   const { flatCount, flatField } = deps;
   const n = flatCount(mem, handle);
   const out = { areas: [], buildings: [], lines: [], pois: [], places: [], streetLabels: [] };
+  out.tilesRead = 0; out.tilesTotal = n;
   const need = (k) => want.includes(k);
   const wantLabels = need('places') || need('streetLabels');
   for (let i = 0; i < n; i++) {
+    // PLAN-PERF §7g — skip the tile on its SEALED FEATURE EXTENT before decoding anything. Five scalar
+    // reads decide what would otherwise cost ~1500 coordinate decodes, and on a real viewport this reads
+    // 72 of 1089 tiles. It is exact, not conservative: the extent is the union of the tile's own
+    // features, so a skipped tile provably has nothing in the box.
+    //
+    // `fcount == 0` means the extent is absent — an empty tile, or a store written before the field
+    // existed. Do NOT skip then: falling back to the full scan keeps an older store correct (slow) rather
+    // than silently blank. (Such a store does not currently load at all, but the filter must not be the
+    // thing that decides that.)
+    const fcount = Number(flatField(mem, handle, i, 'fcount'));
+    if (fcount > 0) {
+      const mnla = Number(flatField(mem, handle, i, 'fmnla'));
+      const mxla = Number(flatField(mem, handle, i, 'fmxla'));
+      const mnlo = Number(flatField(mem, handle, i, 'fmnlo'));
+      const mxlo = Number(flatField(mem, handle, i, 'fmxlo'));
+      if (mxla < fbox.mnla || mnla > fbox.mxla || mxlo < fbox.mnlo || mnlo > fbox.mxlo) continue;
+    }
+    out.tilesRead += 1;
     const ox = Number(flatField(mem, handle, i, 'ox'));
     const oy = Number(flatField(mem, handle, i, 'oy'));
     if (need('areas')) {

@@ -913,6 +913,49 @@ class as step 19's format change, and worth pairing with it rather than doing tw
 **Re-run `tools/tile_overhang.loft` whenever the tiles are regenerated:** the margin is a property of the
 DATA, not of the code, so it can move under a filter that hard-codes it.
 
+### §7g(2) — DONE: per-tile feature extent + an EXACT viewport filter (2026-07-22)
+
+**Not bbox *binning*.** Re-binning by bounding box does not reach margin 0 either — a 9 km river does not
+fit in a 500 m cell whichever vertex keys it, so only clipping/splitting would, and that changes what a
+ring *is*. The exact fix keeps the geometry untouched and records each tile's **actual feature extent**:
+`PTile` gains `fcount` + `fmnla/fmnlo/fmxla/fmxlo` (absolute fixed-point), sealed by `seal_extents` after
+the geometry vectors are complete. The filter then tests real geometry — no margin, no guess.
+
+**Measured first, on the real store** (`tools/tile_bbox_probe.loft`, one zoom-16 viewport):
+
+| policy | tiles read | features found | missed |
+|---|---|---|---|
+| ALL — today | 1089 | 33 481 | — |
+| ORIGIN — the naive screen | 50 | 33 427 | **54** ❌ |
+| **BBOX — shipped** | **72 (6%)** | 33 481 | **0** ✅ |
+
+That the naive screen loses 54 features is the empirical half of §7g: it is not a theoretical hazard.
+
+**Result at `CPU_THROTTLE=4`:**
+
+| | pre-bridge | step 12 | step 13 | **+ filter** |
+|---|---|---|---|---|
+| storeRead | — | — | 468 | **125** |
+| **view total** | 946 | 1447 | 606 | **270** |
+
+**946 → 270 ms, 3.5×**, with every kind still byte-equal to loft's own emit (the `viewtext` gate is what
+proves the filter exact — a dropped feature shows up as a count mismatch immediately).
+
+**Two facts about the format change, both learned the hard way:**
+
+1. **It is BREAKING, and it fails SILENTLY.** The committed store (old schema) no longer loads under the
+   new one: `store_load` gives no output, no error, exit 1. So `browser/stores/enschede.layout.store` had
+   to be regenerated and re-committed, and any deployed copy must be replaced in the same push. The
+   `fcount == 0` fallback in the filter is therefore belt-and-braces, not a migration path — it keeps an
+   extent-less store *correct* (full scan) rather than blank, but such a store will not load anyway.
+   **Worth filing upstream:** a schema mismatch on `store_load` should say so.
+2. **The file is byte-identical in SIZE** (20 776 816 before and after) despite 5 new integer fields ×
+   1089 tiles — the new fields fit existing record slack. Do not use file size to check whether a
+   regeneration took: read a field (`tools/tile_lookup.loft` prints `EXTENT`).
+
+Regeneration is ~21 s: `loft --native-release --lib lib client/basemap/build_store.loft <6 fixtures>
+browser/stores/enschede.layout.store` (fixtures are gitignored; they are present locally at ~170 MB).
+
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 
 **Status: reverted, undiagnosed.** The tree is clean and the app works. The observable is built and

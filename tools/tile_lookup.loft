@@ -39,6 +39,9 @@ fn main() {
       }
     }
     println("TILE tkey={t.tkey} ox={t.ox} oy={t.oy} areas={len(areas)} buildings={len(buildings)} lines={len(t.lines)} labels={len(t.labels)} pois={len(t.pois)} ring0={ring0}");
+    // PLAN-PERF §7g — the sealed feature extent the viewport filter screens on. fcount=0 means a store
+    // written before the field existed (or a genuinely empty tile); the filter must then not skip.
+    println("EXTENT fcount={t.fcount} la=[{t.fmnla}..{t.fmxla}] lo=[{t.fmnlo}..{t.fmxlo}]");
   } else {
     println("MISS tkey={k}");
   }
