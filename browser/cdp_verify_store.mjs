@@ -105,7 +105,9 @@ const sp = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.
 if (!sp || sp.err) { console.log('  FAIL: storeRenderParity —', JSON.stringify(sp)); ok = false; }
 else if (!sp.equal) { console.log(`  FAIL: the store path drew DIFFERENT pixels — objects ${sp.objects} vs store ${sp.store}`, JSON.stringify(sp.objectCounts), JSON.stringify(sp.storeCounts)); ok = false; }
 else if (JSON.stringify(sp.objectCounts) !== JSON.stringify(sp.storeCounts)) { console.log('  FAIL: same pixels but different draw counts —', JSON.stringify(sp.objectCounts), JSON.stringify(sp.storeCounts)); ok = false; }
+else if (!sp.streetsFlat || !sp.streetsFlat.n) { console.log('  FAIL: streets did not parse into the flat column —', JSON.stringify(sp.streetsFlat)); ok = false; }
 else console.log(`  ✓ store-backed render is pixel-identical (${sp.store}) for ${sp.kinds.join(', ')} — ${JSON.stringify(sp.indexed)} indexed`);
+if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.streetsFlat.n} roads, ${sp.streetsFlat.verts} vertices, 0 boxed pairs)`);
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

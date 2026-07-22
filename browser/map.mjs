@@ -365,6 +365,50 @@ function joinStretches(slots) {
   return out;
 }
 
+// Roads, parsed from the `view` text straight into FLAT arrays (PLAN-PERF §6c).
+//
+// Streets are the one layer that cannot come from the store the way buildings/areas/lines/pois now do:
+// the matcher ITERATES the roads store (`corridor_ways_impl2`) and loft cannot iterate a store JS has
+// pinned, so `expose`-ing roads would cost a ~230 ms re-expose per match (§7f). They arrive as text
+// instead — but nothing forces the PARSE to produce boxed pairs, and it was producing 19,397 of them
+// plus 3,112 feature objects, the last of the retained geometry.
+//
+// Coordinates stay `+str` doubles in DEGREES, never converted to fixed point: the object path fed exactly
+// those doubles to project(), and the gate is a pixel hash, so any re-rounding would show up as
+// antialiasing drift. Same drops in the same order as `parseView`'s street demux — `p.length >= 3` then
+// `>= 2` valid coordinates — so the same roads survive, in the same order, and buckets overdraw the same.
+export function parseStreetsFlat(txt) {
+  const lines = (txt || '').split('\n');
+  let cap = 4096, xy = new Float64Array(cap * 2), nv = 0;
+  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map();
+  const bb = [];
+  for (const raw of lines) {
+    if (raw[0] !== 'R' || raw[1] !== ' ') continue;
+    const p = raw.slice(2).split(';');
+    if (p.length < 3) continue;
+    const start = nv;
+    let mnla = Infinity, mxla = -Infinity, mnlo = Infinity, mxlo = -Infinity;
+    for (let i = 1; i < p.length; i++) {
+      const c = p[i], k = c.indexOf(',');
+      if (k < 0) continue;
+      const a = +c.slice(0, k), b = +c.slice(k + 1);
+      if (Number.isNaN(a) || Number.isNaN(b)) continue;
+      if (nv === cap) { cap *= 2; const g = new Float64Array(cap * 2); g.set(xy); xy = g; }
+      xy[nv * 2] = a; xy[nv * 2 + 1] = b; nv++;
+      if (a < mnla) mnla = a; if (a > mxla) mxla = a;
+      if (b < mnlo) mnlo = b; if (b > mxlo) mxlo = b;
+    }
+    if (nv - start < 2) { nv = start; continue; }          // parseView's `line.length >= 2` drop
+    const name = p[0];
+    let ci = clsOf.get(name);
+    if (ci === undefined) { ci = clsNames.length; clsNames.push(name); clsOf.set(name, ci); }
+    clsIdx.push(ci); off.push(nv);
+    bb.push(mnla, mxla, mnlo, mxlo);
+  }
+  return { n: clsIdx.length, xy, off: Int32Array.from(off), cls: Uint8Array.from(clsIdx), clsNames,
+           bb: Float64Array.from(bb), verts: nv };
+}
+
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
 const LINE_STYLES = {                               // waterway = blue; railway = grey dashes; barriers muted
   river: { color: '#a5c8e8', width: 3, minZoom: 11 }, stream: { color: '#a5c8e8', width: 1.5, minZoom: 13 },
@@ -426,6 +470,10 @@ export class RouteMap {
     this.places = v.places; this.streets = v.streets; this.streetLabels = v.streetLabels;
     return this;
   }
+
+  // Load ONLY the roads, flat (PLAN-PERF §6c). `loadView` above is kept for the legacy per-file format
+  // and for the parity probe, which needs the boxed form to compare against.
+  loadRoadsFlat(text) { this.streetsFlat = parseStreetsFlat(text); this.streets = []; return this; }
 
   // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
   // never the line). `pts` is [[lat,lon], …]. Call render() after.
@@ -966,7 +1014,61 @@ export class RouteMap {
   // M3 + B5: roads by class — Carto casing + core, drawn back-to-front (minor→motorway) so higher classes
   // overlap lower ones cleanly. Each class carries its own colour, base width, dash and min-zoom (paths
   // only appear zoomed in). Returns the count drawn in view; stashes them for the label pass.
+  // Roads from the flat column. Two passes, as the object path has: project every visible road once into
+  // one shared scratch (recording where each landed), then stroke the buckets in ROAD_ORDER, casing
+  // before core. The object path allocated a `px` array of point objects PER VISIBLE ROAD PER FRAME —
+  // ~1,077 arrays and ~19k objects of pure per-frame garbage — purely so the second pass could re-read
+  // them. One growable Float64Array replaces all of it.
+  _drawStreetsFlat() {
+    const F = this.streetsFlat, ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
+    const K = this._flatK(), win = this._screen();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    let s = this._streetScratch;
+    if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
+    const byClass = {};
+    let w = 0, vis = 0;
+    for (let i = 0; i < F.n; i++) {
+      const o4 = i * 4;
+      if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
+       || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
+      const cls = F.clsNames[F.cls[i]], style = ROAD_STYLES[cls];
+      if (!style || z < style.minZoom) continue;
+      const a = F.off[i], len = F.off[i + 1] - a;
+      if (len < 2) continue;
+      const at = w;
+      let on = false;
+      for (let k = 0; k < len; k++) {
+        const lat = F.xy[(a + k) * 2], lon = F.xy[(a + k) * 2 + 1];
+        const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+        const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+        const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+        s[w * 2] = x; s[w * 2 + 1] = y; w++;
+        if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
+      }
+      if (!on) { w = at; continue; }                       // `_inView` — rewind the scratch, draw nothing
+      (byClass[cls] || (byClass[cls] = [])).push(at, len);
+      vis++;
+    }
+    const strokeRun = (at, len) => {
+      ctx.beginPath();
+      ctx.moveTo(s[at * 2], s[at * 2 + 1]);
+      for (let k = 1; k < len; k++) ctx.lineTo(s[(at + k) * 2], s[(at + k) * 2 + 1]);
+      ctx.stroke();
+    };
+    for (const cls of ROAD_ORDER) {
+      const b = byClass[cls]; if (!b) continue;
+      const style = ROAD_STYLES[cls], lw = Math.max(0.5, style.w * scale);
+      if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]); }
+      ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
+      for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]);
+    }
+    ctx.setLineDash([]);
+    this._visStreets = [];                                 // legacy label fallback: unused when streetLabels exist
+    return vis;
+  }
+
   drawStreets() {
+    if (this.streetsFlat && this.streetsFlat.n) return this._drawStreetsFlat();
     if (!this.streets.length) return 0;
     const ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';

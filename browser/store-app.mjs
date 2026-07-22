@@ -53,7 +53,7 @@ const fboxOf = (bbox) => {
   return { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
 };
 
-let loadedBox = null, loadedBbox = null, busy = false, again = false;
+let loadedBox = null, loadedBbox = null, lastViewText = null, busy = false, again = false;
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
 async function ensureView() {
@@ -65,7 +65,7 @@ async function ensureView() {
   hud.textContent = 'loading map…';
   const t0 = performance.now();
   const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
-  map.loadView(text);
+  map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
   // because loft no longer walks it either, the `expose` pin survives the whole session (§7f).
@@ -91,7 +91,7 @@ async function ensureView() {
     map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
-  loadedBox = box; loadedBbox = bbox;
+  loadedBox = box; loadedBbox = bbox; lastViewText = text;
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
@@ -398,15 +398,22 @@ window.__perfHooks = {
     const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(loadedBbox), { flatCount, flatField }, STORE_KINDS));
     const saved = {};
     for (const k of STORE_KINDS) { saved[k] = map[k]; map[k] = lists[k]; }
+    // Streets too: they come from the roads TEXT, so the boxed reference is rebuilt by re-parsing the
+    // same `view` output the flat column was built from — same bytes in, both shapes out.
+    const flat = map.streetsFlat;
+    map.streets = parseView(lastViewText || '').streets;
+    map.streetsFlat = null;
     map._sidx = null;
     const objects = fp();
     for (const k of STORE_KINDS) map[k] = saved[k];
+    map.streetsFlat = flat; map.streets = [];
     map._sidx = idx;
     const store = fp();
     const kinds = Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined);
     return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
              objectCounts: objects.counts, storeCounts: store.counts, kinds,
              indexed: Object.fromEntries(kinds.map((k) => [k, idx[k].n])),
+             streetsFlat: flat ? { n: flat.n, verts: flat.verts } : null,
              objectLists: Object.fromEntries(STORE_KINDS.map((k) => [k, lists[k].length])) };
   },
   // The descriptor's field map for PTile and everything nested under it — the reference a byte-level
