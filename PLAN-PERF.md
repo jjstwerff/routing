@@ -70,7 +70,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
 | **15** | `browser/map.mjs` | Cache per-tile rasters; blit on pan. | pan <16 ms/frame | **perf only** |
-| **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): 40-point route, 39 stretches, worst gap **11095 → 384 ms** — the `frame_yield()`s buy it. *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line. See §6b(2). | **responsiveness + presentation** |
+| **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
@@ -410,6 +410,51 @@ before, because nobody ever saw the pre-`remove_spurs` stitch. Two things follow
 - a per-stretch assembly that doubles back over half its points is a **match-quality signal** worth a
   look (PLAN-MATCH §7's numbers are computed per stretch during assembly, so they see the pre-pruned
   path). Not a defect proven here — a number that did not have a reader until now.
+
+## 6b(3). Escalation emits the route TWICE — and step 16's headline number was stale (2026-07-22)
+
+Both found by profiling §6b(2) immediately after shipping it, which is the only reason they were found
+at all. The gates were green; the gates were also all running sketches that do not escalate.
+
+### The measurement that did not match the document
+
+| | step 16's row said | measured, twice, `CPU_THROTTLE=4` |
+|---|---|---|
+| 40-point sketch, stretches emitted | 39 | **78** |
+| 40-point sketch, worst frozen gap | 384 ms | **2567 / 2773 ms** |
+| 40-point sketch, total | — | **16.2 / 16.9 s** |
+
+**78 is exactly 2 × 39, reproducibly** — so the route is matched twice. `do_match_session_streamed`
+matches on the cell tube, and when the §3 gate rejects that tier it rebuilds on the fat bbox and re-runs
+`match_incremental_streamed` with the same `on_stretch`. Every stretch is emitted once per tier.
+
+**Nothing regressed: the document did.** Step 16's numbers were measured *before* step 22 wired the
+ladder, and step 22 doubled the emit for any sketch whose tube is rejected. This is `CLAUDE.md`'s "a
+spec's premise goes stale" rule landing on this plan's own table — the row was correct when written and
+wrong eight commits later, and only re-measuring caught it.
+
+### It was also a live defect in the renderer
+
+`applyStretch` strokes onto the existing canvas, so a second pass left the **rejected tier still painted
+under the accepted one**, and the slots blended: `route` briefly held new stretch 0 beside the rejected
+tier's stretches 1..n — a line that was never matched. The delivered route was never wrong (the final
+`ROUTE` replaces everything); what the user *watched* was.
+
+Fix: **a non-increasing stretch index means a new pass** — clear the slots and repaint. A single pass
+emits 0,1,2,… strictly increasing, so the indices already carry the signal; no kernel change, no second
+channel. Gated **DOM-free** in `map.test.mjs`, because the browser gate structurally cannot reach the
+case (it needs the ladder to *reject* a tier, and every sketch it uses is accepted first try), and
+verified to FAIL without the fix before being kept.
+
+### Two things this leaves open, neither urgent
+
+- **A rejected tier is wasted work, and it is not small.** On the 40-point sketch the app pays a complete
+  tube match *and* a complete bbox match. Whether that matters depends on how often real sketches get
+  rejected — the 40-point probe is a straight synthetic line across 8 km, which is close to the worst
+  possible case for a tube gate (a real drawn route follows roads, so it deviates far less). **Do not
+  read 16 s as a user number.** Sizing it needs the §7h corpus, not this probe.
+- **The 3-point profile is unaffected** (2 stretches, no escalation), which is why every headline number
+  in this document's table still stands.
 
 ## 6b. The match arc — a line that GROWS, on all the cores
 

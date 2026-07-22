@@ -36,6 +36,9 @@ The route was already *emitted* per stretch in travel order, but nothing *render
 accumulates stretches by slot and re-strokes the route so far. `DESIGN.md` §5 and `PLAN-MATCH` again
 describe the actual behaviour. See `PLAN-PERF` §6b(2) — including what its gate then surfaced:
 `remove_spurs` prunes ~60% of the raw stitch, so the line visibly tightens when the match completes.
+**And §6b(3)**, from profiling it straight after shipping: step 22's ladder emits the route **twice** when
+it rejects the tube tier (78 stretches on a 40-point sketch, not 39), which was both a stale number in
+step 16's row and a live rendering defect — now fixed and gated DOM-free in `map.test.mjs`.
 
 ---
 
