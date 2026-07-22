@@ -397,7 +397,7 @@ ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate j
                       // because taps are IMPRECISE (fat-fingered) — the band must reach the ways
                       // actually on the drawn line, not just the ones nearest a mis-tap.
 
-struct CoordIdx { const coord: text, const idx: integer }
+struct CoordIdx { const coord: integer, const idx: integer }
 struct GNode { const lat: float, const lon: float }
 // All fields const: a GEdge is built once by build_graph and never mutated afterwards — the search
 // only ever reads it.
@@ -426,8 +426,27 @@ pub struct Graph {
 // Deduped node index for (lat,lon); appends a fresh node (+ empty adjacency) when unseen.
 // `&Graph`: a live reference so the growing graph is mutated in place, NOT copied per call
 // (by-value passing of the hash+vectors is O(size) each call → O(n^2) build).
+// The node-dedup key: fixed-point degrees packed into one i64.
+//
+// This used to be the TEXT `"{lat},{lon}"`, formatted per vertex of every way — ~45k float-to-string
+// conversions plus text hashing on every cold match, in a `build_graph` that is 54% of one (PLAN-PERF
+// §7a). The integer key is the same identity for a fraction of the cost.
+//
+// It is EXACTLY the same identity, which is why the routes cannot move: coordinates come from the store
+// as deg*1e7 integers, so `round(deg * 1e7)` recovers the original integer, and the pack is injective for
+// every valid coordinate (|lat| <= 90 -> |la| <= 9e8, |lon| <= 180 -> |lo| <= 1.8e9 < 4e9/2, and
+// 9e8 * 4e9 = 3.6e18 < i64::MAX). `tools/nodekey_probe.loft` checks the claim against the real corridor
+// rather than trusting this paragraph: 44,739 vertices collapse to 33,948 distinct nodes under BOTH
+// keyings. If the text key had been rounding — snapping nearby nodes together — the counts would differ
+// and swapping it would silently change routes.
+fn node_key(lat: float, lon: float) -> integer {
+  la = round(lat * 10000000.0) as integer;
+  lo = round(lon * 10000000.0) as integer;
+  la * 4000000000 + lo
+}
+
 fn node_idx(g: Graph, lat: float, lon: float) -> integer {
-  k = "{lat},{lon}";
+  k = node_key(lat, lon);
   hit = g.index[k];
   if hit != null { return hit.idx; }
   idx = len(g.nodes);
@@ -845,7 +864,7 @@ fn heap_pop(h: Heap) -> Popped {
 
 // Node index at an exact coordinate (via the dedup hash), or -1.
 fn node_at(g: Graph, lat: float, lon: float) -> integer {
-  hit = g.index["{lat},{lon}"];
+  hit = g.index[node_key(lat, lon)];
   if hit != null { return hit.idx; }
   -1
 }
@@ -1396,7 +1415,7 @@ pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text) -> v
 // Reveals at a glance any edge that SHOULD be expensive (bus lane, station passage, alley) but is
 // cheap — i.e. a missing cost class. Not used by the server; a tool for validating the matcher.
 fn dbg_node_at(g: Graph, lat: float, lon: float) -> integer {
-  hit = g.index["{lat},{lon}"];
+  hit = g.index[node_key(lat, lon)];
   if hit != null { return hit.idx; }
   -1
 }

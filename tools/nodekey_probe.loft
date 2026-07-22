@@ -1,0 +1,78 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7a — is `build_graph`'s node dedup key INJECTIVE, or is it silently snapping?
+//
+//   loft --native --lib lib tools/nodekey_probe.loft _site/stores/enschede.roads.store
+//
+// `node_idx` dedups graph nodes with a TEXT key, `"{lat},{lon}"`, formatted per vertex of every way —
+// ~100k float-to-string conversions plus text hashing on every cold match, and `build_graph` is 54% of
+// one. An integer key built from the fixed-point coordinates would be far cheaper and needs no store
+// change. But it is only SAFE if the text key is injective: if loft's default float formatting rounds,
+// the text key MERGES nodes that an exact key would keep apart, that merging is load-bearing (it is the
+// de-facto snapping the graph is built on), and swapping keys would silently change routes.
+//
+// So this asks the store, not the docs: how does a real coordinate print, and do the two keyings produce
+// the same number of distinct nodes over the actual corridor?
+#cwd
+
+use map_kernel::parse_sketch;
+use routing_kernel::(TTile, GeoPoint, corridor_margin, tiles_corridor_ways_tube);
+
+SKETCH = "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554";
+
+// Distinct-key counters. A hash must be a struct field, so both live here.
+struct TextKey { k: text, n: integer }
+struct IntKey  { k: integer, n: integer }
+struct Counts  { t: hash<TextKey[k]>, i: hash<IntKey[k]> }
+
+// The candidate integer key: fixed-point degrees packed into one i64. Latitudes reach ~9e8 and
+// longitudes ~1.8e9 at 1e7 scale, so lat needs 31 bits and the pair does not fit in 62 — but the
+// ROUTING data is regional, so this is only valid if the multiply below stays exact. Checked, not assumed.
+fn int_key(lat: float, lon: float) -> integer {
+  la = round(lat * 10000000.0) as integer;
+  lo = round(lon * 10000000.0) as integer;
+  la * 4000000000 + lo
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: nodekey_probe <roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[0] ?? "");
+  trace = parse_sketch(SKETCH);
+  ways = tiles_corridor_ways_tube(roads, trace, corridor_margin(trace));
+
+  // 1. How does a real coordinate PRINT? This is the whole question — if it truncates, the text key snaps.
+  first = true;
+  for w in ways {
+    if !first { continue; }
+    for c in w.coords {
+      println("#K sample lat={c.lat} lon={c.lon}  textkey=\"{c.lat},{c.lon}\"  intkey={int_key(c.lat, c.lon)}");
+      first = false;
+      break;
+    }
+  }
+
+  // 2. Do the two keyings agree on how many DISTINCT nodes the corridor has?
+  cnt = Counts { t: [], i: [] };
+  verts = 0;
+  for w2 in ways {
+    for c2 in w2.coords {
+      verts += 1;
+      tk = "{c2.lat},{c2.lon}";
+      if cnt.t[tk] == null { cnt.t += [TextKey { k: tk, n: 1 }]; }
+      ik = int_key(c2.lat, c2.lon);
+      if cnt.i[ik] == null { cnt.i += [IntKey { k: ik, n: 1 }]; }
+    }
+  }
+  nt = 0;
+  for _e in cnt.t { nt += 1; }
+  ni = 0;
+  for _f in cnt.i { ni += 1; }
+  println("#K ways={len(ways)} vertices={verts} distinct_text={nt} distinct_int={ni}");
+  if nt == ni { println("#K VERDICT injective — the two keyings agree, an integer key is route-safe"); }
+  else { println("#K VERDICT DIFFER — the text key snaps ({nt} vs {ni}); swapping it WOULD change the graph"); }
+}
