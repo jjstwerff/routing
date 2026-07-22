@@ -154,6 +154,12 @@ constant — and re-run the sweep when the corpus grows or the profile changes.
 > Measured, reverted, and written up in PLAN-PERF §7h, with two candidate redesigns — gate on
 > `bridged_m == 0` alone, or make the deviation test relative to `corridor_margin` (which tests the
 > CORRIDOR rather than the sketch, and needs no fitted constant).
+>
+> ✅ **The second SHIPPED (§7h(2)):** the live gate is `bridged_m == 0 && dev_max <= corridor_margin * 6`,
+> swept on a 26-sketch corpus (0 worse accepted; K=8 is cost-optimal, 6 chosen for headroom because the
+> gate can only make us escalate). Cold match **6370 → 3253 ms**, route byte-identical on all 5
+> `match_parity` cases. **`DEV_TOL` above is retained only as the record of why an absolute threshold is
+> the wrong shape.**
 
 > The gate can only make us *escalate* (spend more), never accept something a wider tier would improve
 > on. So mistuning it costs speed, never the wanted route — the fat corridor (§5, tier 3) is always the

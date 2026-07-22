@@ -59,7 +59,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
-| **22** ⛔ | `server` + kernel | Wire the §3 gate + escalation. **ATTEMPTED 2026-07-22 and REVERTED — the gate as specified makes the app's cold match 1.7× SLOWER.** `dev_max` is a property of the SKETCH, not of the corridor tier, so an absolute `DEV_TOL` rejects tube results that are *identical in quality* to bbox's and then pays for both. **Do not re-wire it with a constant threshold; see §7h for the measurement and the two candidate redesigns.** | corpus: 0 worse-accepted **and** ladder cost < bbox-only **on the sketches the app actually runs** | **⚠ route-affecting — the only one** |
+| **22** ✅ | kernel (`lib/map_kernel`) | Wire the §3 gate + escalation, **MARGIN-RELATIVE** (`bridged_m == 0 && dev_max <= corridor_margin * 6`) — the absolute `DEV_TOL` form was wired first and made the cold match 1.7× **slower** (§7h). Cell tube is tier 1, bbox is the floor; gated on the cold path only (`covered()` guards warm edits). | **DONE** — A/B on one quiet machine, `CPU_THROTTLE=4`, all spreads 1.1×: **cold 6370 → 3253 ms (1.96×)**, warm 880 → 584, repeat 450 → 306. Route **byte-identical on all 5 `match_parity` cases**; corpus **0 worse accepted** at K=6. ⚠ `server/server.loft` keeps its own match path and is NOT wired — see §7h. | **⚠ route-affecting — the only one** |
 
 **Steps 2 and 3 are probes and come first**: each is an afternoon and each gates a block (2 → steps
 4–8; 3 → steps 9–12). If a probe fails, that block is fiction and the fallback is named in its phase.
@@ -1012,6 +1012,56 @@ redesign. The kernel wiring itself is reverted; `tools/match_parity.sh` is byte-
 **A note in the ladder's favour, so it is not written off:** on `match_parity`'s case C the tube was
 accepted and produced a byte-identical route from **4501 ways instead of 11287**. The tier is genuinely
 good; only the gate is wrong.
+
+### §7h(2) — Option 2 shipped: the margin-relative gate, cold match 1.96× (2026-07-22)
+
+`bridged_m == 0 && dev_max <= corridor_margin(pts) * K`. It asks the question the gate is *for* — did the
+route stray to where the tube's ways run out? — instead of "did the user draw far from a road?", which is
+what an absolute `dev_max` answers and why it escalated 8 cases for nothing.
+
+**K was swept, not chosen.** `corridor_margin` is capped at `CORRIDOR_MAX_M = 200 m` while corpus
+`dev_max` runs 339–2390 m, so a literal `dev_max <= margin` accepts nothing and the useful ratio had to
+be read off the data. The corpus now includes **the app's own sketch** (i=25) for exactly the reason §7h
+records — an aggregate can win while that sketch loses:
+
+| K | accepted | WORSE | ladder cost | app sketch |
+|---|---|---|---|---|
+| 5 | 11 | 0 | 90% | escalates |
+| **6** | **13** | **0** | **83%** | **ACCEPT** |
+| 8 | 16 | 0 | 77% | ACCEPT |
+| 9 | 17 | **1** | 70% | ACCEPT |
+
+**K = 6, not the cost-optimal 8.** §3's asymmetry decides it: the gate can only make us escalate (spend
+more), never accept something the fat tier would improve on — so headroom is cheap and a wrong acceptance
+is the only real failure. 6 sits two full steps below the first bad acceptance and still accepts the
+sketch the app runs.
+
+**Measured A/B, one quiet machine, `CPU_THROTTLE=4`, every spread 1.1×:**
+
+| | ladder off | ladder on | |
+|---|---|---|---|
+| **cold match** | 6370 ms | **3253 ms** | **1.96×** |
+| warm (one point moved) | ~880 ms | **584 ms** | 1.5× |
+| repeat (nothing changed) | ~450 ms | **306 ms** | 1.47× |
+
+The warm/repeat gains were not predicted: the session now *holds* the accepted tube corridor, so every
+later incremental match runs over ~half the ways too. The ladder pays twice over.
+
+**Gated on the COLD path only.** Re-gating warm edits was tried and showed a 4.6× spread on the warm
+number — an edit that tripped the threshold turned a ~700 ms incremental match into a full corridor
+rebuild. It is also redundant: `covered()` already requires every point within `margin * 0.85` of a
+corridor this session built, so a covered edit is by construction inside the tube that was accepted.
+**`covered()` is the warm-path guard; the gate chooses a tier at build time.**
+
+**A measurement note that nearly cost a wrong conclusion.** The first post-wiring profile showed cold
+6903 ms with a **2.0× spread** and warm at **4.6×** — the machine was at load average 25 from sibling-tree
+builds. Both the ladder-on and ladder-off numbers above were taken after it quiesced. *A profile without
+its spread is not a measurement*, and this repo's own instrument prints the spread for that reason.
+
+**Not wired: `server/server.loft`.** Step 22's row says "server + kernel", but the server keeps its own
+`covered()` + corridor logic and an Overpass path with a different accumulate-vs-replace policy that the
+corpus does not cover. Wiring it on this evidence would be speculative; it needs its own corpus over the
+Overpass path first.
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 

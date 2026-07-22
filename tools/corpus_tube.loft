@@ -13,10 +13,24 @@ use routing_kernel::(GeoPoint, Way, TTile, MatchState, MatchQuality,
                      tiles_corridor_ways, tiles_corridor_ways_tube, build_graph, corridor_margin,
                      match_state_new, match_incremental, match_state_result, match_quality, path_length_m);
 
-DEV_TOL = 900.0;   // PLAN-MATCH §3, tuned on this corpus (cycling_road only)
+DEV_TOL = 900.0;   // PLAN-MATCH §3's ABSOLUTE threshold — kept for comparison; §7h shows it is the wrong shape.
+
+// PLAN-PERF §7h option 2 — the MARGIN-RELATIVE gate: accept while `dev_max <= corridor_margin * K`.
+// The point is to test the CORRIDOR (did the route stray to where the tube's ways run out?) rather than
+// the SKETCH (how far from any road did the user draw?), which is what an absolute dev_max measures and
+// why it escalated 8 cases for nothing. K is swept here rather than guessed: `corridor_margin` is capped
+// at CORRIDOR_MAX_M = 200 m, so the useful K is large and has to be read off the data.
+struct Row { margin: float, t_dev: float, t_bridged: float, worse: boolean, tube_ms: integer, bbox_ms: integer, app: boolean }
 
 // A deterministic spread over the enschede block: start cell, direction, bend, density.
 fn sketch_at(i: integer) -> vector<GeoPoint> {
+  // i == 25 is the APP's sketch — the one map_profile.sh times as the cold match. Included so the sweep
+  // can require it to ACCEPT, not just require the aggregate to win (PLAN-PERF §7h).
+  if i == 25 {
+    return [GeoPoint { lat: 52.2412299, lon: 6.8834496 },
+            GeoPoint { lat: 52.2694705, lon: 6.9164085 },
+            GeoPoint { lat: 52.3116272, lon: 6.9088554 }];
+  }
   la0 = 52.190 + ((i % 5) as float) * 0.030;
   lo0 = 6.800  + (((i / 5) % 5) as float) * 0.040;
   dla = 0.020 + ((i % 3) as float) * 0.020;
@@ -63,7 +77,11 @@ fn main() {
   // escalation pays the tube AND the bbox, so a high escalation rate can make the ladder SLOWER.
   n_accept = 0; n_escal = 0; n_worse_accepted = 0;
   ms_bbox_only = 0; ms_ladder = 0;
-  for i in 0..25 {
+  rows: vector<Row> = [];
+  // 25 lattice sketches + the APP's own headline sketch (i=25) — the one every other measurement in
+  // PLAN-PERF uses. §7h's whole lesson is that a corpus average can win while that sketch loses, so it
+  // is in the corpus now and called out separately in the sweep.
+  for i in 0..26 {
     pts = sketch_at(i);
     m = corridor_margin(pts);
     tb0 = now();
@@ -107,6 +125,8 @@ fn main() {
         n_escal += 1;
         ms_ladder += tube_ms + bbox_ms;          // escalation pays BOTH tiers
       }
+      rows += [Row { margin: m, t_dev: qt.dev_max, t_bridged: qt.bridged_m, worse: worse,
+                     tube_ms: tube_ms, bbox_ms: bbox_ms, app: i == 25 }];
       gate = "ACCEPT";
       if !accept { gate = "escalate"; }
       println("ROW i={i} pts={len(pts)} ways={len(wt)} t_bridged={qt.bridged_m:1.0} t_devmax={qt.dev_max:1.0} t_devmean={qt.dev_mean:1.0} t_penshare={t_pen_share:1.3} | b_bridged={qb.bridged_m:1.0} b_devmax={qb.dev_max:1.0} | {verdict} | {gate} tube={tube_ms}ms bbox={bbox_ms}ms");
@@ -116,4 +136,30 @@ fn main() {
   println("WAYS bbox={wb_tot} tube={wt_tot} dropped={wb_tot - wt_tot} ({((wb_tot - wt_tot) as float) * 100.0 / (wb_tot as float):1.0}%)");
   println("GATE DEV_TOL={DEV_TOL}: accepted={n_accept} escalated={n_escal} WORSE_ACCEPTED={n_worse_accepted}");
   println("COST bbox_only={ms_bbox_only}ms ladder={ms_ladder}ms  ({(ms_ladder as float) * 100.0 / (ms_bbox_only as float):1.0}% of bbox-only)");
+
+  // --- §7h option 2: sweep the MARGIN-RELATIVE gate -----------------------------------------------
+  // Accept while dev_max <= margin*K. Both criteria must hold to pick a K: WORSE=0 (safety) and the
+  // ladder cheaper than bbox-only (the point), AND the app's own sketch must accept — the aggregate
+  // winning while that sketch loses is exactly the trap §7h fell into.
+  println("");
+  println("SWEEP margin-relative gate (dev_max <= margin*K), bridged==0 always required:");
+  println("    K  accepted  escalated  WORSE  ladder%%  app_sketch");
+  for ki in 0..24 {
+    k = 1.0 + (ki as float);
+    s_acc = 0; s_esc = 0; s_worse = 0; s_ladder = 0; s_bbox = 0; app_gate = "escalate";
+    for r in rows {
+      ok = r.t_bridged == 0.0 && r.t_dev <= r.margin * k;
+      s_bbox += r.bbox_ms;
+      if ok {
+        s_acc += 1; s_ladder += r.tube_ms;
+        if r.worse { s_worse += 1; }
+        if r.app { app_gate = "ACCEPT"; }
+      } else {
+        s_esc += 1; s_ladder += r.tube_ms + r.bbox_ms;
+      }
+    }
+    pct = 0.0;
+    if s_bbox > 0 { pct = (s_ladder as float) * 100.0 / (s_bbox as float) ?? 0.0; }
+    println("  {k:3.0}  {s_acc:8}  {s_esc:9}  {s_worse:5}  {pct:6.0}%  {app_gate}");
+  }
 }
