@@ -1,0 +1,128 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7a(2) — step 19b's GO/NO-GO, answered before the format change.
+//
+//   loft --native --lib lib tools/union_probe.loft _site/stores/enschede.roads.store
+//
+// 19b persists a graph per tile so a cold match can UNION the corridor's tiles instead of building a
+// graph from ways. That costs a TTile format change, regenerating and redeploying both stores, and a
+// loader-side merge — §7a calls it the riskiest row in the plan. Its whole case is that unioning is much
+// cheaper than building, and that has never been measured; `build_graph` is ~49% of a cold match, but if
+// the union costs nearly as much, the change buys nothing and should not be made.
+//
+// So this simulates it with in-memory parts: partition the corridor's ways by their storing tile, build
+// each tile's graph (that work becomes PERSISTED, so it does not count at match time), then time the
+// union alone against a straight `build_graph` of the same corridor — and check the route is identical.
+//
+// The comparison is honest about what persisting can and cannot remove:
+//   BUILD  = per-vertex node hashing + per-edge construction (incl. a geodesic per edge) + CSR
+//   UNION  = per-node re-hashing to merge parts + edge copy + CSR
+// The union still pays a hash per node and still rebuilds CSR. Only the measurement says whether what it
+// skips is worth a format change.
+#cwd
+
+use map_kernel::parse_sketch;
+use routing_kernel::(TTile, GeoPoint, Way, Graph, corridor_margin, tiles_corridor_ways_tube,
+                     build_graph, union_graphs, match_state_new, match_incremental, match_state_result);
+
+SKETCHES = [
+  "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554",
+  "52.1800,6.8300;52.2000,6.8600",
+  "52.2200,6.7900;52.2400,6.8200",
+];
+GOLDEN  = [13491979666115, 2009382494520, 1467589415931];
+PROFILE = "cycling_road";
+CELL    = 200000;
+REPS    = 3;
+
+struct CellSeen { const c: integer, const n: integer }
+struct CellSet  { s: hash<CellSeen[c]> }
+
+fn fx(v: float) -> integer { round(v * 10000000.0) as integer }
+fn cell_of(lat: float, lon: float) -> integer {
+  la = fx(lat); lo = fx(lon);
+  ty = la / CELL; if la < 0 && la % CELL != 0 { ty = ty - 1; }
+  tx = lo / CELL; if lo < 0 && lo % CELL != 0 { tx = tx - 1; }
+  ty * 1000000 + tx
+}
+fn route_fp(pts: vector<GeoPoint>) -> integer {
+  acc = 0;
+  for i in 0..len(pts) {
+    p = pts[i] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    acc = acc + (i + 1) * (fx(p.lat) + fx(p.lon));
+  }
+  acc
+}
+fn way_cell(w: Way) -> integer {
+  c = w.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+  cell_of(c.lat, c.lon)
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: union_probe <roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[0] ?? "");
+  for si in 0..len(SKETCHES) { run_one(roads, SKETCHES[si] ?? "", GOLDEN[si] ?? 0, si); }
+}
+
+fn run_one(roads: hash<TTile[tkey]>, sketch: text, golden: integer, si: integer) {
+  trace = parse_sketch(sketch);
+  ways = tiles_corridor_ways_tube(roads, trace, corridor_margin(trace));
+
+  // The distinct storing tiles, in first-seen order.
+  seen = CellSet { s: [] };
+  cells: vector<integer> = [];
+  for w in ways {
+    cid = way_cell(w);
+    if seen.s[cid] == null { seen.s += [CellSeen { c: cid, n: 1 }]; cells += [cid]; }
+  }
+
+  // PERSISTED work: one graph per tile. Timed only to report what generation would have to do.
+  p0 = now();
+  parts: vector<Graph> = [];
+  for ci in 0..len(cells) {
+    target = cells[ci] ?? 0;
+    sub: vector<Way> = [];
+    for w2 in ways { if way_cell(w2) == target { sub += [w2]; } }
+    parts += [build_graph(sub)];
+  }
+  p1 = now();
+
+  // The two things that actually compete at MATCH time.
+  bt = 0; ut = 0;
+  gb = build_graph(ways);
+  gu = union_graphs(parts);
+  for _r in 0..REPS {
+    b0 = now(); gb = build_graph(ways); b1 = now();
+    u0 = now(); gu = union_graphs(parts); u1 = now();
+    bt = bt + (b1 - b0); ut = ut + (u1 - u0);
+  }
+  build_ms = bt / REPS;
+  union_ms = ut / REPS;
+
+  rb = match_state_result(gb, match_incremental(match_state_new(), gb, trace, PROFILE)).pts;
+  ru = match_state_result(gu, match_incremental(match_state_new(), gu, trace, PROFILE)).pts;
+  fb = route_fp(rb);
+  fu = route_fp(ru);
+
+  // How much do the parts DUPLICATE? The union must hash every part-node to merge them, so this is the
+  // work it cannot avoid — and it decides whether a smarter persisted format could do better. If the
+  // parts already total about the union's node count, there is nothing left for a cleverer merge to win.
+  part_nodes = 0; part_edges = 0;
+  for pg in parts { part_nodes = part_nodes + len(pg.nodes); part_edges = part_edges + len(pg.edges); }
+  vtx = 0;
+  for w3 in ways { vtx = vtx + len(w3.coords); }
+  println("#U [{si}] tiles={len(cells)} ways={len(ways)} build_nodes={len(gb.nodes)} union_nodes={len(gu.nodes)} build_edges={len(gb.edges)} union_edges={len(gu.edges)}");
+  println("#U [{si}] hashed: build={vtx} vertices vs union={part_nodes} part-nodes (union nodes={len(gu.nodes)}, parts duplicate {part_nodes - len(gu.nodes)})");
+  println("#U [{si}] build={build_ms}ms union={union_ms}ms  (persist-side per-tile build was {p1 - p0}ms, paid at GENERATION)");
+  if len(gb.nodes) != len(gu.nodes) || len(gb.edges) != len(gu.edges) {
+    println("#U [{si}] FAIL graph differs — union merged a different node/edge SET than the global build");
+  }
+  if fb != fu { println("#U [{si}] FAIL route differs: build_fp={fb} union_fp={fu}"); }
+  else if golden != 0 && fu != golden { println("#U [{si}] FAIL route changed vs golden: {fu} != {golden}"); }
+  else { println("#U [{si}] OK route identical (fp={fu}, {len(ru)} pts)"); }
+}

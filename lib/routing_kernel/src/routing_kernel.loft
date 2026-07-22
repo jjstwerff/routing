@@ -459,6 +459,49 @@ fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: 
   g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype, bicycle: bicycle, access: access, oneway: oneway, onewaybike: onewaybike, svc: svc, cycleway: cycleway, cyclestreet: cyclestreet, name: name }];
 }
 
+// Union pre-built per-tile graphs into one corridor graph (PLAN-PERF §7a(2), step 19b).
+//
+// This is the LOADER side of "persist the graph per tile": each part is a tile's own graph, and the
+// corridor is their union with shared nodes merged and adjacency rebuilt. It is written and measured
+// BEFORE any store-format change, so the question "is unioning actually cheaper than building?" is
+// answered by a number rather than by a regeneration and a redeploy.
+//
+// Two things about the merge that PLAN-TILES §268's "border nodes" phrasing understates:
+//
+//   * shared nodes are NOT only at borders. A way is stored under the tile of its FIRST vertex and is
+//     never clipped, so it can run far into neighbouring tiles — two tiles' ways therefore meet anywhere
+//     they overlap, not just on the cell edge. The merge has to be over ALL nodes, which is what
+//     `node_idx` does here; a border-only splice would silently keep duplicates and disconnect the graph.
+//   * EDGES cannot duplicate, and that is why this is a plain concatenation. Each way belongs to exactly
+//     one tile, so the parts partition the ways; only their endpoints coincide.
+//
+// Node identity is `node_key`'s exact fixed-point pack — the same identity `build_graph` uses, so the
+// union merges exactly the nodes a global build would. `tools/tile_border_gate.sh` is the acceptance:
+// four corridors spanning 4-14 tiles, routes byte-identical.
+pub fn union_graphs(parts: vector<Graph>) -> Graph {
+  g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  for p in parts {
+    // Each part's node indices are local to it; map them into the union as we go.
+    remap: vector<integer> = [];
+    for i in 0..len(p.nodes) {
+      nd = p.nodes[i] ?? GNode { lat: 0.0, lon: 0.0 };
+      remap += [node_idx(g, nd.lat, nd.lon)];
+    }
+    for e in p.edges {
+      ra = remap[e.a] ?? -1;
+      rb = remap[e.b] ?? -1;
+      if ra >= 0 && rb >= 0 && ra != rb {
+        g.edges += [GEdge { a: ra, b: rb, length: e.length, hw: e.hw, surface: e.surface,
+                            tracktype: e.tracktype, bicycle: e.bicycle, access: e.access,
+                            oneway: e.oneway, onewaybike: e.onewaybike, svc: e.svc,
+                            cycleway: e.cycleway, cyclestreet: e.cyclestreet, name: e.name }];
+      }
+    }
+  }
+  build_adj(g);
+  g
+}
+
 // Build the corridor graph from the parsed ways, then its CSR adjacency (a counting-sort pass).
 // As `build_graph`, but `on_tick` fires every TICK_EVERY ways — the second un-interruptible block of a
 // cold match (PLAN-MATCH splits an 886ms match as build 367 + search 519).

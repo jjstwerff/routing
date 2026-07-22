@@ -27,8 +27,8 @@
 #cwd
 
 use map_kernel::parse_sketch;
-use routing_kernel::(TTile, GeoPoint, Way, corridor_margin, tiles_corridor_ways_tube,
-                     build_graph, match_state_new, match_incremental, match_state_result);
+use routing_kernel::(TTile, GeoPoint, Way, Graph, corridor_margin, tiles_corridor_ways_tube,
+                     build_graph, union_graphs, match_state_new, match_incremental, match_state_result);
 
 // The `match_parity` corpus — several DISTINCT routes, each long enough to cross 0.02-degree (~2 km)
 // cells. One sketch would prove one corridor; the border merge has to hold for all of them.
@@ -138,6 +138,33 @@ fn check_sketch(roads: hash<TTile[tkey]>, sketch: text, golden: integer, si: int
   for m in half..len(ways) { rot += [ways[m] ?? ways[0] ?? rev[0] ?? Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }]; }
   for q in 0..half { rot += [ways[q] ?? ways[0] ?? rev[0] ?? Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }]; }
   rotroute = match_with(rot, trace);
+
+  // 5. The UNION path (step 19b's loader) must produce the same route as one global build. 19b itself is
+  // NO-GO on cost (§7a(2)) — the union is only ~16% cheaper than building — but `union_graphs` stays as
+  // the reference implementation, so its correctness is asserted here rather than left to rot.
+  parts: vector<Graph> = [];
+  cells2: vector<integer> = [];
+  seen2 = TileSet { s: [] };
+  for w4 in ways {
+    c4 = w4.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    id4 = cell_of(c4.lat, c4.lon);
+    if seen2.s[id4] == null { seen2.s += [TileSeen { t: id4, n: 1 }]; cells2 += [id4]; }
+  }
+  for ti in 0..len(cells2) {
+    tgt = cells2[ti] ?? 0;
+    sub: vector<Way> = [];
+    for w5 in ways {
+      c5 = w5.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+      if cell_of(c5.lat, c5.lon) == tgt { sub += [w5]; }
+    }
+    parts += [build_graph(sub)];
+  }
+  gu = union_graphs(parts);
+  uroute = match_state_result(gu, match_incremental(match_state_new(), gu, trace, PROFILE)).pts;
+  if route_fp(uroute) != fp || len(uroute) != len(base) {
+    println("#B [{si}] FAIL UNION route differs from the global build — the per-tile merge is wrong");
+    bad = 1;
+  }
 
   same_rev = len(rroute) == len(base) && route_fp(rroute) == fp;
   same_rot = len(rotroute) == len(base) && route_fp(rotroute) == fp;
