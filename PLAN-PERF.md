@@ -72,7 +72,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **12** ✅ | `browser/map.mjs`, `store-app.mjs`, `cdp_verify_store.mjs` | Switch render to the store-read areas (`areaRenderList` mirrors `parseAreas`'s tail — same <3-vertex drop, same `minZoom`); keep the text emit as the **parity gate**, now asserted on the app's own view in `make test-map`, not only in the probe. | **DONE** — `✓ areas render from the store, 2252 == loft's 2252 text areas`; `# view:` counts unchanged. **⚠ Interim cost measured, see §7f: view total 927 → 1447 ms** — not step 12's read, but step 9's per-view `expose`, which re-flattens all 1089 tiles. Step 13 removes it. | **render source** |
 | **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
 | **14** ✅ | `browser/map.mjs`, **`browser/store-geom.mjs`** (new), `store-app.mjs` | **Its premise was half wrong — see §6c.** Landed as two orthogonal fixes: **14a** screen features by lat/lon bounds BEFORE projecting (the frame projected 214,455 vertices to draw ~7,000), and **14b** stop COPYING the store into JS at all — a `vector<Coord>` is already an interleaved `Int32Array`, so the renderer reads coordinates straight out of wasm memory. "Typed arrays" would have been the wrong fix: still a copy. | **DONE.** Quiet box, `CPU_THROTTLE=4`, spreads 1.1–1.5×: **view 277 → 126 ms**, **storeRead 129 → 29 ms**, **pan frame 64 → 20 ms**, retained objects **239,135 → 4,609**, JS heap 33.3 → 24.6 MB. Streets cannot come from the store (the matcher iterates it) but parse into a flat column instead. Gated on a canvas PIXEL HASH, identical (`c85280c8`) across every variant — counts cannot see a ring read at a wrong offset. | **perf only (pixel-identical)** |
-| **15** ⚠ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **IMPLEMENTED, NOT ENABLED (`map.blocked = false`) — see §6d.** Warm pan frame **0.6 ms** vs 20 ms (~33×), cold frame ~135 ms. It **cannot** be pixel-identical (the origin must snap to a whole device pixel; the snap alone moves 261,499 of 557,000 pixels), so its gate is blocked-vs-**snapped-direct**. Four coordinate/order couplings found and fixed; **10.7% of pixels still differ with identical draw counts** and that is unexplained. Off until it is. | **would be a visual change** |
+| **15** ⚠ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **IMPLEMENTED, EXPLAINED, NOT ENABLED (`map.blocked = false`) — see §6d.** Warm pan frame **0.9 ms** vs 20 ms (~22×), cold frame ~91 ms, 6 blocks. Its difference from a direct render is now fully accounted for: an origin-key bug (35,424 px, fixed), a latent POI edge-cull bug in the DIRECT renderer (fixed — a real app fix), and **canvas-size rasterisation rounding, which is a platform property** proven by a minimal control and cannot be removed. Gate is two equalities (cached==baked, labels exact) and one bound (maxDelta ≤ 16). Enabling it is a visual decision — the origin snap moves the image up to one device pixel. | **would be a visual change** |
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
@@ -589,23 +589,63 @@ anchoring invariants are untouched — the snap is a RENDERING decision, not a p
 4. **`fits` is greedy first-come**, so label ORDER decides which labels win a contested spot — and blocked
    collects block-by-block where direct collects in index order. Now sorted by feature index.
 
-### What is still unexplained — the honest part
+### The 10.7% — found, and it was three unrelated things
 
-**59,704 of 557,000 pixels (10.7%)** still differ from the snapped-direct reference, spread over the whole
-canvas, hot columns at x = 0, 1 and 997, 998, 999. **Counts are IDENTICAL on both paths** (areas 868,
-lines 710, buildings 1895, streets 1077, pois 1335, labels 33/75/1), so it is not the feature set.
+Bisected, not guessed. `59,704 -> 8,191` differing pixels, and the remainder is proven irreducible.
 
-The edge concentration points at a known latent bug — `drawPois` culls on the strict viewport rect, so a
-glyph whose centre is just off-screen loses its overhang in the direct render but keeps it in a block —
-but that cannot account for 59,704 pixels.
+| | px | what it was |
+|---|---|---|
+| **1. origin key mismatch** | **35,424** | `renderBlocked` returned `{ox, oy}`; `_origin` is read as `.x`/`.y`. Every overlay projection in a blocked frame was **NaN**, so labels and the route silently vanished. All three label passes now diff 0. |
+| **2. POI edge cull** | ~1,600 (maxDelta 178 → 68) | A **latent bug in the DIRECT renderer**, not the cache. |
+| **3. canvas-size rounding** | **8,191**, every one ±1..15 | A **platform property**. Not fixable. |
 
-### The instrument that should have been built first
+**#2 is a real app fix and it is worth stating on its own.** A POI glyph is drawn from its CENTRE, but
+the cull tested the bare viewport rect — so a marker just off-screen vanished instead of half-showing.
+A block extends past the viewport, so the blocked path drew them and was **more correct than the app**.
+`POI_EDGE_PAD` (largest radius 4.5 + halo → 8) fixes it, and it is why the canvas hash moved
+`c85280c8 → 917244eb`.
 
-`renderDiff(a, b)` returns the differing-pixel COUNT and its bounding box. A hash says *"not equal"* and
-nothing else; a count plus a box separates a **seam** (thin line on a block boundary) from a **label**
-(small scattered box) from an **origin error** (whole canvas) at a glance. Four fixes were made before it
-existed and every one of them was a guess — two of which changed nothing at all. *When a comparison fails
-and you cannot say WHERE, stop fixing and go build the instrument that localises it.*
+**#3 is why step 15's gate can never be equality**, and it was established by experiment rather than
+assumed. `offscreenRoundTrip(pad)` changes ONLY the canvas geometry, with every feature keeping its
+sub-pixel phase:
+
+```
+pad 0   (canvas identical to the viewport)      → diff 0        ← an offscreen round-trip IS exact
+pad 32  (canvas 64 px larger, origin shifted)   → diff 5,026, maxDelta 15
+```
+
+Chromium's canvas rasterisation is **not invariant to canvas dimensions**. A bleed margin necessarily
+changes them, so **no raster cache of this design can be pixel-identical** — the residual is antialiasing
+rounding on feature edges, ±1 in a channel.
+
+### A cache bug the bisect could not see
+
+Building-label anchors are produced only by a **bake**, so a fully-cached frame reset the list and never
+refilled it — every building label would have vanished on the second frame of a pan. The bisect cleared
+the cache on every run, so it structurally could not observe this. Anchors are now cached with their
+block, and `coldVsWarm == 0` asserts it. *A probe that always starts cold cannot test a cache.*
+
+### The gate: two equalities and one bound
+
+```
+✓ block cache: cached==baked, labels exact, vs snapped-direct 1.47% of px at
+  maxDelta 15 (canvas-size rounding) · pan 0.9ms warm / 91.3ms cold, 6 blocks
+```
+
+- **cached == freshly baked** — exact. The cache's own correctness.
+- **every label pass** — exact. Structural; this is what caught #1.
+- **vs snapped-direct** — *bounded*: a small per-channel delta is what "no structural difference" looks
+  like once #3 is understood. A `maxDelta > 16` means something real broke.
+
+`map.blocked` stays **false**. This section explains and bounds the difference; enabling it is a visual
+decision (the snap moves the image up to one device pixel), not a correctness one.
+
+### The method note, which is the reusable part
+
+`renderDiff`'s per-layer and per-label bisect found #1 **in one run**, after four blind fixes had found
+nothing — and **two of those four changed literally zero pixels**. *When a comparison fails and you
+cannot say WHERE, stop fixing and build the instrument that localises it.* A hash is a smoke alarm: it
+tells you there is a fire, and nothing about which room.
 
 ## 6b(3). Escalation emits the route TWICE — and step 16's headline number was stale (2026-07-22)
 

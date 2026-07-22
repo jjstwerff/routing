@@ -72,15 +72,14 @@ fine**, and `release`/`expose` brackets it.
 
 **What to do next, in the order the evidence favours:**
 
-1. **Step 15 — block rasters. IMPLEMENTED BUT OFF** (`map.blocked = false`) — **read `PLAN-PERF` §6d
-   first.** A warm pan frame is **0.6 ms** vs 20 ms, but **10.7% of pixels still differ** from the
-   snapped-direct reference *with identical draw counts*, and that is unexplained. Do not enable it until
-   that is closed. Two things §6d establishes that save re-deriving them: it **cannot** be pixel-identical
-   (the origin must snap to a whole device pixel — the snap alone moves 47% of the canvas), so the gate is
-   blocked-vs-snapped-direct, not blocked-vs-current; and four coordinate/order couplings are already
-   found and fixed (origin split, `_inView` invalid as a per-block cull, screen-space label anchors,
-   greedy label order). Start from `renderDiff()`, which localises a difference instead of just reporting
-   one — building it fourth instead of first is what made the earlier rounds guesswork.
+1. **Step 15 — block rasters. IMPLEMENTED AND EXPLAINED, still OFF** (`map.blocked = false`) — read
+   `PLAN-PERF` §6d. Warm pan frame **0.9 ms** vs 20 ms. Its difference from a direct render is now fully
+   accounted for and gated (cached==baked exact, labels exact, maxDelta ≤ 16). **Turning it on is a
+   VISUAL decision, not a correctness one**: the origin must snap to a whole device pixel, which moves the
+   image by up to one device pixel — that is the only thing left to decide. Two facts §6d establishes so
+   they are not re-derived: an offscreen round-trip IS exact at identical canvas size, but Chromium's
+   rasterisation is **not invariant to canvas dimensions**, so a bleed margin makes pixel-equality
+   unreachable by construction.
    **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
    a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
    is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
