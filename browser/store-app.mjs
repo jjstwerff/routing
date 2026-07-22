@@ -311,7 +311,7 @@ window.__perfHooks = {
     const t0 = performance.now();
     const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
     const t1 = performance.now();
-    map.loadView(text);
+    map.loadRoadsFlat(text);
     const t2 = performance.now();
     // PLAN-PERF §0 step 13 — the layout layers come from the EXPOSED STORE, not from `text`. `ensureView`
     // does this on every view, so this probe must too: leaving it out would report a view the app never
