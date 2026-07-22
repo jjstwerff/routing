@@ -50,8 +50,15 @@ cosmetic). Every step was gated on the route staying **byte-identical** (`tools/
   is **0.14× in the browser and 0.16× native** — step 8 confirmed on both backends. The harness is fixed
   (kernel `reset` command + `matchTrueCold`/`matchRepeat`) and `tools/match_session_probe.loft` is the
   native ground truth to check it against.
-- **The biggest remaining user-visible cost is the COLD match: ~6.1 s on a phone** — newly visible, because
-  nothing measured it until the probe was fixed. That is what steps 19–22 are for.
+- **The biggest remaining user-visible cost is the COLD match: ~6.1 s on a phone, of which ~3.0 s is one
+  frozen frame** — newly visible, because nothing measured it until the probes were fixed. The **warm**
+  path (the common interaction) blocks only **451 ms**. The cold freeze lives in the rebuild phase
+  (`tiles_corridor_ways_streamed` + `build_graph_streamed`, *before* the first stretch exists), so step
+  16's streaming cannot reach it — **steps 19 (persist the graph) and 20 (cell-tube corridor, landed and
+  inert) are the remedies**, both already in the plan.
+- **Three profiler sections were measuring an unannounced cold rebuild** because each inherited the
+  previous probe's corridor. All now `reset` and declare their entry state (`PLAN-PERF` §7e). If you take
+  one habit from this: **a probe that depends on session state must set that state itself.**
 - **Branch state:** `standalone-app` is **64 commits ahead of `main`** (last merge PR #18, 2026-07-11),
   pushed, all gates green. A PR is due.
 - **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.

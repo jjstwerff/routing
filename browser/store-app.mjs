@@ -183,6 +183,12 @@ window.__perfHooks = {
   // n points evenly along the same corridor — a REALISTIC drawn route is ~40 points (PLAN-MATCH),
   // i.e. ~39 small stretches and 39 yield points. The 3-point sketch every other probe uses is the
   // pathological end: 2 huge stretches, so only 2 chances to hand back the frame.
+  // Sketch density vs frozen gap. Both rows must enter in the SAME state or they are not comparable:
+  // without the reset, the 3-point row pays a corridor miss (its straight-line geometry differs from
+  // whatever the previous probe left) and the 40-point row is then covered by the corridor the 3-point
+  // row just built — so the pair read as "denser is cheaper" when they were simply measuring different
+  // interactions. Reset makes both deterministically COLD, which is also the worst case a frozen-frame
+  // metric should report.
   async streamProgressN(n) {
     const pts = [];
     for (let i = 0; i < n; i++) {
@@ -190,6 +196,7 @@ window.__perfHooks = {
       pts.push([52.2412299 + f * (52.3116272 - 52.2412299), 6.8834496 + f * (6.9088554 - 6.8834496)]);
     }
     const spec = pts.map(([a, b]) => `${a.toFixed(7)},${b.toFixed(7)}`).join(';');
+    await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     const gaps = []; let last = performance.now(), stop = false;
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
@@ -200,7 +207,9 @@ window.__perfHooks = {
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
+  // Reset first: a cold match is the case that streams, and it is the one whose freeze this measures.
   async streamProgress() {
+    await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     const gaps = []; let last = performance.now(), stop = false;
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
@@ -214,12 +223,23 @@ window.__perfHooks = {
   // Is the MAIN THREAD blocked while the kernel runs? Lag is not slowness — it is a frozen frame.
   // Drive rAF across a kernel call: count the frames that actually landed and the longest gap between
   // them. A responsive app keeps ~16ms gaps; a blocked one shows one gap ≈ the whole call.
+  // `kind` is 'view' | 'match' (cold, session dropped) | 'matchWarm' (one point moved, session live).
+  // The match cases must name which they are: a cold rebuild and a warm edit block the thread for wildly
+  // different times, and inheriting the previous probe's corridor silently picks one of them for you.
   async frameBlocking(kind) {
+    if (kind === 'match') {
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
+    } else if (kind === 'matchWarm') {
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
+      await this.run('match');                       // establish the corridor, so the timed call is warm
+    }
     const gaps = []; let last = performance.now(), stop = false;
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
     const t0 = performance.now();
-    if (kind === 'match') {
+    if (kind === 'matchWarm') {
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3118272,6.9090554\n${PROFILE}`);
+    } else if (kind === 'match') {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
     } else {
       const b = viewportBox(0.6);

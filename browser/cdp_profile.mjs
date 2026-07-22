@@ -71,7 +71,11 @@ const probe = `(async () => {
   out.streamN = [];
   if (K.streamProgressN) for (const n of [3, 40]) out.streamN.push(await K.streamProgressN(n));
   out.block = [];
-  if (K.frameBlocking) { out.block.push(await K.frameBlocking('view')); out.block.push(await K.frameBlocking('match')); }
+  if (K.frameBlocking) {
+    out.block.push(await K.frameBlocking('view'));
+    out.block.push(await K.frameBlocking('match'));
+    out.block.push(await K.frameBlocking('matchWarm'));
+  }
   return out;
 })()`;
 const res = await ev(probe);
@@ -164,14 +168,15 @@ if (res.stats) {
 }
 if (res.stream) {
   const s = res.stream;
-  console.log('\n=== STEP 16 · does the route ARRIVE progressively? ===');
+  console.log('\n=== STEP 16 · does the route ARRIVE progressively? (COLD — session dropped first) ===');
   console.log('  stretches emitted : ' + s.stretches);
   console.log('  match total       : ' + Math.round(s.total) + 'ms');
   console.log('  frames landed     : ' + s.frames + ' of ~' + s.expectedFrames + ' expected');
   console.log('  longest frozen gap: ' + Math.round(s.longestGap) + 'ms   ← was ~4212ms (one un-interruptible block)');
 }
 if (res.streamN?.length) {
-  console.log('\n=== STEP 16 · progressive arrival vs SKETCH DENSITY ===');
+  console.log('\n=== STEP 16 · progressive arrival vs SKETCH DENSITY (both COLD — same entry state) ===');
+  console.log('  more points = more stretches = more yield points, so the freeze should break up.');
   console.log('  points  stretches   total   frames landed / expected   longest frozen gap');
   for (const s of res.streamN)
     console.log('   ' + String(s.n).padStart(4) + '   ' + String(s.stretches).padStart(6) + '   ' +
@@ -180,8 +185,10 @@ if (res.streamN?.length) {
 }
 if (res.block?.length) {
   console.log('\n=== MAIN-THREAD BLOCKING (is the UI alive while the kernel runs?) ===');
+  console.log('  match = COLD (session dropped) · matchWarm = one point moved · each states its entry');
+  console.log('  state, because a cold rebuild and a warm edit block for wildly different times.');
   for (const b of res.block) {
-    console.log('  ' + b.kind.padEnd(6) + ' call ' + fmt(b.total) + 'ms · frames landed ' + String(b.frames).padStart(4) +
+    console.log('  ' + b.kind.padEnd(10) + ' call ' + fmt(b.total) + 'ms · frames landed ' + String(b.frames).padStart(4) +
                 ' of ~' + String(b.expectedFrames).padStart(4) + ' expected · longest frozen gap ' + fmt(b.longestGap) + 'ms');
   }
   console.log('  (a responsive app lands ~all expected frames with ~16ms gaps;');

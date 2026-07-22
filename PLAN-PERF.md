@@ -935,9 +935,43 @@ instrument before believing it** — here, reading the harness took two minutes 
 against a wrong entry in this plan that would have sent someone into `match_incremental` after a bug that
 does not exist.
 
-**Still genuinely open — the C0 confound.** The 3-point density row (5651 ms frozen gap) and MAIN-THREAD
-BLOCKING (5292 ms) both sit on top of the C0 warm-up figure (**5941 ms, wasm memory growing to 188.9 MB**),
-and each `memory.grow` can copy the whole linear memory. Those two sections start before the plateau, so
-they are probably measuring the grow, not the match — the 40-point row, which runs after it, shows 384 ms.
-Fix the probe's start point before reading those cells. Same class of fault as the one above: a section
-measuring something other than its title.
+### The "C0 confound" — also wrong, and also the session. Fixed; the real freeze is now visible.
+
+I guessed the 5651 ms / 5292 ms frozen gaps were the wasm `memory.grow` (188.9 MB) leaking into sections
+that start before the plateau. **Wrong — third fragment-based hypothesis of the day to fail.** `warmup()`
+already reaches the plateau before any of them, and `reset` does not free linear memory, so growth was
+never in those cells.
+
+**It was session-state contamination again, one probe inheriting the previous one's corridor:**
+`matchExtend` runs 5th and leaves the *extended* corridor; `streamProgressN` then builds a **straight-line
+interpolation** — different geometry from the standard sketch — so it misses and rebuilds; the 40-point row
+is then covered by the corridor the 3-point row just built; and `frameBlocking('match')` sends the standard
+sketch into the straight-line corridor and misses again. Every one of those cells was timing an
+*unannounced cold rebuild*.
+
+**Fixed** by making each probe declare its entry state (`reset` first for the cold cases; a new
+`matchWarm` blocking case that establishes the corridor first). Deterministic now:
+
+| case | total | longest frozen gap |
+|---|---|---|
+| view | 738 ms | 739 ms |
+| **match — COLD** (session dropped) | 6477 ms | **2994 ms** |
+| **match — WARM** (one point moved) | 730 ms | **451 ms** |
+| density, COLD: 3 pts → 2 stretches | 6180 ms | 2734 ms |
+| density, COLD: 40 pts → 39 stretches | 9629 ms | **1802 ms** |
+
+**What this says, and it is a better target than the guess it replaces.** The warm path — the common
+interaction — blocks for **451 ms**. The freeze that remains is the **cold rebuild**, and step 16's
+per-stretch streaming cannot reach it: on a cold match the ~3 s is spent in `tiles_corridor_ways_streamed`
++ `build_graph_streamed` **before the first stretch exists**. More points break the gap up (2734 → 1802 ms)
+but cannot remove it, which is exactly the signature of a floor that lives in the pre-stretch phase and is
+independent of stretch count.
+
+So the cold-match freeze is one problem with two live remedies already in this plan — **step 19** (persist
+the built graph: no `build_graph` at all) and **step 20** (the cell-tube corridor, measured to drop 43–60%
+of the ways, already landed and inert). It is not a new work item.
+
+**One thing to re-measure, not to trust:** `4cc84f8` recorded *"TICK_EVERY measured FLAT — don't tune it;
+the ticks aren't what bounds the gap"*. That measurement was taken on the contaminated instrument, so it
+may have been reading a cold rebuild it did not know it had. Re-run it against the fixed probes before
+relying on it either way — I am not asserting it is wrong, only that it is unanchored.
