@@ -436,6 +436,7 @@ export class RouteMap {
   // new one starts growing. This is the only full render the stream pays.
   beginStretches() {
     this._stretches = [];
+    this._lastStretch = -1;
     this.route = [];
     this.render();
     return this;
@@ -457,8 +458,20 @@ export class RouteMap {
   //
   // Same for z-order: a streaming stretch sits ABOVE the labels, below them once the match completes.
   // Both are transient, and paying a full re-render per stretch to avoid them is the wrong trade.
+  // A NON-INCREASING index means the matcher started the route over, and the canvas must be cleared.
+  //
+  // This is not hypothetical: step 22's ladder matches with the cell tube, and if the §3 gate rejects
+  // that tier it rebuilds on the fat bbox and re-runs `match_incremental_streamed` — so every stretch is
+  // emitted TWICE, the second pass restarting at 0 with different geometry (measured: a 40-point sketch
+  // emits 78 stretches, not 39). Without this branch the rejected tier stays painted under the accepted
+  // one and the slots blend into a route that was never matched: new stretch 0 beside old stretches 1..n.
+  //
+  // A single pass emits 0,1,2,… strictly increasing, so the test needs no cooperation from the kernel and
+  // no second channel — the indices already say it.
   applyStretch(i, pts) {
-    if (!this._stretches) this._stretches = [];
+    if (!this._stretches) { this._stretches = []; this._lastStretch = -1; }
+    if (i <= this._lastStretch) { this._stretches = []; this.route = []; this.render(); }
+    this._lastStretch = i;
     this._stretches[i] = pts;
     this.route = joinStretches(this._stretches);
     if (this.route.length < 2) return this;

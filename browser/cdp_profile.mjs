@@ -64,6 +64,8 @@ const probe = `(async () => {
   const SKETCH = [[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]];
   out.matchCold = []; out.matchWarm = []; out.matchRepeat = [];
   if (K.matchTrueCold) for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchTrueCold(SKETCH));
+  out.matchColdStreamed = [];
+  if (K.matchTrueColdStreamed) for (let i = 0; i < ${N}; i++) out.matchColdStreamed.push(await K.matchTrueColdStreamed(SKETCH));
   if (K.matchRepeat) for (let i = 0; i < ${N}; i++) out.matchRepeat.push(await K.matchRepeat(SKETCH));
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.matchExtend = [];
@@ -125,6 +127,19 @@ console.log('  raw match_warm   kernel per run: ' + (res.matchWarm || []).map((r
 console.log('\n=== MATCH TRUE COLD (session dropped first — corridor + build_graph + full seed) — x' + res.matchCold.length + ' (ms) ===');
 console.log('             median   min–max   spread');
 for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchCold.map((r) => r[k]));
+if (res.matchColdStreamed?.length) {
+  // The app's REAL click path: the same cold match with the route drawing itself per stretch (§6b(2)).
+  // Reported as a delta against MATCH TRUE COLD above, because the growing line's cost is only meaningful
+  // like-for-like — and because a headline number that quietly absorbed it would explain nothing.
+  console.log('\n=== MATCH TRUE COLD, STREAMED (the app\'s click path — the line grows) — x' + res.matchColdStreamed.length + ' (ms) ===');
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchColdStreamed.map((r) => r[k]));
+  const s = med(res.matchColdStreamed.map((r) => r.total)), p = med(res.matchCold.map((r) => r.total));
+  console.log('\n  growing line costs  ' + (s - p >= 0 ? '+' : '') + Math.round(s - p) + ' ms  (' + (s / p).toFixed(2) + 'x of the non-streaming path)');
+  console.log('    → work is meant to be proportional to the ROUTE, not the map: applyStretch strokes a');
+  console.log('      polyline per stretch, never a full render. A ratio climbing with sketch size means');
+  console.log('      that stopped holding (PLAN-PERF §6b(2)).');
+}
 if (res.matchRepeat?.length) {
   console.log('\n=== MATCH REPEAT (identical sketch, live session — NOTHING changed; the floor) — x' + res.matchRepeat.length + ' (ms) ===');
   console.log('             median   min–max   spread');

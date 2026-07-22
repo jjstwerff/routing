@@ -6,7 +6,7 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { makeView, projectWorld, unprojectWorld, panCenter } from './map.mjs';
+import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { fails++; console.error('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };
@@ -90,6 +90,46 @@ console.log('M1 · wheel zoom holds the cursor lat/lon fixed while zoom changes'
     if (nz === z) allZoomed = false;
   }
   ok(worst < 1e-9 && allZoomed, `cursor point fixed across a wheel tick (worst ${worst.toExponential(2)}°)`);
+}
+
+// --- §6b(2): the growing line ----------------------------------------------------------------------
+// DOM-free, because the case that matters is one a browser gate is bad at reaching: the ladder has to
+// REJECT its first tier before a second pass ever happens, and the sketches the headless gate uses are
+// accepted on the first try. A stub canvas gets the branch under test in milliseconds instead.
+const noop = () => {};
+const stubCanvas = () => {
+  const ctx = { setTransform: noop, clearRect: noop, fillRect: noop, beginPath: noop, moveTo: noop,
+                lineTo: noop, stroke: noop, fill: noop, arc: noop, rect: noop, closePath: noop,
+                setLineDash: noop, fillText: noop, strokeText: noop, save: noop, restore: noop,
+                measureText: () => ({ width: 10 }) };
+  return { width: 0, height: 0, style: {}, getContext: () => ctx, addEventListener: noop,
+           getBoundingClientRect: () => ({ width: 800, height: 600 }) };
+};
+
+console.log('\n§6b(2) · a STRETCH line parses to its index and points');
+{
+  const s = parseStretch('STRETCH 7;52.1,6.1;52.2,6.2');
+  ok(s && s.i === 7 && s.pts.length === 2 && s.pts[1][0] === 52.2, `STRETCH 7 → i=${s?.i}, ${s?.pts.length} pts`);
+  ok(parseStretch('ROUTE;52.1,6.1') === null && parseStretch('') === null, 'a non-STRETCH line parses to null');
+}
+
+console.log('§6b(2) · a restarted stretch pass REPLACES the route, never blends with it');
+{
+  // Step 22's ladder re-runs match_incremental_streamed on the fat bbox when the gate rejects the cell
+  // tube, so the whole route is emitted a second time from index 0 (measured: a 40-point sketch emits 78
+  // stretches, not 39). Blending the passes would draw a route that was never matched — new stretch 0
+  // beside the rejected tier's stretches 1..n.
+  const m = new RouteMap(stubCanvas(), { ...ENSCHEDE, zoom: 13, interactive: false });
+  m.beginStretches();
+  m.applyStretch(0, [[52.20, 6.88], [52.21, 6.89]]);
+  m.applyStretch(1, [[52.21, 6.89], [52.22, 6.90]]);
+  const pass1 = m.route.length;
+  ok(pass1 === 3, `pass 1 accumulates and dedups the shared joint (${pass1} pts from 2+2)`);
+  m.applyStretch(0, [[52.30, 6.98], [52.31, 6.99]]);          // the gate rejected tier 1 — pass 2 restarts
+  ok(m.route.length === 2 && m.route[0][0] === 52.30,
+     `a restart drops the rejected tier entirely (${pass1} pts → ${m.route.length}, starting at the new geometry)`);
+  m.applyStretch(1, [[52.31, 6.99], [52.32, 7.00]]);
+  ok(m.route.length === 3 && m.route[2][0] === 52.32, `pass 2 then accumulates normally (${m.route.length} pts)`);
 }
 
 console.log(fails ? `\nM0+M1 FAIL — ${fails} check(s) failed` : '\nM0+M1 PASS — projection + pan/zoom invariants hold');

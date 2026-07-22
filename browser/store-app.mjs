@@ -454,6 +454,14 @@ window.__perfHooks = {
     await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     return timeMatch(pts);
   },
+  // The same cold match, down the app's REAL click path — with the route drawing itself as it arrives
+  // (§6b(2)). Paired with matchTrueCold so the growing line's cost is a DELTA between two like-for-like
+  // runs rather than a shift in the headline number that nothing explains. If this pair ever separates
+  // materially, the per-stretch stroke has stopped being proportional to the route.
+  async matchTrueColdStreamed(pts) {
+    await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
+    return timeMatch(pts, true);
+  },
   // A REPEAT match: the identical sketch, re-sent into a live session. covered() holds and
   // match_incremental finds nothing changed, so this is the app's cheapest possible match — the floor,
   // not the outlier. (This is what the old `matchColdFull` actually measured; kept under an honest name.)
@@ -481,10 +489,18 @@ window.__perfHooks = {
 };
 
 // Shared body for the two match probes above.
-async function timeMatch(pts) {
+//
+// `stream` selects which of the two match paths is measured, and the pair is the point: with it, the
+// app's REAL click path (streamedMatch — the route draws itself stretch by stretch); without it, the same
+// match with the growing line switched off. Running both is what ATTRIBUTES the cost of §6b(2) instead of
+// folding it into the headline number, and it is why the recorded 3327 ms cold match stays comparable
+// across the change. Measuring only the non-streaming path would have profiled an interaction the user no
+// longer performs — the mistake CLAUDE.md's "measure the common case" rule names.
+async function timeMatch(pts, stream) {
   const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
   const t0 = performance.now();
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+  const text = stream ? await streamedMatch(spec)
+                      : await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
   const t1 = performance.now();
   map.loadMatch(text);
   const t2 = performance.now();
