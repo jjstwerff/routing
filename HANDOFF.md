@@ -72,10 +72,15 @@ fine**, and `release`/`expose` brackets it.
 
 **What to do next, in the order the evidence favours:**
 
-1. **Step 15 — per-tile rasters.** ⚠ **Re-size it first.** Step 14 (§6c) took the view to **126 ms** and
-   the pan frame to **20 ms**, so 15's "pan <16 ms" is a small step now, not the main event. A frame is
-   now RASTERISATION, not projection (projection is 4% of it) — which is what 15 actually targets. The
-   largest remaining slice is buildings (36% of 20 ms).
+1. **Step 15 — block rasters. IMPLEMENTED BUT OFF** (`map.blocked = false`) — **read `PLAN-PERF` §6d
+   first.** A warm pan frame is **0.6 ms** vs 20 ms, but **10.7% of pixels still differ** from the
+   snapped-direct reference *with identical draw counts*, and that is unexplained. Do not enable it until
+   that is closed. Two things §6d establishes that save re-deriving them: it **cannot** be pixel-identical
+   (the origin must snap to a whole device pixel — the snap alone moves 47% of the canvas), so the gate is
+   blocked-vs-snapped-direct, not blocked-vs-current; and four coordinate/order couplings are already
+   found and fixed (origin split, `_inView` invalid as a per-block cull, screen-space label anchors,
+   greedy label order). Start from `renderDiff()`, which localises a difference instead of just reporting
+   one — building it fourth instead of first is what made the earlier rounds guesswork.
    **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
    a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
    is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
