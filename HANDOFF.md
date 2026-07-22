@@ -132,7 +132,11 @@ match 88**. In the browser a cold match is 1450 ms and a warm one 343 ms.
 - **Store-format changes fail SILENTLY** — an old-schema store gives no output, no error, exit 1. And the
   file size can be byte-identical after adding fields; read a field to verify, not `ls`.
 
-- **Known-stale below:** §§2–9 predate the `lib/` package layout and the store app; treat them as history.
+- **Known-stale below:** §§4–11 predate the `lib/` package layout and the store app; treat them as
+  history. (They were §§2–9 before §§1–3 were rewritten — the range was renumbered with them.)
+  ⚠ Two things in §9 are already stale in a way that matters: **PR #8 is closed** (no PRs are open), and
+  Track 1d's "Leaflet base map" was superseded — the app has its **own canvas renderer** (PLAN-MAP), which
+  is what §§1–3 describe.
 
 ---
 
