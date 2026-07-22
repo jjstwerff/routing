@@ -29,8 +29,8 @@ Three structural changes got it there, and each is worth more than its number:
    ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1831 ms**,
-**warm match ~880 → 395 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1539 ms**,
+**warm match ~880 → 358 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
 frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
@@ -78,10 +78,13 @@ ms**, warm 644 → 526, routes byte-identical. Then the SEARCH (**§7j**): `near
 4 full scans over every node, ~3x per sketch point — **anchoring cost more than routing**. One pass
 keeping the best K, identical tie-breaking, identical routes: **warm match 526 → 395 ms**. Native split
 is now corridor 20 · build_graph 93 · match 88.
-**Next, in size order:** `precompute_edges` (~27 ms — five arrays of 37.6k entries the hot loop could
-index per-WAY via `g.edges[ei].w`), then `nearest_nodes` is still O(nodes) per call — loft's
-`spatial<T[x,y]>` would make it O(log n), but the candidate SET and its tie-breaking must come out
-identical, so the border gate + `match_parity` are its acceptance.
+Then **§7k**: `EdgeCosts` indexed by WAY rather than by edge — five arrays of
+37.6k entries (~188k appends) collapsed to ~7.1k, free in the hot loop because it already loads the edge
+record. **cold match 1831 → 1539 ms**, warm 395 → 358.
+**Next:** `nearest_nodes` is still O(nodes) per call. loft's `spatial<T[x,y]>` would make it O(log n),
+but a Morton walk returns Z-order, NOT distance order — so an exact replacement needs an expanding-box
+query plus an exact re-rank, with the candidate SET and its tie-breaking identical. The border gate +
+`match_parity` are its acceptance.
 
 **What to do next, in the order the evidence favours:**
 

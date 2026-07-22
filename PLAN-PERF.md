@@ -18,8 +18,8 @@ it measures it and ranks it against everything else.
 | **view** (pan past the box) | 946 ms | **126 ms** | 7.5× — §7g(2), §6c |
 | **pan frame** (camera moved, no reload) | 76 ms | **20 ms** | 3.8× — §6c |
 | JS objects retained for geometry | 239,135 | **4,609** | −98.1% — §6c |
-| **cold match** (first click / corridor miss) | 6370 ms | **1831 ms** | 3.5× — §7h(2), §7a(2), §7i |
-| **warm match** (one point moved — what users do) | ~880 ms | **395 ms** | 2.2× — §7i, §7j |
+| **cold match** (first click / corridor miss) | 6370 ms | **1539 ms** | 4.1× — §7h(2), §7a(2), §7i–k |
+| **warm match** (one point moved — what users do) | ~880 ms | **358 ms** | 2.5× — §7i–k |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
 | layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
 
@@ -1118,11 +1118,35 @@ there is the one worth having.
 
 Routes byte-identical: all four tile-border fingerprints and all three `match_parity` lengths.
 
-**Still open in the search**, in size order: `precompute_edges` (~27 ms — it materialises five arrays of
-37.6k entries that the hot loop could instead index per-WAY via `g.edges[ei].w`), and `nearest_nodes` is
-still **O(nodes) per call** — loft has `spatial<T[x,y]>` (Morton/Z-order, with proximity range-slices)
-which would make it O(log n), but the candidate SET and its tie-breaking must come out identical, so it
-needs the border gate and `match_parity` as its acceptance.
+### 7k — `EdgeCosts` indexed by WAY, not by edge
+
+`precompute_edges` was ~27 ms of the 88 ms search: five arrays of ~37.6k entries — about **188,000 vector
+appends per cold match** — holding ~7.1k distinct values, because every edge of a way has identical costs.
+
+The arrays are now one entry per WAY, indexed by `GEdge.w`. **The indirection is free where it matters:**
+the hot relaxation loop already loads `e = g.edges[ei]` for `e.a`/`e.length`, so `e.w` costs nothing and
+the arrays it indexes are 5× smaller — better locality, not worse. Four read sites, all with `e` already
+in scope.
+
+| | before | after |
+|---|---|---|
+| search (native) | 88 ms | **~66 ms** (−25%) |
+| cold match (native, TUBE) | ~205 ms | **~187 ms** |
+| **cold match (browser)** | 1831 ms | **1539 ms** (−16%) |
+| **warm match (browser)** | 395 ms | **358 ms** (−9%) |
+
+Routes byte-identical. Quiet box, spreads 1.0–1.1×.
+
+⚠ **The first attempt to measure this was thrown away**, and that is the process working: the box was at
+load 16 and the probe spread opened to 1.7× (match 70–121 ms). The commit landed on its correctness proof
+with the timing explicitly *not* claimed, and the numbers above were taken later on a quiet box. *A
+change can be committed on a gate; it cannot be characterised on a contended one.*
+
+**Still open in the search:** `nearest_nodes` is **O(nodes) per call**. loft has `spatial<T[x,y]>`
+(Morton/Z-order, proximity range-slices) which would make it O(log n) — but a Morton walk returns
+candidates in Z-order, *not* distance order, so an exact replacement needs an expanding-box query plus an
+exact re-rank, and the candidate SET and its tie-breaking must come out identical. The border gate and
+`match_parity` are its acceptance.
 
 ## 7i. Attacking the corridor read and the graph build directly (2026-07-22)
 
