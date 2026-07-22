@@ -48,7 +48,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **8** | `client/web_basemap_kernel.loft` | Hold `MatchState`; port `covered()` + `match_incremental` from `server/server.loft`. | **route byte-identical to the full match**; warm click ~10–20× cheaper | **perf only** (gate proves it) |
 | **9** ✅ | `client/web_basemap_kernel.loft`, `browser/store-kernel.mjs` | `expose(EXPOSE_LAYOUT, layout)` per view command, **wrapped in the release/expose bracket** — loft's own `do_view_bbox` ITERATES the layout and an exposed store rejects the iteration cursor's claim (§7d(2)). The bare one-liner this row used to specify hangs the app; the additive form is `release` → load/emit → `expose`. Also added `loft_host_release` to the shim (a new host import `release` pulls in). | **DONE** — `tools/expose_probe.sh` green: `descLen=1955`, **17 descriptor nodes** naming `PTile`/`Area`/`Building`/`Line`/`Label`/`Poi`/`Coord`, `storeBase=29126376 rec=1 pos=8`, bracket balanced. View output **byte-identical** (`A=2252 B=16646 L=1231 P=4460 labels=1441 R=3112`); all five gates green. | none |
 | **10** ✅ | `browser/loft-deliver.js` (vendored), `browser/loft-store.mjs`, `store-app.mjs`, `build-site.mjs` | Wire loft's own `readLoftValue` (vendored verbatim from loft `40daabd0`; the release does not install it) + a routing-side `flat*` accessor layer that indexes the pre-flattened keyed collection, so a caller can reach ONE element instead of materialising all 1089. `loft_host_deliver` was NOT needed — `expose` is the path, and `deliver` is its one-shot sibling. | **DONE** — `tools/deliver_probe.sh`: JS and loft agree on the whole line for tile 2047399103 — `ox=68300000 oy=521650000 areas=4 buildings=1 lines=0 labels=1 pois=0 ring0=17` — plus an interned text decoded (`"Meddelerweg"`) and the cheap `flatScalar` screen proven to agree with the full walk. | none |
-| **11** | `browser/map.mjs` | Read **areas only** via `readLoftValue`, **beside** the text path; compare in the gate. | JS-read areas == text-parsed areas | none (text still drives render) |
+| **11** ✅ | `browser/map.mjs`, `store-app.mjs` | `areasFromStore()` — reads **areas only** (not the other four kinds) through the bridge, mirroring `emit_areas` + `ring_hits` exactly, **beside** the text path. | **DONE** — `tools/deliver_probe.sh`: **A=2252 emitted · 2252 store hits · 2252 renderable · 2252 text-parsed**, 0 cover mismatches, 0 ring-length mismatches, `maxCoordDelta ≈ 5e-7` — *exactly* half a unit in loft's last printed decimal, so the geometry is identical and only the TEXT side is lossy. Zero order mismatches also proves the pre-flattened array is key-ordered the way `for t in layout` walks. | none (text still drives render) |
 | **12** | `browser/map.mjs` | Switch render to the JS-read areas; keep the text emit as the **parity gate**. | `# view:` A= count identical | **render source** |
 | **13** | ×4 + kernel | Repeat 11–12 per kind (buildings, lines, labels, pois); then delete the layout text emit. | counts identical per kind; serialize → ~0 | one kind per commit |
 | **14** | `browser/map.mjs` | Pre-project geometry into typed arrays once per view, not per frame. | pan frame time falls | **perf only** |
@@ -795,6 +795,20 @@ need us.
 **The lesson, since I paid for it twice in one hour:** probe the function the STEP ACTUALLY CALLS. Both
 wrong conclusions came from testing `deliver`'s loopback and generalising to `expose`'s bridge, and from
 reading a `cfg`-disabled no-op as evidence about loft rather than about my probe.
+
+### Where steps 9–11 leave the bridge (2026-07-22)
+
+All three are green and gated in `make test-map`: loft hands JS a live handle (9), JS reads any one tile —
+or one FIELD of it — without materialising the rest (10), and the areas it reads match loft's serialised
+areas exactly (11). **Step 12 can switch the render source for areas.** Two things to carry into it:
+
+- **`readMs=96` for all 2252 areas across 1089 tiles is NOT comparable to the profiler's numbers.** The
+  bridge gate runs unthrottled; `tools/map_profile.sh` runs at `CPU_THROTTLE=4`. Measure step 12's win
+  with the profiler, never from this gate's number.
+- **The store read is EXACT; the text path is LOSSY** (6 printed decimals). So step 12 does not merely
+  move where areas come from — it slightly *improves* their precision. Harmless at these zooms, but it
+  means the render is not expected to be pixel-identical, so the parity gate must stay a tolerance check
+  and must not become a screenshot diff.
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 

@@ -72,6 +72,28 @@ console.log(`  names: ${JSON.stringify(t.sampleNames)}`);
 console.log(`JSTILE tkey=${t.full.tkey} ox=${t.full.ox} oy=${t.full.oy} areas=${t.counts.areas} buildings=${t.counts.buildings} ` +
             `lines=${t.counts.lines} labels=${t.counts.labels} pois=${t.counts.pois} ring0=${t.ringLen}`);
 if (fail.length) die(fail.join('\n  FAIL — '));
+
+// --- step 11: areas read from the store == areas loft serialised for the same viewport ---------------
+const rawAp = await ev('window.__perfHooks.areaParity().then(JSON.stringify)');
+if (typeof rawAp !== 'string') die(`areaParity threw: ${JSON.stringify(rawAp).slice(0, 400)}`);
+const ap = JSON.parse(rawAp);
+if (ap.err) die(`areaParity: ${ap.err}`);
+console.log('\n== step 11: do store-read areas equal the text areas? ==');
+console.log(`  loft emitted A=${ap.emitted} · store hits=${ap.jsHits} · store renderable=${ap.jsRenderable} · text parsed=${ap.textCount}`);
+console.log(`  cover mismatches=${ap.coverMismatch} ringLen mismatches=${ap.ringLenMismatch} maxCoordDelta=${ap.maxDelta} readMs=${ap.readMs}`);
+const af = [];
+if (!ap.textCount) af.push('the text path parsed 0 areas — the viewport has nothing to compare');
+// loft's own A= is the count it EMITTED, so it must equal the unfiltered store hits: same tiles, same
+// rings, same overlap test. A drift here means the two filters disagree, not that rendering differs.
+if (ap.jsHits !== ap.emitted) af.push(`store hits ${ap.jsHits} != loft's emitted A=${ap.emitted} — the overlap test diverged`);
+if (ap.jsRenderable !== ap.textCount) af.push(`renderable ${ap.jsRenderable} != text-parsed ${ap.textCount}`);
+if (ap.coverMismatch) af.push(`${ap.coverMismatch} areas disagree on cover — wrong field or wrong order`);
+if (ap.ringLenMismatch) af.push(`${ap.ringLenMismatch} areas disagree on ring length`);
+// One unit in loft's last printed decimal is 1e-6; allow exactly that, since the text side is the lossy
+// one. Anything larger is a real geometry disagreement, not formatting.
+if (!(ap.maxDelta <= 1e-6)) af.push(`max coordinate delta ${ap.maxDelta} exceeds the 1e-6 print precision — geometry differs`);
+if (af.length) die(af.join('\n  FAIL — '));
+console.log('PASS — store-read areas match loft\'s text areas: count, cover, ring length, geometry to print precision');
 // Exit explicitly — the open WebSocket would otherwise keep node alive forever on the success path
 // (the trap that hid in cdp_expose.mjs until step 9 made it pass for the first time).
 ws.close();

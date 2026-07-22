@@ -60,10 +60,12 @@ export function flatElement(mem, h, i) {
   return readLoftValue(mem, Number(h.storeBase), h.desc, node.elem, rec, 8);
 }
 
-// Read ONE named scalar field of element `i` without materialising the element. This is the screening
-// primitive the viewport filter needs: `ring_hits` only ever consults a tile's `ox`/`oy`, so paying to
-// decode its ~200 rings just to reject it would defeat the whole point of the bridge.
-export function flatScalar(mem, h, i, fieldName) {
+// Read ONE named field of element `i` without materialising the rest of the element. This is the
+// selectivity the bridge exists for, in two ways: a scalar screen (`ox`/`oy` — all `ring_hits` consults,
+// so paying to decode a tile's ~200 rings just to reject it would defeat the point), and a per-KIND read
+// (`areas` alone, not buildings+lines+labels+pois too — which is how steps 11-13 land one kind at a
+// time). Works for any field the descriptor knows: `content` carries its type id, scalar or collection.
+export function flatField(mem, h, i, fieldName) {
   const rec = flatElementRec(mem, h, i);
   if (!rec) return null;
   const node = h.desc.nodes[h.typeId];

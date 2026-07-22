@@ -37,7 +37,7 @@ srv=$!
 chr=$!
 sleep 4
 
-echo "== step 10: does JS read the same tile loft reads? =="
+echo "== steps 10-11: the @PLN105 bridge — JS reads tiles + areas from the exposed store =="
 js="$(node "$here/browser/cdp_deliver.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html")"
 rc=$?
 echo "$js" | grep -v '^JSTILE'

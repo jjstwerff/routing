@@ -4,9 +4,9 @@
 // PLAN-BUILD B5–B7 — the standalone base-map + routing app. Fetches the two loft stores, runs the
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
-import { RouteMap } from './map.mjs';
+import { RouteMap, parseView, areasFromStore } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
-import { flatCount, flatElement, flatScalar, flatFields } from './loft-store.mjs';
+import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 
 const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
 const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
@@ -103,9 +103,9 @@ window.__perfHooks = {
     const n = flatCount(mem, h);
     if (!n) return { err: 'exposed collection is empty' };
     const idx = ((i % n) + n) % n;
-    const scalars = { tkey: String(flatScalar(mem, h, idx, 'tkey')),
-                      ox:   String(flatScalar(mem, h, idx, 'ox')),
-                      oy:   String(flatScalar(mem, h, idx, 'oy')) };
+    const scalars = { tkey: String(flatField(mem, h, idx, 'tkey')),
+                      ox:   String(flatField(mem, h, idx, 'ox')),
+                      oy:   String(flatField(mem, h, idx, 'oy')) };
     const t = flatElement(mem, h, idx);
     const names = [];
     for (const b of t.buildings || []) if (b.name) names.push(b.name);
@@ -117,6 +117,46 @@ window.__perfHooks = {
                        pois: (t.pois || []).length },
              ringLen: (t.areas || []).length ? t.areas[0].ring.length : ((t.buildings || []).length ? t.buildings[0].ring.length : 0),
              sampleNames: names.slice(0, 4), fields: flatFields(h).map((f) => f.name) };
+  },
+  // Step 11's observable: do the AREAS read from the exposed store equal the areas loft serialised as
+  // text for the same viewport? Runs one `view`, then reads the store back through the bridge and diffs.
+  //
+  // Two asymmetries are mirrored deliberately rather than papered over, because each is a real property
+  // of the text path that step 12 will INHERIT when it starts rendering from the store:
+  //   * loft prints coordinates at 6 decimals (`{:2.6}`), so the text path is LOSSY — the store read is
+  //     exact. They can therefore differ by up to half a unit in the last printed place; the gate checks
+  //     a tolerance, not string equality, and reports the worst case it saw.
+  //   * `parseAreas` drops rings with fewer than 3 vertices; `emit_areas` emits them. So the text-parsed
+  //     count is compared against the FILTERED store read, and the unfiltered count is reported next to
+  //     loft's own `A=` so a divergence in the filter itself is visible rather than absorbed.
+  areaParity: async () => {
+    const box = viewportBox(0.6);
+    const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!h) return { err: 'no exposed layout handle' };
+    const textAreas = parseView(text).areas;
+    // Build the fixed-point box from the SAME 6-dp strings loft parsed, so both sides round identically.
+    const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
+    const fbox = { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
+    const t0 = performance.now();
+    const all = areasFromStore(kernel.memory(), h, fbox, { flatCount, flatField });
+    const readMs = performance.now() - t0;
+    const js = all.filter((a) => a.ring.length >= 3);
+    let coverMismatch = 0, ringLenMismatch = 0, maxDelta = 0;
+    const n = Math.min(js.length, textAreas.length);
+    for (let i = 0; i < n; i++) {
+      if (js[i].cover !== textAreas[i].cover) coverMismatch++;
+      if (js[i].ring.length !== textAreas[i].ring.length) { ringLenMismatch++; continue; }
+      for (let k = 0; k < js[i].ring.length; k++) {
+        maxDelta = Math.max(maxDelta, Math.abs(js[i].ring[k][0] - textAreas[i].ring[k][0]),
+                                      Math.abs(js[i].ring[k][1] - textAreas[i].ring[k][1]));
+      }
+    }
+    const sum = text.split('\n').find((l) => l.startsWith('# view')) || '';
+    const emitted = +((sum.match(/A=(\d+)/) || [])[1] ?? -1);
+    return { emitted, jsHits: all.length, jsRenderable: js.length, textCount: textAreas.length,
+             coverMismatch, ringLenMismatch, maxDelta, readMs: Math.round(readMs), summary: sum };
   },
   // Does the session's graph grow without bound as the user moves to NEW areas? server.loft replaces
   // tile corridors for exactly this reason ("RSS and latency blow up"). Match several sketches in

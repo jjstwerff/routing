@@ -100,6 +100,46 @@ function areaMinZoom(ring) {
 }
 
 // --- Layer parsers (the emit_*.loft text formats) ---------------------------------------------
+// --- PLAN-PERF §0 step 11 — areas read from the EXPOSED store instead of from loft's text ------------
+//
+// Mirrors `map_kernel.loft`'s `emit_areas` + `ring_hits` exactly, because step 11's whole point is that
+// the two paths agree; where it deviates the gate must see it, not the user. So:
+//   * every tile, every area, no tile-level pre-filter — loft has none either. A tile-extent screen
+//     would be a sound optimisation but a BEHAVIOUR change, and it needs its own equality proof.
+//   * the overlap test is integer fixed-point (deg*1e7) on the ring's own bbox, like `ring_hits`.
+//   * coords come out in degrees via `/1e7`, matching `deg()`.
+// `fbox` is {mnla,mnlo,mxla,mxlo} in FIXED-POINT, the same space as `parse_fbox` builds.
+//
+// Only `ox`/`oy`/`areas` are decoded per tile — not buildings/lines/labels/pois. That per-kind read is
+// the selectivity the text path cannot express: loft has to serialise a whole viewport or nothing.
+export function areasFromStore(mem, handle, fbox, deps) {
+  const { flatCount, flatField } = deps;
+  const n = flatCount(mem, handle);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const ox = Number(flatField(mem, handle, i, 'ox'));
+    const oy = Number(flatField(mem, handle, i, 'oy'));
+    const areas = flatField(mem, handle, i, 'areas') || [];
+    for (const ar of areas) {
+      const ring = ar.ring || [];
+      if (!ring.length) continue;                   // ring_hits: an empty ring never hits
+      let mnla = 0, mxla = 0, mnlo = 0, mxlo = 0, first = true;
+      for (const c of ring) {
+        const la = oy + c.y, lo = ox + c.x;
+        if (first) { mnla = la; mxla = la; mnlo = lo; mxlo = lo; first = false; }
+        else {
+          if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+          if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+        }
+      }
+      if (mxla >= fbox.mnla && mnla <= fbox.mxla && mxlo >= fbox.mnlo && mnlo <= fbox.mxlo) {
+        out.push({ cover: ar.cover, ring: ring.map((c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7]) });
+      }
+    }
+  }
+  return out;
+}
+
 export function parseAreas(txt) {                   // `cover;lat,lon;…`
   const areas = [];
   for (const line of (txt || '').split('\n')) {
