@@ -84,8 +84,12 @@ fine**, and `release`/`expose` brackets it.
    is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
    buffer** (re-derive the view every frame; never cache it across a match), and the gate is a **canvas
    pixel hash**, because counts cannot see a ring read at a wrong offset.
-2. **Step 18 — `par` over the stretches.** Unblocked; read §6b B, **not** step 17's row (17's conclusion
-   was a mis-read and is kept only as the record of one).
+2. **Step 18 — ⛔ DO NOT BUILD.** `par` is a **no-op in the browser** (`PLAN-PERF` §6e), proven from the
+   app's own wasm: `shared=false`, Rust's no-threads std linked in, loft's WASM (single) profile compiles
+   `threading` OFF → Tier 1 sequential. Tier 2 needs COEP/COOP headers GitHub Pages cannot set. Its verify
+   line was "~3× **native**" — the server, not this plan's subject. `tools/wasm_threads.mjs` gates it and
+   FAILS the day browser threads arrive, which is when to revisit. §6b B's determinism design is still
+   correct and kept for that day.
 3. **Step 19 — persist the built graph.** ⚠ **Re-size it first.** Its "~41% of a cold match" premise
    predates steps 20–22; the cold match is now 3327 ms, not 5899. §7a says to do exactly this, and it is
    the riskiest row in the plan (a border-node splice that can silently alter a route).

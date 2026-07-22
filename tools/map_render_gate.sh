@@ -21,6 +21,10 @@ command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; 
 # 1. Projection invariant (no browser needed).
 node "$here/browser/map.test.mjs" || exit 1
 
+# 1a. PLAN-PERF §6e — is the browser kernel threaded? `par` (step 18) is a no-op while it is not.
+echo "== step 18 tripwire: browser kernel threading =="
+node "$here/tools/wasm_threads.mjs" || exit 1
+
 # 2. Build the deployable site (inlines map.mjs + store-kernel.mjs + store-app.mjs → _site/index.html).
 node "$here/browser/build-site.mjs" || exit 1
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }

@@ -2,7 +2,8 @@
 # PLAN-PERF — making the standalone app fully performant
 
 **Status (2026-07-22):** steps **1–16 and 20–22 IMPLEMENTED** (16 including its presentation half —
-§6b(2); 14 rescoped by measurement — §6c; 15 landed and ON — §6d); **open:**
+§6b(2); 14 rescoped by measurement — §6c; 15 landed and ON — §6d); **18 is ⛔ not buildable in the
+browser — §6e**; **open:**
 **18** (`par`), **19** (persist the graph). **Nothing is blocked upstream** — re-validated against the
 installed loft **2026.7.2**, see §7c. All five gates pass on it (`test`, `test-native`, `test-wasm`,
 `test-map`, `match_parity.sh`), including through the breaking @PLN110 `len`/`size` flip.
@@ -27,9 +28,10 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 @PLN105's bridge; `view` emits roads only — steps 9–13).
 
 **Open, in the order the evidence favours:**
-- **18 — `par` over the stretches**, and **19 — persist the graph** (⚠ re-size 19 first). The render path
-  is done: steps 14–15 took a pan frame **76 → 0.6 ms** and a view **946 → 146 ms**. What is left is all
-  in the MATCH.
+- **19 — persist the built graph** (⚠ re-size it first). The render path is done — steps 14–15 took a pan
+  frame **76 → 0.6 ms** and a view **946 → 146 ms** — so everything left is in the MATCH, and the target
+  is the cold match's **~3.4 s frozen gap** in the corridor read + `build_graph`.
+- **18 is ⛔ DO NOT BUILD** — `par` is a no-op in the browser (§6e), proven from the shipped wasm.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
   **re-sized against 3327 ms, not 5899** (§7a says to do exactly this).
@@ -75,7 +77,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **15** ✅ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **DONE and ON — see §6d.** Pan frame **20 → 0.6 ms**; view 126 → 146 ms (one amortised bake). Bakes are bounded per frame after the first version made `view` 4× worse. Its difference from a direct render is fully accounted for: an origin-key bug (35,424 px, fixed), a latent POI edge-cull bug in the DIRECT renderer (fixed — a real app fix), and **canvas-size rasterisation rounding, which is a platform property** proven by a minimal control and cannot be removed. Gate is three equalities (cached==baked, data-load invalidates, labels exact) and one bound (maxDelta ≤ 16). | **visual: the origin snaps to a whole device pixel** |
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
-| **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
+| **18** ⛔ | `lib/routing_kernel` + kernel | **DO NOT BUILD — `par` is a NO-OP in the browser (§6e).** The app's wasm has `shared=false` and Rust's no-threads std linked in; loft's WASM (single) profile compiles `threading` OFF so `par()` runs Tier 1 (sequential), and Tier 2 needs COEP/COOP headers that GitHub Pages cannot set. Its own verify line says "~3× **native**" — i.e. the server, not this plan's subject. `tools/wasm_threads.mjs` gates the claim and fails the day it stops holding. Original note follows. **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
 | **19** | `tools/gen-tiles.loft` + `lib/routing_kernel` + kernel + **regenerate the stores** | Persist the **built graph** (PLAN-TILES §268) — a TILE FORMAT change, not a one-liner. See §7a. | identical route across a tile border; cold match −~41% | **perf only, but format-breaking** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
 | **21** | — | Corpus compare: cheap vs fat tier on the §7 quality numbers. | the table that tunes the gate | none (offline) |
@@ -546,6 +548,50 @@ probes contradicted each other: `layerFootprint` said 0 retained features while 
 214,455 vertices. **Its own comment warned about exactly this**; the comment stayed true while the code
 went stale against the app it mirrors. *A probe that mirrors the app must be re-synced when the app moves
 — and the way you find out is by making two probes disagree.*
+
+## 6e. Step 18 — `par` is a NO-OP in the browser. Do not build it. (2026-07-22)
+
+**Step 18 cannot move a single number this plan measures**, and the reason is a property of the shipped
+artifact, not an opinion. Established BEFORE writing any loft, which is the only reason no time was spent
+on it.
+
+### The evidence, from the app's own wasm
+
+```
+kernel wasm: memories=1 shared=false noThreadsStd=true
+```
+
+- **The memory is not shared.** A wasm module with threads carries a SHARED memory (flags bit 1). The
+  app's does not — there is no thread support in the module at all.
+- **Rust's no-threads std was linked in.** `no_threads.rs` appears in the panic paths for mutex, rwlock
+  and thread-local. The build had `threading` compiled OFF, not merely unused.
+
+That matches loft's own `WASM.md`: the **WASM (single)** profile has `threading` **OFF**, and `par()`
+falls back to **Tier 1 (sequential)**. Tier 2 (Web Workers) needs the `wasm-threads` feature *and*
+**COEP/COOP headers**. `loft --html` — the only browser build, and the one
+`browser/build-store-kernel.mjs` invokes — has no thread flag at all.
+
+### And the deploy target cannot supply the headers either
+
+Even if the build gained threads, Tier 2 needs COEP/COOP, and the app ships on **GitHub Pages**
+(`PLAN-BUILD`), which does not let you set response headers. So the second gate is shut too.
+
+### What step 18 would actually have bought
+
+Its own verify line says *"~3× native on the stretch loop"* — **native**. That is `server/server.loft`,
+which is not what this plan is about. In the browser the stretch loop is already streamed and
+interruptible (step 16), so the sequential `par` would change nothing but the code.
+
+**§6b B is not wasted and should not be deleted.** Its determinism analysis — order the source before
+par, hash iteration is unordered, `gen` is loop-carried, keep reductions out of the workers — is exactly
+right and is what step 18 would need on the day it becomes possible. It is a design waiting for a
+platform, not a design that was wrong.
+
+### The tripwire, so this does not have to be re-derived
+
+`tools/wasm_threads.mjs`, wired into `make test-map`, asserts the state written above. **The day loft's
+browser build gains threads, that gate FAILS** and says to revisit step 18 — rather than this section
+quietly staying wrong. *A blocked step should leave behind the check that unblocks it.*
 
 ## 6d. Step 15 — the block raster cache: LANDED and ON (2026-07-22)
 
