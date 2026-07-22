@@ -321,6 +321,31 @@ window.__perfHooks = {
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
+  // §6b(2)'s observable: do the STRETCH lines reach JS *while the match runs*, or only at the end?
+  //
+  // Step 16 made loft EMIT per stretch, but `runKernel` buffered the whole response, so JS learned
+  // nothing until `#EOR`. The distinction is invisible in the resolved text — it contains the same lines
+  // either way — so this counts DELIVERY BATCHES (`stats().deliveries`, one per yield that flushed
+  // output) against STRETCH lines. One burst delivers once regardless of stretch count; genuine
+  // streaming delivers at least once per stretch. A count, so a loaded machine cannot fake it either way.
+  async streamArrival(n) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const f = i / (n - 1);
+      pts.push([52.2412299 + f * (52.3116272 - 52.2412299), 6.8834496 + f * (6.9088554 - 6.8834496)]);
+    }
+    const spec = pts.map(([a, b]) => `${a.toFixed(7)},${b.toFixed(7)}`).join(';');
+    await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
+    const d0 = kernel.stats().deliveries;
+    let earlyStretches = 0, done = false, afterDone = 0;
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`, (line) => {
+      if (!line.startsWith('STRETCH ')) return;
+      if (done) afterDone++; else earlyStretches++;
+    });
+    done = true;
+    const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
+    return { n, stretches, earlyStretches, afterDone, deliveries: kernel.stats().deliveries - d0 };
+  },
   // Reset first: a cold match is the case that streams, and it is the one whose freeze this measures.
   async streamProgress() {
     await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);

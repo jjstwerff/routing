@@ -46,6 +46,34 @@ export async function createKernel(wasmUrl) {
   const exposed = new Map();   // tag -> { storeBase, rec, pos, typeId, desc } from expose() (step 9)
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
+  let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
+
+  // Hand the lines loft has flushed SO FAR to the in-flight command's `onLine`, and only then.
+  //
+  // This is what makes a response arrive progressively instead of all at once (PLAN-PERF §6b(2)): the
+  // kernel prints `STRETCH i;…` and immediately frame_yield()s, so every stretch is flushed at a yield
+  // point and reaches JS while the match is still running.
+  //
+  // Three properties it must have, each earned:
+  //   * OPT-IN. A `view` flushes ~400 KB and wants none of this; with no `onLine` the scan never runs, so
+  //     the view path pays exactly what it paid before. This is why the header's "never scan per print"
+  //     rule survives — the scan is per YIELD, and only for a caller that asked.
+  //   * NON-DESTRUCTIVE. `scanned` is a cursor, not a consume: `outBuf` keeps every line, so the promise
+  //     still resolves with the complete text and the ROUTE/SUMMARY parse downstream is untouched.
+  //   * ONLY AT YIELDS. `pump` deliberately does NOT call this. Draining there would hand the tail of a
+  //     finished response to `onLine` in one burst, and `deliveries` — the gate's observable — would count
+  //     that burst as streaming. Every stretch is followed by a frame_yield(), so nothing is missed.
+  const drain = () => {
+    if (!onLine) return;
+    let nl, sent = 0;
+    while ((nl = outBuf.indexOf('\n', scanned)) >= 0) {
+      const line = outBuf.slice(scanned, nl);
+      scanned = nl + 1;
+      sent++;
+      onLine(line);
+    }
+    if (sent) deliveries++;
+  };
 
   // Resolve the in-flight command once its terminator lands. Checked whenever loft suspends (it prints
   // the whole response, then loops and yields), never per print — that would scan 29k lines a view.
@@ -55,7 +83,8 @@ export async function createKernel(wasmUrl) {
     if (i < 0) return;
     const out = outBuf.slice(0, i);
     outBuf = outBuf.slice(i + EOR.length).replace(/^\n/, '');
-    const done = resolveRun; resolveRun = null; done(out);
+    scanned = 0;                                    // the cursor indexed the response just consumed
+    const done = resolveRun; resolveRun = null; onLine = null; done(out);
   };
   // Continue loft past whatever it is suspended on. `why` guards the race: a yield-driven resume must
   // not land inside a pending fetch's rewind (which would read httpBytes === null as a load failure).
@@ -116,6 +145,12 @@ export async function createKernel(wasmUrl) {
         if (!ctrl.ac) return;
         if (ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return; }   // rewinding → carry on
         waiting = 'yield';
+        // Deliver in a MICROTASK, wake in a macrotask — the order is the whole point. The microtask runs
+        // once this unwind has returned to the event loop but BEFORE the browser paints, so whatever the
+        // sink draws is on screen in the very frame the yield handed back. Draining inside this import
+        // instead would run the sink mid-unwind; draining in the setTimeout would put it after the paint,
+        // and the stretch would appear one frame late (or not at all, if loft resumes and blocks).
+        if (onLine) queueMicrotask(drain);
         setTimeout(() => wake('yield'), 0);
         ctrl.ac.suspend();
       },
@@ -128,12 +163,18 @@ export async function createKernel(wasmUrl) {
 
   // Push a command and wait for its `#EOR`. Callers serialize (await one before the next); the kernel
   // reads exactly one blob per pass, so a queued command is picked up by the next poll.
-  function runKernel(blob) {
+  //
+  // `lineSink` is optional: pass it to receive each output line AS LOFT FLUSHES IT (see `drain`) instead
+  // of only the whole text at the end. The promise still resolves with the complete response either way,
+  // so a sink is a strictly additional view of the same bytes — it cannot change what the caller parses.
+  function runKernel(blob, lineSink) {
     return new Promise((resolve) => {
       resolveRun = resolve;
+      onLine = lineSink || null;
+      scanned = 0;
       commands++;
       inQ.push(enc.encode(String(blob)));
-      if (!ctrl.ac) { r.instance.exports.loft_start(); resolveRun = null; resolve(outBuf); outBuf = ''; return; }
+      if (!ctrl.ac) { r.instance.exports.loft_start(); resolveRun = null; onLine = null; resolve(outBuf); outBuf = ''; return; }
       if (!started) { started = true; starts++; ctrl.ac.start('loft_start'); pump(); }   // never returns; suspends on the first idle poll
       else wake('yield');                                                                // idle → hand it the command now, don't wait a frame
     });
@@ -148,9 +189,15 @@ export async function createKernel(wasmUrl) {
   // holds (steps 6-8) would be silently rebuilt. tools/map_profile.sh asserts it.
   // wasm linear memory, in bytes. The session holds state now, so a per-command climb here is a LEAK,
   // not noise — and it would explain cost growing with session history (PLAN-PERF §5 C0).
+  //
+  // `deliveries` counts the YIELD POINTS at which a line sink actually received output — i.e. how many
+  // separate batches a response arrived in. It is the count-based proof that streaming is real: a
+  // response that lands all at once delivers ONCE no matter how many STRETCH lines it contains, so
+  // `deliveries >= stretches` can only hold if each stretch genuinely reached JS mid-match. Timing cannot
+  // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
+    stats: () => ({ starts, commands, storeLoads, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

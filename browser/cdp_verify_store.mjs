@@ -57,5 +57,18 @@ const s2 = JSON.parse((await ev('JSON.stringify(window.__storeApp||{})')) || '{}
 if (!s2.matchOk || !(s2.routePts > 2)) { console.log('  FAIL: match/route —', sum, JSON.stringify(s2)); ok = false; }
 else console.log(`  ✓ match drew the route (${sum}, ${s2.routePts} pts)`);
 
+// 3. PLAN-PERF §6b(2) — the route ARRIVES progressively, not in one burst at #EOR.
+//
+// A count, not a timing, so it holds on a loaded machine: `deliveries` is the number of yield points at
+// which output actually reached JS. A buffered response delivers ONCE however many stretches it carries,
+// so `deliveries >= stretches` is only reachable if each stretch crossed into JS during the match. 10
+// points ⇒ 9 stretches — enough that a single-burst regression cannot pass by coincidence.
+const sa = JSON.parse((await ev('(async () => (window.__perfHooks ? JSON.stringify(await window.__perfHooks.streamArrival(10)) : "null"))()')) || 'null');
+if (!sa) { console.log('  FAIL: streamArrival hook missing'); ok = false; }
+else if (!(sa.stretches >= 2)) { console.log(`  FAIL: the match emitted ${sa.stretches} stretches — nothing to stream`, JSON.stringify(sa)); ok = false; }
+else if (sa.earlyStretches !== sa.stretches || sa.afterDone) { console.log(`  FAIL: stretches did not all arrive before the response resolved —`, JSON.stringify(sa)); ok = false; }
+else if (sa.deliveries < sa.stretches) { console.log(`  FAIL: ${sa.stretches} stretches arrived in only ${sa.deliveries} batch(es) — buffered, not streamed`, JSON.stringify(sa)); ok = false; }
+else console.log(`  ✓ the route streams: ${sa.stretches} stretches in ${sa.deliveries} delivery batches, all before #EOR`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);
