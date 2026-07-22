@@ -1328,6 +1328,32 @@ lengths unchanged.
 Rust returning `&str` where `String` is expected (`--native` only, and it surfaces as a rustc error
 against generated code). Bind the struct to a local first. Filed in `docs/loft-feedback.md`.
 
+## 7p. The ladder's gate re-swept on `walking_paved` — it holds (2026-07-22)
+
+Prerequisite for wiring `server/server.loft` onto the match ladder, established **before** any code was
+touched, because `tier_ok`'s own doc comment says its K was swept on `cycling_road` and warns: *"Expect
+it to matter on walking/trail, where penalties dominate rather than bonuses — re-tune there."*
+
+**The server's default profile is `walking_paved`** (`server.loft`'s `profile` default), so the warning
+applies directly to it. Re-swept with `tools/corpus_tube.loft <store> walking_paved`:
+
+| K | accepted | escalate | **worse** | ladder cost vs bbox-only |
+|---|---|---|---|---|
+| 5 | 12 | 14 | 0 | 90% |
+| **6** | **14** | **12** | **0** | **87%** ← the wired value |
+| 8 | 16 | 10 | 0 | 84% |
+| 9 | 17 | 9 | **1** | 79% |
+
+**K = 6 holds on walking: 0 worse, and the first bad acceptance is at K = 9 — the same shape as
+`cycling_road`.** So the gate does not need re-tuning per profile after all, and the server can use it as
+wired. The caution in `tier_ok` was worth having and is now answered with numbers rather than removed.
+
+Note the ladder is worth **less** here than on cycling: 87% of bbox-only, i.e. ~13% off the server's tile
+match, against a larger win on `cycling_road`. Real, but small — size it against the wiring's risk before
+spending much on it.
+
+---
+
 ## 7a(2). Step 19 RE-MEASURED (2026-07-22) — and 19a landed without a format change
 
 §7a said to re-size step 19 before building it. Done, with a new instrument
