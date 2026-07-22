@@ -16,7 +16,7 @@
 use server;
 use web;
 use imaging;
-use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, TTile, tiles_corridor_ways, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
+use routing_kernel::(GeoPoint, Way, Graph, MatchResult, MatchState, TTile, tiles_corridor_ways, tiles_corridor_ways_tube, tier_ok, match_quality, path_length_m, overpass_corridor_query, corridor_margin, point_polyline_m, parse_ways, build_graph, match_route_closed, match_closed_ex, match_state_new, match_incremental, match_state_result, gpx_export, elev_at_points, clean_track, retrace_m,
                      TileHeights, terrarium_h, elev_zoom, elev_tiles_for, elev_profile);
 
 PORT = 18080;
@@ -216,8 +216,28 @@ fn match_for(state: SyncState, tstore: hash<TTile[tkey]>, payload: text) -> Matc
   from_tiles = false;   // true once a match was committed from the (complete, local) tile block
   for _try in 0..3 {
     // Prefer the local tile block; an empty tile corridor (area outside the block) falls back to Overpass.
-    newways: vector<Way> = tiles_corridor_ways(tstore, pts, margin);
+    //
+    // THE MATCH LADDER (PLAN-PERF step 22, wired here per §7p): read the cheap CELL TUBE first — only the
+    // tiles near the polyline, not every tile in its bbox rectangle — and keep it unless the §3 gate says
+    // the route strayed to where the tube's ways run out. ~65% fewer ways when accepted.
+    //
+    // Deliberately INSIDE the tile branch. The widening loop around it (widen toward zero bridges) and the
+    // tiles-replace / Overpass-accumulates policy below are untouched: a tube that under-covers produces
+    // bridges, the gate escalates to the fat bbox for THIS try, and only then does the loop widen.
+    //
+    // The gate's K was swept on `cycling_road`, and this server defaults to `walking_paved` — so it was
+    // re-swept there before wiring (§7p): K=6 gives 0 worse on walking too, first bad acceptance at K=9,
+    // the same shape as cycling. Worth ~13% of a tile match here (87% of bbox-only), less than on cycling.
+    newways: vector<Way> = tiles_corridor_ways_tube(tstore, pts, margin);
     tile_src = len(newways) > 0;
+    if tile_src {
+      tg = build_graph(newways);
+      tms = match_incremental(match_state_new(), tg, pts, profile);
+      tr = match_state_result(tg, tms);
+      if !tier_ok(match_quality(tms, pts, tr), margin) {
+        newways = tiles_corridor_ways(tstore, pts, margin);   // escalate: the fat bbox is the floor
+      }
+    }
     if !tile_src {
       body = fetch_corridor(overpass_corridor_query(pts, margin));
       if body != "" { newways = parse_ways(body); }
