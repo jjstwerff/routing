@@ -17,7 +17,10 @@ const TILE = 256;                         // world-pixel size of one tile at zoo
 // Step 15's raster cache. BLOCK is the baked square in world pixels; BLOCK_MARGIN is bled around it and
 // never blitted, so a stroke crossing a block edge is antialiased outside the visible region (must exceed
 // the widest half-stroke: roads ~9 px, route halo 7 px). The cap keeps a phone's memory bounded.
-const BLOCK = 512, BLOCK_MARGIN = 32, BLOCK_CACHE_MAX = 24;
+const BLOCK = 512, BLOCK_MARGIN = 32;
+// Cap the raster cache by BYTES, not by block count: a block is (BLOCK+2*MARGIN)^2 * dpr^2 * 4 bytes, so
+// a phone at dpr 3 stores 9x what this desktop does and a fixed count would be a 250 MB cache there.
+const BLOCK_CACHE_BYTES = 48 * 1024 * 1024;
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
 const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
 const clampLat = (lat) => Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
@@ -463,9 +466,15 @@ export class RouteMap {
     this._timeLayers = false;                 // opt-in per-layer render timing (PLAN-PERF §6 R)
     this._layerMs = null;
     this._bboxCache = new WeakMap();          // layer array → per-feature lat/lon bounds (step 14)
-    // Step 15's block raster cache. OFF: the blit is 0.6 ms against a 20 ms direct frame, but the output
-    // is not yet provably equal to the direct render (PLAN-PERF §6d) — so it stays opt-in until it is.
-    this.blocked = false;
+    // Step 15's block raster cache — ON. A pan blits cached rasters instead of redrawing the base map:
+    // 0.9 ms against 20 ms. Its difference from a direct render is fully accounted for in PLAN-PERF §6d
+    // and gated (cached==baked exact, every label pass exact, maxDelta <= 16). The residual is
+    // antialiasing rounding that no cache of this design can avoid, because Chromium's rasterisation is
+    // not invariant to canvas dimensions and a bleed margin necessarily changes them.
+    //
+    // It also snaps the render origin to a whole device pixel, so the image sits within one device pixel
+    // of the unsnapped projection. project/unproject stay EXACT, so pan/zoom anchoring is unaffected.
+    this.blocked = true;
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
@@ -477,6 +486,7 @@ export class RouteMap {
 
   // Replace all base-map layers from the kernel's `view` text (parseView demux). Call render() after.
   loadView(text) {
+    this.invalidateBlocks();
     const v = parseView(text);
     this.areas = v.areas; this.buildings = v.buildings; this.lines = v.lines; this.pois = v.pois;
     this.places = v.places; this.streets = v.streets; this.streetLabels = v.streetLabels;
@@ -485,7 +495,7 @@ export class RouteMap {
 
   // Load ONLY the roads, flat (PLAN-PERF §6c). `loadView` above is kept for the legacy per-file format
   // and for the parity probe, which needs the boxed form to compare against.
-  loadRoadsFlat(text) { this.streetsFlat = parseStreetsFlat(text); this.streets = []; return this; }
+  loadRoadsFlat(text) { this.streetsFlat = parseStreetsFlat(text); this.streets = []; return this.invalidateBlocks(); }
 
   // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
   // never the line). `pts` is [[lat,lon], …]. Call render() after.
@@ -728,7 +738,9 @@ export class RouteMap {
     }
     ctx.imageSmoothingEnabled = smooth;
     this._blocksBaked = baked;
-    if (cache.size > BLOCK_CACHE_MAX) {                    // crude cap: drop everything but what is on screen
+    const blockBytes = Math.pow((B + 2 * M) * this.dpr, 2) * 4;
+    const maxBlocks = Math.max(4, Math.floor(BLOCK_CACHE_BYTES / blockBytes));
+    if (cache.size > maxBlocks) {                          // keep what is on screen, drop the rest
       for (const k of [...cache.keys()]) {
         const [kx, ky] = k.split(',').map(Number);
         if (kx < bx0 || kx > bx1 || ky < by0 || ky > by1) cache.delete(k);
@@ -849,7 +861,12 @@ export class RouteMap {
     // must use that same origin or the route and the labels sit a sub-pixel off the map under them —
     // which is exactly what the first blockRaster() probe caught.
     let snapOrigin = null;
-    const base = this.blocked ? ((snapOrigin = this.renderBlocked()), this._blockStats || {}) : this._drawBase(z);
+    // Block rendering needs a real canvas to bake into and a ctx that can blit. map.test.mjs runs the
+    // renderer DOM-free against a stub, and a headless environment must still draw — so this degrades to
+    // the direct path rather than requiring a DOM.
+    const canBlock = this.blocked && typeof document !== 'undefined' && !!document.createElement
+                     && typeof ctx.drawImage === 'function';
+    const base = canBlock ? ((snapOrigin = this.renderBlocked()), this._blockStats || {}) : this._drawBase(z);
     mark('base');
     if (snapOrigin) this._origin = snapOrigin;
     let rtN = 0, lab;
@@ -860,17 +877,18 @@ export class RouteMap {
         lab = this.layoutLabels();
         mark('labels');
       }
+      // The M0 sketch dots belong INSIDE the snapped origin too — drawing them after it is restored put
+      // the user's own clicked points up to a device pixel off the map they were clicked on.
+      for (const p of this.points) {
+        const s2 = this.project(p.lat, p.lon);
+        ctx.beginPath(); ctx.arc(s2.x, s2.y, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = '#c0392b'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
     } finally { if (snapOrigin) this._origin = null; }
     lab = lab || { placeLabels: 0, streetLabels: 0, buildingLabels: 0 };
     this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     if (t) this._layerMs = t.ms;
-    // M0 probe: optional test dots (empty once real layers are loaded).
-    for (const p of this.points) {
-      const s = this.project(p.lat, p.lon);
-      ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = '#c0392b'; ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
-    }
     for (const cb of this._renderCbs) cb(ctx, this);
   }
 
@@ -933,8 +951,15 @@ export class RouteMap {
   // read a detached buffer (length 0) and the map would silently go blank after the first match.
   setStoreIndex(idx, memFn, storeBase) {
     this._sidx = idx; this._smem = memFn; this._sb = Number(storeBase) || 0;
+    this.invalidateBlocks();
     return this;
   }
+
+  // Drop every cached raster. A block is baked from whatever features were loaded at the time, and the
+  // index is built for ONE viewport window — so a block baked before a data load can be missing features
+  // that window did not include. Anything that replaces layer data must call this, or the map shows a
+  // stale tile that no amount of panning repairs.
+  invalidateBlocks() { this._blocks = new Map(); this._blockZoom = null; return this; }
 
   // The projection constants for this frame, hoisted so the per-vertex loop is pure arithmetic.
   //

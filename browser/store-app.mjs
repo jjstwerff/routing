@@ -546,7 +546,19 @@ window.__perfHooks = {
     const blocks = M._blocks.size;
     M.blocked = false; M.render();
     const med = (a) => { const s2 = [...a].sort((x, y) => x - y); return s2[Math.floor(s2.length / 2)]; };
-    return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip,
+    // A block baked before a data load can be missing features that window did not include, and a stale
+    // raster is a failure that LOOKS like a correct map.
+    //
+    // The data has to actually CHANGE for this to test anything: reloading the same text leaves stale
+    // blocks correct, so the check passes whether or not invalidation happens. (It did, first try — a
+    // vacuous gate is worse than none.) So: bake, then load an EMPTY road set, then compare a cached
+    // frame against a forced-cold one. Without invalidation the cached frame still shows the old roads.
+    M.blocked = true; M.render();                          // populate the cache
+    M.loadRoadsFlat('');                                    // a real data change — must invalidate
+    const staleness = this.renderDiff(() => { M.blocked = true; M.render(); },
+                                      () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); }).diff;
+    M.loadRoadsFlat(lastViewText || '');                    // restore the real roads
+    return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip, staleness,
              vsSnapped: vsSnapped.diff, vsSnappedMaxDelta: vsSnapped.maxDelta,
              pct: +(vsSnapped.diff / vsSnapped.total * 100).toFixed(2),
              coldMs: +coldMs.toFixed(1), warmMs: +med(w).toFixed(2), blocks };
@@ -561,6 +573,11 @@ window.__perfHooks = {
     const idx = map._sidx;
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!idx || !h || !loadedBbox) return { err: 'no store index / handle / view' };
+    // ⚠ DIRECT path only. With the block cache on, toggling `_sidx` and re-rendering would blit the same
+    // cached rasters both times and this gate would pass vacuously — it would be comparing a cache
+    // against itself. Blocking is restored at the end.
+    const wasBlocked = map.blocked;
+    map.blocked = false;
     const fp = () => { map.render(); const c = document.getElementById('map');
                        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
                        let hh = 0x811c9dc5;
@@ -583,6 +600,7 @@ window.__perfHooks = {
     map._sidx = idx;
     const store = fp();
     const kinds = Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined);
+    map.blocked = wasBlocked; map.invalidateBlocks();
     return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
              objectCounts: objects.counts, storeCounts: store.counts, kinds,
              indexed: Object.fromEntries(kinds.map((k) => [k, idx[k].n])),
@@ -718,6 +736,9 @@ window.__perfHooks = {
   // referee that. Renders the CURRENT view n times with per-layer timing on, and separately times the
   // projection walk alone, which is the hard CEILING on what step 14 can win.
   async renderBudget(n) {
+    // The per-layer breakdown describes the DIRECT path. A blocked frame is one blit and has no layers to
+    // attribute, which is the point of it — `blockRaster()` reports that number.
+    const wasBlocked = map.blocked; map.blocked = false;
     map._timeLayers = true;
     const runs = [];
     for (let i = 0; i < n; i++) { const t0 = performance.now(); map.render(); runs.push({ total: performance.now() - t0, ms: { ...map._layerMs } }); }
@@ -728,6 +749,7 @@ window.__perfHooks = {
     const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
     const layers = {};
     for (const k of Object.keys(runs[0].ms)) layers[k] = med(runs.map((r) => r.ms[k]));
+    map.blocked = wasBlocked; map.invalidateBlocks();
     return { total: med(runs.map((r) => r.total)), layers, projection: med(proj), verts, counts: { ...map._stats } };
   },
   // §6b(2)'s observable: do the STRETCH lines reach JS *while the match runs*, or only at the end?
