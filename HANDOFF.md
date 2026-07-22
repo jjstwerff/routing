@@ -28,18 +28,22 @@ at 1.1× spread: **view 946 → 277 ms**, **cold match 6370 → 3327 ms**, **war
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
 
-⚠ **One documented behaviour is not delivered:** the route is emitted per stretch in travel order, but
-nothing *renders* it that way — `runKernel` returns the whole response at `#EOR` and only the final
-`ROUTE` is drawn. The `frame_yield()`s buy responsiveness (worst frozen gap 11095 → 384 ms), not a
-growing line. See `PLAN-PERF` §6b(2); `DESIGN.md` §5 and `PLAN-MATCH` describe the intent, not the
-current behaviour.
+✅ **The growing line is delivered** (2026-07-22, closing the one documented behaviour that was not).
+The route was already *emitted* per stretch in travel order, but nothing *rendered* it that way —
+`runKernel` returned the whole response at `#EOR` and only the final `ROUTE` was drawn, so the
+`frame_yield()`s bought responsiveness (worst frozen gap 11095 → 384 ms) and no growing line. Now
+`runKernel` takes an opt-in line sink drained per yield in a microtask (before paint), and `map`
+accumulates stretches by slot and re-strokes the route so far. `DESIGN.md` §5 and `PLAN-MATCH` again
+describe the actual behaviour. See `PLAN-PERF` §6b(2) — including what its gate then surfaced:
+`remove_spurs` prunes ~60% of the raw stitch, so the line visibly tightens when the match completes.
 
 ---
 
 ## 1a. Resume here (2026-07-22)
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list. Then §7g(2)
-  (the viewport filter), §7h(2) (the match ladder), §6b(2) (a documented behaviour that is NOT delivered).
+  (the viewport filter), §7h(2) (the match ladder), §6b(2) (the growing line — delivered, and what its
+  gate then surfaced about `remove_spurs`).
   `CLAUDE.md` § "Read the reference before you write" — the rule that would have saved this session hours.
 - **Toolchain:** installed loft is **2026.7.2** (@PLN110 `len`/`size` flip: `len(text)` is CHARACTERS,
   `size(text)` is BYTES — breaking). Routing absorbed it with **no source edits**; all five gates pass.
@@ -60,8 +64,9 @@ fine**, and `release`/`expose` brackets it.
 **What to do next, in the order the evidence favours:**
 
 1. **Steps 14–15 — the render budget.** Now the biggest remaining slice of a view (~74 ms render +
-   127 ms `storeRead` of a 277 ms view). Pure JS, nothing blocking. **Pair it with §6b(2)**: the route is
-   emitted per stretch but never rendered that way, and both are the same code path.
+   127 ms `storeRead` of a 277 ms view). Pure JS, nothing blocking. §6b(2) is **done** and shares this
+   code path — read its two rendering decisions (work ∝ route not map; re-stroke the accumulation, or
+   every joint gets a white notch) before changing how the route is drawn.
 2. **Step 18 — `par` over the stretches.** Unblocked; read §6b B, **not** step 17's row (17's conclusion
    was a mis-read and is kept only as the record of one).
 3. **Step 19 — persist the built graph.** ⚠ **Re-size it first.** Its "~41% of a cold match" premise
@@ -71,10 +76,9 @@ fine**, and `release`/`expose` brackets it.
    not the total. Step 16's `frame_yield()`s do not reach it (the gap is in the corridor read +
    `build_graph`, before the first stretch exists).
 
-**Two things NOT done that a reader might assume are:**
+**One thing NOT done that a reader might assume is:**
 - **`server/server.loft` is not on the match ladder** (step 22 wired only `lib/map_kernel`). The server
   keeps its own `covered()` + corridor logic and an Overpass path the corpus does not cover.
-- **The growing line is not rendered** — see §6b(2).
 
 **Traps this session paid for, so you do not have to:**
 - **A probe outside a gate is a comment.** Four instrument bugs were found in one day; every one was a
