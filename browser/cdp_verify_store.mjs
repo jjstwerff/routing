@@ -95,5 +95,17 @@ if (!cl || cl.err) { console.log('  FAIL: coordLayout —', JSON.stringify(cl));
 else if (!cl.zeroCopyOk) { console.log(`  FAIL: a ring is NOT a zero-copy Int32Array —`, JSON.stringify(cl)); ok = false; }
 else console.log(`  ✓ a ring is a zero-copy Int32Array view: Coord ${cl.layout.size}B (x@${cl.layout.fields[0].pos}, y@${cl.layout.fields[1].pos}), ${cl.ringLen} coords, 0 mismatches vs loft's reader`);
 
+// 5. PLAN-PERF §6c — the store-backed render path draws EXACTLY what the object path draws.
+//
+// The additive-before-subtractive gate. Both paths are live, so this renders the same view twice — once
+// with the store index off, once on — and compares a hash of the actual PIXELS. Counts cannot settle
+// this: a ring read at a wrong offset still yields plausible integers and a plausible count, and only the
+// pixels show it drew somewhere else. This assertion is what licenses deleting the object path.
+const sp = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.storeRenderParity()))()')) || 'null');
+if (!sp || sp.err) { console.log('  FAIL: storeRenderParity —', JSON.stringify(sp)); ok = false; }
+else if (!sp.equal) { console.log(`  FAIL: the store path drew DIFFERENT pixels — objects ${sp.objects} vs store ${sp.store}`, JSON.stringify(sp.objectCounts), JSON.stringify(sp.storeCounts)); ok = false; }
+else if (JSON.stringify(sp.objectCounts) !== JSON.stringify(sp.storeCounts)) { console.log('  FAIL: same pixels but different draw counts —', JSON.stringify(sp.objectCounts), JSON.stringify(sp.storeCounts)); ok = false; }
+else console.log(`  ✓ store-backed render is pixel-identical (${sp.store}) for ${sp.kinds.join(', ')} — ${JSON.stringify(sp.indexed)} indexed`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

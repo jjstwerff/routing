@@ -11,6 +11,8 @@
 // Interaction (pan/wheel), the layers, and the feature catalog arrive in M1+. The seam
 // exported at the bottom (project/unproject/camera/onRender/hitTest) is what PLAN-EDIT builds on.
 
+import { decodeText } from './store-geom.mjs';
+
 const TILE = 256;                         // world-pixel size of one tile at zoom 0
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
 const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
@@ -686,6 +688,67 @@ export class RouteMap {
   _projLine(g) { const px = new Array(g.length); for (let i = 0; i < g.length; i++) px[i] = this.project(g[i][0], g[i][1]); return px; }
   _inView(px, pad = 60) { for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
 
+  // --- Drawing straight out of the store (PLAN-PERF §6c) ---------------------------------------------
+  //
+  // `setStoreIndex` hands the renderer a per-view INDEX (browser/store-geom.mjs) instead of JS geometry:
+  // per feature, where its ring lives in wasm memory and what it spans. Nothing per-vertex is retained.
+  //
+  // ⚠ `memory` is kept as a FUNCTION, never as a buffer. `memory.grow` detaches the ArrayBuffer and the
+  // kernel grows memory while matching, so every frame must re-derive its view; a cached Int32Array would
+  // read a detached buffer (length 0) and the map would silently go blank after the first match.
+  setStoreIndex(idx, memFn, storeBase) {
+    this._sidx = idx; this._smem = memFn; this._sb = Number(storeBase) || 0;
+    return this;
+  }
+
+  // The projection constants for this frame, hoisted so the per-vertex loop is pure arithmetic.
+  //
+  // These reproduce makeView().project EXACTLY — same operations, same left-to-right association
+  // (`(p - c) + half`) — because the store path has to be bit-identical to the object path it replaces,
+  // and the gate is a canvas pixel hash. Anything that merely rounds the same way would eventually differ
+  // in a last bit and show up as antialiasing noise.
+  _flatK() {
+    const cam = this.camera, scale = TILE * Math.pow(2, cam.zoom);
+    const c = projectWorld(cam.lon, cam.lat, cam.zoom);
+    return { scale, cx: c.x, cy: c.y, hw: this.width / 2, hh: this.height / 2 };
+  }
+
+  // Project one feature's coordinates from the store into the reusable scratch buffer. Reads the ints
+  // where loft wrote them and writes x,y pairs; allocates nothing per vertex and nothing per feature.
+  _projectFlat(i32, o, len, ox, oy, K) {
+    let s = this._scratch;
+    if (!s || s.length < len * 2) { s = this._scratch = new Float64Array(Math.max(4096, len * 2)); }
+    for (let k = 0; k < len; k++) {
+      const lon = (ox + i32[o + 2 * k]) / 1e7, lat = (oy + i32[o + 2 * k + 1]) / 1e7;
+      const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+      s[2 * k] = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+      s[2 * k + 1] = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+    }
+    return s;
+  }
+  // `_inView` on the scratch — same padded-rect test, so the same features survive.
+  _inViewFlat(s, len, pad = 60) {
+    for (let k = 0; k < len; k++) {
+      const x = s[2 * k], y = s[2 * k + 1];
+      if (x >= -pad && x <= this.width + pad && y >= -pad && y <= this.height + pad) return true;
+    }
+    return false;
+  }
+  _pathFlat(s, len) {
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.moveTo(s[0], s[1]);
+    for (let k = 1; k < len; k++) ctx.lineTo(s[2 * k], s[2 * k + 1]);
+  }
+
+  // The screen rect in FIXED POINT (deg * 1e7), matching the index's stored bounds so the per-feature
+  // test is integer compare — no conversion per feature, and the same rectangle `_screen` computes.
+  _screenFixed() {
+    const w = this._screen();
+    return { mnla: Math.floor(w.mnla * 1e7), mxla: Math.ceil(w.mxla * 1e7),
+             mnlo: Math.floor(w.mnlo * 1e7), mxlo: Math.ceil(w.mxlo * 1e7) };
+  }
+
   // --- The geometry screen (PLAN-PERF §0 step 14 / §6 R) ---------------------------------------------
   //
   // Every draw loop below used to PROJECT a feature's whole ring and only then ask `_inView` whether any
@@ -753,6 +816,7 @@ export class RouteMap {
   drawBuildings() {
     this._buildingLabels = [];
     if (this.camera.zoom < BUILDINGS_MINZOOM) return 0;
+    if (this._sidx && this._sidx.buildings) return this._drawBuildingsFromStore();
     const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM; let n = 0;
     const win = this._screen(), bb = this._geoBounds(this.buildings, (b) => b.ring);
     for (let i = 0; i < this.buildings.length; i++) {
@@ -764,6 +828,44 @@ export class RouteMap {
       if (wantLabels && b.name) {
         let cx = 0, cy = 0; for (const p of px) { cx += p.x; cy += p.y; }        // ring centroid ≈ label anchor
         this._buildingLabels.push({ name: b.name, x: cx / px.length, y: cy / px.length });
+      }
+    }
+    return n;
+  }
+
+  // Buildings, read straight out of the store (PLAN-PERF §6c). Same drops in the same order as the object
+  // path above — the fixed-point screen, then `ring.length >= 3` (which `viewRenderLists` applied at load
+  // and this applies at draw), then `_inView(px, 20)` — so the two produce identical pixels and identical
+  // counts. Names are decoded ONLY for the handful that get a label, which is why the index keeps the
+  // string RECORD rather than the string: 16,646 building names would be 16,646 JS objects to draw 33.
+  _drawBuildingsFromStore() {
+    const col = this._sidx.buildings, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);                  // re-derived per frame: memory.grow detaches
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb;
+    const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM;
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const len = col.len[i];
+      if (len < 3) continue;
+      const o = (sb + col.rec[i] * 8 + 8) >> 2;              // Int32 index of the ring's first coord
+      const s = this._projectFlat(i32, o, len, col.ox[i], col.oy[i], K);
+      if (!this._inViewFlat(s, len, 20)) continue;
+      this._pathFlat(s, len);
+      const ctx = this.ctx;
+      ctx.closePath();
+      ctx.fillStyle = BUILDING_FILL; ctx.fill();
+      ctx.strokeStyle = BUILDING_STROKE; ctx.lineWidth = 0.6; ctx.stroke();
+      n++;
+      if (wantLabels && col.sRec[i]) {
+        const name = decodeText(mem, sb, col.sRec[i], this._textCache || (this._textCache = new Map()));
+        if (name) {
+          let cx = 0, cy = 0;
+          for (let k = 0; k < len; k++) { cx += s[2 * k]; cy += s[2 * k + 1]; }
+          this._buildingLabels.push({ name, x: cx / len, y: cy / len });
+        }
       }
     }
     return n;

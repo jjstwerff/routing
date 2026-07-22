@@ -7,6 +7,7 @@
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
+import { buildIndex, storeLayout } from './store-geom.mjs';
 
 const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
 const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
@@ -34,6 +35,10 @@ const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= 
 // stays until every kind is here, and only then can it be deleted (§7f: that deletion is also what
 // collapses step 9's per-view expose bracket).
 const STORE_KINDS = ['areas', 'buildings', 'lines', 'pois', 'places', 'streetLabels'];
+// PLAN-PERF §6c — the kinds the store-backed index currently covers. Grows one kind at a time, each
+// proved pixel-identical against the object path before the next is added (buildings first: 145,214 of
+// the viewport's 214,455 vertices, 68%).
+const STORE_GEOM_KINDS = ['buildings'];
 
 // The viewport box in FIXED POINT (deg*1e7), built from the same 6-decimal strings the kernel parses so
 // both sides round identically — `parse_fbox` reads exactly this text.
@@ -71,6 +76,13 @@ async function ensureView() {
   if (h) {
     const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
     for (const k of STORE_KINDS) { counts[k] = lists[k].length; map[k] = lists[k]; }
+    // PLAN-PERF §6c — the store-backed index, built BESIDE the object lists above and (for now) driving
+    // only buildings. Additive on purpose: while both exist the gate can prove they draw the same pixels,
+    // and only then does the object path go. It costs one walk of the same tiles and retains typed arrays
+    // instead of 145k boxed vertex pairs.
+    const idx = buildIndex(kernel.memory(), h, storeLayout(h), fboxOf(bbox), STORE_GEOM_KINDS);
+    map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
+    for (const k of STORE_GEOM_KINDS) counts[k + 'Idx'] = idx[k].n;
   }
   loadedBox = box;
   map.render();
@@ -350,6 +362,54 @@ window.__perfHooks = {
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
+  },
+  // PLAN-PERF §6c — does the store-backed render path draw EXACTLY what the object path drew?
+  //
+  // This is the additive-before-subtractive gate: both paths are live, so flip the store index off, render,
+  // fingerprint; flip it on, render, fingerprint; the two hashes must be equal. Counts alone would not
+  // settle it — a ring read at a wrong offset yields plausible integers and a plausible count, and only
+  // the pixels show that it drew somewhere else. This is the check that licenses deleting the object path.
+  storeRenderParity() {
+    const idx = map._sidx;
+    if (!idx) return { err: 'no store index' };
+    const fp = () => { map.render(); const c = document.getElementById('map');
+                       const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+                       let h = 0x811c9dc5;
+                       for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); }
+                       return { hash: (h >>> 0).toString(16), counts: { ...map._stats } }; };
+    map._sidx = null;
+    const objects = fp();
+    map._sidx = idx;
+    const store = fp();
+    return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
+             objectCounts: objects.counts, storeCounts: store.counts,
+             kinds: Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined),
+             indexed: Object.fromEntries(Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined).map((k) => [k, idx[k].n])) };
+  },
+  // The descriptor's field map for PTile and everything nested under it — the reference a byte-level
+  // walker has to be written against. Dumped rather than guessed: a wrong `pos` reads a neighbouring
+  // field and still returns plausible integers.
+  descMap() {
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!h) return { err: 'no layout handle' };
+    const d = h.desc, out = {}, seen = new Set();
+    const sizeOf = (id) => (d.sizes && d.sizes[id] != null ? +d.sizes[id] : 0);
+    const walk = (id, label) => {
+      if (id == null || seen.has(id)) return;
+      seen.add(id);
+      const n = d.nodes[id];
+      if (!n) return;
+      const row = { id, kind: n.kind, size: sizeOf(id) };
+      if (n.base) row.base = n.base;
+      if (n.elem != null) { row.elem = n.elem, row.elemKind = d.nodes[n.elem]?.kind, row.elemSize = sizeOf(n.elem); }
+      if (n.fields) row.fields = n.fields.map((f) => ({ name: f.name, pos: f.pos, content: f.content, kind: d.nodes[f.content]?.kind, base: d.nodes[f.content]?.base }));
+      if (n.variants) row.variants = n.variants.map((v) => v.name);
+      out[label] = row;
+      if (n.elem != null) walk(n.elem, label + '.elem');
+      for (const f of n.fields || []) walk(f.content, label + '.' + f.name);
+    };
+    walk(d.nodes[h.typeId].elem, 'PTile');
+    return out;
   },
   // Is a `vector<Coord>` already the flat layout we want — readable as a ZERO-COPY Int32Array view over
   // wasm memory? (PLAN-PERF §6c: where the loft/JS split should live.)

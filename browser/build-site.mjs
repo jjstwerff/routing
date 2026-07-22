@@ -21,22 +21,25 @@ const stripExport = (s) => s.replace(/^export\s+/gm, '');
 const loftDeliverJs = stripExport(readFileSync(join(here, 'loft-deliver.js'), 'utf8'));
 const loftStoreMjs = stripExport(readFileSync(join(here, 'loft-store.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/loft-deliver\.js';\s*$/m, '');
-const mapMjs = stripExport(readFileSync(join(here, 'map.mjs'), 'utf8'));
+const storeGeomMjs = stripExport(readFileSync(join(here, 'store-geom.mjs'), 'utf8'));
+const mapMjs = stripExport(readFileSync(join(here, 'map.mjs'), 'utf8'))
+  .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-geom\.mjs';\s*$/m, '');
 const storeKernelMjs = stripExport(readFileSync(join(here, 'store-kernel.mjs'), 'utf8'));
 const storeAppMjs = stripExport(readFileSync(join(here, 'store-app.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/map\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-kernel\.mjs';\s*$/m, '')
+  .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-geom\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/loft-store\.mjs';\s*$/m, '');
 // A leftover `import ... from './x.mjs'` means a module was added without teaching this bundler about
 // it: the browser then tries to FETCH that path out of _site/, where it does not exist, and the app dies
 // on load with no console error the harness can see. Fail the build instead.
-for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs]]) {
+for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs], ['map.mjs', mapMjs], ['store-geom.mjs', storeGeomMjs]]) {
   const stray = src.match(/^import\s.*$/m);
   if (stray) { console.error(`build-site: ERROR — un-inlined import left in ${name}: ${stray[0]}`); process.exit(1); }
 }
 const html = readFileSync(join(here, 'index.html'), 'utf8')
   .replace(/<script type="module" src="\.\/store-app\.mjs"><\/script>/,
-    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
+    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/store-geom.mjs ---- */\n${storeGeomMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
 
 // Assemble _site/: the inlined app + the kernel wasm + the two loft stores (served static for the app to fetch).
 if (existsSync(site)) rmSync(site, { recursive: true });
