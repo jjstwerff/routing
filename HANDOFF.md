@@ -187,9 +187,13 @@ no visual answer to "did my click land?".
    6 matches**, with the drawn route byte-identical to a re-match of the settled sketch.
    ⚠ **A press on a point that never moves commits NOTHING** — that do-nothing press is exactly what E4
    turns into a selection.
-4. ⏭ **NEXT — delete.** Double-click (⚠ key the detector on the point's **`id`**, not a screen spot — see
-   increment 2) and tap-select + a Delete button for touch.
-5. **Range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a primitive).
+4. ✅ **DONE — delete.** A press selects; a second press on the **same point id** inside 250 ms deletes.
+   Touch gets a Delete button (bound by the layer); desktop also `Delete`/`Backspace`/`Esc`. Selection is
+   **not** a mutation — it never re-matches. Down to 1 point degrades to *"add ≥2"* with an empty route.
+   ⚠ The gate had a hidden **ordering dependency** (the P1 test pans, so later tests ran wherever the map
+   had drifted); `resetSketch` now restores the camera too.
+5. ⏭ **NEXT — range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a
+   primitive). E4's single `_selected` id generalises to rough.js's two-anchor contiguous range.
 6. Box-select last — desktop-only and the least load-bearing.
 
 ⚠ **A drag cannot re-match per frame.** A warm match is ~545 ms throttled and ~33 move events arrive per

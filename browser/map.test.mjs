@@ -7,7 +7,9 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
-import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX } from './rough.mjs';
+import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
+         DOUBLE_CLICK_MS } from './rough.mjs';
+const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
 
 let fails = 0;
 const ok = (cond, msg) => { if (!cond) { fails++; console.error('  ✗ ' + msg); } else console.log('  ✓ ' + msg); };
@@ -198,23 +200,23 @@ console.log('E0/E2 · a double-click drops ONE point — enforced by hit PRIORIT
   // pan invalidates). The dedupe is gone; these assertions pin the behaviour it used to be credited with.
   const m = freshMap();
   const r = layerOn(m);
-  const tap = (x, y) => { r.pointerDown(x, y, 0); r.pointerUp(); };
-  tap(400, 300);
-  tap(401, 301);                           // the 2nd click of a double-click
+  const tap = (x, y, t) => { r.pointerDown(x, y, t); r.pointerUp(); };
+  tap(400, 300, 0);
+  tap(401, 301, 60);                       // the 2nd click of a double-click, landing on the new point
   ok(r.points.length === 1, `a double-click drops ONE point, not two (${r.points.length})`);
-  tap(401, 301);                           // and a later one at the same spot is STILL a grab, not an add
-  ok(r.points.length === 1, `a repeat tap on a point never appends, whatever the delay (${r.points.length})`);
-  tap(600, 300);                           // clear of every point → a genuine new point
+  tap(401, 301, 900);                      // well outside E4's window: a grab, not an add and not a delete
+  ok(r.points.length === 1, `a repeat tap on a point never appends (${r.points.length})`);
+  tap(600, 300, 1200);                     // clear of every point → a genuine new point
   ok(r.points.length === 2, `a tap ELSEWHERE appends (${r.points.length})`);
 
   // The case that proves the timer had to go rather than merely being redundant: tap, pan the map, then
   // tap the SAME SCREEN SPOT. Nothing is under the cursor any more, so this is a legitimate new point —
   // a screen-keyed dedupe would have swallowed it.
   const n = r.points.length;
-  r.pointerDown(250, 520, 0); r.pointerMove(350, 600); r.pointerUp();   // pan, started clear of every point
+  r.pointerDown(250, 520, 1400); r.pointerMove(350, 600); r.pointerUp();   // pan, started clear of every point
   const moved = m.project(r.points[n - 1].lat, r.points[n - 1].lon);
   ok(Math.round(moved.x) !== 600, `the pan carried the point off (600,300) → (${Math.round(moved.x)},${Math.round(moved.y)})`);
-  tap(600, 300);
+  tap(600, 300, 1600);
   ok(r.points.length === n + 1, `a tap at the same screen spot AFTER a pan still appends (${r.points.length})`);
 }
 
@@ -491,6 +493,11 @@ console.log('E2 · a cancelled sweep still commits — its point is on the map e
 // --- PLAN-EDIT E3: drag a point ----------------------------------------------------------------------
 
 const sketchOf = (m, pts) => { const r = layerOn(m); for (const [lat, lon] of pts) r.append(lat, lon); return r; };
+// A screen position that hits nothing — so a test meaning "press the empty map" cannot land on the sketch.
+const emptySpot = (r) => {
+  for (let y = 40; y <= 560; y += 40) for (let x = 40; x <= 760; x += 40) if (r.hitTest(x, y) === null) return { x, y };
+  return null;
+};
 const TRI = [[52.20, 6.85], [52.24, 6.95], [52.28, 6.88]];
 
 console.log('\nE3 · dragging a point moves it, and the line follows every frame');
@@ -603,5 +610,118 @@ console.log('E3 · the coalescer keeps a drag affordable — many moves, few mat
   ok(ran[ran.length - 1] === finalLat, 'and the LAST match run is the one for the final position');
 }
 
-console.log(fails ? `\nM0+M1+E0-E3 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E3 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert and drag hold');
+// --- PLAN-EDIT E4: delete a point --------------------------------------------------------------------
+
+console.log('\nE4 · a press selects; a second press on the SAME point deletes it');
+{
+  const m = freshMap();
+  const commits = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts, c) => commits.push(c) });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  const at = (i) => m.project(r.points[i].lat, r.points[i].lon);
+  const mid = at(1), midId = r.points[1].id;
+  commits.length = 0;
+
+  r.pointerDown(mid.x, mid.y, 1000); r.pointerUp();
+  ok(r.selected === midId, 'the first press selects the point');
+  ok(commits.length === 0, 'selecting is NOT a sketch mutation — no commit, no re-match');
+  ok(r.points[1].selected === true && r.points[0].selected === false, 'the renderer sees the flag on the right point');
+
+  r.pointerDown(mid.x, mid.y, 1100); r.pointerUp();
+  ok(r.points.length === 2, `the second press within ${DOUBLE_CLICK_MS}ms deletes it (${r.points.length} points)`);
+  ok(!r.points.some((p) => p.id === midId), 'and it is the point that was pressed that went');
+  ok(commits.filter((c) => c === true).length === 1, 'the delete is ONE committed edit');
+  ok(r.selected === null, 'and the selection is cleared with it');
+}
+
+console.log('E4 · the double-click detector keys on the POINT, not on a screen position');
+{
+  // The E2 lesson, in the one test that can catch its return: select a point, PAN so it is somewhere else
+  // on screen, then press it again at its NEW position inside the window. A screen-keyed detector sees two
+  // presses in different places and refuses to delete; an id-keyed one deletes, which is what a user who
+  // nudged the map between clicks expects.
+  const m = freshMap();
+  const r = sketchOf(m, TRI);
+  const before = m.project(r.points[1].lat, r.points[1].lon);
+  const id = r.points[1].id;
+  r.pointerDown(before.x, before.y, 1000); r.pointerUp();
+  ok(r.selected === id, 'selected');
+
+  // Ask hitTest where the empty map is rather than guessing: picking a spot by eye once landed 0.6 px off
+  // a segment and the "pan" inserted a point instead.
+  const empty = emptySpot(r);
+  ok(empty !== null, `found empty map at (${empty?.x},${empty?.y}) to start the pan from`);
+  r.pointerDown(empty.x, empty.y, 1050); r.pointerMove(empty.x + 140, empty.y - 90); r.pointerUp();
+  const after = m.project(r.points[1].lat, r.points[1].lon);
+  ok(Math.hypot(after.x - before.x, after.y - before.y) > DOUBLE_TAP_MOVED_PX,
+     `the point is now ${Math.round(Math.hypot(after.x - before.x, after.y - before.y))}px from where it was pressed`);
+
+  r.pointerDown(after.x, after.y, 1200); r.pointerUp();
+  ok(r.points.length === 2 && !r.points.some((p) => p.id === id),
+     `it still deletes across the pan (${r.points.length} points) — a screen-keyed detector would not have`);
+}
+
+console.log('E4 · two presses on DIFFERENT points never delete');
+{
+  const m = freshMap();
+  const r = sketchOf(m, TRI);
+  const a = m.project(r.points[0].lat, r.points[0].lon), b = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown(a.x, a.y, 1000); r.pointerUp();
+  r.pointerDown(b.x, b.y, 1050); r.pointerUp();
+  ok(r.points.length === 3, `nothing was deleted (${r.points.length} points)`);
+  ok(r.selected === r.points[1].id, 'the second point is simply the one now selected');
+}
+
+console.log('E4 · a slow second press deselects rather than deleting');
+{
+  const m = freshMap();
+  const r = sketchOf(m, TRI);
+  const p = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown(p.x, p.y, 1000); r.pointerUp();
+  r.pointerDown(p.x, p.y, 1000 + DOUBLE_CLICK_MS, 0); r.pointerUp();
+  ok(r.points.length === 3, `at exactly ${DOUBLE_CLICK_MS}ms it is not a double-click (${r.points.length} points)`);
+  ok(r.selected === null, 'and pressing the selected point again deselects it');
+}
+
+console.log('E4 · Delete / Backspace / Escape, and the Delete button');
+{
+  const m = freshMap();
+  const btn = { classList: { _hidden: true, toggle(_c, on) { this._hidden = on; } } };
+  const r = new RoughLayer(m, { bind: false, deleteButton: btn });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  ok(btn.classList._hidden === true, 'the Delete button is hidden while nothing is selected');
+
+  const p = m.project(r.points[1].lat, r.points[1].lon);
+  r.pointerDown(p.x, p.y, 1000); r.pointerUp();
+  ok(btn.classList._hidden === false, 'selecting a point reveals it');
+  r.deleteSelected();
+  ok(r.points.length === 2, `the button deletes the selection (${r.points.length} points)`);
+  ok(btn.classList._hidden === true, 'and it hides again afterwards');
+
+  // Escape clears without deleting.
+  const q = m.project(r.points[0].lat, r.points[0].lon);
+  r.pointerDown(q.x, q.y, 2000); r.pointerUp();
+  r.clearSelection();
+  ok(r.selected === null && r.points.length === 2, 'Escape clears the selection and deletes nothing');
+  ok(r.deleteSelected() === r && r.points.length === 2, 'deleting with nothing selected is a no-op, not a throw');
+}
+
+console.log('E4 · deleting down to 1 point and to 0 degrades, it does not throw  (failure path 8)');
+{
+  const m = freshMap();
+  const seen = [];
+  const r = new RoughLayer(m, { bind: false, onCommit: (pts) => seen.push(pts.length) });
+  for (const [lat, lon] of TRI) r.append(lat, lon);
+  seen.length = 0;
+  r.removeId(r.points[2].id);
+  r.removeId(r.points[1].id);
+  ok(r.points.length === 1 && seen[seen.length - 1] === 1, 'down to one point, and the commit reports 1');
+  r.removeId(r.points[0].id);
+  ok(r.points.length === 0 && seen[seen.length - 1] === 0, 'down to zero, still one clean commit');
+  ok(m.drawRough() === 0, 'and the renderer draws an empty sketch without complaint');
+  r.append(52.2, 6.9);
+  ok(r.points.length === 1, 'the sketch is reusable afterwards');
+}
+
+console.log(fails ? `\nM0+M1+E0-E4 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E4 PASS — projection, pan/zoom, the chokepoints, the sketch layer, insert, drag and delete hold');
 process.exit(fails ? 1 : 0);

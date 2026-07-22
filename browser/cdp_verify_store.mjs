@@ -140,7 +140,18 @@ const drag = async (x0, y0, x1, y1) => {
 // Assert on the LAYER's array, not on map.points: they are the same array by reference, and the layer is
 // what owns it (PLAN-EDIT failure path 11).
 const nPts = () => ev('window.__rough.points.length');
-const resetSketch = async () => { await ev('window.__rough.clear(); window.__storeApp.routePts = 0; window.__storeApp.matchRuns = 0;'); await sleep(200); };
+// Reset the CAMERA as well as the sketch. The P1 assertion below deliberately pans, so without this each
+// gesture test would run wherever its predecessors left the map — and a route's length depends on where
+// you drew it. That coupling already bit once: E4's assertion failed not because the delete was broken
+// but because the clicks had drifted somewhere with a genuinely 2-point route.
+const HOME = { lat: 52.2215, lon: 6.8937, zoom: 16 };
+const resetSketch = async () => {
+  await ev(`window.__rough.clear();
+    Object.assign(window.__map0.camera, ${JSON.stringify(HOME)});
+    window.__map0.render();
+    window.__storeApp.routePts = 0; window.__storeApp.matchRuns = 0;`);
+  await sleep(400);
+};
 
 await resetSketch();
 const seen = [];
@@ -275,6 +286,47 @@ else if (Math.abs(dragged.x - wx) > 6 || Math.abs(dragged.y - wy) > 6) {
 } else if (dragged.hash !== reHash) {
   console.log(`  FAIL: the drawn route is STALE — re-matching the settled sketch gives a different route (${dragged.hash} vs ${reHash})`); ok = false;
 } else console.log(`  ✓ drag: the point follows and the route is the settled sketch's, in ${dragged.runs} matches for ${MOVES} moves (E3)`);
+
+// 7c4. PLAN-EDIT E4 — delete a point: double-click (mouse) and select + the Delete button (touch).
+await resetSketch();
+await click(300, 220); await click(560, 400); await click(760, 200);
+await sleep(3000);
+const midAt = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
+  const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y), id: p.id }); })()`));
+await click(midAt.x, midAt.y, 120);
+const sel = JSON.parse(await ev(`JSON.stringify({ selected: window.__rough.selected,
+  btn: document.getElementById('rough-delete').classList.contains('hidden'), n: window.__rough.points.length })`));
+await click(midAt.x, midAt.y, 120);          // the second click of a double-click, inside 250 ms
+await sleep(2500);
+const del = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
+  gone: !window.__rough.points.some((p) => p.id === ${midAt.id}), route: window.__map0.route.length,
+  hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7),
+  btn: document.getElementById('rough-delete').classList.contains('hidden') })`));
+// Same anti-staleness check as E3, and for the same reason: "the route is non-empty" would pass on a
+// route left over from before the delete. Re-matching the settled sketch must reproduce it exactly.
+const delRe = await ev(`(async () => { await window.__match(window.__rough.coords());
+  return window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7); })()`);
+if (sel.selected !== midAt.id) { console.log(`  FAIL: a single click did not select the point (selected=${sel.selected})`); ok = false; }
+else if (sel.btn !== false) { console.log('  FAIL: selecting a point did not reveal the Delete button'); ok = false; }
+else if (sel.n !== 3) { console.log(`  FAIL: selecting changed the sketch (${sel.n} points)`); ok = false; }
+else if (del.n !== 2 || !del.gone) { console.log(`  FAIL: the double-click left ${del.n} points, target gone=${del.gone}`); ok = false; }
+else if (!(del.route >= 2)) { console.log(`  FAIL: the route did not re-match after the delete (${del.route} pts)`); ok = false; }
+else if (del.hash !== delRe) { console.log(`  FAIL: the route after the delete is STALE — a re-match differs (${del.hash} vs ${delRe})`); ok = false; }
+else if (del.btn !== true) { console.log('  FAIL: the Delete button stayed visible after the point went'); ok = false; }
+else console.log(`  ✓ click selects (button shown), double-click deletes and re-matches to the settled sketch (${del.route} route pts) (E4)`);
+
+// 7c5. PLAN-EDIT E4 / failure path 8 — deleting below 2 points must DEGRADE, not throw.
+// The matcher needs two points; the app must say so and clear the route rather than leave a stale line
+// on screen describing a sketch that no longer exists.
+await ev('window.__rough.select(window.__rough.points[1].id);');
+await ev("document.getElementById('rough-delete').click();");
+await sleep(2000);
+const one = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
+  hud: document.getElementById('hud').textContent })`));
+if (one.n !== 1) { console.log(`  FAIL: the Delete button left ${one.n} points (want 1)`); ok = false; }
+else if (one.route !== 0) { console.log(`  FAIL: a 1-point sketch still shows a ${one.route}-pt route — it is stale`); ok = false; }
+else if (!/add ≥2/.test(one.hud)) { console.log(`  FAIL: the HUD does not say a point is missing — "${one.hud}"`); ok = false; }
+else console.log(`  ✓ the Delete button works and 1 point degrades cleanly: "${one.hud}" (E4)`);
 
 // 7d. PLAN-EDIT E0 / §2 P4 — an edit arriving DURING a match must not be dropped.
 // `if (sketch.length < 2 || busy) return` added the point and skipped the re-match, and `busy` was shared

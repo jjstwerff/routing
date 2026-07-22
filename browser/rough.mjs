@@ -53,6 +53,11 @@ export const PAN_SLOP_PX = 4;
 export const HIT_POINT_PX = 15;
 export const HIT_SEGMENT_PX = 9;
 
+// A second press on the SAME POINT inside this window deletes it (E4, mouse). Keyed on the point's `id`,
+// never on a screen position — that is the whole lesson of the dedupe E2 removed: a screen-keyed timer
+// breaks the moment the map moves under it, and a point is a thing, not a place.
+export const DOUBLE_CLICK_MS = 250;
+
 // Distance from (px,py) to the segment a→b, and how far along it the foot lands (t in 0..1, clamped to the
 // ends so a point beyond the segment measures to the nearer endpoint). Pure, and pure SCREEN space — see
 // nearestSegment for why that matters.
@@ -127,6 +132,10 @@ export class RoughLayer {
     map.points = this.points;
     this._seq = 0;
     this._g = null;                 // the in-progress gesture, or null when no pointer is down
+    this._selected = null;          // the selected point's id, or null
+    this._lastPress = null;         // { id, t } — the last press that landed on a point (E4's dblclick)
+    this._deleteBtn = opts.deleteButton || null;
+    this._syncSelection();
     if (opts.bind !== false) this.bind();
   }
 
@@ -155,6 +164,49 @@ export class RoughLayer {
     this.points.splice(index, 0, pt);
     this.commitEdit(false);
     return pt;
+  }
+
+  removeId(id) {
+    const i = this.points.findIndex((p) => p.id === id);
+    if (i < 0) return this;
+    this.points.splice(i, 1);
+    if (this._selected === id) this._selected = null;
+    this._syncSelection();
+    this.commitEdit(true);
+    return this;
+  }
+
+  deleteSelected() { return this._selected === null ? this : this.removeId(this._selected); }
+
+  // ---- selection -----------------------------------------------------------------------------------
+  //
+  // Selection is NOT a sketch mutation: it changes no geometry, so it must never reach commitEdit and
+  // never re-match. It only redraws and re-labels the Delete button. Keeping that distinction is what
+  // stops "I tapped a point to look at it" from costing a match.
+
+  select(id) {
+    this._selected = this._selected === id ? null : id;   // tapping the same point again deselects
+    this._syncSelection();
+    this.map.requestRender();
+    return this;
+  }
+
+  clearSelection() {
+    if (this._selected === null) return this;
+    this._selected = null;
+    this._syncSelection();
+    this.map.requestRender();
+    return this;
+  }
+
+  get selected() { return this._selected; }
+
+  // The renderer draws a point's selection ring from a flag ON THE POINT: the layer owns the data, map.mjs
+  // owns the pixels. Selection is by id, so a splice can never make it point at the wrong element.
+  _syncSelection() {
+    let live = false;
+    for (const p of this.points) { p.selected = p.id === this._selected; if (p.selected) live = true; }
+    if (this._deleteBtn) this._deleteBtn.classList.toggle('hidden', !live);
   }
 
   // ---- hit testing ---------------------------------------------------------------------------------
@@ -269,8 +321,17 @@ export class RoughLayer {
     if (g.kind === 'move') {
       // ONE committed edit for the whole gesture. A press on an existing point that never moved is NOT an
       // edit — committing it would re-match for nothing and, from E6, push an undo step that undoes
-      // nothing. (E4 turns that same do-nothing press into a selection.)
-      if (g.created || g.moved) this.commitEdit(true);
+      // nothing. Instead it selects the point, or DELETES it if this is the second such press on the same
+      // point inside the window.
+      if (g.created || g.moved) { this.commitEdit(true); return; }
+      const id = g.pt.id;
+      if (this._lastPress && this._lastPress.id === id && g.t0 - this._lastPress.t < DOUBLE_CLICK_MS) {
+        this._lastPress = null;
+        this.removeId(id);
+        return;
+      }
+      this._lastPress = { id, t: g.t0 };
+      this.select(id);
       return;
     }
     if (g.panning) return;                                        // P1: a pan is not an edit, and never commits
@@ -310,6 +371,21 @@ export class RoughLayer {
     window.addEventListener('pointermove', (e) => { if (this._g) { const p = at(e); this.pointerMove(p.x, p.y); } });
     window.addEventListener('pointerup', () => { if (this._g) { this.pointerUp(); cv.style.cursor = ''; } });
     window.addEventListener('pointercancel', () => { this.pointerCancel(); cv.style.cursor = ''; });
+    // Touch has no double-click and no keyboard, so a selected point gets an explicit Delete button. The
+    // button is bound HERE rather than in the app for the same reason the canvas is: it is an input that
+    // produces a sketch mutation, and those have one owner (PLAN-EDIT §4, chokepoint 1).
+    if (this._deleteBtn) this._deleteBtn.addEventListener('click', () => this.deleteSelected());
+    if (typeof document !== 'undefined') {
+      document.addEventListener('keydown', (e) => {
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          if (this._selected === null) return;
+          e.preventDefault();
+          this.deleteSelected();
+        } else if (e.key === 'Escape') this.clearSelection();
+      });
+    }
     return this;
   }
 }

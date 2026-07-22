@@ -248,11 +248,30 @@ the matching; it is false on a phone.
   re-match of the settled sketch** — which is the real anti-staleness check, stronger than "the route
   changed". On a phone the ratio only improves: slower matches coalesce more.
 
-### E4 — delete one point
-- **Build.** Double-click a point (mouse, behind the P2 dedupe); tap-select + a **Delete** button in
-  `index.html` (touch); `Delete`/`Backspace` and `Esc` on desktop.
-- **Check.** Browser: double-click a mid point ⇒ gone, route re-matches; delete to 1 point ⇒ HUD says
-  "add ≥2", no throw, no route (failure path 8).
+### E4 — delete one point ✅ **DONE**
+- **Built.** The do-nothing press E3 reserved now **selects**; a second press on the **same point** inside
+  `DOUBLE_CLICK_MS` **deletes** it. Touch gets tap-select + a **Delete** button (`#rough-delete`, bound by
+  the layer, not the app — it is an input that mutates the sketch, so it has the same owner as the canvas);
+  desktop also gets `Delete`/`Backspace` and `Esc`. The amber selection ring draws from a `selected` flag
+  **on the point**: the layer owns what is selected, `map.mjs` owns what selected looks like.
+- **Keyed on the point's `id`, never a screen position** — E2's lesson, with a test that can catch its
+  return: select a point, **pan 166 px**, press it again at its new position inside the window; it still
+  deletes. A screen-keyed detector could not.
+- **Selection is not a mutation.** It never reaches `commitEdit` and never re-matches, so "I tapped a point
+  to look at it" costs nothing. Only the delete commits — once.
+- **Checked.** Unit: select → delete, and it is the pressed point that goes; two presses on *different*
+  points never delete; at exactly `DOUBLE_CLICK_MS` it deselects instead; the button appears with a
+  selection and hides after; `Esc` clears without deleting; deleting with nothing selected is a no-op, not
+  a throw; **down to 1 point and then to 0** commits cleanly and still renders (failure path 8).
+  Browser: click selects and reveals the button, double-click deletes and re-matches to **27 route pts**,
+  the button drives the same path, and 1 point degrades to *"sketch 1 pt — add ≥2 to route"* with an
+  **empty** route.
+- ⚠ **The gate had a hidden ordering dependency, now fixed.** E4's assertion failed at first not because
+  the delete was broken but because the P1 test deliberately **pans**, so every later gesture test ran
+  wherever its predecessors left the map — and a route's length depends on where you drew it. `resetSketch`
+  now restores the **camera** as well as the sketch. E3 and E4 also assert the drawn route is
+  **byte-identical to a re-match of the settled sketch**, which is location-independent in a way that
+  "the route is non-empty" is not.
 
 ### E5 — multi-select a range + bulk delete
 - **Build.** Port `_toggleSelect` / `_selectedIds` / `deleteSelected`: tap first + last of a stretch selects

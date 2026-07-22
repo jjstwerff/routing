@@ -150,7 +150,10 @@ async function streamedMatch(spec, isCurrent) {
 // The rough sketch (PLAN-EDIT E0). The layer owns the points and ALL pointer input; this wiring is the
 // whole of the app's side of editing, and every later gesture rides it unchanged — which is the point of
 // the chokepoints: a new gesture mutates the point list and calls commitEdit, and nothing else.
-const rough = new RoughLayer(map, { onCommit: (pts) => requestMatch(pts) });
+const rough = new RoughLayer(map, {
+  onCommit: (pts) => requestMatch(pts),
+  deleteButton: document.getElementById('rough-delete'),   // bound BY the layer — see rough.mjs bind()
+});
 
 // Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen
 // is what makes a delete-down-to-one-point degrade instead of lying (PLAN-EDIT failure path 8).

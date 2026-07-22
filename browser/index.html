@@ -8,7 +8,13 @@
   #map { display: block; width: 100vw; height: 100vh; cursor: crosshair; background: #f2efe9; }
   #hud { position: fixed; left: 8px; top: 8px; max-width: 90vw; background: rgba(255,255,255,.88);
          padding: 4px 8px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.2); color: #333; }
+  /* Touch has no double-click, so a selected point gets an explicit Delete (DESIGN.md §1). */
+  #rough-delete { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+                  background: #f04438; color: #fff; border: 0; border-radius: 6px; padding: 10px 18px;
+                  font: 600 14px system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.3); cursor: pointer; }
+  #rough-delete.hidden { display: none; }
 </style>
 <canvas id="map"></canvas>
 <div id="hud">loading…</div>
+<button id="rough-delete" class="hidden">Delete point</button>
 <script type="module" src="./store-app.mjs"></script>

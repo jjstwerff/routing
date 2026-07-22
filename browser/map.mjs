@@ -108,6 +108,7 @@ const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential
 const ROUGH_LINE = '#2b6cff', ROUGH_DASH = [6, 7], ROUGH_WIDTH = 3, ROUGH_ALPHA = 0.9;
 const ROUGH_DOT = { start: 18, finish: 18, mid: 14 };            // diameters, CSS px
 const ROUGH_FILL = { start: '#17b26a', finish: '#f04438', mid: '#2b6cff' };
+const ROUGH_SEL = 'rgba(249,178,51,0.95)';                       // amber selection ring (E4)
 const roughRole = (i, n) => (i === 0 ? 'start' : i === n - 1 ? 'finish' : 'mid');
 const roadScale = (z) => (z >= 17 ? 1.9 : z >= 15 ? 1.4 : z >= 13 ? 1.0 : z >= 11 ? 0.7 : 0.5);
 // Street labels (S10): repeat every ~420 px — far sparser than before (one name, not ten in a row).
@@ -1450,6 +1451,14 @@ export class RouteMap {
     for (let i = 0; i < px.length; i++) {
       const role = roughRole(i, px.length);
       ctx.beginPath(); ctx.arc(px[i].x, px[i].y, ROUGH_DOT[role] / 2, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+    // The selection ring, outside the white one. The flag is set by the layer that owns selection — the
+    // renderer never decides WHAT is selected, only what a selected point looks like.
+    ctx.strokeStyle = ROUGH_SEL; ctx.lineWidth = 3;
+    for (let i = 0; i < px.length; i++) {
+      if (!pts[i].selected) continue;
+      ctx.beginPath(); ctx.arc(px[i].x, px[i].y, ROUGH_DOT[roughRole(i, px.length)] / 2 + 3.5, 0, 2 * Math.PI);
       ctx.stroke();
     }
     ctx.restore();
