@@ -691,29 +691,47 @@ pub fn line_progress(p: GeoPoint, line: vector<GeoPoint>) -> float {
 // the Viterbi to the old nearest-node matcher by construction.
 fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
   out: vector<integer> = [];
-  taken: vector<boolean> = [];
-  for i in 0..len(g.nodes) { taken += [false]; }
+  n = len(g.nodes);
+  if n == 0 { return out; }
   // Ranking metric: planar distance with kx computed ONCE for this query (not Vincenty per node).
   // Nearest-node selection only needs a monotone distance; a local flat-earth metric is exact enough
   // over a corridor and turns ~17M Vincenty calls into cheap multiplies.
   kx = 111320.0 * cos(lat * PI / 180.0);
   ky = 111320.0;
-  first_d = -1.0;
-  for _k in 0..VITERBI_K {
-    best = -1;
-    bestd = BIG;
-    for i in 0..len(g.nodes) {
-      if !(taken[i] ?? true) {
-        dx = (g.nodes[i].lon - lon) * kx; dy = (g.nodes[i].lat - lat) * ky;
-        d = dx * dx + dy * dy;   // squared metres — monotone, sqrt-free
-        if d < bestd { bestd = d; best = i; }
-      }
+  // ONE pass keeping the best VITERBI_K, instead of K selection passes over every node.
+  //
+  // This was K full scans plus a `taken` vector the size of the graph allocated on every call — and it
+  // is called ~3x per sketch point, so a cold match spent more time ANCHORING than routing (measured:
+  // 60 ms of a 114 ms search for a 3-point sketch; a 40-point sketch pays it 40 times). PLAN-PERF §7j.
+  //
+  // The result is IDENTICAL, not merely equivalent, and the tie-breaking is why: the old code scanned
+  // ascending with a strict `d < bestd`, so among equal distances the LOWEST node index won. The
+  // insertion below shifts only while `d < bd[pos-1]` — also strict — so an equal-distance node stays
+  // behind the one found earlier. Anchors feed the Viterbi, so a different tie would be a different route.
+  bd: vector<float> = [];
+  bi: vector<integer> = [];
+  for _z in 0..VITERBI_K { bd += [BIG]; bi += [-1]; }
+  for i in 0..n {
+    dx = (g.nodes[i].lon - lon) * kx; dy = (g.nodes[i].lat - lat) * ky;
+    d = dx * dx + dy * dy;   // squared metres — monotone, sqrt-free
+    if d >= (bd[VITERBI_K - 1] ?? BIG) { continue; }
+    pos = VITERBI_K - 1;
+    while pos > 0 && d < (bd[pos - 1] ?? BIG) {
+      bd[pos] = bd[pos - 1] ?? BIG; bi[pos] = bi[pos - 1] ?? -1;
+      pos = pos - 1;
     }
-    if best < 0 { break; }
-    if first_d < 0.0 { first_d = sqrt(bestd) ?? 0.0; }
-    if (sqrt(bestd) ?? 0.0) > first_d + ANCHOR_BAND_M { break; }
-    out += [best];
-    taken[best] = true;
+    bd[pos] = d; bi[pos] = i;
+  }
+  // Then the same band cut as before: candidates within ANCHOR_BAND_M of the nearest, nearest first,
+  // stopping (not skipping) at the first that falls outside.
+  first_d = -1.0;
+  for k in 0..VITERBI_K {
+    nk = bi[k] ?? -1;
+    if nk < 0 { break; }
+    dk = sqrt(bd[k] ?? BIG) ?? 0.0;
+    if first_d < 0.0 { first_d = dk; }
+    if dk > first_d + ANCHOR_BAND_M { break; }
+    out += [nk];
   }
   out
 }
@@ -1251,7 +1269,7 @@ fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i:
           e = g.edges[ei];
           lenm = lenm + e.length;
           penm = penm + (ec.pen[ei] ?? 0.0) * e.length;
-          qt = etags(g, e);          // bound, not `etags(g, e).highway` — see the note in docs/loft-feedback.md
+          qt = etags(g, e ?? GEdge { a: 0, b: 0, length: 0.0, w: 0 });   // bound, not `etags(…).highway` — see docs/loft-feedback.md
           c = road_class(qt.highway);
           cm[c] = (cm[c] ?? 0.0) + e.length;
         }
