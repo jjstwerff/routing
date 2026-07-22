@@ -1751,3 +1751,45 @@ path, so the overlap pays both. **Step 13 deletes the text emit**, after which n
 the layout, the bracket collapses to a single `expose` at load, and this cost goes to zero. Recorded so
 the interim number is not mistaken for a regression in the bridge itself — the bridge is fine; calling it
 per frame is what costs.
+
+---
+
+## 2026-07-22 — codegen: a text field read off a struct-RETURNING CALL emits `&str` where `String` is expected
+
+**loft:** 2026.7.2 (installed, `/usr/local/bin/loft`) · **backend:** `--native` only (the interpreter is fine)
+
+Reading a `text` field **directly off a call that returns a struct** fails to build natively. Binding the
+returned struct to a local first compiles and behaves identically.
+
+```loft
+struct WayTags { const highway: text, /* … */ }
+fn etags(g: Graph, e: GEdge) -> WayTags { g.wtags[e.w] ?? empty_tags() }
+
+c = road_class(etags(g, e).highway);   // ✗ native build fails
+et = etags(g, e);                      // ✓ same thing, bound first
+c = road_class(et.highway);
+```
+
+The generated Rust returns a `&str` into a slot typed `String`:
+
+```
+error[E0308]: mismatched types
+  --> lib/routing_kernel/native-auto/loft_auto_routing_kernel.rs:2225:87
+     let mut var___ret_1: String = {{ let db = (var___lift_1);
+         if db.rec == 0 { loft::state::STRING_NULL } else { … store.get_str(…) } }};
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^ expected `String`, found `&str`
+```
+
+rustc even names the fix in its own hint — `STRING_NULL.to_string()` — so the lift path for a
+store-backed `text` is missing an owned conversion on this one shape. Note the error is reported at the
+generated-Rust level, i.e. it escapes loft's own type checking: the loft program is well-typed and the
+failure surfaces as a rustc error against a file the user did not write.
+
+**Where it bit:** `lib/routing_kernel/src/routing_kernel.loft`, moving per-edge tags behind a per-way
+table (edges went from 14 fields to 4; cold match 2721 → 1820 ms). Two sites needed the local-binding
+workaround and carry a comment pointing here.
+
+**Not a blocker** — the workaround is one line and arguably reads better. Filed because the *shape* is
+ordinary (accessor function returning a record, read one field), it only fails on `--native`, and it
+fails as a rustc error rather than a loft diagnostic, which is a poor first experience for anyone who
+meets it without knowing to bind the struct.
