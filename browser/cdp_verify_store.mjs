@@ -120,5 +120,31 @@ else if (br.labelDiffs.places || br.labelDiffs.streets || br.labelDiffs.building
 else if (br.vsSnappedMaxDelta > 16) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > 16), not just by rasterisation rounding`); ok = false; }
 else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm · settles in ${br.settleFrames} frames, worst ${br.worstFrameMs}ms, ${br.blocks} blocks`);
 
+// 7. THE CLICK PATH — real mouse events, not window.__match.
+//
+// Every other match assertion here drives `window.__match(...)`, which skips the canvas listener
+// entirely. So the interaction a USER performs — click to drop a rough point, from the 2nd on re-match —
+// was never gated, and a regression in it would be invisible to this file while everything stayed green.
+// It is also hard to see by eye: the rough points render as DOTS with no line between them, so "did my
+// click land?" has no visual answer beyond a single 4-px marker.
+const click = async (x, y) => {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0 });
+  }
+  await new Promise((r) => setTimeout(r, 250));
+};
+await ev('window.__map0.points = []; window.__storeApp.routePts = 0;');
+const seen = [];
+for (const [x, y] of [[300, 200], [520, 330], [700, 180]]) {
+  await click(x, y);
+  const st3 = JSON.parse((await ev('(() => JSON.stringify({ pts: window.__map0.points.length, route: window.__storeApp.routePts || 0 }))()')) || '{}');
+  seen.push(st3);
+}
+// A click must ALWAYS add a rough point; the route only appears from the 2nd click on.
+const ptsOk = seen.length === 3 && seen[0].pts === 1 && seen[1].pts === 2 && seen[2].pts === 3;
+if (!ptsOk) { console.log('  FAIL: clicks did not add rough points —', JSON.stringify(seen)); ok = false; }
+else if (!(seen[2].route > 2)) { console.log('  FAIL: three clicks drew no route —', JSON.stringify(seen)); ok = false; }
+else console.log(`  ✓ the click path works: 3 clicks → 3 rough points, route ${seen[2].route} pts`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);
