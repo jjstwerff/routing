@@ -155,6 +155,38 @@ if (!ptsOk) { console.log('  FAIL: clicks did not add rough points —', JSON.st
 else if (!(seen[2].route > 2)) { console.log('  FAIL: three clicks drew no route —', JSON.stringify(seen)); ok = false; }
 else console.log(`  ✓ the click path works: 3 clicks → 3 rough points, route ${seen[2].route} pts`);
 
+// 7a. PLAN-EDIT E1 — the sketch is VISIBLE: a dashed line between the points, not just isolated dots.
+//
+// Asserted by isolating the sketch's own pixels: capture a box on the segment BETWEEN two rough points,
+// re-render with the points hidden, and capture again. If the two differ, something was drawn there — and
+// the box is placed away from every point, so that something can only be the line. Comparing colours
+// instead would be fragile: the route's #1a73e8 and the sketch's #2b6cff are near-neighbours, and a 0.9
+// alpha over the map shifts both.
+const lineSeen = JSON.parse(await ev(`(() => {
+  const m = window.__map0, p = m.points, d = m.dpr, ctx = m.canvas.getContext('2d');
+  if (p.length < 2) return JSON.stringify({ err: 'need 2 points' });
+  const a = m.project(p[0].lat, p[0].lon), b = m.project(p[1].lat, p[1].lon);
+  const sum = (box) => { let s = 0; for (let i = 0; i < box.length; i++) s = (s * 31 + box[i]) >>> 0; return s; };
+  const grab = (t, half) => {
+    const x = Math.round((a.x + (b.x - a.x) * t) * d), y = Math.round((a.y + (b.y - a.y) * t) * d);
+    return ctx.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data;
+  };
+  const mids = [0.35, 0.5, 0.65];
+  const withSketch = mids.map((t) => sum(grab(t, 8)));
+  const saved = m.points;
+  m.points = []; m.render();                                  // hide ONLY the sketch; route untouched
+  const without = mids.map((t) => sum(grab(t, 8)));
+  m.points = saved; m.render();                               // restore the shared array by reference
+  const dist = Math.round(Math.hypot(b.x - a.x, b.y - a.y));
+  return JSON.stringify({ changed: mids.filter((_, i) => withSketch[i] !== without[i]).length,
+                          of: mids.length, segPx: dist, rough: m._stats.rough, shared: m.points === saved });
+})()`));
+if (lineSeen.err) { console.log(`  FAIL: could not sample the sketch line — ${lineSeen.err}`); ok = false; }
+else if (lineSeen.rough !== 3) { console.log(`  FAIL: render() drew ${lineSeen.rough} rough points (want 3)`); ok = false; }
+else if (lineSeen.changed === 0) { console.log(`  FAIL: nothing is drawn BETWEEN the rough points — the sketch is still isolated dots (segment ${lineSeen.segPx}px)`); ok = false; }
+else if (!lineSeen.shared) { console.log('  FAIL: map.points is no longer the layer\'s array after a re-render'); ok = false; }
+else console.log(`  ✓ the sketch draws a LINE: ${lineSeen.changed}/${lineSeen.of} mid-segment samples change when it is hidden (E1)`);
+
 // 7b. PLAN-EDIT E0 / §2 P1 — a PAN DRAG must not append a point.
 // map.mjs bound mousedown→pan and store-app.mjs bound click→append, and a browser fires `click` after a
 // mouseup even if the pointer travelled 200 px: every pan silently dropped a rough point into the sketch.

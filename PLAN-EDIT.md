@@ -171,14 +171,32 @@ the matching; it is false on a phone.
 - ⚠ **A note for E1–E6:** `map.points` and the layer's array are now **the same array**. Mutate it in
   place (`push`, `splice`, `length = 0`); re-assigning `map.points` re-opens failure path 11.
 
-### E1 — the sketch is visible *(the original complaint)*
-- **Build.** Draw, in the overlay pass inside the snapped-origin block beside `drawRoute()`: the dashed
-  line `#2b6cff`, `weight 3`, `opacity 0.9`, dash `6 7`, round cap/join; then the points — start/finish
-  18 px, mid 14 px, roles recomputed from index. Extend the render seam with an **overlay hook that fires
-  inside** the snapped block (P3), and leave `onRender` alone for anything genuinely unsnapped.
-- **Check.** `map.test.mjs`: the overlay callback observes a non-null `_origin` (P3 as a standing
-  assertion). Browser: 3 clicks ⇒ a 3-point dashed line; pixel hashes in PLAN-PERF §6c/§6d **re-recorded**
-  (they change deliberately — `storeRenderParity` compares object-vs-store paths, so it stays green).
+### E1 — the sketch is visible *(the original complaint)* ✅ **DONE**
+- **Built.** `map.drawRough()`, called in the overlay pass **inside** the snapped-origin block beside
+  `drawRoute()` and *above* it (the thing you can grab is the thing on top). Styling ported verbatim from
+  the Leaflet client's `styles.css` so the two apps look the same: dashed line `#2b6cff` / width 3 /
+  alpha 0.9 / dash `6 7` / round caps, and dots with a 2 px white ring and a soft drop shadow —
+  **start `#17b26a` 18 px · mid `#2b6cff` 14 px · finish `#f04438` 18 px**. Roles are positional, so an
+  insert or delete re-roles the ends with no bookkeeping. `render()` now reports `_stats.rough`.
+- **The seam was FIXED, not doubled.** The plan said to add an overlay hook beside `onRender`. `onRender`
+  had **no consumers**, and `map.mjs:12` already advertises it as *"what PLAN-EDIT builds on"* — so the
+  honest repair was to move it inside the snapped block rather than leave a documented trap next to a new
+  hook. One seam, now correct.
+- ⚠ **`renderSnappedDirect` had to learn the same overlays.** It drew route + labels but never the dots,
+  so it and `render()` were already producing different pictures — harmless while the sketch was 4-px dots
+  drawn only by one of them, and a false "rasterisation difference" in the block-cache gate the moment the
+  sketch grew a line. Both paths now draw the same three overlays.
+- **Checked.** `map.test.mjs`: `drawRough` sees a **live snapped origin** via `renderSnappedDirect` (the
+  one path that snaps without a DOM), the origin is restored afterwards, the `onRender` hook and the sketch
+  see the *same* origin, roles are positional, and the sketch draws **above** the route. Browser: the
+  sketch's own pixels are isolated — a box on the segment *between* two points is captured, the points are
+  hidden, and it is captured again; **3/3 mid-segment samples change**, which only a line can explain.
+  (Colour matching was rejected: the route's `#1a73e8` and the sketch's `#2b6cff` are near-neighbours and
+  alpha 0.9 over the map shifts both.)
+- ✅ **The predicted hash churn did not happen.** §6c/§6d's `917244eb` is **unchanged**, because the parity
+  and block captures run before any sketch exists. The comparisons are path-vs-path on identical state, so
+  a sketch present would shift both sides equally — the printed value depends on gate ORDER, the verdict
+  does not. Nothing to re-record.
 
 ### E2 — hit test + insert (tap and sweep)
 - **Build.** `map.hitTest(x, y)` → `{kind: 'point'|'segment'|null, index, t}`, screen-space, priority

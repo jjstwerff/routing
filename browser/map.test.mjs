@@ -272,5 +272,83 @@ console.log('E0 · a superseded job\'s isCurrent() goes false, so its stretches 
   ok(checkAfterNext && checkAfterNext() === false, 'once a later job has run, the earlier job\'s isCurrent() is false');
 }
 
-console.log(fails ? `\nM0+M1+E0 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0 PASS — projection, pan/zoom and the edit chokepoints hold');
+// --- PLAN-EDIT E1: the sketch is visible ------------------------------------------------------------
+
+console.log('\nE1 · the rough layer draws INSIDE the snapped origin  (PLAN-EDIT §2 P3)');
+{
+  // The one that matters. The base map is rasterised from a whole-device-pixel origin (step 15), so an
+  // overlay projected from the unsnapped camera sits up to a device pixel off the map under it. `onRender`
+  // used to fire after the origin was restored, which made the hook documented as PLAN-EDIT's seam the one
+  // place an overlay could NOT be drawn. Both the sketch and the hook must now see a live origin.
+  // `renderSnappedDirect` sets a snapped origin unconditionally, so it is the one path that exercises the
+  // real case without a DOM. (render() itself only snaps when it can bake blocks, which needs a document —
+  // the browser gate covers that half.)
+  const m = freshMap();
+  const r = layerOn(m);
+  r.append(52.2215, 6.8937);
+  let seen = 'never-drawn';
+  const realDrawRough = m.drawRough.bind(m);
+  m.drawRough = function () { seen = this._origin; return realDrawRough(); };
+  m.renderSnappedDirect();
+  ok(seen && typeof seen.x === 'number', `drawRough sees a LIVE snapped origin (${seen ? `x=${seen.x}` : seen})`);
+  ok(m._origin === null, 'and the origin is restored afterwards');
+  m.drawRough = realDrawRough;
+
+  // The same must hold for the onRender hook, which fires from render()'s snapped block. Drive it with an
+  // origin already set, and assert the callback still sees one — the regression P3 measured was the
+  // callback running after `_origin = null`.
+  let inHook = 'never-fired';
+  m.onRender(function (ctx, map) { inHook = map._origin; });
+  m.render();
+  ok(inHook !== 'never-fired', 'onRender fires during a render');
+  const rendersSnapped = m._stats && typeof m._stats.rough === 'number';
+  ok(rendersSnapped, 'render() reached the overlay pass');
+  // render() on a stub canvas cannot bake blocks, so its origin is legitimately null here. What this pins
+  // is that the hook runs INSIDE the try that owns the origin — i.e. it sees whatever drawRough sees.
+  let hookOrigin = null, roughOrigin = null;
+  m._renderCbs = [(ctx, map) => { hookOrigin = map._origin; }];
+  m.drawRough = function () { roughOrigin = this._origin; return realDrawRough(); };
+  m._origin = null;
+  m.render();
+  ok(hookOrigin === roughOrigin, 'the onRender hook and the sketch see the SAME origin — one block, not two');
+  m.drawRough = realDrawRough;
+}
+
+console.log('E1 · the sketch draws a line and roles its points');
+{
+  const m = freshMap();
+  const r = layerOn(m);
+  ok(m.drawRough() === 0, 'an empty sketch draws nothing');
+  r.append(52.2215, 6.8937);
+  ok(m.drawRough() === 1, 'one point draws (a lone start, no line)');
+  r.append(52.2300, 6.9000);
+  r.append(52.2400, 6.9100);
+  ok(m.drawRough() === 3, 'three points draw');
+  m.render();
+  ok(m._stats.rough === 3, `render() reports the sketch in its stats (rough=${m._stats.rough})`);
+  // The role is positional, so an insert or delete re-roles the ends with no extra bookkeeping — which is
+  // what lets E2/E4 mutate the list and nothing else (DESIGN.md §1: start/finish are a distinct type).
+  const roles = (n) => Array.from({ length: n }, (_, i) => (i === 0 ? 'start' : i === n - 1 ? 'finish' : 'mid'));
+  ok(roles(3).join(',') === 'start,mid,finish', 'roles: start · mid · finish');
+  ok(roles(1).join(',') === 'start', 'a single point is the start, not the finish');
+  ok(roles(2).join(',') === 'start,finish', 'two points are start and finish, no mid');
+}
+
+console.log('E1 · the sketch is drawn, and the route stays read-only beneath it');
+{
+  // DESIGN.md §1: the detailed route is derived and never edited. Drawing order encodes that — the thing
+  // you can grab is the thing on top — so a regression that drew the sketch first would be invisible to a
+  // count and visible only as "my points vanished under the route".
+  const m = freshMap();
+  const order = [];
+  m.route = [[52.20, 6.88], [52.24, 6.92]];
+  new RoughLayer(m, { bind: false }).append(52.22, 6.90);
+  const realRoute = m.drawRoute.bind(m), realRough = m.drawRough.bind(m);
+  m.drawRoute = () => { order.push('route'); return realRoute(); };
+  m.drawRough = () => { order.push('rough'); return realRough(); };
+  m.render();
+  ok(order.join(',') === 'route,rough', `the sketch draws ABOVE the route (${order.join(' → ')})`);
+}
+
+console.log(fails ? `\nM0+M1+E0+E1 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0+E1 PASS — projection, pan/zoom, the edit chokepoints and the sketch layer hold');
 process.exit(fails ? 1 : 0);

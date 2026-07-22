@@ -172,10 +172,12 @@ no visual answer to "did my click land?".
 0. ✅ **DONE — the three chokepoints**, no new gesture: `browser/rough.mjs` owns all pointer input and the
    sketch, `commitEdit` is the one exit, and `KernelQueue` serializes view+match with per-key latest-wins
    coalescing (`busy`/`again` are gone). Route byte-identical; the three defects are gated.
-1. ⏭ **NEXT — the visible line + points** (restores the ability to see a sketch at all — the original
-   complaint). Draw in the overlay pass **inside** the snapped-origin block; extend the render seam with a
-   hook that fires there, since `onRender` does not (see 1 above).
-2. **`hitTest` + insert** on tap/press-sweep.
+1. ✅ **DONE — the visible line + points.** `map.drawRough()` in the overlay pass, inside the snapped-origin
+   block and above the route; styling ported verbatim from the Leaflet client's `styles.css`. `onRender`
+   was **fixed** rather than doubled — it had no consumers and is advertised as PLAN-EDIT's seam, so it now
+   fires inside the block. `renderSnappedDirect` learned the same overlays (it and `render()` were already
+   drawing different pictures). The §6c/§6d pixel hashes did **not** go stale after all — see PLAN-EDIT E1.
+2. ⏭ **NEXT — `hitTest` + insert** on tap/press-sweep.
 3. **Drag to move** a point, rough line following live at 60 fps, matched route coalesced.
 4. **Delete** — double-click (behind the 250 ms dedupe) and tap-select + Delete for touch.
 5. **Range multi-select + bulk delete**, then **undo/redo** (`DESIGN.md` §1 makes undo a primitive).

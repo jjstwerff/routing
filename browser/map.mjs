@@ -98,6 +98,16 @@ const ROAD_STYLES = {
 };
 // Draw order (back → front): minor/paths first, motorways on top.
 const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
+// The rough sketch (PLAN-EDIT E1), ported from the Leaflet client's styles.css so the two look the same:
+// a dashed blue hint line, and colour-coded dots with a white ring — start and finish are a DISTINCT point
+// type from the intermediates (DESIGN.md §1), which is why they are both bigger and differently coloured.
+//
+// The visible dot is deliberately SMALLER than its tap target: E2's hit radius is a separate constant in
+// rough.mjs, because how big a thing looks and how big it is to a fingertip are different questions.
+const ROUGH_LINE = '#2b6cff', ROUGH_DASH = [6, 7], ROUGH_WIDTH = 3, ROUGH_ALPHA = 0.9;
+const ROUGH_DOT = { start: 18, finish: 18, mid: 14 };            // diameters, CSS px
+const ROUGH_FILL = { start: '#17b26a', finish: '#f04438', mid: '#2b6cff' };
+const roughRole = (i, n) => (i === 0 ? 'start' : i === n - 1 ? 'finish' : 'mid');
 const roadScale = (z) => (z >= 17 ? 1.9 : z >= 15 ? 1.4 : z >= 13 ? 1.0 : z >= 11 ? 0.7 : 0.5);
 // Street labels (S10): repeat every ~420 px — far sparser than before (one name, not ten in a row).
 const STREET_MINZOOM = 13, STREET_SPACING_PX = 420, STREET_FONTPX = 11;
@@ -802,7 +812,9 @@ export class RouteMap {
       // nothing to do with caching.
       this._noVertexCull = true;
       try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
-      if (!this._skipOverlays) { this.drawRoute(); this.layoutLabels(); }
+      // Must draw the SAME overlays as render(), or the block-cache gate compares two different pictures
+      // and reports a rasterisation difference that is really a missing layer.
+      if (!this._skipOverlays) { this.drawRoute(); this.layoutLabels(); this.drawRough(); }
     } finally { this._origin = null; }
     return this;
   }
@@ -889,27 +901,27 @@ export class RouteMap {
     } else base = this._drawBase(z);
     mark('base');
     if (snapOrigin) this._origin = snapOrigin;
-    let rtN = 0, lab;
+    let rtN = 0, rgN = 0, lab;
     try {
       if (!this._skipOverlays) {
         rtN = this.drawRoute();                // matched route, above the base map
         mark('route');
         lab = this.layoutLabels();
         mark('labels');
+        // The rough sketch belongs INSIDE the snapped origin too — drawing it after the origin is
+        // restored puts the user's own points up to a device pixel off the map they were placed on.
+        rgN = this.drawRough();
+        mark('rough');
       }
-      // The M0 sketch dots belong INSIDE the snapped origin too — drawing them after it is restored put
-      // the user's own clicked points up to a device pixel off the map they were clicked on.
-      for (const p of this.points) {
-        const s2 = this.project(p.lat, p.lon);
-        ctx.beginPath(); ctx.arc(s2.x, s2.y, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = '#c0392b'; ctx.fill();
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
-      }
+      lab = lab || { placeLabels: 0, streetLabels: 0, buildingLabels: 0 };
+      this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, rough: rgN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
+      // `onRender` fires HERE, inside the snapped block, so a consumer that draws is aligned with the map
+      // under it. It used to fire after the origin was restored — measured, PLAN-EDIT §2 P3 — which made
+      // the one hook documented as "what PLAN-EDIT builds on" the one place an overlay could not be drawn.
+      // Fixing the seam beats adding a second one beside it.
+      for (const cb of this._renderCbs) cb(ctx, this);
     } finally { if (snapOrigin) this._origin = null; }
-    lab = lab || { placeLabels: 0, streetLabels: 0, buildingLabels: 0 };
-    this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
     if (t) this._layerMs = t.ms;
-    for (const cb of this._renderCbs) cb(ctx, this);
   }
 
   // Probe (PLAN-PERF §6 R, step 14): what does a frame spend on PROJECTION alone?
@@ -1392,6 +1404,55 @@ export class RouteMap {
     if (!this._inView(px)) return 0;
     this._strokeRoute(px);
     return this.route.length;
+  }
+
+  // The rough sketch (PLAN-EDIT E1): a dashed hint line with colour-coded points, drawn ABOVE the matched
+  // route. The sketch is what you edit; the route is derived and read-only (DESIGN.md §1), so the thing
+  // you can grab is the thing on top.
+  //
+  // ⚠ MUST be called from inside the snapped-origin block, beside drawRoute(). The base map is rasterised
+  // from a whole-device-pixel origin (step 15), so anything projected from the UNSNAPPED camera sits up to
+  // a device pixel off the map beneath it. That is not theoretical: it is what the comment on the old dot
+  // loop recorded having already been fixed once, and what PLAN-EDIT §2 P3 measured for `onRender`.
+  //
+  // Deliberately NOT view-culled. A sketch is a handful of points the user placed themselves; skipping the
+  // walk when it is off-screen would save nothing measurable and would silently drop the line the moment a
+  // single vertex left the viewport — the very feedback the user is steering by.
+  drawRough() {
+    const pts = this.points;
+    if (!pts || !pts.length) return 0;
+    const ctx = this.ctx;
+    const px = new Array(pts.length);
+    for (let i = 0; i < pts.length; i++) px[i] = this.project(pts[i].lat, pts[i].lon);
+
+    ctx.save();
+    if (px.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(px[0].x, px[0].y);
+      for (let i = 1; i < px.length; i++) ctx.lineTo(px[i].x, px[i].y);
+      ctx.setLineDash(ROUGH_DASH);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = ROUGH_LINE; ctx.lineWidth = ROUGH_WIDTH; ctx.globalAlpha = ROUGH_ALPHA;
+      ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    // Two passes, so a later dot's drop shadow can never land on an earlier dot's white ring: fill every
+    // dot (with the shadow), then ring every dot (without it).
+    ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+    for (let i = 0; i < px.length; i++) {
+      const role = roughRole(i, px.length);
+      ctx.beginPath(); ctx.arc(px[i].x, px[i].y, ROUGH_DOT[role] / 2, 0, 2 * Math.PI);
+      ctx.fillStyle = ROUGH_FILL[role]; ctx.fill();
+    }
+    ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    for (let i = 0; i < px.length; i++) {
+      const role = roughRole(i, px.length);
+      ctx.beginPath(); ctx.arc(px[i].x, px[i].y, ROUGH_DOT[role] / 2, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+    ctx.restore();
+    return pts.length;
   }
 
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
