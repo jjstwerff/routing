@@ -863,17 +863,55 @@ one call per session exactly as predicted — `view` no longer touches the layou
 all 1089 tiles and decoding six kinds, because it inherited `emit_*`'s "scan every tile" shape. That is
 now the whole view budget, and the tile-level pre-filter skipped in step 11 is the obvious next move.
 
-**Do not just write that filter — one fact has to be established first.** A tile screen on `ox`/`oy` is
-only sound if a tile's features lie within its own cell. If a ring can extend past its tile's bounds, a
-naive screen silently drops features near cell edges — and the parity gate would catch it only when the
-viewport happens to clip one. Establish the invariant (in `tools/gen-tiles.loft` / `build_store.loft`:
-are features clipped to the tile, or merely assigned to it by origin?) **before** designing the filter,
-and give the screen a margin equal to the worst overhang if features are not clipped.
+**ANSWERED 2026-07-22 — features are NOT clipped, and the naive filter is dead. See §7g.**
 
 **Instrument note.** `timedView` did not perform the store read, so the first step-13 profile read
 `total 91 ms` — a view the app never performs. Fixed by adding a `storeRead` phase; the 180 s hard
 timeout also had to grow, because it was sized for a probe that no longer exists. Both are the §7e
 lesson again: **when a step moves work between layers, the probe that measures that work moves too.**
+
+## §7g — Tile features are NOT clipped to their cell (2026-07-22). The naive viewport filter is dead.
+
+The question §7f(2) said to answer before writing the tile pre-filter. Answered both ways — from the
+code and from the data — because either alone would have been a guess.
+
+**The code.** `client/basemap/build_store.loft` keys each feature by its **first vertex only**
+(`g0 = geom.item(0); tx = cell_ix(to_fixed(g0.lon), cell)`), then stores **every** vertex as an unclipped
+offset from that tile's origin. `encode_areas.loft:5` says it in prose: *"bins its ring into the PTile of
+its cell (keyed by the first vertex)"*. So a feature straddling a cell boundary provably can overhang,
+by as much as the feature is long.
+
+**The data** — `tools/tile_overhang.loft` over the real enschede store (1089 tiles, `CELL_P = 50000`
+≈ 500 m). A feature inside its own cell has `0 <= x,y < CELL_P`; anything else is overhang:
+
+| kind | coords | outside its cell | margin a screen would need | vs a cell |
+|---|---|---|---|---|
+| areas | 487 038 | 99 243 (**20%**) | 352 974 (≈ 3.9 km) | 705% |
+| **buildings** | **1 033 161** | 23 968 (2.3%) | **33 726 (≈ 375 m)** | 67% |
+| lines | 39 871 | 9 838 (**25%**) | 805 575 (≈ 9 km) | 1611% |
+| labels | 26 787 | 4 964 (19%) | 504 364 (≈ 5.6 km) | 1008% |
+| **pois** | 27 912 | **0** | **0** | 0% |
+
+**So a single global margin is useless.** At zoom 16 the app's padded viewport is ≈ 0.047° × 0.032°;
+widening it by the worst margin (0.0806° per side) gives a box ≈ **27× the viewport area**, which selects
+essentially every tile. A filter built on the "obvious" assumption would have been *worse than nothing* —
+and had it been built without the margin, it would have silently dropped 20–25% of area/line/label
+vertices near cell edges, which the parity gate catches only when a viewport happens to clip one.
+
+**But per-kind it is very much alive, and it covers the bulk of the data:**
+
+- **pois — margin 0.** Filter freely; a point's tile is derived from the point itself, so it cannot overhang.
+- **buildings — margin ≈ 375 m**, which expands the viewport by only ~1.4× in area. And buildings are
+  **1.03 M of the 1.61 M coordinates (64%)**, so this alone is most of the `storeRead` budget.
+- areas / lines / labels: leave unfiltered, or fix the data (below).
+
+**The better fix is upstream, in the tiles.** Binning by the first vertex is what creates the overhang;
+binning by a feature's **bounding box** (or splitting features at cell borders) makes every margin 0 and
+the filter trivial and exact. That is a `build_store.loft` change plus a store regeneration — the same
+class as step 19's format change, and worth pairing with it rather than doing twice.
+
+**Re-run `tools/tile_overhang.loft` whenever the tiles are regenerated:** the margin is a property of the
+DATA, not of the code, so it can move under a filter that hard-codes it.
 
 ## §7d — Step 9 attempt 1: `expose(1, layout)` hangs the app (2026-07-17)
 

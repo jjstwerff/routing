@@ -1,0 +1,87 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7f(2) — are a tile's features CLIPPED to its cell, or only ASSIGNED to it?
+//
+// The answer decides whether a viewport filter may screen tiles on `ox`/`oy` alone (cheap: two scalars,
+// no ring decoded) or must widen the box by a margin first. `build_store.loft` keys each feature by its
+// FIRST vertex (`geom.item(0)`) and then stores every vertex as an unclipped offset from that tile's
+// origin — so a feature straddling a cell boundary provably CAN overhang. This measures how far it
+// actually does, which is the number a margin has to be built from.
+//
+//   loft --native --lib lib tools/tile_overhang.loft _site/stores/enschede.layout.store
+//
+// Coordinates are relative to the tile origin, so a feature inside its own cell has 0 <= x,y < CELL_P.
+// Anything outside that range is overhang; the reported margin is what a tile screen must add on each
+// side to stay sound. Re-run it whenever the tiles are regenerated — the margin is a property of the
+// DATA, not of the code.
+#cwd
+
+use basemap::(PTile);
+
+CELL_P = 50000;        // presentation cell (~500 m) — build_store.loft's CELL_P
+
+struct Ext { mnx: integer, mxx: integer, mny: integer, mxy: integer, n: integer, over: integer }
+
+fn note(e: Ext, x: integer, y: integer) {
+  if e.n == 0 { e.mnx = x; e.mxx = x; e.mny = y; e.mxy = y; }
+  else {
+    if x < e.mnx { e.mnx = x; }
+    if x > e.mxx { e.mxx = x; }
+    if y < e.mny { e.mny = y; }
+    if y > e.mxy { e.mxy = y; }
+  }
+  e.n += 1;
+  if x < 0 || y < 0 || x >= CELL_P || y >= CELL_P { e.over += 1; }
+}
+
+// One function per kind: map_kernel notes that a single function holding every loop trips a loft
+// codegen bug, and this has the same shape.
+fn scan_areas(t: PTile, e: Ext) { for ar in t.areas { for ca in ar.ring { note(e, ca.x as integer, ca.y as integer); } } }
+fn scan_buildings(t: PTile, e: Ext) { for bl in t.buildings { for cb in bl.ring { note(e, cb.x as integer, cb.y as integer); } } }
+fn scan_lines(t: PTile, e: Ext) { for ln in t.lines { for cl in ln.geom { note(e, cl.x as integer, cl.y as integer); } } }
+fn scan_labels(t: PTile, e: Ext) { for lb in t.labels { for cc in lb.line { note(e, cc.x as integer, cc.y as integer); } } }
+fn scan_pois(t: PTile, e: Ext) { for po in t.pois { note(e, po.at.x as integer, po.at.y as integer); } }
+
+fn report(name: text, e: Ext) {
+  lo_x = 0 - e.mnx; hi_x = e.mxx - (CELL_P - 1);
+  lo_y = 0 - e.mny; hi_y = e.mxy - (CELL_P - 1);
+  m = 0;
+  if lo_x > m { m = lo_x; }
+  if hi_x > m { m = hi_x; }
+  if lo_y > m { m = lo_y; }
+  if hi_y > m { m = hi_y; }
+  if m < 0 { m = 0; }
+  println("{name}: coords={e.n} outside_cell={e.over} x=[{e.mnx}..{e.mxx}] y=[{e.mny}..{e.mxy}] margin={m} ({m * 100 / CELL_P}% of a cell)");
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: tile_overhang <layout.store>"); return; }
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+
+  ar_e = Ext { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, over: 0 };
+  bl_e = Ext { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, over: 0 };
+  ln_e = Ext { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, over: 0 };
+  lb_e = Ext { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, over: 0 };
+  po_e = Ext { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, over: 0 };
+
+  tiles = 0;
+  for t in layout {
+    tiles += 1;
+    scan_areas(t, ar_e);
+    scan_buildings(t, bl_e);
+    scan_lines(t, ln_e);
+    scan_labels(t, lb_e);
+    scan_pois(t, po_e);
+  }
+  println("tiles={tiles} cell={CELL_P}");
+  report("areas    ", ar_e);
+  report("buildings", bl_e);
+  report("lines    ", ln_e);
+  report("labels   ", lb_e);
+  report("pois     ", po_e);
+}
