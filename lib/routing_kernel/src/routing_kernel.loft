@@ -1081,33 +1081,27 @@ pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, co
 // what makes the hot search loop cheap (array reads, not ~40 string compares per edge relaxation).
 // All fields const: the 5 parallel arrays are filled once in precompute_edges (`ec.pen += […]`, an
 // append, which const permits on a collection field) and then only read by index in the search loop.
+// Indexed by WAY (`GEdge.w`), not by edge. Every edge of a way has identical costs, so materialising
+// one entry per edge meant five arrays of ~37.6k built per cold match — ~188k appends — to hold ~7.1k
+// distinct values. The hot loop already loads `e = g.edges[ei]`, so `e.w` is free there and the arrays
+// are 5x smaller. PLAN-PERF §7k.
 struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur: vector<float>, const afwd: vector<boolean>, const abwd: vector<boolean> }
 
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
   ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
   cyc = profile.starts_with("cycling");
-  // PER WAY, not per edge. Every one of these depends only on the way's TAGS — `way_penalty` alone is
-  // ~40 string comparisons — and a corridor has ~7.1k ways behind ~37.6k edges, so computing them per
-  // edge did the same string work five times over. The per-edge pass below is then five array reads.
-  wpen: vector<float> = []; wdw: vector<float> = []; wsur: vector<float> = [];
-  wafwd: vector<boolean> = []; wabwd: vector<boolean> = [];
+  // One entry PER WAY. `way_penalty` alone is ~40 string comparisons, and a corridor has ~7.1k ways
+  // behind ~37.6k edges — so this used to do the same string work five times over and then materialise
+  // the answer five times as well. Callers index by `GEdge.w`.
   for wi in 0..len(g.wtags) {
     t = g.wtags[wi] ?? empty_tags();
     p = way_penalty(profile, t.highway, t.surface, t.tracktype);
     if cyc && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
-    wpen += [p];
-    wdw += [dev_weight(profile, t)];
-    wsur += [edge_surcharge(profile, t)];
-    wafwd += [dir_allowed(profile, t.oneway, t.onewaybike, true)];
-    wabwd += [dir_allowed(profile, t.oneway, t.onewaybike, false)];
-  }
-  for ei in 0..len(g.edges) {
-    e = g.edges[ei];
-    ec.pen += [wpen[e.w] ?? 0.0];
-    ec.dw += [wdw[e.w] ?? DEV_K];
-    ec.sur += [wsur[e.w] ?? 0.0];
-    ec.afwd += [wafwd[e.w] ?? true];
-    ec.abwd += [wabwd[e.w] ?? true];
+    ec.pen += [p];
+    ec.dw += [dev_weight(profile, t)];
+    ec.sur += [edge_surcharge(profile, t)];
+    ec.afwd += [dir_allowed(profile, t.oneway, t.onewaybike, true)];
+    ec.abwd += [dir_allowed(profile, t.oneway, t.onewaybike, false)];
   }
   ec
 }
@@ -1157,7 +1151,7 @@ fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPo
       if v < 0 || ei < 0 || (sc.done[v] ?? -1) == gen { continue; }
       e = g.edges[ei];
       fwd = e.a == u;
-      if fwd { if !(ec.afwd[ei] ?? true) { continue; } } else { if !(ec.abwd[ei] ?? true) { continue; } }
+      if fwd { if !(ec.afwd[e.w] ?? true) { continue; } } else { if !(ec.abwd[e.w] ?? true) { continue; } }
       mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
       mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
       dev = BIG;
@@ -1167,9 +1161,9 @@ fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPo
       }
       edev = dev - free;
       if edev < 0.0 { edev = 0.0; }
-      f = 1.0 + (ec.dw[ei] ?? DEV_K) * edev + (ec.pen[ei] ?? 0.0);
+      f = 1.0 + (ec.dw[e.w] ?? DEV_K) * edev + (ec.pen[e.w] ?? 0.0);
       if f < 0.1 { f = 0.1; }
-      nd = du + e.length * f + e.length * (ec.sur[ei] ?? 0.0);
+      nd = du + e.length * f + e.length * (ec.sur[e.w] ?? 0.0);
       dv = BIG;
       if (sc.seen[v] ?? -1) == gen { dv = sc.dist[v] ?? BIG; }
       if nd < dv { sc.seen[v] = gen; sc.dist[v] = nd; sc.prev[v] = u; heap_push(h, nd, v); }
@@ -1268,7 +1262,7 @@ fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i:
         if ei >= 0 {
           e = g.edges[ei];
           lenm = lenm + e.length;
-          penm = penm + (ec.pen[ei] ?? 0.0) * e.length;
+          penm = penm + (ec.pen[e.w] ?? 0.0) * e.length;
           qt = etags(g, e ?? GEdge { a: 0, b: 0, length: 0.0, w: 0 });   // bound, not `etags(…).highway` — see docs/loft-feedback.md
           c = road_class(qt.highway);
           cm[c] = (cm[c] ?? 0.0) + e.length;
