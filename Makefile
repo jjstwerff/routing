@@ -197,6 +197,7 @@ test-native: check-rustc
 	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib --native || exit 1; \
 	done
 	@echo "  NATIVE KERNEL SUITE PASSES"
+	@./tools/tile_border_gate.sh
 
 test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
