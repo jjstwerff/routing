@@ -60,7 +60,7 @@ help:
 	@echo "  make test        offline: interpreter kernel suites + server harnesses"
 	@echo "  make test-native the kernel suites on the --native backend (slow, thorough)"
 	@echo "  make test-wasm   wasip2 parity via wasmtime: kernel geodesic + full matcher (app_kernel)"
-	@echo "  make test-map    headless-Chromium: the canvas base-map app (PLAN-MAP M0..M5)"
+	@echo "  make test-map    headless-Chromium: the base-map app + the @PLN105 bridge (steps 9-10)"
 	@echo ""
 	@echo "after 'make install' (ensure $(BINDIR) is on PATH):"
 	@echo "  routing         start (if not already up) + open primary browser"
@@ -197,11 +197,21 @@ test-native: check-rustc
 	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib --native || exit 1; \
 	done
 	@echo "  NATIVE KERNEL SUITE PASSES"
+	@./tools/tile_border_gate.sh
 
 test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/app_headless_test.sh
 
-# The standalone store app (PLAN-BUILD): projection invariant + headless-Chromium view/match over _site.
+# The standalone store app (PLAN-BUILD): projection invariant + headless-Chromium view/match over _site,
+# then the @PLN105 binary-bridge gates (PLAN-PERF §0 steps 9-10): loft hands JS a live handle to the
+# layout store, and JS reads a tile out of it identically to loft.
+#
+# The bridge probes live HERE, in a standing gate, deliberately. Every instrument bug found on
+# 2026-07-22 was a probe that no gate ran: it was written once, silently invalidated by a later step,
+# and believed for two months. A probe outside a gate is a comment.
+# NOTE these are local-only — CI has no chromium, so it runs neither this target nor the bridge gates.
 test-map:
 	@./tools/map_render_gate.sh
+	@./tools/expose_probe.sh
+	@./tools/deliver_probe.sh

@@ -397,21 +397,24 @@ ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate j
                       // because taps are IMPRECISE (fat-fingered) — the band must reach the ways
                       // actually on the drawn line, not just the ones nearest a mis-tap.
 
-struct CoordIdx { const coord: text, const idx: integer }
+struct CoordIdx { const coord: integer, const idx: integer }
 struct GNode { const lat: float, const lon: float }
 // All fields const: a GEdge is built once by build_graph and never mutated afterwards — the search
 // only ever reads it.
 struct GEdge {
   const a: integer, const b: integer, const length: float,
-  const hw: text, const surface: text, const tracktype: text,
-  const bicycle: text, const access: text,
-  const oneway: text, const onewaybike: text,   // direction restriction (a→b is the way's digitised sense)
-  const svc: text,                        // service= subtag (driveway/alley/parking_aisle)
-  const cycleway: text, const cyclestreet: text, // on-road cycle infrastructure (lane/track) / fietsstraat
-  const name: text,                        // road identity (for same-road out-and-back detection)
+  // The SOURCE WAY, not a copy of its tags. Every edge of a way carries identical tags, so copying all
+  // eleven into each of ~37.6k edge records was the single largest cost in a cold match: `add_edge` was
+  // ~108 ms of build_graph's ~163 ms (PLAN-PERF §7i), and neither the per-edge geodesic (~6 ms) nor the
+  // CSR build (~6 ms) came close. Tags are now read through `g.ways[e.w]`.
+  const w: integer,
 }
+
 pub struct Graph {
-  index: hash<CoordIdx[coord]>,   // "lat,lon" → node idx (dedup)
+  // One entry per SOURCE WAY, so an edge names its tags instead of copying them (see GEdge.w). ~7.1k
+  // records for a corridor that has ~37.6k edges — the whole point.
+  wtags: vector<WayTags>,
+  index: hash<CoordIdx[coord]>,   // packed fixed-point coord → node idx (dedup)
   nodes: vector<GNode>,
   edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
   // CSR adjacency (FLAT vectors — not nested, so no O(n^2) interpreter trap): the arcs leaving node
@@ -426,8 +429,27 @@ pub struct Graph {
 // Deduped node index for (lat,lon); appends a fresh node (+ empty adjacency) when unseen.
 // `&Graph`: a live reference so the growing graph is mutated in place, NOT copied per call
 // (by-value passing of the hash+vectors is O(size) each call → O(n^2) build).
+// The node-dedup key: fixed-point degrees packed into one i64.
+//
+// This used to be the TEXT `"{lat},{lon}"`, formatted per vertex of every way — ~45k float-to-string
+// conversions plus text hashing on every cold match, in a `build_graph` that is 54% of one (PLAN-PERF
+// §7a). The integer key is the same identity for a fraction of the cost.
+//
+// It is EXACTLY the same identity, which is why the routes cannot move: coordinates come from the store
+// as deg*1e7 integers, so `round(deg * 1e7)` recovers the original integer, and the pack is injective for
+// every valid coordinate (|lat| <= 90 -> |la| <= 9e8, |lon| <= 180 -> |lo| <= 1.8e9 < 4e9/2, and
+// 9e8 * 4e9 = 3.6e18 < i64::MAX). `tools/nodekey_probe.loft` checks the claim against the real corridor
+// rather than trusting this paragraph: 44,739 vertices collapse to 33,948 distinct nodes under BOTH
+// keyings. If the text key had been rounding — snapping nearby nodes together — the counts would differ
+// and swapping it would silently change routes.
+fn node_key(lat: float, lon: float) -> integer {
+  la = round(lat * 10000000.0) as integer;
+  lo = round(lon * 10000000.0) as integer;
+  la * 4000000000 + lo
+}
+
 fn node_idx(g: Graph, lat: float, lon: float) -> integer {
-  k = "{lat},{lon}";
+  k = node_key(lat, lon);
   hit = g.index[k];
   if hit != null { return hit.idx; }
   idx = len(g.nodes);
@@ -436,8 +458,79 @@ fn node_idx(g: Graph, lat: float, lon: float) -> integer {
   idx
 }
 
-fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: text, tracktype: text, bicycle: text, access: text, oneway: text, onewaybike: text, svc: text, cycleway: text, cyclestreet: text, name: text) {
-  g.edges += [GEdge { a: a, b: b, length: length, hw: hw, surface: surface, tracktype: tracktype, bicycle: bicycle, access: access, oneway: oneway, onewaybike: onewaybike, svc: svc, cycleway: cycleway, cyclestreet: cyclestreet, name: name }];
+fn add_edge(g: Graph, a: integer, b: integer, length: float, w: integer) {
+  g.edges += [GEdge { a: a, b: b, length: length, w: w }];
+}
+
+// The `??` fallback for the source-way read in build_graph. Unreachable (the index is the loop's own),
+// but the read must be total.
+fn empty_source_way() -> Way {
+  Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+        onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }
+}
+
+// An edge's tags, WITHOUT geometry. Deliberately not `Way`: a Way carries its `coords`, so reading one
+// per edge copies a coordinate vector — measured, that made `precompute_edges` (37.6k edge reads) more
+// than twice as slow and gave back everything build_graph had saved. WayTags is 11 text handles, so a
+// read is a handful of word copies.
+struct WayTags {
+  const highway: text, const surface: text, const tracktype: text, const bicycle: text,
+  const access: text, const oneway: text, const onewaybike: text, const svc: text,
+  const cycleway: text, const cyclestreet: text, const name: text,
+}
+
+// A FUNCTION, not a constant: loft rejects struct-valued constants (they cannot be materialised at each
+// use site — it says so, and names this fix).
+fn empty_tags() -> WayTags {
+  WayTags { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+            onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "" }
+}
+
+// The tags behind an edge.
+fn etags(g: Graph, e: GEdge) -> WayTags { g.wtags[e.w] ?? empty_tags() }
+
+// Union pre-built per-tile graphs into one corridor graph (PLAN-PERF §7a(2), step 19b).
+//
+// This is the LOADER side of "persist the graph per tile": each part is a tile's own graph, and the
+// corridor is their union with shared nodes merged and adjacency rebuilt. It is written and measured
+// BEFORE any store-format change, so the question "is unioning actually cheaper than building?" is
+// answered by a number rather than by a regeneration and a redeploy.
+//
+// Two things about the merge that PLAN-TILES §268's "border nodes" phrasing understates:
+//
+//   * shared nodes are NOT only at borders. A way is stored under the tile of its FIRST vertex and is
+//     never clipped, so it can run far into neighbouring tiles — two tiles' ways therefore meet anywhere
+//     they overlap, not just on the cell edge. The merge has to be over ALL nodes, which is what
+//     `node_idx` does here; a border-only splice would silently keep duplicates and disconnect the graph.
+//   * EDGES cannot duplicate, and that is why this is a plain concatenation. Each way belongs to exactly
+//     one tile, so the parts partition the ways; only their endpoints coincide.
+//
+// Node identity is `node_key`'s exact fixed-point pack — the same identity `build_graph` uses, so the
+// union merges exactly the nodes a global build would. `tools/tile_border_gate.sh` is the acceptance:
+// four corridors spanning 4-14 tiles, routes byte-identical.
+pub fn union_graphs(parts: vector<Graph>) -> Graph {
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  for p in parts {
+    // Each part indexes its OWN tag table, so concatenate them and shift this part's edge references by
+    // however many entries are already in the union.
+    wbase = len(g.wtags);
+    for pw in p.wtags { g.wtags += [pw]; }
+    // Each part's node indices are local to it; map them into the union as we go.
+    remap: vector<integer> = [];
+    for i in 0..len(p.nodes) {
+      nd = p.nodes[i] ?? GNode { lat: 0.0, lon: 0.0 };
+      remap += [node_idx(g, nd.lat, nd.lon)];
+    }
+    for e in p.edges {
+      ra = remap[e.a] ?? -1;
+      rb = remap[e.b] ?? -1;
+      if ra >= 0 && rb >= 0 && ra != rb {
+        g.edges += [GEdge { a: ra, b: rb, length: e.length, w: wbase + e.w }];
+      }
+    }
+  }
+  build_adj(g);
+  g
 }
 
 // Build the corridor graph from the parsed ways, then its CSR adjacency (a counting-sort pass).
@@ -446,9 +539,14 @@ fn add_edge(g: Graph, a: integer, b: integer, length: float, hw: text, surface: 
 pub fn build_graph_streamed(ways: vector<Way>, on_tick: fn(integer)) -> Graph { build_graph_impl(ways, on_tick) }
 pub fn build_graph(ways: vector<Way>) -> Graph { build_graph_impl(ways, drop_tick) }
 fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
-  g = Graph { index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
   nw = 0;
-  for w in ways {
+  for wi in 0..len(ways) {
+    w = ways[wi] ?? empty_source_way();
+    g.wtags += [WayTags { highway: w.highway, surface: w.surface, tracktype: w.tracktype,
+                          bicycle: w.bicycle, access: w.access, oneway: w.oneway,
+                          onewaybike: w.onewaybike, svc: w.svc, cycleway: w.cycleway,
+                          cyclestreet: w.cyclestreet, name: w.name }];
     nw += 1;
     if nw % TICK_EVERY == 0 { on_tick(nw); }
     prev = -1;
@@ -457,7 +555,7 @@ fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
       ni = node_idx(g, p.lat, p.lon);
       if prev >= 0 && prev != ni {
         d = geodesic_ll(g.nodes[prev].lat, g.nodes[prev].lon, g.nodes[ni].lat, g.nodes[ni].lon);
-        add_edge(g, prev, ni, d, w.highway, w.surface, w.tracktype, w.bicycle, w.access, w.oneway, w.onewaybike, w.svc, w.cycleway, w.cyclestreet, w.name);
+        add_edge(g, prev, ni, d, wi);
       }
       prev = ni;
     }
@@ -593,29 +691,47 @@ pub fn line_progress(p: GeoPoint, line: vector<GeoPoint>) -> float {
 // the Viterbi to the old nearest-node matcher by construction.
 fn nearest_nodes(g: Graph, lat: float, lon: float) -> vector<integer> {
   out: vector<integer> = [];
-  taken: vector<boolean> = [];
-  for i in 0..len(g.nodes) { taken += [false]; }
+  n = len(g.nodes);
+  if n == 0 { return out; }
   // Ranking metric: planar distance with kx computed ONCE for this query (not Vincenty per node).
   // Nearest-node selection only needs a monotone distance; a local flat-earth metric is exact enough
   // over a corridor and turns ~17M Vincenty calls into cheap multiplies.
   kx = 111320.0 * cos(lat * PI / 180.0);
   ky = 111320.0;
-  first_d = -1.0;
-  for _k in 0..VITERBI_K {
-    best = -1;
-    bestd = BIG;
-    for i in 0..len(g.nodes) {
-      if !(taken[i] ?? true) {
-        dx = (g.nodes[i].lon - lon) * kx; dy = (g.nodes[i].lat - lat) * ky;
-        d = dx * dx + dy * dy;   // squared metres — monotone, sqrt-free
-        if d < bestd { bestd = d; best = i; }
-      }
+  // ONE pass keeping the best VITERBI_K, instead of K selection passes over every node.
+  //
+  // This was K full scans plus a `taken` vector the size of the graph allocated on every call — and it
+  // is called ~3x per sketch point, so a cold match spent more time ANCHORING than routing (measured:
+  // 60 ms of a 114 ms search for a 3-point sketch; a 40-point sketch pays it 40 times). PLAN-PERF §7j.
+  //
+  // The result is IDENTICAL, not merely equivalent, and the tie-breaking is why: the old code scanned
+  // ascending with a strict `d < bestd`, so among equal distances the LOWEST node index won. The
+  // insertion below shifts only while `d < bd[pos-1]` — also strict — so an equal-distance node stays
+  // behind the one found earlier. Anchors feed the Viterbi, so a different tie would be a different route.
+  bd: vector<float> = [];
+  bi: vector<integer> = [];
+  for _z in 0..VITERBI_K { bd += [BIG]; bi += [-1]; }
+  for i in 0..n {
+    dx = (g.nodes[i].lon - lon) * kx; dy = (g.nodes[i].lat - lat) * ky;
+    d = dx * dx + dy * dy;   // squared metres — monotone, sqrt-free
+    if d >= (bd[VITERBI_K - 1] ?? BIG) { continue; }
+    pos = VITERBI_K - 1;
+    while pos > 0 && d < (bd[pos - 1] ?? BIG) {
+      bd[pos] = bd[pos - 1] ?? BIG; bi[pos] = bi[pos - 1] ?? -1;
+      pos = pos - 1;
     }
-    if best < 0 { break; }
-    if first_d < 0.0 { first_d = sqrt(bestd) ?? 0.0; }
-    if (sqrt(bestd) ?? 0.0) > first_d + ANCHOR_BAND_M { break; }
-    out += [best];
-    taken[best] = true;
+    bd[pos] = d; bi[pos] = i;
+  }
+  // Then the same band cut as before: candidates within ANCHOR_BAND_M of the nearest, nearest first,
+  // stopping (not skipping) at the first that falls outside.
+  first_d = -1.0;
+  for k in 0..VITERBI_K {
+    nk = bi[k] ?? -1;
+    if nk < 0 { break; }
+    dk = sqrt(bd[k] ?? BIG) ?? 0.0;
+    if first_d < 0.0 { first_d = dk; }
+    if dk > first_d + ANCHOR_BAND_M { break; }
+    out += [nk];
   }
   out
 }
@@ -780,8 +896,8 @@ fn is_cycle_infra(hw: text, cycleway: text, cyclestreet: text) -> boolean {
 
 // Deviation weight for an edge: normally DEV_K, but reduced on cycle infrastructure for a cycling
 // profile so the route is willing to leave the drawn line to pick up a cycle route (see the constant).
-fn dev_weight(profile: text, e: GEdge) -> float {
-  if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) {
+fn dev_weight(profile: text, t: WayTags) -> float {
+  if profile.starts_with("cycling") && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) {
     return DEV_K * CYCLE_INFRA_DEV_FACTOR;
   }
   DEV_K
@@ -791,12 +907,12 @@ fn dev_weight(profile: text, e: GEdge) -> float {
 // ILLEGAL off-limits. Both non-zero tiers are finite, so a stretch with no better option still
 // bridges rather than gapping; their sizes make a bike path normally win over walking, and walking
 // normally win over a genuinely-illegal way.
-fn edge_surcharge(profile: text, e: GEdge) -> float {
+fn edge_surcharge(profile: text, t: WayTags) -> float {
   if profile.starts_with("cycling") {
-    if bike_never(e.hw, e.bicycle, e.access, e.svc) { return ILLEGAL_PER_M; }
-    if bike_dismount(e.hw, e.bicycle) { return DISMOUNT_PER_M; }
+    if bike_never(t.highway, t.bicycle, t.access, t.svc) { return ILLEGAL_PER_M; }
+    if bike_dismount(t.highway, t.bicycle) { return DISMOUNT_PER_M; }
   } else if profile.starts_with("walking") || profile.starts_with("running") {
-    if foot_never(e.hw, e.access) { return ILLEGAL_PER_M; }
+    if foot_never(t.highway, t.access) { return ILLEGAL_PER_M; }
   }
   0.0
 }
@@ -845,7 +961,7 @@ fn heap_pop(h: Heap) -> Popped {
 
 // Node index at an exact coordinate (via the dedup hash), or -1.
 fn node_at(g: Graph, lat: float, lon: float) -> integer {
-  hit = g.index["{lat},{lon}"];
+  hit = g.index[node_key(lat, lon)];
   if hit != null { return hit.idx; }
   -1
 }
@@ -854,7 +970,13 @@ fn edge_name_between(g: Graph, u: integer, v: integer) -> text {
   if u < 0 || v < 0 { return ""; }
   s0 = g.adj_head[u] ?? 0;
   s1 = g.adj_head[u + 1] ?? 0;
-  for k in s0..s1 { if (g.adj_to[k] ?? -1) == v { return g.edges[g.adj_edge[k] ?? 0].name; } }
+  for k in s0..s1 {
+    if (g.adj_to[k] ?? -1) == v {
+      ne = g.edges[g.adj_edge[k] ?? 0] ?? GEdge { a: 0, b: 0, length: 0.0, w: 0 };
+      nt = etags(g, ne);               // bound, not `etags(…).name` — see docs/loft-feedback.md
+      return nt.name;
+    }
+  }
   ""
 }
 // GEdge index between adjacent nodes u,v (or -1). Same CSR walk as edge_name_between, but returns the
@@ -959,20 +1081,27 @@ pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, co
 // what makes the hot search loop cheap (array reads, not ~40 string compares per edge relaxation).
 // All fields const: the 5 parallel arrays are filled once in precompute_edges (`ec.pen += […]`, an
 // append, which const permits on a collection field) and then only read by index in the search loop.
+// Indexed by WAY (`GEdge.w`), not by edge. Every edge of a way has identical costs, so materialising
+// one entry per edge meant five arrays of ~37.6k built per cold match — ~188k appends — to hold ~7.1k
+// distinct values. The hot loop already loads `e = g.edges[ei]`, so `e.w` is free there and the arrays
+// are 5x smaller. PLAN-PERF §7k.
 struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur: vector<float>, const afwd: vector<boolean>, const abwd: vector<boolean> }
 
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
   ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
   cyc = profile.starts_with("cycling");
-  for ei in 0..len(g.edges) {
-    e = g.edges[ei];
-    p = way_penalty(profile, e.hw, e.surface, e.tracktype);
-    if cyc && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
+  // One entry PER WAY. `way_penalty` alone is ~40 string comparisons, and a corridor has ~7.1k ways
+  // behind ~37.6k edges — so this used to do the same string work five times over and then materialise
+  // the answer five times as well. Callers index by `GEdge.w`.
+  for wi in 0..len(g.wtags) {
+    t = g.wtags[wi] ?? empty_tags();
+    p = way_penalty(profile, t.highway, t.surface, t.tracktype);
+    if cyc && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
     ec.pen += [p];
-    ec.dw += [dev_weight(profile, e)];
-    ec.sur += [edge_surcharge(profile, e)];
-    ec.afwd += [dir_allowed(profile, e.oneway, e.onewaybike, true)];
-    ec.abwd += [dir_allowed(profile, e.oneway, e.onewaybike, false)];
+    ec.dw += [dev_weight(profile, t)];
+    ec.sur += [edge_surcharge(profile, t)];
+    ec.afwd += [dir_allowed(profile, t.oneway, t.onewaybike, true)];
+    ec.abwd += [dir_allowed(profile, t.oneway, t.onewaybike, false)];
   }
   ec
 }
@@ -1022,7 +1151,7 @@ fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPo
       if v < 0 || ei < 0 || (sc.done[v] ?? -1) == gen { continue; }
       e = g.edges[ei];
       fwd = e.a == u;
-      if fwd { if !(ec.afwd[ei] ?? true) { continue; } } else { if !(ec.abwd[ei] ?? true) { continue; } }
+      if fwd { if !(ec.afwd[e.w] ?? true) { continue; } } else { if !(ec.abwd[e.w] ?? true) { continue; } }
       mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
       mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
       dev = BIG;
@@ -1032,9 +1161,9 @@ fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPo
       }
       edev = dev - free;
       if edev < 0.0 { edev = 0.0; }
-      f = 1.0 + (ec.dw[ei] ?? DEV_K) * edev + (ec.pen[ei] ?? 0.0);
+      f = 1.0 + (ec.dw[e.w] ?? DEV_K) * edev + (ec.pen[e.w] ?? 0.0);
       if f < 0.1 { f = 0.1; }
-      nd = du + e.length * f + e.length * (ec.sur[ei] ?? 0.0);
+      nd = du + e.length * f + e.length * (ec.sur[e.w] ?? 0.0);
       dv = BIG;
       if (sc.seen[v] ?? -1) == gen { dv = sc.dist[v] ?? BIG; }
       if nd < dv { sc.seen[v] = gen; sc.dist[v] = nd; sc.prev[v] = u; heap_push(h, nd, v); }
@@ -1095,17 +1224,50 @@ pub struct MatchState {
 
 // Pass-1 anchor for ctrace index i: an endpoint snaps to its nearest node; an interior point snaps onto
 // the route PAST it (A→C, with A/C its neighbours) at the node closest to the drawn point.
-fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer) -> integer {
+// Per-POINT candidate cache for the anchor pass.
+//
+// `nearest_nodes(ct[j])` was computed TWICE for every interior point — once as the source `a` while
+// anchoring point j+1, and once as the target set `ctgt` while anchoring point j-1. Measured over a
+// 40-point sketch that is 82 ms of a 213 ms anchor pass, half of it recomputation. This memoises it.
+//
+// Flat, not `vector<vector<integer>>`: nested collections are the O(n^2) interpreter trap the Graph's own
+// CSR comment warns about. `cn[j]` is the count for point j (-1 = not computed yet) and the candidates
+// live at `cf[j*VITERBI_K + t]`.
+//
+// LAZY on purpose. A warm match recomputes only the edited window, so eagerly filling all m points would
+// make the common interaction slower — exactly the regression this is meant to avoid.
+fn cands_for(g: Graph, ct: vector<GeoPoint>, j: integer, cn: &vector<integer>, cf: &vector<integer>) -> vector<integer> {
+  out: vector<integer> = [];
+  have = cn[j] ?? -1;
+  if have >= 0 {
+    for t in 0..have { out += [cf[j * VITERBI_K + t] ?? -1]; }
+    return out;
+  }
+  p = ct[j] ?? point_none();
+  got = nearest_nodes(g, p.lat, p.lon);
+  k = len(got);
+  if k > VITERBI_K { k = VITERBI_K; }
+  for t2 in 0..k { cf[j * VITERBI_K + t2] = got[t2] ?? -1; }
+  cn[j] = k;
+  got
+}
+
+fn denoise_anchor(g: Graph, ct: vector<GeoPoint>, i: integer, ec: EdgeCosts, sc: Scratch, gen: integer,
+                  cn: &vector<integer>, cf: &vector<integer>) -> integer {
   m = len(ct);
   // Callers walk i over 0..len(ct), so ct[i] is in range on both sides of this guard and ct[i-1] is
   // reached only when i > 0 — point_none() is never taken.
-  if i <= 0 || i >= m - 1 { return nearest_node1(g, ct[i] ?? point_none()); }
-  a = nearest_node1(g, ct[i - 1] ?? point_none());
-  ctgt = nearest_nodes(g, ct[i + 1].lat, ct[i + 1].lon);
+  if i <= 0 || i >= m - 1 {
+    ce = cands_for(g, ct, i, cn, cf);
+    return ce[0] ?? -1;
+  }
+  ca = cands_for(g, ct, i - 1, cn, cf);
+  a = ca[0] ?? -1;
+  ctgt = cands_for(g, ct, i + 1, cn, cf);
   win: vector<GeoPoint> = [ct[i - 1], ct[i], ct[i + 1]];
   path = dijkstra_win(g, a, ctgt, win, ec, sc, gen);
   bp = closest_node_on_path(g, path, ct[i] ?? point_none());
-  if bp < 0 { bp = nearest_node1(g, ct[i] ?? point_none()); }
+  if bp < 0 { cb = cands_for(g, ct, i, cn, cf); bp = cb[0] ?? -1; }
   bp
 }
 
@@ -1133,8 +1295,9 @@ fn assemble_stretch(g: Graph, ct: vector<GeoPoint>, anchors: vector<integer>, i:
         if ei >= 0 {
           e = g.edges[ei];
           lenm = lenm + e.length;
-          penm = penm + (ec.pen[ei] ?? 0.0) * e.length;
-          c = road_class(e.hw);
+          penm = penm + (ec.pen[e.w] ?? 0.0) * e.length;
+          qt = etags(g, e ?? GEdge { a: 0, b: 0, length: 0.0, w: 0 });   // bound, not `etags(…).highway` — see docs/loft-feedback.md
+          c = road_class(qt.highway);
           cm[c] = (cm[c] ?? 0.0) + e.length;
         }
       }
@@ -1228,7 +1391,10 @@ fn build_state(g: Graph, trace: vector<GeoPoint>, profile: text, close: boolean,
   anchors: vector<integer> = [];
   // Pass 1 is one search PER POINT — 40 points is 40 of them, and with no tick here a dense sketch
   // froze the page for ~8s even after the corridor read and build_graph were yielded (PLAN-PERF §6b A).
-  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen)]; on_tick(i); }
+  cn: vector<integer> = []; cf: vector<integer> = [];
+  for _c in 0..m { cn += [-1]; }
+  for _c2 in 0..(m * VITERBI_K) { cf += [-1]; }
+  for i in 0..m { gen = gen + 1; anchors += [denoise_anchor(g, ct, i, ec, sc, gen, cn, cf)]; on_tick(i); }
   subs: vector<SubPath> = [];
   // Report each stretch the moment it is matched, so a caller can DRAW it now instead of waiting for
   // the whole route (PLAN-PERF §6b A). `subs` is already one sub-path per stretch — the route is a
@@ -1288,10 +1454,13 @@ fn update_state(prev: MatchState, g: Graph, trace: vector<GeoPoint>, close: bool
   sc = new_scratch(len(g.nodes));
   gen = 0;
   anchors: vector<integer> = [];
+  cn: vector<integer> = []; cf: vector<integer> = [];
+  for _c in 0..clenNew { cn += [-1]; }
+  for _c2 in 0..(clenNew * VITERBI_K) { cf += [-1]; }
   for i in 0..clenNew {
     if i >= lo && i <= hi {
       gen = gen + 1;
-      anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen)];
+      anchors += [denoise_anchor(g, ct, i, prev.ec, sc, gen, cn, cf)];
       on_tick(i);
     } else {
       oldIdx = i;
@@ -1396,7 +1565,7 @@ pub fn match_route_closed(g: Graph, trace: vector<GeoPoint>, profile: text) -> v
 // Reveals at a glance any edge that SHOULD be expensive (bus lane, station passage, alley) but is
 // cheap — i.e. a missing cost class. Not used by the server; a tool for validating the matcher.
 fn dbg_node_at(g: Graph, lat: float, lon: float) -> integer {
-  hit = g.index["{lat},{lon}"];
+  hit = g.index[node_key(lat, lon)];
   if hit != null { return hit.idx; }
   -1
 }
@@ -1429,16 +1598,17 @@ pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> te
         mlat = (g.nodes[e.a].lat + g.nodes[e.b].lat) / 2.0;
         mlon = (g.nodes[e.a].lon + g.nodes[e.b].lon) / 2.0;
         dev = point_trace_m(mlat, mlon, trace);
-        pen = way_penalty(profile, e.hw, e.surface, e.tracktype);
-        if profile.starts_with("cycling") && is_cycle_infra(e.hw, e.cycleway, e.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
-        sur = edge_surcharge(profile, e);
-        cpm = 1.0 + dev_weight(profile, e) * dev + pen;
+        et = etags(g, e);
+        pen = way_penalty(profile, et.highway, et.surface, et.tracktype);
+        if profile.starts_with("cycling") && is_cycle_infra(et.highway, et.cycleway, et.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
+        sur = edge_surcharge(profile, et);
+        cpm = 1.0 + dev_weight(profile, et) * dev + pen;
         if cpm < 0.1 { cpm = 0.1; }
         cpm = cpm + sur;
         total = total + cpm * e.length;
         tier = "-   ";
         if sur >= ILLEGAL_PER_M { tier = "ILL "; } else if sur > 0.0 { tier = "walk"; }
-        out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {e.hw} / {dash(e.svc)} / {dash(e.access)} / {dash(e.oneway)} / {dash(e.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
+        out = out + "{d0:6.0}  {e.length:4.0}  {dev:6.0}   {pen:1.2}   {tier}  {cpm:9.1}   {et.highway} / {dash(et.svc)} / {dash(et.access)} / {dash(et.oneway)} / {dash(et.bicycle)} @{mlat:1.6},{mlon:1.6}\n";
       }
     } else {
       out = out + "{d0:6.0}  {seglen:4.0}       -      -    -          -   (jump — no direct edge)\n";

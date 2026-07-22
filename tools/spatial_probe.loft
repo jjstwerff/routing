@@ -1,0 +1,64 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Does loft's `spatial<T[x,y]>` actually work, and with what semantics?
+//
+//   loft --native --lib lib tools/spatial_probe.loft
+//
+// PLAN-PERF §7l wants it to replace `nearest_nodes`'s O(nodes) scan. It is a TESTED BUT NOT WIDELY USED
+// index, so this checks it against the real thing rather than against its documentation — and the two
+// facts the matcher depends on are exactly the ones the docs state loosely.
+//
+// From the implementation (`loft2/src/spatial.rs`, `radix_db.rs`), read before writing any of this:
+//   * `spatial.rs` carries EXACT `nearest`/`within`, but it is `#![allow(dead_code)]` and nothing in loft
+//     references `spatial::` — those are NOT wired to the stdlib. Only `radix_db`'s surface is reachable.
+//   * the reachable box slice `xs[(a,b)..(c,d)]` is the raw MORTON CODE INTERVAL — a SUPERSET of the
+//     geometric box, because Z-order threads through codes outside it. The caller must filter.
+//   * the outward walk `xs[(x,y)..]` / `..:n` is `Near`, explicitly APPROXIMATE: "close to distance order
+//     but jumps at quadrant boundaries … never for a correct radius or k-NN".
+//
+// So an exact k-NN has to be built as expanding-box + exact re-rank. This probe asserts the two
+// properties that makes possible: a box query must return a SUPERSET of the box (never miss a point),
+// and it must be cheaper than scanning everything.
+#cwd
+
+struct P { const x: integer, const y: integer, const id: integer }
+struct Grid { pts: spatial<P[x, y]> }
+
+N    = 20000;      // ~ the node count of a real corridor graph
+SPAN = 1000000;
+
+fn main() {
+  g = Grid { pts: [] };
+  // A deterministic scatter (no rand: the probe must be reproducible).
+  seed = 12345;
+  xs: vector<integer> = [];
+  ys: vector<integer> = [];
+  for i in 0..N {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    x = seed % SPAN;
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    y = seed % SPAN;
+    xs += [x]; ys += [y];
+    g.pts += [P { x: x, y: y, id: i }];
+  }
+  println("#X inserted={g.pts.len()} of {N}");
+
+  // A box around a query point. Truth by brute force, then the same box through the index.
+  qx = SPAN / 2; qy = SPAN / 2; r = 20000;
+  truth = 0;
+  for j in 0..N {
+    bx = xs[j] ?? -1; by = ys[j] ?? -1;
+    if bx >= qx - r && bx <= qx + r && by >= qy - r && by <= qy + r { truth = truth + 1; }
+  }
+  got = 0; inbox = 0;
+  for p in g.pts[(qx - r, qy - r)..(qx + r, qy + r)] {
+    got = got + 1;
+    if p.x >= qx - r && p.x <= qx + r && p.y >= qy - r && p.y <= qy + r { inbox = inbox + 1; }
+  }
+  println("#X box: brute={truth} returned={got} of-which-in-box={inbox}");
+  if inbox == truth { println("#X SUPERSET OK — the box query missed nothing ({got - inbox} extra to filter)"); }
+  else { println("#X FAIL — the box query MISSED {truth - inbox} point(s); an exact k-NN cannot be built on it"); }
+  if got < N / 4 { println("#X SELECTIVE OK — returned {got} of {N}, so it is worth more than a scan"); }
+  else { println("#X FAIL — returned {got} of {N}: no better than scanning"); }
+}

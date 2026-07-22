@@ -10,7 +10,11 @@
 // __exposeCalls / __exposeArgs and counts handles in stats().exposed.
 //
 // Asserts, in order of what each would catch:
-//   * called ONCE — not zero (never fired), not per-view (the load guard leaked)
+//   * called AT LEAST ONCE — zero means it never fired
+//   * the bracket is BALANCED — releases == exposes - 1. The kernel must unpin before it reloads or
+//     ITERATES the layout (a walk claims a cursor record inside the pinned store and the read-only lock
+//     rejects it — PLAN-PERF §7d(2)), then re-pin after. So N views produce N exposes and N-1 releases;
+//     any other ratio means loft is touching a store it has pinned, which traps silently in wasm.
 //   * descriptor PARSES — the JSON crossed intact and is not the {__parseError} fallback
 //   * the address is real — storeBase/rec nonzero (rec == 0 is expose_value's early return)
 //   * the hash was PRE-FLATTENED — @PLN105 Phase 3's collect_keyed ran, so the descriptor is not a
@@ -43,19 +47,35 @@ for (let i = 0; i < 200; i++) {
 if (!st?.ready) { console.log('  FAIL: app never became ready', JSON.stringify(st), errs.slice(-2)); process.exit(1); }
 
 const seen = await ev(`JSON.stringify({
-  calls: globalThis.__exposeCalls || 0,
-  args:  globalThis.__exposeArgs || null,
-  desc:  (() => { const h = window.__storeKernel?.exposedValue?.(1); return h ? JSON.stringify(h.desc).slice(0, 400) : null; })(),
+  calls:    globalThis.__exposeCalls  || 0,
+  releases: globalThis.__releaseCalls || 0,
+  args:     globalThis.__exposeArgs   || null,
+  info:     window.__perfHooks?.exposeInfo?.() || null,
 })`);
 const r = JSON.parse(seen || '{}');
 const a = r.args || {};
+const info = r.info;
 const fail = [];
-if (r.calls !== 1) fail.push(`expose called ${r.calls}x, want exactly 1 (0 = never fired; >1 = the load guard leaked)`);
-if (!r.desc) fail.push('no descriptor for tag 1 — the host never stored the handle');
-else if (r.desc.includes('__parseError')) fail.push(`descriptor did not parse: ${r.desc}`);
-if (a.storeBase === '0' || !a.storeBase) fail.push(`storeBase is ${a.storeBase} — not a real address`);
-if (a.rec === '0' || !a.rec) fail.push(`rec is ${a.rec} — expose_value early-returns when rec == 0, so the value never crossed`);
-console.log(`  calls=${r.calls} tag=${a.tag} storeBase=${a.storeBase} rec=${a.rec} pos=${a.pos} typeId=${a.typeId} descLen=${a.descLen}`);
-console.log(`  desc: ${(r.desc || '(none)').slice(0, 200)}`);
+if (!r.calls) fail.push('expose never fired — no handle was ever delivered');
+if (r.calls && r.releases !== r.calls - 1)
+  fail.push(`bracket unbalanced: ${r.calls} exposes vs ${r.releases} releases (want releases == exposes-1) — ` +
+            `loft is touching a store it has pinned, which traps silently in wasm`);
+if (!info) fail.push('no descriptor for tag 1 — the host never stored the handle (or it was released and not re-pinned)');
+else {
+  if (!info.descLen) fail.push('descriptor is empty');
+  if (!info.descNodes) fail.push(`descriptor has no nodes — JS cannot walk it (${JSON.stringify(info).slice(0, 200)})`);
+  if (!Number(info.storeBase)) fail.push(`storeBase is ${info.storeBase} — not a real address`);
+  if (!Number(info.rec)) fail.push(`rec is ${info.rec} — expose_value early-returns when rec == 0, so the value never crossed`);
+}
+console.log(`  exposes=${r.calls} releases=${r.releases} tag=${a.tag} typeId=${a.typeId} descLen=${a.descLen}`);
+if (info) {
+  console.log(`  handle: storeBase=${info.storeBase} rec=${info.rec} pos=${info.pos} descNodes=${info.descNodes} wasmMB=${info.wasmMB}`);
+  console.log(`  names:  ${JSON.stringify(info.sampleNames || []).slice(0, 200)}`);
+}
 if (fail.length) { console.log('FAIL — ' + fail.join('\n  FAIL — ')); process.exit(1); }
-console.log('PASS — JS holds a live layout handle: descriptor parsed + address delivered');
+console.log('PASS — JS holds a live layout handle: descriptor parsed + address delivered, bracket balanced');
+// Exit explicitly: the open WebSocket keeps node's event loop alive, so the success path would otherwise
+// hang forever. Only the FAIL branch ever called process.exit, and until step 9 landed this probe had
+// never once passed — so nothing had exercised the path that returns.
+ws.close();
+process.exit(0);

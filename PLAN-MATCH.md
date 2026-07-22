@@ -19,9 +19,11 @@ The touch points in code: `match_for` / the widen loop in `server/server.loft`, 
 > big search cheaper?" and answers with an escalation ladder. The app-level measurement changed the
 > question. Two facts this document predates:
 >
-> 1. **The route is already per-stretch, and it now STREAMS.** `subs` is one sub-path per stretch, each
->    independent, and they are emitted as they are matched — the line grows in travel order. So the
->    user-facing cost is *time to the first stretch* (~96 ms on a phone), not time to the whole route.
+> 1. **The route is already per-stretch, and it STREAMS end to end.** `subs` is one sub-path per stretch,
+>    each independent; the kernel emits them as they are matched, in travel order, and (2026-07-22) the
+>    browser now draws each one as it arrives — so **"time to the first stretch" is a real user-facing
+>    number**, not just time to the whole route. See `PLAN-PERF` §6b(2), including the interval in which
+>    the emit shipped without a consumer and the claim was intent rather than behaviour.
 >    A cheaper ladder tier improves the total; it does not create the responsiveness, and the ladder is
 >    the only lever here that can return a WORSE route.
 > 2. **The numbers below came from a 3-point sketch** (2 huge stretches, widest corridor) — the
@@ -145,6 +147,21 @@ Sweeping the gate over the tube's OWN numbers — all it can see at runtime:
 **Caveat, stated so it is not forgotten:** 25 synthetic sketches over one block. The corpus already
 overturned a 3-sketch conclusion once (PLAN-PERF §7b), so treat 900 as the current best estimate, not a
 constant — and re-run the sweep when the corpus grows or the profile changes.
+
+> ⛔ **SUPERSEDED 2026-07-22 — do not wire `DEV_TOL` as an absolute threshold.** The tuning above is
+> correct on its own terms (0 worse accepted) and still makes the app **1.7× slower**: `dev_max` measures
+> distance from the DRAWN SKETCH, so it is large whenever the user drew far from any road — under *both*
+> tiers. The gate then reads "far from the network" as "the cheap corridor clipped something", escalates,
+> and pays twice for an identical route. **8 of the 12 corpus escalations have `t_devmax == b_devmax`.**
+> Measured, reverted, and written up in PLAN-PERF §7h, with two candidate redesigns — gate on
+> `bridged_m == 0` alone, or make the deviation test relative to `corridor_margin` (which tests the
+> CORRIDOR rather than the sketch, and needs no fitted constant).
+>
+> ✅ **The second SHIPPED (§7h(2)):** the live gate is `bridged_m == 0 && dev_max <= corridor_margin * 6`,
+> swept on a 26-sketch corpus (0 worse accepted; K=8 is cost-optimal, 6 chosen for headroom because the
+> gate can only make us escalate). Cold match **6370 → 3253 ms**, route byte-identical on all 5
+> `match_parity` cases. **`DEV_TOL` above is retained only as the record of why an absolute threshold is
+> the wrong shape.**
 
 > The gate can only make us *escalate* (spend more), never accept something a wider tier would improve
 > on. So mistuning it costs speed, never the wanted route — the fat corridor (§5, tier 3) is always the

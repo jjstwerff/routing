@@ -166,7 +166,35 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
     }
   }
 
+  seal_extents(idx);
   idx
+}
+
+// Fold one coordinate into a tile's extent. `fcount` doubles as the "is it set yet" flag, so the first
+// coordinate initialises rather than min/maxing against a zero that is not in the data.
+fn note_extent(t: PTile, la: integer, lo: integer) {
+  if t.fcount == 0 { t.fmnla = la; t.fmxla = la; t.fmnlo = lo; t.fmxlo = lo; }
+  else {
+    if la < t.fmnla { t.fmnla = la; }
+    if la > t.fmxla { t.fmxla = la; }
+    if lo < t.fmnlo { t.fmnlo = lo; }
+    if lo > t.fmxlo { t.fmxlo = lo; }
+  }
+  t.fcount += 1;
+}
+
+// PLAN-PERF §7g — record each tile's ACTUAL feature extent, once the geometry vectors are complete.
+// A separate pass rather than maintaining it at the six append sites: one place to be correct, and it
+// cannot drift when a new feature kind is added (a missed append site would silently shrink the extent
+// and start dropping features from the viewport).
+fn seal_extents(idx: hash<PTile[tkey]>) {
+  for t in idx {
+    for sa in t.areas { for ca in sa.ring { note_extent(t, t.oy + (ca.y as integer), t.ox + (ca.x as integer)); } }
+    for sb in t.buildings { for cb in sb.ring { note_extent(t, t.oy + (cb.y as integer), t.ox + (cb.x as integer)); } }
+    for sl in t.lines { for cl in sl.geom { note_extent(t, t.oy + (cl.y as integer), t.ox + (cl.x as integer)); } }
+    for sk in t.labels { for ck in sk.line { note_extent(t, t.oy + (ck.y as integer), t.ox + (ck.x as integer)); } }
+    for sp in t.pois { note_extent(t, t.oy + (sp.at.y as integer), t.ox + (sp.at.x as integer)); }
+  }
 }
 
 fn main() {

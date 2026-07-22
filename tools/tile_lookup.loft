@@ -1,0 +1,48 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §0 step 10's ground truth: what loft itself reads for one tile, so the JS-side
+// descriptor walk can be checked against it rather than against my expectations.
+//
+//   loft --native --lib lib tools/tile_lookup.loft _site/stores/enschede.layout.store <tkey>
+//
+// Prints one machine-readable line the gate diffs against `__perfHooks.readTile()`:
+//   TILE tkey=… ox=… oy=… areas=… buildings=… lines=… labels=… pois=… ring0=…
+// `ring0` (the first area's ring length, else the first building's) is in there deliberately: tkey/ox/oy
+// only prove the reader found the record, while a nested vector length proves it walked INTO it — a
+// different code path (child record-index, then per-element records) and the one steps 11-13 depend on.
+#cwd
+
+use basemap::(PTile);
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: tile_lookup <layout.store> <tkey>"); return; }
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+  k = a[1] as integer ?? 0;
+
+  t = layout[k];
+  if t {
+    ring0 = 0;
+    areas = t.areas;
+    buildings = t.buildings;
+    if len(areas) > 0 {
+      ar = areas[0];
+      if ar { ring0 = len(ar.ring); }
+    } else {
+      if len(buildings) > 0 {
+        bl = buildings[0];
+        if bl { ring0 = len(bl.ring); }
+      }
+    }
+    println("TILE tkey={t.tkey} ox={t.ox} oy={t.oy} areas={len(areas)} buildings={len(buildings)} lines={len(t.lines)} labels={len(t.labels)} pois={len(t.pois)} ring0={ring0}");
+    // PLAN-PERF §7g — the sealed feature extent the viewport filter screens on. fcount=0 means a store
+    // written before the field existed (or a genuinely empty tile); the filter must then not skip.
+    println("EXTENT fcount={t.fcount} la=[{t.fmnla}..{t.fmxla}] lo=[{t.fmnlo}..{t.fmxlo}]");
+  } else {
+    println("MISS tkey={k}");
+  }
+}

@@ -11,7 +11,21 @@
 // Interaction (pan/wheel), the layers, and the feature catalog arrive in M1+. The seam
 // exported at the bottom (project/unproject/camera/onRender/hitTest) is what PLAN-EDIT builds on.
 
+import { decodeText } from './store-geom.mjs';
+
 const TILE = 256;                         // world-pixel size of one tile at zoom 0
+// Step 15's raster cache. BLOCK is the baked square in world pixels; BLOCK_MARGIN is bled around it and
+// never blitted, so a stroke crossing a block edge is antialiased outside the visible region (must exceed
+// the widest half-stroke: roads ~9 px, route halo 7 px). The cap keeps a phone's memory bounded.
+const BLOCK = 512, BLOCK_MARGIN = 32;
+// Cap the raster cache by BYTES, not by block count: a block is (BLOCK+2*MARGIN)^2 * dpr^2 * 4 bytes, so
+// a phone at dpr 3 stores 9x what this desktop does and a fixed count would be a 250 MB cache there.
+const BLOCK_CACHE_BYTES = 48 * 1024 * 1024;
+// Bakes are amortised over frames. Baking every block a viewport needs in ONE frame made a `view` cost a
+// full cold bake — measured 26 -> 387 ms at CPU_THROTTLE=4, a 4x regression on a user-visible
+// interaction, to make the frames AFTER it free. Bounded instead: a frame bakes at most this many blocks
+// and draws directly until the cache can cover the viewport, so no single frame pays for all of them.
+const BLOCK_BAKES_PER_FRAME = 1;
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
 const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
 const clampLat = (lat) => Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
@@ -100,6 +114,147 @@ function areaMinZoom(ring) {
 }
 
 // --- Layer parsers (the emit_*.loft text formats) ---------------------------------------------
+// --- PLAN-PERF §0 step 11 — areas read from the EXPOSED store instead of from loft's text ------------
+//
+// Mirrors `map_kernel.loft`'s `emit_areas` + `ring_hits` exactly, because step 11's whole point is that
+// the two paths agree; where it deviates the gate must see it, not the user. So:
+//   * every tile, every area, no tile-level pre-filter — loft has none either. A tile-extent screen
+//     would be a sound optimisation but a BEHAVIOUR change, and it needs its own equality proof.
+//   * the overlap test is integer fixed-point (deg*1e7) on the ring's own bbox, like `ring_hits`.
+//   * coords come out in degrees via `/1e7`, matching `deg()`.
+// `fbox` is {mnla,mnlo,mxla,mxlo} in FIXED-POINT, the same space as `parse_fbox` builds.
+//
+// Only `ox`/`oy`/`areas` are decoded per tile — not buildings/lines/labels/pois. That per-kind read is
+// the selectivity the text path cannot express: loft has to serialise a whole viewport or nothing.
+// `ring_hits` — a ring overlaps the box iff its own fixed-point bbox intersects it. Empty never hits.
+function ringHits(ox, oy, ring, fbox) {
+  if (!ring.length) return false;
+  let mnla = 0, mxla = 0, mnlo = 0, mxlo = 0, first = true;
+  for (const c of ring) {
+    const la = oy + c.y, lo = ox + c.x;
+    if (first) { mnla = la; mxla = la; mnlo = lo; mxlo = lo; first = false; }
+    else {
+      if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+      if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+    }
+  }
+  return mxla >= fbox.mnla && mnla <= fbox.mxla && mxlo >= fbox.mnlo && mnlo <= fbox.mxlo;
+}
+// `pt_hits` — a single Coord inside the box (inclusive, as loft's is).
+function ptHits(ox, oy, c, fbox) {
+  const la = oy + c.y, lo = ox + c.x;
+  return la >= fbox.mnla && la <= fbox.mxla && lo >= fbox.mnlo && lo <= fbox.mxlo;
+}
+const degRing = (ox, oy, ring) => ring.map((c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7]);
+const degPt = (ox, oy, c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7];
+
+// Read the requested layer kinds out of the exposed store in ONE walk over the tiles. Mirrors
+// `emit_areas`/`emit_buildings`/`emit_lines`/`emit_pois`/`emit_labels` exactly — same hit tests, same
+// per-kind shapes, and (for labels) the same split into street labels vs places by `kind == "street"`.
+//
+// One walk, not one per kind: each `flatField` decodes a tile's vector, so five separate passes would
+// re-walk 1089 tiles five times. `want` keeps the migration incremental — a kind not asked for is not
+// decoded at all, which is the selectivity the text path cannot express.
+//
+// Returns raw hits (loft's emitted set). Apply `viewRenderLists` for the render-ready lists — the
+// per-kind drops live there, mirroring the text parsers, so the gate can still compare raw against
+// loft's own `# view:` counts.
+export function viewFromStore(mem, handle, fbox, deps, want) {
+  const { flatCount, flatField } = deps;
+  const n = flatCount(mem, handle);
+  const out = { areas: [], buildings: [], lines: [], pois: [], places: [], streetLabels: [] };
+  out.tilesRead = 0; out.tilesTotal = n;
+  const need = (k) => want.includes(k);
+  const wantLabels = need('places') || need('streetLabels');
+  for (let i = 0; i < n; i++) {
+    // PLAN-PERF §7g — skip the tile on its SEALED FEATURE EXTENT before decoding anything. Five scalar
+    // reads decide what would otherwise cost ~1500 coordinate decodes, and on a real viewport this reads
+    // 72 of 1089 tiles. It is exact, not conservative: the extent is the union of the tile's own
+    // features, so a skipped tile provably has nothing in the box.
+    //
+    // `fcount == 0` means the extent is absent — an empty tile, or a store written before the field
+    // existed. Do NOT skip then: falling back to the full scan keeps an older store correct (slow) rather
+    // than silently blank. (Such a store does not currently load at all, but the filter must not be the
+    // thing that decides that.)
+    const fcount = Number(flatField(mem, handle, i, 'fcount'));
+    if (fcount > 0) {
+      const mnla = Number(flatField(mem, handle, i, 'fmnla'));
+      const mxla = Number(flatField(mem, handle, i, 'fmxla'));
+      const mnlo = Number(flatField(mem, handle, i, 'fmnlo'));
+      const mxlo = Number(flatField(mem, handle, i, 'fmxlo'));
+      if (mxla < fbox.mnla || mnla > fbox.mxla || mxlo < fbox.mnlo || mnlo > fbox.mxlo) continue;
+    }
+    out.tilesRead += 1;
+    const ox = Number(flatField(mem, handle, i, 'ox'));
+    const oy = Number(flatField(mem, handle, i, 'oy'));
+    if (need('areas')) {
+      for (const a of flatField(mem, handle, i, 'areas') || []) {
+        if (ringHits(ox, oy, a.ring, fbox)) out.areas.push({ cover: a.cover, ring: degRing(ox, oy, a.ring) });
+      }
+    }
+    if (need('buildings')) {
+      for (const b of flatField(mem, handle, i, 'buildings') || []) {
+        if (ringHits(ox, oy, b.ring, fbox)) out.buildings.push({ name: b.name, ring: degRing(ox, oy, b.ring) });
+      }
+    }
+    if (need('lines')) {
+      for (const l of flatField(mem, handle, i, 'lines') || []) {
+        if (ringHits(ox, oy, l.geom, fbox)) out.lines.push({ kind: l.kind, name: l.name, geom: degRing(ox, oy, l.geom) });
+      }
+    }
+    if (need('pois')) {
+      for (const p of flatField(mem, handle, i, 'pois') || []) {
+        if (ptHits(ox, oy, p.at, fbox)) out.pois.push({ kind: p.kind, name: p.name, at: degPt(ox, oy, p.at) });
+      }
+    }
+    if (wantLabels) {
+      for (const lb of flatField(mem, handle, i, 'labels') || []) {
+        if (lb.kind === 'street') {
+          if (need('streetLabels') && ringHits(ox, oy, lb.line, fbox)) {
+            out.streetLabels.push({ label: lb.name, line: degRing(ox, oy, lb.line) });
+          }
+        } else if (need('places')) {
+          // `lb.line[0] ?? Coord{0,0}` in emit_labels — a place with no geometry tests the origin, which
+          // is outside any real viewport. Mirror it rather than skipping, so the counts agree exactly.
+          const c = (lb.line && lb.line[0]) || { x: 0, y: 0 };
+          if (ptHits(ox, oy, c, fbox)) out.places.push({ rank: Number(lb.rank), name: lb.name, at: degPt(ox, oy, c) });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Areas-only view of `viewFromStore`, kept because step 11's gate compares the UNFILTERED area hits
+// against loft's `A=`.
+export function areasFromStore(mem, handle, fbox, deps) {
+  return viewFromStore(mem, handle, fbox, deps, ['areas']).areas;
+}
+
+// The render-ready lists: each kind's drop mirrors its text parser, so switching a kind's source cannot
+// change what draws. `parseView`'s street-label rule is the fiddly one — it needs a NON-EMPTY label as
+// well as >=2 points, where the other kinds only bound the geometry.
+export function viewRenderLists(raw) {
+  return {
+    areas: areaRenderList(raw.areas),
+    buildings: raw.buildings.filter((b) => b.ring.length >= 3),
+    lines: raw.lines.filter((l) => l.geom.length >= 2),
+    pois: raw.pois,
+    places: raw.places,
+    streetLabels: raw.streetLabels.filter((s) => s.label && s.line.length >= 2),
+  };
+}
+
+// PLAN-PERF §0 step 12 — turn raw store hits into the render list, mirroring `parseAreas`'s TAIL so the
+// substitution is total: the same <3-vertex drop and the same `minZoom`, which `render()` requires (an
+// area without it compares `z >= undefined` and silently never draws). Kept separate from
+// `areasFromStore` so step 11's gate can still see the UNFILTERED hits and check them against loft's `A=`.
+export function areaRenderList(raw) {
+  const out = [];
+  for (const a of raw) if (a.ring.length >= 3) out.push({ cover: a.cover, ring: a.ring, minZoom: areaMinZoom(a.ring) });
+  return out;
+}
+
 export function parseAreas(txt) {                   // `cover;lat,lon;…`
   const areas = [];
   for (const line of (txt || '').split('\n')) {
@@ -187,6 +342,85 @@ export function parseView(txt) {
   };
 }
 
+// parseStretch(line): one `STRETCH <i>;lat,lon;…` line → { i, pts }, or null for anything else.
+// The kernel emits one per matched sub-path, in travel order, the moment it lands (map_kernel's
+// emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
+// including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
+// re-match redraw correctly rather than concatenate onto the previous route.
+export function parseStretch(line) {
+  if (!line || !line.startsWith('STRETCH ')) return null;
+  const parts = line.split(';');
+  const i = +parts[0].slice(8);
+  if (!Number.isInteger(i) || i < 0) return null;
+  const pts = [];
+  for (let k = 1; k < parts.length; k++) {
+    const c = parts[k].split(','); const a = +c[0], b = +c[1];
+    if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) pts.push([a, b]);
+  }
+  return { i, pts };
+}
+
+// Concatenate stretch slots into one polyline, dropping repeated joints — the mirror of routing_kernel's
+// `push_pt`, which is how loft stitches the same sub-paths into the final ROUTE. Holes (a slot not yet
+// filled) are skipped rather than treated as a break: during streaming there are none after the first,
+// because stretches arrive in order.
+function joinStretches(slots) {
+  const out = [];
+  for (const pts of slots) {
+    if (!pts) continue;
+    for (const p of pts) {
+      const last = out[out.length - 1];
+      if (last && last[0] === p[0] && last[1] === p[1]) continue;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+// Roads, parsed from the `view` text straight into FLAT arrays (PLAN-PERF §6c).
+//
+// Streets are the one layer that cannot come from the store the way buildings/areas/lines/pois now do:
+// the matcher ITERATES the roads store (`corridor_ways_impl2`) and loft cannot iterate a store JS has
+// pinned, so `expose`-ing roads would cost a ~230 ms re-expose per match (§7f). They arrive as text
+// instead — but nothing forces the PARSE to produce boxed pairs, and it was producing 19,397 of them
+// plus 3,112 feature objects, the last of the retained geometry.
+//
+// Coordinates stay `+str` doubles in DEGREES, never converted to fixed point: the object path fed exactly
+// those doubles to project(), and the gate is a pixel hash, so any re-rounding would show up as
+// antialiasing drift. Same drops in the same order as `parseView`'s street demux — `p.length >= 3` then
+// `>= 2` valid coordinates — so the same roads survive, in the same order, and buckets overdraw the same.
+export function parseStreetsFlat(txt) {
+  const lines = (txt || '').split('\n');
+  let cap = 4096, xy = new Float64Array(cap * 2), nv = 0;
+  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map();
+  const bb = [];
+  for (const raw of lines) {
+    if (raw[0] !== 'R' || raw[1] !== ' ') continue;
+    const p = raw.slice(2).split(';');
+    if (p.length < 3) continue;
+    const start = nv;
+    let mnla = Infinity, mxla = -Infinity, mnlo = Infinity, mxlo = -Infinity;
+    for (let i = 1; i < p.length; i++) {
+      const c = p[i], k = c.indexOf(',');
+      if (k < 0) continue;
+      const a = +c.slice(0, k), b = +c.slice(k + 1);
+      if (Number.isNaN(a) || Number.isNaN(b)) continue;
+      if (nv === cap) { cap *= 2; const g = new Float64Array(cap * 2); g.set(xy); xy = g; }
+      xy[nv * 2] = a; xy[nv * 2 + 1] = b; nv++;
+      if (a < mnla) mnla = a; if (a > mxla) mxla = a;
+      if (b < mnlo) mnlo = b; if (b > mxlo) mxlo = b;
+    }
+    if (nv - start < 2) { nv = start; continue; }          // parseView's `line.length >= 2` drop
+    const name = p[0];
+    let ci = clsOf.get(name);
+    if (ci === undefined) { ci = clsNames.length; clsNames.push(name); clsOf.set(name, ci); }
+    clsIdx.push(ci); off.push(nv);
+    bb.push(mnla, mxla, mnlo, mxlo);
+  }
+  return { n: clsIdx.length, xy, off: Int32Array.from(off), cls: Uint8Array.from(clsIdx), clsNames,
+           bb: Float64Array.from(bb), verts: nv };
+}
+
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
 const LINE_STYLES = {                               // waterway = blue; railway = grey dashes; barriers muted
   river: { color: '#a5c8e8', width: 3, minZoom: 11 }, stream: { color: '#a5c8e8', width: 1.5, minZoom: 13 },
@@ -203,6 +437,11 @@ const POI_STYLES = {                                // color · minZoom · glyph
   ruins: { color: '#7a5230', z: 13, shape: 'square', r: 3 }, monument: { color: '#7a5230', z: 13, shape: 'triangle', r: 3.5 }, information: { color: '#4a90d9', z: 15, shape: 'square', r: 2.5 },
 };
 const POI_FALLBACK = { color: '#777777', z: 15, shape: 'circle', r: 2.5 };
+// A glyph is drawn from its CENTRE, so culling on the bare viewport rect throws away the half that
+// overhangs the edge — the marker vanishes instead of half-showing. Pad by the largest radius (4.5) plus
+// its 1 px halo stroke, rounded up. Found by §6d's block bisect: a block extends past the viewport, so it
+// kept those glyphs and the direct render did not, and the two differed in a band along every edge.
+const POI_EDGE_PAD = 8;
 
 // The camera centre that puts geographic `latlon` under screen point `mouse` (CSS px) at `zoom`.
 // Pan is "hold the grabbed lat/lon under the cursor"; zoom-about-a-point is "hold the cursor's
@@ -229,6 +468,18 @@ export class RouteMap {
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
     this.route = opts.route || [];            // [[lat,lon], …]            — the matched route (read-only)
     this._stats = {};                         // per-render draw counts (gate hook)
+    this._timeLayers = false;                 // opt-in per-layer render timing (PLAN-PERF §6 R)
+    this._layerMs = null;
+    this._bboxCache = new WeakMap();          // layer array → per-feature lat/lon bounds (step 14)
+    // Step 15's block raster cache — ON. A pan blits cached rasters instead of redrawing the base map:
+    // 0.9 ms against 20 ms. Its difference from a direct render is fully accounted for in PLAN-PERF §6d
+    // and gated (cached==baked exact, every label pass exact, maxDelta <= 16). The residual is
+    // antialiasing rounding that no cache of this design can avoid, because Chromium's rasterisation is
+    // not invariant to canvas dimensions and a bleed margin necessarily changes them.
+    //
+    // It also snaps the render origin to a whole device pixel, so the image sits within one device pixel
+    // of the unsnapped projection. project/unproject stay EXACT, so pan/zoom anchoring is unaffected.
+    this.blocked = true;
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
@@ -240,15 +491,74 @@ export class RouteMap {
 
   // Replace all base-map layers from the kernel's `view` text (parseView demux). Call render() after.
   loadView(text) {
+    this.invalidateBlocks();
     const v = parseView(text);
     this.areas = v.areas; this.buildings = v.buildings; this.lines = v.lines; this.pois = v.pois;
     this.places = v.places; this.streets = v.streets; this.streetLabels = v.streetLabels;
     return this;
   }
 
+  // Load ONLY the roads, flat (PLAN-PERF §6c). `loadView` above is kept for the legacy per-file format
+  // and for the parity probe, which needs the boxed form to compare against.
+  loadRoadsFlat(text) { this.streetsFlat = parseStreetsFlat(text); this.streets = []; return this.invalidateBlocks(); }
+
   // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
   // never the line). `pts` is [[lat,lon], …]. Call render() after.
   setRoute(pts) { this.route = pts || []; return this; }
+
+  // --- The growing line (PLAN-PERF §6b(2) / §6b A) ---------------------------------------------------
+  //
+  // A match arrives one stretch at a time, in TRAVEL order, so the route draws itself along the way the
+  // user will actually go. That ordering is load-bearing, not decoration (§6b A): it is a progress
+  // indicator with no indicator, because the thing shown IS the work being done.
+  //
+  // Start a streamed match: drop the previous route and repaint ONCE, so the old line is gone before the
+  // new one starts growing. This is the only full render the stream pays.
+  beginStretches() {
+    this._stretches = [];
+    this._lastStretch = -1;
+    this.route = [];
+    this.render();
+    return this;
+  }
+
+  // Fold in one arrived stretch and re-stroke the route so far, on top of what is already on the canvas.
+  //
+  // Work is proportional to the ROUTE, not to the map. A full render() per stretch would redraw every
+  // area, building, road and label for a line that grew by ~50 points — the exact violation of §1 this
+  // plan exists to remove, and ~74 ms of it each time. Stroking the accumulated polyline instead costs
+  // one path over a few thousand points, and `route` stays authoritative so any later full render (a pan,
+  // or loadMatch at the end) draws it correctly and at the proper z-order.
+  //
+  // It re-strokes the WHOLE line rather than only the new piece, and that is the deliberate part: the
+  // route is drawn as a white halo under a blue core, so stroking one stretch alone paints its halo over
+  // the previous stretch's core and leaves a white notch at every joint. Stroking the accumulation has no
+  // seam. The price is that the halo composites over itself and goes opaque after ~3 stretches, where a
+  // full render leaves it at 85% — invisible in practice, and the final render restores it.
+  //
+  // Same for z-order: a streaming stretch sits ABOVE the labels, below them once the match completes.
+  // Both are transient, and paying a full re-render per stretch to avoid them is the wrong trade.
+  // A NON-INCREASING index means the matcher started the route over, and the canvas must be cleared.
+  //
+  // This is not hypothetical: step 22's ladder matches with the cell tube, and if the §3 gate rejects
+  // that tier it rebuilds on the fat bbox and re-runs `match_incremental_streamed` — so every stretch is
+  // emitted TWICE, the second pass restarting at 0 with different geometry (measured: a 40-point sketch
+  // emits 78 stretches, not 39). Without this branch the rejected tier stays painted under the accepted
+  // one and the slots blend into a route that was never matched: new stretch 0 beside old stretches 1..n.
+  //
+  // A single pass emits 0,1,2,… strictly increasing, so the test needs no cooperation from the kernel and
+  // no second channel — the indices already say it.
+  applyStretch(i, pts) {
+    if (!this._stretches) { this._stretches = []; this._lastStretch = -1; }
+    if (i <= this._lastStretch) { this._stretches = []; this.route = []; this.render(); }
+    this._lastStretch = i;
+    this._stretches[i] = pts;
+    this.route = joinStretches(this._stretches);
+    if (this.route.length < 2) return this;
+    const px = this._projLine(this.route);
+    if (this._inView(px)) this._strokeRoute(px);
+    return this;
+  }
 
   // Parse the kernel's `match` output (a ROUTE line + a SUMMARY line), set the route, return the SUMMARY.
   loadMatch(text) {
@@ -276,7 +586,37 @@ export class RouteMap {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
 
-  view() { return makeView(this.camera, this.width, this.height); }
+  // The current view, rebuilt only when the camera or the viewport actually moves.
+  //
+  // This used to construct a fresh one per call, and `project()` is called once PER VERTEX — 214 455 of
+  // them in a frame of this viewport (PLAN-PERF §6 R). So every vertex paid an extra `projectWorld` for
+  // the camera centre plus three allocations, to compute a value identical for the whole frame.
+  //
+  // The camera is mutated IN PLACE by pan/zoom (`this.camera.lat = …`), so the cached view must hold a
+  // COPY of the camera fields: comparing against the same object it was built from would compare a value
+  // with itself, and the cache would never invalidate. Same arithmetic either way — makeView is pure and
+  // gets identical inputs — so the pixels are unchanged, which is what the gate asserts.
+  view() {
+    const c = this.camera, v = this._view;
+    // Under an `_origin` override the view is not the camera's — build it fresh each time rather than
+    // poison the memo, since block rendering changes the origin per block.
+    if (this._origin) return this._viewAt(this._origin.x, this._origin.y);
+    if (!v || v.width !== this.width || v.height !== this.height
+        || v.camera.lat !== c.lat || v.camera.lon !== c.lon || v.camera.zoom !== c.zoom) {
+      this._view = makeView({ lat: c.lat, lon: c.lon, zoom: c.zoom }, this.width, this.height);
+    }
+    return this._view;
+  }
+  // A view whose screen space is measured from an arbitrary world-pixel origin. `makeView` derives its
+  // origin from the camera; this is the same projection with the origin supplied instead.
+  _viewAt(ox, oy) {
+    const zoom = this.camera.zoom;
+    return {
+      camera: this.camera, width: this.width, height: this.height,
+      project(lat, lon) { const p = projectWorld(lon, lat, zoom); return { x: p.x - ox, y: p.y - oy }; },
+      unproject(sx, sy) { return unprojectWorld(ox + sx, oy + sy, zoom); },
+    };
+  }
   project(lat, lon) { return this.view().project(lat, lon); }
   unproject(x, y) { return this.view().unproject(x, y); }
 
@@ -340,29 +680,264 @@ export class RouteMap {
     this._raf = requestAnimationFrame(() => { this._raf = 0; this.render(); });
   }
 
+  // --- Step 15: cached per-block rasters -------------------------------------------------------------
+  //
+  // A pan re-runs the whole base map for a camera that moved a few pixels — §1's invariant violated at
+  // frame scale one last time. The base layers are baked into 512-px blocks in WORLD-PIXEL space (which
+  // is camera-independent at a given zoom, so a block's content is fixed) and a pan just blits them.
+  //
+  // ⚠ THIS IS THE FIRST STEP IN §6c THAT IS NOT PIXEL-IDENTICAL, and the reason is worth stating because
+  // it is not a shortcut. Canvas rasterisation depends on a path's SUB-PIXEL PHASE. A block's raster fixes
+  // that phase when it is baked; the viewport origin (`cameraWorld - width/2`) is fractional and moves
+  // continuously, so blitting a baked block at the true fractional offset would resample it (blurring
+  // every pan) and blitting at a rounded offset shifts it by up to one device pixel. Every tile renderer
+  // faces this; all of them snap. So the ORIGIN IS SNAPPED to a whole device pixel, and the rendered image
+  // sits within one device pixel of the unsnapped projection.
+  //
+  // What is deliberately NOT snapped: `project`/`unproject` themselves. They stay exact, so the pan/zoom
+  // anchoring invariants in map.test.mjs (grabbed point stays under the cursor, wheel zoom holds its
+  // anchor) are untouched — the snap is a RENDERING decision, not a projection one.
+  //
+  // The margin is what keeps the seams invisible: a block is baked at BLOCK+2*MARGIN and only its interior
+  // is blitted, so the clip edge — where a stroke crossing a block boundary would be antialiased against
+  // nothing — falls outside the region ever shown. MARGIN must exceed the widest half-stroke drawn
+  // (roads ~9 px at high zoom, the route halo 7 px), and 32 is comfortably past that.
+  //
+  // Labels and the route are NOT baked, on purpose: label collision is resolved against the whole viewport
+  // and would be wrong per block, and the route changes without the base map changing.
+  renderBlocked() {
+    const B = this.blockSize || BLOCK, M = BLOCK_MARGIN, z = this.camera.zoom;
+    const o = this._originWorld();
+    const ox = Math.round(o.x * this.dpr) / this.dpr, oy = Math.round(o.y * this.dpr) / this.dpr;
+    const ctx = this.ctx, W = this.width, H = this.height;
+    if (this._blockZoom !== z) { this._blocks = new Map(); this._blockZoom = z; }
+    this._blockStats = { areas: 0, lines: 0, buildings: 0, streets: 0, pois: 0 };
+    const cache = this._blocks || (this._blocks = new Map());
+    // The blit takes a SUB-RECTANGLE of the block (its interior, inside the bleed margin). With smoothing
+    // on, Chromium filters at the sub-rect edges even at 1:1 scale, which shows up as antialiasing-
+    // magnitude drift spread across the frame. A whole-canvas round-trip is exact (see
+    // `offscreenRoundTrip`), so this is the difference between that control and the block path.
+    const smooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+    this._buildingLabels = [];
+    const bx0 = Math.floor(ox / B), bx1 = Math.floor((ox + W) / B);
+    const by0 = Math.floor(oy / B), by1 = Math.floor((oy + H) / B);
+    // Two passes: bake a bounded number of the missing blocks, then decide whether the cache can cover
+    // the viewport. If it cannot, the caller draws this frame directly — a partial blit would show holes.
+    let baked = 0;
+    for (let by = by0; by <= by1 && baked < BLOCK_BAKES_PER_FRAME; by++) {
+      for (let bx = bx0; bx <= bx1 && baked < BLOCK_BAKES_PER_FRAME; bx++) {
+        if (!cache.has(bx + ',' + by)) { cache.set(bx + ',' + by, this._bakeBlock(bx, by)); baked++; }
+      }
+    }
+    this._blocksBaked = baked;
+    for (let by = by0; by <= by1; by++) {
+      for (let bx = bx0; bx <= bx1; bx++) if (!cache.has(bx + ',' + by)) { ctx.imageSmoothingEnabled = smooth; return null; }
+    }
+    for (let by = by0; by <= by1; by++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        const key = bx + ',' + by;
+        const cv = cache.get(key);
+        // Label anchors are cached WITH the block. Only a bake produces them, so a fully-cached frame
+        // would otherwise reset the list and never refill it — every building label would vanish on the
+        // second frame of a pan. The bisect never saw this because it cleared the cache every time.
+        if (cv.__labels) for (const L of cv.__labels) this._buildingLabels.push(L);
+        // Counts are SUMMED over blocks, so a feature spanning two blocks counts twice. That is a real
+        // description of the drawing done, and deliberately NOT comparable to the direct path's counts —
+        // which is why the blocked-vs-direct gate compares PIXELS, not counts.
+        for (const k in cv.__stats || {}) this._blockStats[k] += cv.__stats[k];
+        // Integer device-pixel destination: both origins are snapped, so this subtraction is exact.
+        ctx.drawImage(cv, M * this.dpr, M * this.dpr, B * this.dpr, B * this.dpr,
+                      bx * B - ox, by * B - oy, B, B);
+      }
+    }
+    ctx.imageSmoothingEnabled = smooth;
+    const blockBytes = Math.pow((B + 2 * M) * this.dpr, 2) * 4;
+    const maxBlocks = Math.max(4, Math.floor(BLOCK_CACHE_BYTES / blockBytes));
+    if (cache.size > maxBlocks) {                          // keep what is on screen, drop the rest
+      for (const k of [...cache.keys()]) {
+        const [kx, ky] = k.split(',').map(Number);
+        if (kx < bx0 || kx > bx1 || ky < by0 || ky > by1) cache.delete(k);
+      }
+    }
+    // `{x, y}`, not `{ox, oy}`: the caller assigns this straight to `_origin`, which `_flatK` and
+    // `_viewAt` read as .x/.y. Returning the wrong key names made every overlay projection NaN — labels
+    // and the route silently vanished from a blocked frame, which the per-layer bisect found as 34,414
+    // differing pixels in the street-label pass alone.
+    return { x: ox, y: oy };
+  }
+
+  // Bake one block: an offscreen canvas of BLOCK+2*MARGIN, drawn with the world-pixel origin moved to the
+  // block's top-left minus the margin. Every base layer is drawn by the SAME methods the direct path uses
+  // — that shared code is what makes "the cache changed nothing" a checkable claim rather than a hope.
+  _bakeBlock(bx, by) {
+    const B = this.blockSize || BLOCK, M = BLOCK_MARGIN, S = B + 2 * M;
+    const cv = (typeof document !== 'undefined' && document.createElement)
+      ? document.createElement('canvas') : { getContext: () => null, width: 0, height: 0 };
+    cv.width = Math.round(S * this.dpr); cv.height = Math.round(S * this.dpr);
+    const c2 = cv.getContext ? cv.getContext('2d') : null;
+    if (!c2) return cv;
+    c2.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    c2.fillStyle = '#f2efe9'; c2.fillRect(0, 0, S, S);
+    const savedCtx = this.ctx, savedW = this.width, savedH = this.height;
+    this.ctx = c2; this.width = S; this.height = S;
+    this._origin = { x: bx * B - M, y: by * B - M };
+    this._noVertexCull = true; this._baking = true;
+    const labelMark = this._buildingLabels.length;
+    try { cv.__stats = this._drawBase(this.camera.zoom); cv.__labels = this._buildingLabels.slice(labelMark); }
+    finally { this._baking = false; this._noVertexCull = false; this._origin = null; this.ctx = savedCtx; this.width = savedW; this.height = savedH; }
+    return cv;
+  }
+
+  // Draw the whole map directly, but from the SNAPPED origin the blocked path uses. This is the gate's
+  // reference: it isolates the cache (does blitting baked blocks equal drawing them?) from the snap
+  // (does moving the origin to a whole device pixel change the image?), which are two different claims.
+  renderSnappedDirect() {
+    const o = this._originWorld();
+    const ox = Math.round(o.x * this.dpr) / this.dpr, oy = Math.round(o.y * this.dpr) / this.dpr;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.fillStyle = '#f2efe9'; ctx.fillRect(0, 0, this.width, this.height);
+    this._origin = { x: ox, y: oy };
+    try {
+      // The vertex cull is disabled for the BASE only, matching a block bake exactly. Leaving it off for
+      // the label pass would give the reference a different candidate SET, and `fits` is greedy — so the
+      // two paths would place different labels and differ all over the canvas for a reason that has
+      // nothing to do with caching.
+      this._noVertexCull = true;
+      try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
+      if (!this._skipOverlays) { this.drawRoute(); this.layoutLabels(); }
+    } finally { this._origin = null; }
+    return this;
+  }
+
+  // A building's label anchor, recorded in WORLD PIXELS rather than screen pixels.
+  //
+  // Screen coordinates are meaningless across a block bake: each block projects from its own origin, so a
+  // centroid computed there lands wherever that block's top-left happens to be. World pixels are
+  // camera- and block-independent, and the label pass subtracts whatever origin the frame is using.
+  //
+  // While baking, only the block whose INTERIOR contains the anchor claims it — a building straddling two
+  // blocks is drawn by both but labelled once.
+  _pushBuildingLabel(name, x, y, seq) {
+    const K = this._flatK();
+    const B = this.blockSize || BLOCK;
+    if (this._baking
+        && (x < BLOCK_MARGIN || x >= BLOCK_MARGIN + B || y < BLOCK_MARGIN || y >= BLOCK_MARGIN + B)) return;
+    this._buildingLabels.push({ name, wx: x + K.cx - K.hw, wy: y + K.cy - K.hh, seq });
+  }
+
+  // The baked layers, in z-order. Shared by the direct render and by every block bake.
+  _drawBase(z) {
+    // `_onlyLayer` restricts the base to one kind. It exists for the §6d bisect: when two renders differ
+    // over the whole canvas, drawing one layer at a time is what says WHICH one diverges, instead of
+    // guessing from a hash.
+    const only = this._onlyLayer;
+    const want = (k) => (only === '__none__' ? false : (!only || only === k));
+    let areasN = 0;
+    if (want('areas')) {
+      if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
+      else {
+        const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+        for (let i = 0; i < this.areas.length; i++) {
+          const a = this.areas[i];
+          if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+          this.drawArea(a); areasN++;
+        }
+      }
+    }
+    const lnN = want('lines') ? this.drawLines() : 0;
+    const bN = want('buildings') ? this.drawBuildings() : 0;
+    const sN = want('streets') ? this.drawStreets() : 0;
+    const poiN = want('pois') ? this.drawPois() : 0;
+    return { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN };
+  }
+
   render() {
     const ctx = this.ctx, W = this.width, H = this.height, z = this.camera.zoom;
+    // Per-layer attribution (PLAN-PERF §6 R). `render` was one 73 ms number, and steps 14/15 each bet on
+    // a DIFFERENT half of it — 14 that projection math dominates, 15 that rasterisation does. One
+    // aggregate cannot referee that bet, and the step that guesses wrong moves nothing. `now` is read
+    // once: performance.now() itself is not free at ~26k features, and an absent clock (node stub canvas
+    // in map.test.mjs) must cost nothing at all.
+    const clk = this._timeLayers && typeof performance !== 'undefined' ? () => performance.now() : null;
+    const t = clk ? { at: clk(), ms: {} } : null;
+    const mark = (k) => { if (t) { const n = clk(); t.ms[k] = n - t.at; t.at = n; } };
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#f2efe9';                 // Carto land background
     ctx.fillRect(0, 0, W, H);
+    mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
-    let areasN = 0;
-    for (const a of this.areas) if (z >= a.minZoom) { this.drawArea(a); areasN++; }
-    const lnN = this.drawLines();              // streams / rails / barriers, above terrain
-    const bN = this.drawBuildings();
-    const sN = this.drawStreets();
-    const poiN = this.drawPois();              // point glyphs, above roads
-    const rtN = this.drawRoute();              // matched route, above the base map
-    const lab = this.layoutLabels();
-    this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
-    // M0 probe: optional test dots (empty once real layers are loaded).
-    for (const p of this.points) {
-      const s = this.project(p.lat, p.lon);
-      ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, 2 * Math.PI);
-      ctx.fillStyle = '#c0392b'; ctx.fill();
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
-    }
+    // The base map is either blitted from cached blocks (step 15) or drawn directly; the route and the
+    // labels are always drawn live on top — labels because their collision pass is viewport-wide, the
+    // route because it changes without the base map changing.
+    // When the base comes from cached blocks it is drawn from a SNAPPED origin, so the rest of the frame
+    // must use that same origin or the route and the labels sit a sub-pixel off the map under them —
+    // which is exactly what the first blockRaster() probe caught.
+    let snapOrigin = null;
+    // Block rendering needs a real canvas to bake into and a ctx that can blit. map.test.mjs runs the
+    // renderer DOM-free against a stub, and a headless environment must still draw — so this degrades to
+    // the direct path rather than requiring a DOM.
+    const canBlock = this.blocked && typeof document !== 'undefined' && !!document.createElement
+                     && typeof ctx.drawImage === 'function';
+    let base;
+    if (canBlock && (snapOrigin = this.renderBlocked())) base = this._blockStats || {};
+    else if (canBlock) {
+      // Cache cannot cover the viewport yet (it is still baking). Draw directly, but from the SAME snapped
+      // origin the blocks use, so the image does not jump by a device pixel when the cache takes over.
+      const o = this._originWorld();
+      snapOrigin = { x: Math.round(o.x * this.dpr) / this.dpr, y: Math.round(o.y * this.dpr) / this.dpr };
+      this._origin = snapOrigin;
+      try { base = this._drawBase(z); } finally { this._origin = null; }
+      this.requestRender();                                // keep baking on following frames
+    } else base = this._drawBase(z);
+    mark('base');
+    if (snapOrigin) this._origin = snapOrigin;
+    let rtN = 0, lab;
+    try {
+      if (!this._skipOverlays) {
+        rtN = this.drawRoute();                // matched route, above the base map
+        mark('route');
+        lab = this.layoutLabels();
+        mark('labels');
+      }
+      // The M0 sketch dots belong INSIDE the snapped origin too — drawing them after it is restored put
+      // the user's own clicked points up to a device pixel off the map they were clicked on.
+      for (const p of this.points) {
+        const s2 = this.project(p.lat, p.lon);
+        ctx.beginPath(); ctx.arc(s2.x, s2.y, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = '#c0392b'; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+    } finally { if (snapOrigin) this._origin = null; }
+    lab = lab || { placeLabels: 0, streetLabels: 0, buildingLabels: 0 };
+    this._stats = { areas: base.areas ?? 0, lines: base.lines ?? 0, buildings: base.buildings ?? 0, streets: base.streets ?? 0, pois: base.pois ?? 0, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
+    if (t) this._layerMs = t.ms;
     for (const cb of this._renderCbs) cb(ctx, this);
+  }
+
+  // Probe (PLAN-PERF §6 R, step 14): what does a frame spend on PROJECTION alone?
+  //
+  // Step 14 is "pre-project geometry into typed arrays once per view, not per frame", and its entire
+  // value is bounded by this number — hoisting projection out of the frame cannot save more than
+  // projection costs. Walks exactly the geometry `render()` walks, calls the same `project()`, and
+  // discards the result, so what it returns is the CEILING on step 14's win. If that ceiling is a small
+  // fraction of the measured render, step 14 is the wrong step and the cost is in rasterisation (15).
+  //
+  // `sink` defeats dead-code elimination: without consuming the coordinates a JIT is free to delete the
+  // whole loop and report a projection cost of ~0, which would send step 14 to the scrapyard for free.
+  projectionCost() {
+    const z = this.camera.zoom;
+    let sink = 0, verts = 0;
+    const walk = (g) => { for (const p of g) { const s = this.project(p[0], p[1]); sink += s.x + s.y; verts++; } };
+    for (const a of this.areas) if (z >= a.minZoom) walk(a.ring);
+    for (const b of this.buildings) walk(b.ring);
+    for (const s of this.streets) walk(s.line);
+    for (const l of this.lines) walk(l.geom);
+    for (const p of this.pois) { const s = this.project(p.at[0], p.at[1]); sink += s.x + s.y; verts++; }
+    for (const p of this.places) { const s = this.project(p.at[0], p.at[1]); sink += s.x + s.y; verts++; }
+    for (const s of this.streetLabels) walk(s.line);
+    return { verts, sink };
   }
 
   // M2: one filled path per area, coloured by Carto cover class.
@@ -388,23 +963,297 @@ export class RouteMap {
   }
 
   _projLine(g) { const px = new Array(g.length); for (let i = 0; i < g.length; i++) px[i] = this.project(g[i][0], g[i][1]); return px; }
-  _inView(px, pad = 60) { for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
+  _inView(px, pad = 60) { if (this._noVertexCull) return true; for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
+
+  // --- Drawing straight out of the store (PLAN-PERF §6c) ---------------------------------------------
+  //
+  // `setStoreIndex` hands the renderer a per-view INDEX (browser/store-geom.mjs) instead of JS geometry:
+  // per feature, where its ring lives in wasm memory and what it spans. Nothing per-vertex is retained.
+  //
+  // ⚠ `memory` is kept as a FUNCTION, never as a buffer. `memory.grow` detaches the ArrayBuffer and the
+  // kernel grows memory while matching, so every frame must re-derive its view; a cached Int32Array would
+  // read a detached buffer (length 0) and the map would silently go blank after the first match.
+  setStoreIndex(idx, memFn, storeBase) {
+    this._sidx = idx; this._smem = memFn; this._sb = Number(storeBase) || 0;
+    this.invalidateBlocks();
+    return this;
+  }
+
+  // Drop every cached raster. A block is baked from whatever features were loaded at the time, and the
+  // index is built for ONE viewport window — so a block baked before a data load can be missing features
+  // that window did not include. Anything that replaces layer data must call this, or the map shows a
+  // stale tile that no amount of panning repairs.
+  invalidateBlocks() { this._blocks = new Map(); this._blockZoom = null; return this; }
+
+  // The projection constants for this frame, hoisted so the per-vertex loop is pure arithmetic.
+  //
+  // These reproduce makeView().project EXACTLY — same operations, same left-to-right association
+  // (`(p - c) + half`) — because the store path has to be bit-identical to the object path it replaces,
+  // and the gate is a canvas pixel hash. Anything that merely rounds the same way would eventually differ
+  // in a last bit and show up as antialiasing noise.
+  _flatK() {
+    const cam = this.camera, scale = TILE * Math.pow(2, cam.zoom);
+    // `_origin` (step 15) redirects every projection to a WORLD-PIXEL origin instead of the camera —
+    // that is what lets the same draw code fill a cached block whose top-left is not the viewport's.
+    if (this._origin) return { scale, cx: this._origin.x, cy: this._origin.y, hw: 0, hh: 0 };
+    const c = projectWorld(cam.lon, cam.lat, cam.zoom);
+    return { scale, cx: c.x, cy: c.y, hw: this.width / 2, hh: this.height / 2 };
+  }
+
+  // The viewport's top-left in WORLD PIXELS at the current zoom. Fractional as the camera pans, which is
+  // exactly why step 15 has to snap it (see `renderBlocked`).
+  _originWorld() {
+    const c = projectWorld(this.camera.lon, this.camera.lat, this.camera.zoom);
+    return { x: c.x - this.width / 2, y: c.y - this.height / 2 };
+  }
+
+  // Project one feature's coordinates from the store into the reusable scratch buffer. Reads the ints
+  // where loft wrote them and writes x,y pairs; allocates nothing per vertex and nothing per feature.
+  _projectFlat(i32, o, len, ox, oy, K) {
+    let s = this._scratch;
+    if (!s || s.length < len * 2) { s = this._scratch = new Float64Array(Math.max(4096, len * 2)); }
+    for (let k = 0; k < len; k++) {
+      const lon = (ox + i32[o + 2 * k]) / 1e7, lat = (oy + i32[o + 2 * k + 1]) / 1e7;
+      const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+      s[2 * k] = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+      s[2 * k + 1] = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+    }
+    return s;
+  }
+  // `_inView` on the scratch — same padded-rect test, so the same features survive.
+  _inViewFlat(s, len, pad = 60) {
+    if (this._noVertexCull) return true;
+    for (let k = 0; k < len; k++) {
+      const x = s[2 * k], y = s[2 * k + 1];
+      if (x >= -pad && x <= this.width + pad && y >= -pad && y <= this.height + pad) return true;
+    }
+    return false;
+  }
+  _pathFlat(s, len) {
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.moveTo(s[0], s[1]);
+    for (let k = 1; k < len; k++) ctx.lineTo(s[2 * k], s[2 * k + 1]);
+  }
+
+  // The screen rect in FIXED POINT (deg * 1e7), matching the index's stored bounds so the per-feature
+  // test is integer compare — no conversion per feature, and the same rectangle `_screen` computes.
+  // Scaled, NOT rounded outward. Flooring/ceiling would make this a slightly larger rectangle than
+  // `_screen`, and the two paths would then disagree about features whose bounds sit within 1e-7° of the
+  // padded edge. Such a feature lies >60 px off-screen and paints nothing either way, so the pixels are
+  // safe regardless — but the DRAW COUNTS would differ, and the gate compares those too.
+  _screenFixed() {
+    const w = this._screen();
+    return { mnla: w.mnla * 1e7, mxla: w.mxla * 1e7, mnlo: w.mnlo * 1e7, mxlo: w.mxlo * 1e7 };
+  }
+
+  // --- The geometry screen (PLAN-PERF §0 step 14 / §6 R) ---------------------------------------------
+  //
+  // Every draw loop below used to PROJECT a feature's whole ring and only then ask `_inView` whether any
+  // of it landed on screen. Measured on the app's own viewport: 214 455 vertices projected per frame to
+  // draw 1 895 buildings of 16 646 loaded — ~89% of the projection thrown away, every frame, and 82% of
+  // the frame's 64 ms (CPU_THROTTLE=4). That is §1's invariant violated at frame scale: work proportional
+  // to the loaded data instead of to what is on screen.
+  //
+  // WHY THIS IS PIXEL-IDENTICAL, and not merely "close enough". `_inView(px, pad)` keeps a feature iff
+  // some VERTEX lands in the viewport padded by `pad` pixels. `_screen` is the same rectangle unprojected
+  // to lat/lon — exact, because Mercator is monotonic per axis, so the pixel rect and the degree rect are
+  // the same region. If a vertex is inside the pixel rect its lat/lon is inside the degree rect, so the
+  // feature's bounding box necessarily OVERLAPS it. Contrapositive: a feature whose bbox misses the rect
+  // has no vertex in view and `_inView` would have rejected it anyway. The screen is therefore a
+  // conservative SUPERSET of the existing test — it can only skip work that was already being discarded,
+  // never change what is drawn. (It is a strict superset: a long line crossing the viewport with both
+  // ends outside overlaps the rect but has no vertex in it. The screen keeps it; `_inView` still rejects
+  // it. Cheaper is not the same as equal, and the gate asserts equal.)
+  //
+  // ⚠ And for AREAS a bbox test is not merely cheaper, it is the only correct one. Areas are FILLED and
+  // had no cull at all — deliberately, it turns out: a polygon big enough to contain the whole viewport
+  // has no vertex on screen yet paints every pixel of it, so culling areas by `_inView` would erase
+  // lakes and forests exactly when zoomed in far enough to be inside one. A bbox overlap keeps them,
+  // because containment implies overlap. This is why the screen is expressed as bounds and not as
+  // "is any vertex visible".
+  //
+  // A single pad of 60 is used for every layer even though buildings pass 20. Larger pad = larger window =
+  // fewer features skipped, which is the SAFE direction; the selectivity lost is negligible.
+  _screen() {
+    const v = this.view(), pad = 60;
+    const nw = v.unproject(-pad, -pad), se = v.unproject(this.width + pad, this.height + pad);
+    return { mnla: se.lat, mxla: nw.lat, mnlo: nw.lon, mxlo: se.lon };
+  }
+
+  // Per-feature lat/lon bounds for a layer, built ONCE per layer array and reused every frame — the
+  // "once per view, not per frame" of step 14. Keyed on the array itself, so replacing a layer (loadView,
+  // or a store read) misses the cache automatically and there is no invalidation to forget.
+  _geoBounds(list, geomOf) {
+    let bb = this._bboxCache.get(list);
+    if (bb) return bb;
+    bb = new Float64Array(list.length * 4);
+    for (let i = 0; i < list.length; i++) {
+      const g = geomOf(list[i]);
+      let mnla = Infinity, mxla = -Infinity, mnlo = Infinity, mxlo = -Infinity;
+      for (let k = 0; k < g.length; k++) {
+        const la = g[k][0], lo = g[k][1];
+        if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+        if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+      }
+      bb[i * 4] = mnla; bb[i * 4 + 1] = mxla; bb[i * 4 + 2] = mnlo; bb[i * 4 + 3] = mxlo;
+    }
+    this._bboxCache.set(list, bb);
+    return bb;
+  }
+  // Does feature `i`'s bbox overlap the screen rect? Empty geometry leaves +Inf/-Inf and misses, matching
+  // `_inView([])` — which is also false.
+  _onScreen(bb, i, w) {
+    const o = i * 4;
+    return bb[o + 1] >= w.mnla && bb[o] <= w.mxla && bb[o + 3] >= w.mnlo && bb[o + 2] <= w.mxlo;
+  }
   _strokePx(px) { const ctx = this.ctx; ctx.beginPath(); for (let i = 0; i < px.length; i++) { if (i === 0) ctx.moveTo(px[i].x, px[i].y); else ctx.lineTo(px[i].x, px[i].y); } ctx.stroke(); }
 
   // M3/S13 + B5: fill building footprints (only from z14, S13) and collect named ones for a label at ≥z16.
   // Returns the count drawn in view; the label candidates are consumed by layoutLabels().
   drawBuildings() {
-    this._buildingLabels = [];
+    // Not reset while BAKING: a frame's labels accumulate across its blocks (each block claims only the
+    // anchors inside its own interior, so nothing is claimed twice). renderBlocked resets per frame.
+    if (!this._baking) this._buildingLabels = [];
     if (this.camera.zoom < BUILDINGS_MINZOOM) return 0;
+    if (this._sidx && this._sidx.buildings) return this._drawBuildingsFromStore();
     const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM; let n = 0;
-    for (const b of this.buildings) {
+    const win = this._screen(), bb = this._geoBounds(this.buildings, (b) => b.ring);
+    for (let i = 0; i < this.buildings.length; i++) {
+      if (!this._onScreen(bb, i, win)) continue;          // step 14: reject before projecting, not after
+      const b = this.buildings[i];
       const px = this._projLine(b.ring);
       if (px.length < 3 || !this._inView(px, 20)) continue;
       this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); n++;
       if (wantLabels && b.name) {
         let cx = 0, cy = 0; for (const p of px) { cx += p.x; cy += p.y; }        // ring centroid ≈ label anchor
-        this._buildingLabels.push({ name: b.name, x: cx / px.length, y: cy / px.length });
+        this._pushBuildingLabel(b.name, cx / px.length, cy / px.length, i);
       }
+    }
+    return n;
+  }
+
+  // Buildings, read straight out of the store (PLAN-PERF §6c). Same drops in the same order as the object
+  // path above — the fixed-point screen, then `ring.length >= 3` (which `viewRenderLists` applied at load
+  // and this applies at draw), then `_inView(px, 20)` — so the two produce identical pixels and identical
+  // counts. Names are decoded ONLY for the handful that get a label, which is why the index keeps the
+  // string RECORD rather than the string: 16,646 building names would be 16,646 JS objects to draw 33.
+  _drawBuildingsFromStore() {
+    const col = this._sidx.buildings, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);                  // re-derived per frame: memory.grow detaches
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb;
+    const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM;
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const len = col.len[i];
+      if (len < 3) continue;
+      const o = (sb + col.rec[i] * 8 + 8) >> 2;              // Int32 index of the ring's first coord
+      const s = this._projectFlat(i32, o, len, col.ox[i], col.oy[i], K);
+      if (!this._inViewFlat(s, len, 20)) continue;
+      this._pathFlat(s, len);
+      const ctx = this.ctx;
+      ctx.closePath();
+      ctx.fillStyle = BUILDING_FILL; ctx.fill();
+      ctx.strokeStyle = BUILDING_STROKE; ctx.lineWidth = 0.6; ctx.stroke();
+      n++;
+      if (wantLabels && col.sRec[i]) {
+        const name = decodeText(mem, sb, col.sRec[i], this._textCache || (this._textCache = new Map()));
+        if (name) {
+          let cx = 0, cy = 0;
+          for (let k = 0; k < len; k++) { cx += s[2 * k]; cy += s[2 * k + 1]; }
+          this._pushBuildingLabel(name, cx / len, cy / len, i);
+        }
+      }
+    }
+    return n;
+  }
+
+  // Areas, read straight out of the store. Draw ORDER is what makes this pixel-identical as much as the
+  // geometry is: areas overdraw each other, and the index pushes them in the same tile-then-element order
+  // `viewFromStore` did, so the same polygon ends up on top.
+  //
+  // `minZoom` is recomputed here rather than stored, from the SAME degree values `areaMinZoom` used — the
+  // bounds are converted to degrees BEFORE subtracting, because (a-b)/1e7 and a/1e7-b/1e7 are not the same
+  // double and a band edge would then flip for an area sitting exactly on a threshold.
+  _drawAreasFromStore(z) {
+    const col = this._sidx.areas, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
+    const cache = this._textCache || (this._textCache = new Map());
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const len = col.len[i];
+      if (len < 3) continue;                                 // areaRenderList's drop, applied at draw
+      const diag = Math.hypot(col.bb[o4 + 1] / 1e7 - col.bb[o4] / 1e7, col.bb[o4 + 3] / 1e7 - col.bb[o4 + 2] / 1e7);
+      const mz = diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
+      if (z < mz) continue;
+      const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+      this._pathFlat(s, len);
+      ctx.closePath();
+      ctx.fillStyle = COVER_COLORS[decodeText(mem, sb, col.sRec[i], cache)] || COVER_FALLBACK;
+      ctx.fill();
+      n++;
+    }
+    return n;
+  }
+
+  // Streams / rails / barriers from the store — same zoom gate, same style table, same `_inView` drop.
+  _drawLinesFromStore(z) {
+    const col = this._sidx.lines, mem = this._smem();
+    const i32 = new Int32Array(mem.buffer);
+    const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
+    const cache = this._textCache || (this._textCache = new Map());
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const o4 = i * 4;
+      if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+       || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+      const st = LINE_STYLES[decodeText(mem, sb, col.sRec[i], cache)];
+      if (!st || z < st.minZoom) continue;
+      const len = col.len[i];
+      if (len < 2) continue;
+      const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+      if (!this._inViewFlat(s, len)) continue;
+      ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
+      this._pathFlat(s, len); ctx.stroke();
+      n++;
+    }
+    ctx.setLineDash([]);
+    return n;
+  }
+
+  // POI glyphs from the store. A poi's Coord is INLINE in its element, so the index stored the point in
+  // its own bounds and there is no ring to walk — project the one pair and reuse drawPoi's exact tests.
+  _drawPoisFromStore() {
+    const col = this._sidx.pois, mem = this._smem();
+    const K = this._flatK(), sb = this._sb, ctx = this.ctx, z = this.camera.zoom;
+    const cache = this._textCache || (this._textCache = new Map());
+    let n = 0;
+    for (let i = 0; i < col.n; i++) {
+      const st = POI_STYLES[decodeText(mem, sb, col.sRec[i], cache)] || POI_FALLBACK;
+      if (z < st.z) continue;
+      const o4 = i * 4;
+      const lat = col.bb[o4] / 1e7, lon = col.bb[o4 + 2] / 1e7;
+      const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+      const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+      const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+      if (x < -POI_EDGE_PAD || x > this.width + POI_EDGE_PAD
+       || y < -POI_EDGE_PAD || y > this.height + POI_EDGE_PAD) continue;
+      const r = st.r || 2.5;
+      ctx.beginPath();
+      if (st.shape === 'square') ctx.rect(x - r, y - r, 2 * r, 2 * r);
+      else if (st.shape === 'triangle') { ctx.moveTo(x, y - r); ctx.lineTo(x + r, y + r); ctx.lineTo(x - r, y + r); ctx.closePath(); }
+      else ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.setLineDash([]); ctx.fillStyle = st.color; ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1;
+      ctx.fill(); ctx.stroke();
+      n++;
     }
     return n;
   }
@@ -412,13 +1261,70 @@ export class RouteMap {
   // M3 + B5: roads by class — Carto casing + core, drawn back-to-front (minor→motorway) so higher classes
   // overlap lower ones cleanly. Each class carries its own colour, base width, dash and min-zoom (paths
   // only appear zoomed in). Returns the count drawn in view; stashes them for the label pass.
+  // Roads from the flat column. Two passes, as the object path has: project every visible road once into
+  // one shared scratch (recording where each landed), then stroke the buckets in ROAD_ORDER, casing
+  // before core. The object path allocated a `px` array of point objects PER VISIBLE ROAD PER FRAME —
+  // ~1,077 arrays and ~19k objects of pure per-frame garbage — purely so the second pass could re-read
+  // them. One growable Float64Array replaces all of it.
+  _drawStreetsFlat() {
+    const F = this.streetsFlat, ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
+    const K = this._flatK(), win = this._screen();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    let s = this._streetScratch;
+    if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
+    const byClass = {};
+    let w = 0, vis = 0;
+    for (let i = 0; i < F.n; i++) {
+      const o4 = i * 4;
+      if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
+       || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
+      const cls = F.clsNames[F.cls[i]], style = ROAD_STYLES[cls];
+      if (!style || z < style.minZoom) continue;
+      const a = F.off[i], len = F.off[i + 1] - a;
+      if (len < 2) continue;
+      const at = w;
+      let on = false;
+      for (let k = 0; k < len; k++) {
+        const lat = F.xy[(a + k) * 2], lon = F.xy[(a + k) * 2 + 1];
+        const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+        const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+        const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+        s[w * 2] = x; s[w * 2 + 1] = y; w++;
+        if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
+      }
+      if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
+      (byClass[cls] || (byClass[cls] = [])).push(at, len);
+      vis++;
+    }
+    const strokeRun = (at, len) => {
+      ctx.beginPath();
+      ctx.moveTo(s[at * 2], s[at * 2 + 1]);
+      for (let k = 1; k < len; k++) ctx.lineTo(s[(at + k) * 2], s[(at + k) * 2 + 1]);
+      ctx.stroke();
+    };
+    for (const cls of ROAD_ORDER) {
+      const b = byClass[cls]; if (!b) continue;
+      const style = ROAD_STYLES[cls], lw = Math.max(0.5, style.w * scale);
+      if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]); }
+      ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
+      for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]);
+    }
+    ctx.setLineDash([]);
+    this._visStreets = [];                                 // legacy label fallback: unused when streetLabels exist
+    return vis;
+  }
+
   drawStreets() {
+    if (this.streetsFlat && this.streetsFlat.n) return this._drawStreetsFlat();
     if (!this.streets.length) return 0;
     const ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     // Project + cull once, bucket by class, dropping any class not shown at this zoom.
     const byClass = {}, vis = [];
-    for (const st of this.streets) {
+    const win = this._screen(), sbb = this._geoBounds(this.streets, (s) => s.line);
+    for (let i = 0; i < this.streets.length; i++) {
+      if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
+      const st = this.streets[i];
       const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
       const entry = { st, px }; (byClass[st.cls] || (byClass[st.cls] = [])).push(entry); vis.push(entry);
@@ -436,10 +1342,14 @@ export class RouteMap {
 
   // M3b: stroked lines (streams/rails/barriers), per-kind Carto style, zoom-gated + culled.
   drawLines() {
+    if (this._sidx && this._sidx.lines) return this._drawLinesFromStore(this.camera.zoom);
     if (!this.lines.length) return 0;
     const z = this.camera.zoom, ctx = this.ctx; let n = 0;
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    for (const ln of this.lines) {
+    const win = this._screen(), lbb = this._geoBounds(this.lines, (l) => l.geom);
+    for (let i = 0; i < this.lines.length; i++) {
+      if (!this._onScreen(lbb, i, win)) continue;         // step 14: reject before projecting, not after
+      const ln = this.lines[i];
       const st = LINE_STYLES[ln.kind]; if (!st || z < st.minZoom) continue;
       const px = this._projLine(ln.geom); if (px.length < 2 || !this._inView(px)) continue;
       ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
@@ -454,7 +1364,8 @@ export class RouteMap {
     const st = POI_STYLES[p.kind] || POI_FALLBACK;
     if (this.camera.zoom < st.z) return false;
     const s = this.project(p.at[0], p.at[1]);
-    if (s.x < 0 || s.x > this.width || s.y < 0 || s.y > this.height) return false;
+    if (s.x < -POI_EDGE_PAD || s.x > this.width + POI_EDGE_PAD
+     || s.y < -POI_EDGE_PAD || s.y > this.height + POI_EDGE_PAD) return false;
     const ctx = this.ctx, r = st.r || 2.5;
     ctx.beginPath();
     if (st.shape === 'square') ctx.rect(s.x - r, s.y - r, 2 * r, 2 * r);
@@ -464,22 +1375,32 @@ export class RouteMap {
     ctx.fill(); ctx.stroke();
     return true;
   }
-  drawPois() { let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n; }
+  drawPois() {
+    if (this._sidx && this._sidx.pois) return this._drawPoisFromStore();
+    let n = 0; for (const p of this.pois) if (this.drawPoi(p)) n++; return n;
+  }
+
+  // The route's two-pass stroke, from already-projected pixels. Factored out so the finished route and
+  // the growing one (applyStretch) are stroked by the same code and cannot drift in style.
+  _strokeRoute(px) {
+    const ctx = this.ctx;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
+    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+  }
 
   // Draw the matched route as a white halo + blue core, above the base map. Returns the point count drawn.
   drawRoute() {
     if (!this.route || this.route.length < 2) return 0;
     const px = this._projLine(this.route);
     if (!this._inView(px)) return 0;
-    const ctx = this.ctx;
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash([]);
-    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 7; this._strokePx(px);   // halo
-    ctx.strokeStyle = '#1a73e8'; ctx.lineWidth = 4; this._strokePx(px);                 // route core
+    this._strokeRoute(px);
     return this.route.length;
   }
 
   // M3 S9/S10/S14: ONE collision-aware label pass. Place labels first (highest rank wins), then street
   // labels along the centreline, repeated, skipping any candidate overlapping an already-placed label.
+  // `_onlyLabels` restricts the label pass to one kind, for the §6d bisect.
   layoutLabels() {
     const ctx = this.ctx, z = this.camera.zoom, placed = [];
     const fits = (x, y, w, h) => {
@@ -487,7 +1408,9 @@ export class RouteMap {
       for (const q of placed) if (!(r < q[0] || l > q[2] || b < q[1] || t > q[3])) return false;
       placed.push([l, t, r, b]); return true;
     };
+    const onlyL = this._onlyLabels;
     let placeLabels = 0;
+    if (onlyL && onlyL !== 'places') { /* bisect: skip */ } else
     for (const p of [...this.places].sort((a, b) => b.rank - a.rank)) {
       if (z < (RANK_MINZOOM[p.rank] ?? 14)) continue;
       const s = this.project(p.at[0], p.at[1]);
@@ -498,8 +1421,8 @@ export class RouteMap {
       this._label(p.name, s.x, s.y, font, '#3a3a3a');
       placeLabels++;
     }
-    const streetLabels = z >= STREET_MINZOOM ? this._streetLabels(fits) : 0;
-    const buildingLabels = this._buildingLabelPass(fits);
+    const streetLabels = (z >= STREET_MINZOOM && (!onlyL || onlyL === 'streets')) ? this._streetLabels(fits) : 0;
+    const buildingLabels = (!onlyL || onlyL === 'buildings') ? this._buildingLabelPass(fits) : 0;
     return { placeLabels, streetLabels, buildingLabels };
   }
   _streetLabels(fits) {
@@ -537,10 +1460,18 @@ export class RouteMap {
   // B5: a horizontal label centred on each named building (≥z16), yielding to place/street labels via `fits`.
   _buildingLabelPass(fits) {
     const cands = this._buildingLabels || []; if (!cands.length) return 0;
+    // Sorted by the building's own index, NOT by arrival. `fits` is greedy first-come, so the ORDER
+    // decides which labels win a contested spot — and a blocked frame collects them block by block while
+    // a direct frame collects them in index order. Same set, same count, different winners: it is the
+    // last of the coordinate/order couplings that made the cache differ from the reference.
+    cands.sort((a, b) => a.seq - b.seq);
     const ctx = this.ctx, font = `500 10px system-ui, sans-serif`; ctx.font = font; let n = 0;
+    // Anchors are WORLD pixels (see _pushBuildingLabel) — bring them into this frame's screen space.
+    const K = this._flatK(), offX = K.cx - K.hw, offY = K.cy - K.hh;
     for (const c of cands) {
-      if (!fits(c.x, c.y, ctx.measureText(c.name).width + 6, 12)) continue;
-      this._label(c.name, c.x, c.y, font, '#6a6a6a');
+      const x = c.wx - offX, y = c.wy - offY;
+      if (!fits(x, y, ctx.measureText(c.name).width + 6, 12)) continue;
+      this._label(c.name, x, y, font, '#6a6a6a');
       n++;
     }
     return n;

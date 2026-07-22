@@ -11,7 +11,10 @@
 //   node browser/cdp_profile.mjs <devtools host:port> <app url> [cpuThrottleRate]
 const [dt, app, rateArg] = process.argv.slice(2);
 const RATE = Number(rateArg || 1);
-setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 180000);
+// Generous, and overridable: at CPU_THROTTLE=4 the probe does ~6 cold matches (~6 s each) plus six
+// full views that now include the store read. 180 s used to be ample and stopped being so the moment
+// step 13 moved the layout into JS — a hard timeout is a measurement input, not a constant.
+setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, Number(process.env.PROFILE_TIMEOUT_MS || 600000));
 
 const list = await (await fetch(`http://${dt}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');
@@ -61,10 +64,13 @@ const probe = `(async () => {
   const SKETCH = [[52.2412299,6.8834496],[52.2694705,6.9164085],[52.3116272,6.9088554]];
   out.matchCold = []; out.matchWarm = []; out.matchRepeat = [];
   if (K.matchTrueCold) for (let i = 0; i < ${N}; i++) out.matchCold.push(await K.matchTrueCold(SKETCH));
+  out.matchColdStreamed = [];
+  if (K.matchTrueColdStreamed) for (let i = 0; i < ${N}; i++) out.matchColdStreamed.push(await K.matchTrueColdStreamed(SKETCH));
   if (K.matchRepeat) for (let i = 0; i < ${N}; i++) out.matchRepeat.push(await K.matchRepeat(SKETCH));
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.matchExtend = [];
   if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
+  out.renderBudget = K.renderBudget ? await K.renderBudget(${N}) : null;
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.stream = K.streamProgress ? await K.streamProgress() : null;
@@ -100,7 +106,7 @@ if (res.decodeBoth?.length) {
 }
 console.log('\n=== VIEW — same command x' + res.runs.length + ' in one session (ms) ===');
 console.log('             median   min–max   spread');
-for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.runs.map((r) => r[k]));
+for (const k of ['kernel', 'parse', 'storeRead', 'render', 'total']) row(k, res.runs.map((r) => r[k]));
 if (res.appFirstViewMs) {
   const w = med(res.runs.map((r) => r.total));
   console.log('\n  app FIRST view (the only truly cold one — pays the session store load): ' + fmt(res.appFirstViewMs) + 'ms');
@@ -122,6 +128,19 @@ console.log('  raw match_warm   kernel per run: ' + (res.matchWarm || []).map((r
 console.log('\n=== MATCH TRUE COLD (session dropped first — corridor + build_graph + full seed) — x' + res.matchCold.length + ' (ms) ===');
 console.log('             median   min–max   spread');
 for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchCold.map((r) => r[k]));
+if (res.matchColdStreamed?.length) {
+  // The app's REAL click path: the same cold match with the route drawing itself per stretch (§6b(2)).
+  // Reported as a delta against MATCH TRUE COLD above, because the growing line's cost is only meaningful
+  // like-for-like — and because a headline number that quietly absorbed it would explain nothing.
+  console.log('\n=== MATCH TRUE COLD, STREAMED (the app\'s click path — the line grows) — x' + res.matchColdStreamed.length + ' (ms) ===');
+  console.log('             median   min–max   spread');
+  for (const k of ['kernel', 'parse', 'render', 'total']) row(k, res.matchColdStreamed.map((r) => r[k]));
+  const s = med(res.matchColdStreamed.map((r) => r.total)), p = med(res.matchCold.map((r) => r.total));
+  console.log('\n  growing line costs  ' + (s - p >= 0 ? '+' : '') + Math.round(s - p) + ' ms  (' + (s / p).toFixed(2) + 'x of the non-streaming path)');
+  console.log('    → work is meant to be proportional to the ROUTE, not the map: applyStretch strokes a');
+  console.log('      polyline per stretch, never a full render. A ratio climbing with sketch size means');
+  console.log('      that stopped holding (PLAN-PERF §6b(2)).');
+}
 if (res.matchRepeat?.length) {
   console.log('\n=== MATCH REPEAT (identical sketch, live session — NOTHING changed; the floor) — x' + res.matchRepeat.length + ' (ms) ===');
   console.log('             median   min–max   spread');
@@ -151,7 +170,24 @@ if (res.matchWarm?.length && res.matchCold?.length) {
 if (globalThis.__db) {
   const db = globalThis.__db, dr = globalThis.__dr;
   const vk = med(res.runs.map((r) => r.kernel)), mk = med(res.matchCold.map((r) => r.kernel));
-  console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
+  if (res.renderBudget) {
+  // PLAN-PERF §6 R. The point of this block is to REFEREE steps 14 and 15 before either is written:
+  // 14 hoists projection out of the frame, 15 caches rasters — and they are bets on different halves.
+  const rb = res.renderBudget;
+  console.log('\n=== RENDER BUDGET — where one frame goes (median of ' + (process.env.PROFILE_RUNS || 6) + ') ===');
+  const rows = Object.entries(rb.layers).sort((a, b) => b[1] - a[1]);
+  for (const [k, v] of rows) {
+    const n = rb.counts[k] ?? '';
+    console.log('  ' + k.padEnd(12) + String(Math.round(v)).padStart(5) + ' ms  ' + (v / rb.total * 100).toFixed(0).padStart(3) + '%   ' + (n === '' ? '' : n + ' drawn'));
+  }
+  console.log('  ' + 'TOTAL'.padEnd(12) + String(Math.round(rb.total)).padStart(5) + ' ms');
+  console.log('\n  projection alone ' + Math.round(rb.projection) + ' ms over ' + rb.verts + ' vertices'
+    + '  = ' + (rb.projection / rb.total * 100).toFixed(0) + '% of the frame');
+  console.log('    → this is the CEILING on step 14 (pre-project into typed arrays): hoisting projection');
+  console.log('      out of the frame cannot save more than projection costs. The remainder is');
+  console.log('      rasterisation, which is step 15 (cache per-tile rasters, blit on pan).');
+}
+console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
   console.log('  match_true_cold: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
 }

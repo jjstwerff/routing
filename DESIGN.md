@@ -195,6 +195,17 @@ sub-path per stretch (a pair of consecutive drawn points) and each is independen
 emitted stretch by stretch **as it is matched** rather than after the whole search finishes. This is a
 design property, not an optimisation:
 
+> ✅ **STATUS 2026-07-22 — delivered.** Both halves ship. The kernel emits each stretch in travel order as
+> it is matched with a `frame_yield()` between — which turned a 40-point route's worst frozen gap from
+> 11095 ms into 384 ms — and the browser now *renders* them: `runKernel` takes an opt-in line sink drained
+> per yield in a microtask (before paint), and `map` accumulates stretches by slot and re-strokes the
+> route so far. For an interval this was the INTENT only, because the emit shipped without a consumer;
+> `PLAN-PERF` §6b(2) records that gap and the gate that now prevents it recurring.
+>
+> One honest caveat: `remove_spurs` prunes ~60% of the raw stitch, so the growing line carries out-and-back
+> excursions that vanish when the match completes — it tightens at the end rather than simply stopping.
+
+
 - **It retraces the user's own gesture** — the line grows in the order they drew it.
 - **It is a progress indicator with no indicator** — no spinner, no percentage, no invented estimate,
   because the thing being shown IS the work being done. A slow stretch is one the user watches take its

@@ -24,7 +24,7 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
 use basemap::(PTile);
 use routing_kernel::(TTile, GeoPoint);
 use web::frame_yield;
@@ -33,6 +33,9 @@ use web::frame_yield;
 // "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
 // every map line carries a type prefix (A/B/L/P/N/S/R) and the summaries are `# view:` / `SUMMARY`.
 EOR = "#EOR";
+
+// The tag JS looks the layout handle up under (`__storeKernel.exposedValue(EXPOSE_LAYOUT)`).
+EXPOSE_LAYOUT = 1;
 
 // The command loop. Today JS pushes exactly one blob per `loft_start`, so this runs a single pass and
 // then returns on the empty read — byte-identical behaviour to the one-shot form it replaces. It is a
@@ -69,6 +72,10 @@ fn main() {
   // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
   // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
   sess = session_new();
+  // Is the layout store currently PINNED by `expose` (PLAN-PERF §0 step 9)? Tracked rather than inferred,
+  // because `release` must only ever be called against a live pin — and because loft must not touch the
+  // store while one is in force (see the view branch below for why).
+  layout_pinned = false;
   while true {
     blob = host_input();
     if blob == "" {
@@ -110,6 +117,25 @@ fn main() {
           // must compile on every backend.
           do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
         } else {
+          // @PLN105 steps 9-13 — the layout store is EXPOSED to JS, which reads its PTiles straight out
+          // of wasm memory. loft no longer serialises the layout at all: `view` emits roads only.
+          //
+          // The pin must not be in force while loft itself TOUCHES the store — `expose` locks it
+          // read-only, and both a (re)load (which writes) and an iteration (which claims a cursor record
+          // INSIDE the pinned store — `Claim on read-only store (size=546)`, §7d(2)) are rejected under
+          // it. In wasm that rejection is a silent trap, which is what hung step 9's first attempt.
+          //
+          // Only two things still touch it, so only they unpin:
+          //   * a store (re)load — writes;
+          //   * `viewtext`, the full text emit, kept ONLY so the parity gate has a reference to compare
+          //     the JS-read layers against. The app never sends it.
+          // A plain `view` touches nothing, so the pin SURVIVES the whole session: one `expose` at load
+          // rather than one per view. That is §7f's ~420 ms, and it is why deleting the emit was worth
+          // more than the serialize time it saved.
+          if layout_pinned && (cmd == "viewtext" || layout_url != layout_at) {
+            release(EXPOSE_LAYOUT, layout);
+            layout_pinned = false;
+          }
           if layout_url != layout_at {
             if store_load_url_trusted(layout, layout_url) {
               layout_at = layout_url;
@@ -119,7 +145,17 @@ fn main() {
               ok = false;
             }
           }
-          if ok { do_view_bbox(layout, roads, arg3); }
+          if ok {
+            if cmd == "viewtext" {
+              do_view_bbox(layout, roads, arg3);
+            } else {
+              do_view_roads_bbox(roads, arg3);
+            }
+            if !layout_pinned {
+              expose(EXPOSE_LAYOUT, layout);
+              layout_pinned = true;
+            }
+          }
         }
       }
       // Terminate the response on EVERY path, errors included — a host waiting on this marker must

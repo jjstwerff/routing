@@ -1,0 +1,66 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7n — the acceptance gate for a ROUTE-AFFECTING change to the anchor pass.
+//
+//   loft --native --lib lib tools/corpus_anchor.loft _site/stores/enschede.roads.store > corpus.txt
+//
+// Everything in §7i–§7m was route-identical and provable by a fingerprint. Bounding or sharing
+// `denoise_anchor`'s per-point Dijkstra is not: it changes WHICH ANCHOR is chosen, so the route moves by
+// design. The only honest acceptance is step 22's — the §7 quality numbers over the whole corpus, with
+// **0 worse accepted** — so this prints them per sketch and a diff of two runs is the verdict.
+//
+// The corpus is `corpus_tube.loft`'s: 25 deterministic lattice sketches plus, at i=25, THE APP'S OWN
+// sketch. That one is here for the reason §7h paid for — a corpus average can improve while the sketch
+// every headline number is measured on gets worse.
+#cwd
+use routing_kernel::(GeoPoint, TTile, corridor_margin, tiles_corridor_ways_tube, build_graph,
+                     match_state_new, match_incremental, match_state_result, match_quality);
+
+PROFILE = "cycling_road";
+
+fn sketch_at(i: integer) -> vector<GeoPoint> {
+  if i == 25 {
+    return [GeoPoint { lat: 52.2412299, lon: 6.8834496 },
+            GeoPoint { lat: 52.2694705, lon: 6.9164085 },
+            GeoPoint { lat: 52.3116272, lon: 6.9088554 }];
+  }
+  la0 = 52.190 + ((i % 5) as float) * 0.030;
+  lo0 = 6.800  + (((i / 5) % 5) as float) * 0.040;
+  dla = 0.020 + ((i % 3) as float) * 0.020;
+  dlo = 0.030 + ((i % 4) as float) * 0.015;
+  bend = (i % 2) == 1;
+  n = 3 + (i % 4) * 6;
+  pts: vector<GeoPoint> = [];
+  for k in 0..n {
+    f = (k as float) / ((n - 1) as float) ?? 0.0;
+    la = la0 + f * dla;
+    lo = lo0 + f * dlo;
+    if bend { lo = lo + 0.004 * (1.0 - (2.0 * f - 1.0) * (2.0 * f - 1.0)); }
+    pts += [GeoPoint { lat: la, lon: lo }];
+  }
+  pts
+}
+
+fn main() {
+  a = arguments();
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, a[0] ?? "") { println("ERR store_load"); return; }
+  total_ms = 0;
+  for i in 0..26 {
+    pts = sketch_at(i);
+    g = build_graph(tiles_corridor_ways_tube(roads, pts, corridor_margin(pts)));
+    t0 = now();
+    st = match_incremental(match_state_new(), g, pts, PROFILE);
+    t1 = now();
+    total_ms = total_ms + (t1 - t0);
+    mr = match_state_result(g, st);
+    q = match_quality(st, pts, mr);
+    // The §7 numbers, plus the point count so a route change is visible even when the metrics tie.
+    println("#Q {i} pts={len(mr.pts)} dev_max={q.dev_max:1.2} dev_mean={q.dev_mean:1.2} bridged={q.bridged_m:1.2} len={q.len_m:1.2} pen={q.pen_m:1.2}");
+  }
+  // NOT part of the golden — a timing varies run to run (measured: 1597 vs 1652 ms for byte-identical
+  // code, ~3.4%). Diff the `#Q <i>` rows for acceptance; read this line only as a rough cost signal, and
+  // never accept a change whose only evidence is a difference this small.
+  println("#T (not golden) TOTAL match_ms={total_ms}");
+}

@@ -1,0 +1,82 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7a — WHERE does a COLD match actually go? Step 19's re-sizing instrument.
+//
+//   loft --native --lib lib tools/match_phase_probe.loft _site/stores/enschede.roads.store
+//
+// Step 19 (persist the built graph) is a STORE-FORMAT change plus a border-node splice that can silently
+// alter a route — the riskiest row in the plan. Its case rests on one number: how much of a cold match is
+// `build_graph`. That number was ~41% when the cold match was 5899 ms, and steps 20-22 have since cut the
+// cold match to ~3.3 s by shrinking the corridor — which shrinks build_graph's input too. So the premise
+// has to be re-measured before anything is built on it, and §7a says exactly that.
+//
+// This mirrors the cold path in `do_match_session_streamed` phase for phase — margin, corridor read,
+// build_graph, then the seeding match — rather than timing `do_match_session` as a whole, because the
+// question is the SPLIT, not the total. Both tiers are timed: the cell tube is what a cold match uses
+// first (step 22), the fat bbox is what it escalates to when the gate rejects that.
+#cwd
+
+use map_kernel::parse_sketch;
+use routing_kernel::(TTile, GeoPoint, corridor_margin, tiles_corridor_ways, tiles_corridor_ways_tube,
+                     build_graph, match_state_new, match_incremental, match_state_result);
+
+// The app's own sketch — the interaction the plan's cold-match number is measured on.
+SKETCH  = "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554";
+PROFILE = "cycling_road";
+REPS    = 5;
+
+// One tier's cold path, timed per phase. `tube` picks the corridor: the cell tube (step 20/22's tier 1)
+// or the fat bbox it escalates to.
+fn time_tier(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, tube: boolean, label: text) {
+  margin = corridor_margin(trace);
+
+  c0 = now();
+  ways = if tube { tiles_corridor_ways_tube(roads, trace, margin) }
+         else { tiles_corridor_ways(roads, trace, margin) };
+  c1 = now();
+
+  g = build_graph(ways);
+  b1 = now();
+
+  st = match_incremental(match_state_new(), g, trace, PROFILE);
+  m1 = now();
+
+  res = match_state_result(g, st);
+  total = m1 - c0;
+  println("#P {label} ways={len(ways)} nodes={len(g.nodes)} edges={len(g.edges)} route_pts={len(res.pts)}");
+  println("#P {label} corridor={c1 - c0} build_graph={b1 - c1} match={m1 - b1} total={total}");
+}
+
+// A dense sketch: n points evenly along the same corridor. PLAN-MATCH says a REAL drawn route is ~40
+// points, and the 3-point sketch every other probe uses is the sparse extreme — anchoring is per POINT,
+// so the two sizes are different questions.
+fn dense(n: integer) -> text {
+  out = "";
+  for i in 0..n {
+    f = (i as float) / ((n - 1) as float) ?? 0.0;
+    la = 52.2412299 + f * (52.3116272 - 52.2412299);
+    lo = 6.8834496 + f * (6.9088554 - 6.8834496);
+    if i > 0 { out += ";"; }
+    out += "{la:2.7},{lo:2.7}";
+  }
+  out
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: match_phase_probe <roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[0] ?? "");
+  trace = parse_sketch(SKETCH);
+
+  // Repeat each tier: the first pass pays first-touch page-in on the store, which is not what the split
+  // is about. Read the medians, not the first line.
+  for _ in 0..REPS { time_tier(roads, trace, true, "TUBE"); }
+  for _ in 0..REPS { time_tier(roads, trace, false, "BBOX"); }
+  // The realistic case: anchoring is per POINT, so this is where nearest_nodes actually bites.
+  d40 = parse_sketch(dense(40));
+  for _ in 0..REPS { time_tier(roads, d40, true, "TUBE40"); }
+}

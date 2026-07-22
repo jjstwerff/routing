@@ -1,0 +1,177 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-PERF §7a(2) — the gate step 19b lives or dies on, built BEFORE the format change.
+//
+//   loft --native --lib lib tools/tile_border_probe.loft _site/stores/enschede.roads.store
+//
+// Step 19b persists a graph PER TILE and unions the corridor's tiles at match time, "merging their
+// exact-integer border nodes, splicing adjacency" (PLAN-TILES §268). §268's own acceptance is "a corridor
+// spanning >=2 tiles matches identically", and §7a calls it the riskiest row in the plan: a border that
+// merges wrong changes a route across a tile edge, silently.
+//
+// This asks the question that decides how risky it really is, and it needs NO format change to answer:
+//
+//   *Is the matched route sensitive to the ORDER the ways are fed to build_graph?*
+//
+// It matters because node indices are assigned in first-encounter order, and PLAN-PERF §6b B warns the
+// chain out loud: way order -> node/edge indices -> Dijkstra tie-breaks -> a different route from
+// identical input. A per-tile union necessarily produces a DIFFERENT node ordering than one global build.
+// So:
+//   * order-INSENSITIVE  -> the splice only has to merge the same node SET, and 19b is as risky as §7a says;
+//   * order-SENSITIVE    -> ANY union that renumbers nodes changes routes, and 19b additionally needs a
+//                           canonical node ordering. That is a much bigger job, and better known now.
+//
+// Non-vacuity is asserted, not hoped for (a gate that cannot fail is worse than none): the run FAILS if
+// the corridor does not span >=2 tiles, or if the matched route never crosses a tile boundary.
+#cwd
+
+use map_kernel::parse_sketch;
+use routing_kernel::(TTile, GeoPoint, Way, Graph, corridor_margin, tiles_corridor_ways_tube,
+                     build_graph, union_graphs, match_state_new, match_incremental, match_state_result);
+
+// The `match_parity` corpus — several DISTINCT routes, each long enough to cross 0.02-degree (~2 km)
+// cells. One sketch would prove one corridor; the border merge has to hold for all of them.
+SKETCHES = [
+  "52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554",
+  "52.2412299,6.8834496;52.2704705,6.9174085;52.3116272,6.9088554",
+  "52.1800,6.8300;52.2000,6.8600",
+  "52.2200,6.7900;52.2400,6.8200",
+];
+// Recorded route fingerprints (position-weighted, see route_fp). These are the CHARACTERISATION half:
+// when 19b lands and unions per-tile graphs, any of these moving means the border splice altered a route
+// — which is the failure §268's acceptance is written against. Regenerate ONLY with a reason, and let the
+// diff show which route moved.
+GOLDEN = [13491979666115, 13491979666115, 2009382494520, 1467589415931];
+PROFILE = "cycling_road";
+CELL    = 200000;          // tile edge in fixed-point units — TILE_CELL in routing_kernel
+
+struct TileSeen { const t: integer, const n: integer }
+struct TileSet  { s: hash<TileSeen[t]> }
+
+fn fx(v: float) -> integer { round(v * 10000000.0) as integer }
+// The tile a coordinate falls in, as one packed id. Floor division: loft's `/` truncates toward zero, so
+// a negative coordinate would land in the wrong cell without the adjustment.
+fn cell_of(lat: float, lon: float) -> integer {
+  la = fx(lat); lo = fx(lon);
+  ty = la / CELL; if la < 0 && la % CELL != 0 { ty = ty - 1; }
+  tx = lo / CELL; if lo < 0 && lo % CELL != 0 { tx = tx - 1; }
+  ty * 1000000 + tx
+}
+
+// An ORDER-SENSITIVE fingerprint of a route: position-weighted, so a reordered or shifted route differs
+// even when it visits the same coordinates. Bounded well inside i64 (213 pts * 213 * ~1e9).
+fn route_fp(pts: vector<GeoPoint>) -> integer {
+  acc = 0;
+  for i in 0..len(pts) {
+    p = pts[i] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    acc = acc + (i + 1) * (fx(p.lat) + fx(p.lon));
+  }
+  acc
+}
+
+// How many times does the route step from one tile into another? This is the thing the border splice has
+// to get right, so a run where it is 0 proves nothing and must fail.
+fn border_crossings(pts: vector<GeoPoint>) -> integer {
+  n = 0;
+  for j in 1..len(pts) {
+    a = pts[j - 1] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    b = pts[j] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    if cell_of(a.lat, a.lon) != cell_of(b.lat, b.lon) { n = n + 1; }
+  }
+  n
+}
+
+fn match_with(ways: vector<Way>, trace: vector<GeoPoint>) -> vector<GeoPoint> {
+  g = build_graph(ways);
+  match_state_result(g, match_incremental(match_state_new(), g, trace, PROFILE)).pts
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: tile_border_probe <roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, a[0] ?? "");
+  fails = 0;
+  for si in 0..len(SKETCHES) {
+    fails += check_sketch(roads, SKETCHES[si] ?? "", GOLDEN[si] ?? 0, si);
+  }
+  if fails == 0 { println("#B ALL PASS — every corridor spans tiles, crosses borders, and is order-insensitive"); }
+  else { println("#B FAILURES: {fails}"); }
+}
+
+// One sketch, end to end. Returns 1 if anything about it failed.
+fn check_sketch(roads: hash<TTile[tkey]>, sketch: text, golden: integer, si: integer) -> integer {
+  trace = parse_sketch(sketch);
+  ways = tiles_corridor_ways_tube(roads, trace, corridor_margin(trace));
+
+  // 1. Does the corridor actually span several tiles? (A way is stored under the tile of its FIRST vertex.)
+  seen = TileSet { s: [] };
+  ntiles = 0;
+  for w in ways {
+    c = w.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    cid = cell_of(c.lat, c.lon);
+    if seen.s[cid] == null { seen.s += [TileSeen { t: cid, n: 1 }]; ntiles = ntiles + 1; }
+  }
+
+  // 2. The route as built today, from the corridor's natural (tile-iteration) way order.
+  base = match_with(ways, trace);
+  crossings = border_crossings(base);
+  fp = route_fp(base);
+  println("#B [{si}] ways={len(ways)} tiles={ntiles} route_pts={len(base)} crossings={crossings} fp={fp}");
+
+  bad = 0;
+  if ntiles < 2 { println("#B [{si}] FAIL corridor spans {ntiles} tile(s) — needs >=2 to test a border"); bad = 1; }
+  if crossings < 1 { println("#B [{si}] FAIL the route never crosses a tile boundary — this proves nothing"); bad = 1; }
+  if golden != 0 && fp != golden { println("#B [{si}] FAIL route CHANGED: fp={fp} expected={golden}"); bad = 1; }
+
+  // 3. Feed the SAME ways in a different order. A per-tile union renumbers nodes exactly like this does.
+  rev: vector<Way> = [];
+  for k in rev(0..len(ways)) { rev += [ways[k] ?? ways[0] ?? Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }]; }
+  rroute = match_with(rev, trace);
+
+  // 4. And a rotation — a different renumbering again, in case reversal is accidentally symmetric.
+  rot: vector<Way> = [];
+  half = len(ways) / 2;
+  for m in half..len(ways) { rot += [ways[m] ?? ways[0] ?? rev[0] ?? Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }]; }
+  for q in 0..half { rot += [ways[q] ?? ways[0] ?? rev[0] ?? Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }]; }
+  rotroute = match_with(rot, trace);
+
+  // 5. The UNION path (step 19b's loader) must produce the same route as one global build. 19b itself is
+  // NO-GO on cost (§7a(2)) — the union is only ~16% cheaper than building — but `union_graphs` stays as
+  // the reference implementation, so its correctness is asserted here rather than left to rot.
+  parts: vector<Graph> = [];
+  cells2: vector<integer> = [];
+  seen2 = TileSet { s: [] };
+  for w4 in ways {
+    c4 = w4.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    id4 = cell_of(c4.lat, c4.lon);
+    if seen2.s[id4] == null { seen2.s += [TileSeen { t: id4, n: 1 }]; cells2 += [id4]; }
+  }
+  for ti in 0..len(cells2) {
+    tgt = cells2[ti] ?? 0;
+    sub: vector<Way> = [];
+    for w5 in ways {
+      c5 = w5.coords[0] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+      if cell_of(c5.lat, c5.lon) == tgt { sub += [w5]; }
+    }
+    parts += [build_graph(sub)];
+  }
+  gu = union_graphs(parts);
+  uroute = match_state_result(gu, match_incremental(match_state_new(), gu, trace, PROFILE)).pts;
+  if route_fp(uroute) != fp || len(uroute) != len(base) {
+    println("#B [{si}] FAIL UNION route differs from the global build — the per-tile merge is wrong");
+    bad = 1;
+  }
+
+  same_rev = len(rroute) == len(base) && route_fp(rroute) == fp;
+  same_rot = len(rotroute) == len(base) && route_fp(rotroute) == fp;
+  if !same_rev || !same_rot {
+    println("#B [{si}] FAIL ORDER-SENSITIVE — reordering the ways CHANGED the route (rev={same_rev} rot={same_rot})");
+    println("#B [{si}]      => 19b needs a CANONICAL node ordering, not just an exact-integer border merge");
+    bad = 1;
+  }
+  bad
+}

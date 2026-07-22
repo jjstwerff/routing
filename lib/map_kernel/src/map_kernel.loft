@@ -13,9 +13,11 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState,
-                     tiles_corridor_ways, tiles_corridor_ways_streamed, build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
-                     point_polyline_m, match_state_new, match_incremental, match_incremental_streamed, match_state_result);
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, MatchQuality,
+                     tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
+                     build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
+                     point_polyline_m, match_state_new, match_incremental, match_incremental_streamed,
+                     match_state_result, match_quality);
 
 fn deg(fixed: integer) -> float { (fixed as float) / 10000000.0 }
 
@@ -138,6 +140,19 @@ pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: t
   emit_view(layout, roads, parse_fbox(bbox));
 }
 
+// ROADS-ONLY viewport view — what the browser front-end asks for since PLAN-PERF §0 step 13. The layout
+// is read by JS straight out of the exposed store (@PLN105), so loft neither serialises it (~658 ms of a
+// throttled view) nor WALKS it — and not walking it is what lets `expose` stay pinned for the whole
+// session instead of being released and re-flattened per view (§7f, ~420 ms more).
+//
+// Roads still come over as text: the roads store is not exposed, and `match` — not the map — is what
+// reads it. `client/basemap_kernel.loft` (native CLI) keeps calling `do_view_bbox` for the full emit,
+// and the browser keeps it reachable as `viewtext` so the parity gate has something to compare against.
+pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {
+  nr = emit_roads(roads, parse_fbox(bbox));
+  println("# view: R={nr}");
+}
+
 // Parse a rough sketch "lat,lon;lat,lon;…" into GeoPoints (bad tokens skipped).
 pub fn parse_sketch(spec: text) -> vector<GeoPoint> {
   pts: vector<GeoPoint> = [];
@@ -176,10 +191,47 @@ fn emit_route(route: vector<GeoPoint>, nways: integer, profile: text) {
 // have. Keep the two in step — the server is the reference implementation.
 
 struct Corridor { pts: vector<GeoPoint>, margin: float }
-pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, mstate: MatchState, built: boolean }
+// `tier` is which corridor the session holds: TIER_TUBE (the cheap cell-tube) or TIER_BBOX (the fat
+// rectangle, §3's floor). It exists so the gate can be re-applied to a WARM edit as well as a cold one —
+// a warm edit reuses the accepted graph and can drift to where the tube has no ways, so acceptance has
+// to be re-earned rather than inherited from the match that first built the corridor.
+pub struct MatchSession { cways: vector<Way>, cg: Graph, covs: vector<Corridor>, mstate: MatchState, built: boolean, tier: integer }
+
+TIER_TUBE = 1;
+TIER_BBOX = 3;
+
+// PLAN-MATCH §3's acceptance gate for the cheap tier — MARGIN-RELATIVE (PLAN-PERF §7h option 2).
+//
+// Two conditions, both computable from the match already in hand:
+//   * CONNECTED — no bridged metres. This alone catches 2 of the 3 genuinely-worse corpus cases.
+//   * FAITHFUL  — the route stayed inside the corridor it was matched on: `dev_max <= margin * K`.
+//
+// The second is relative for a measured reason. An ABSOLUTE `dev_max <= 900` was wired first and made
+// the app's cold match 1.7x SLOWER (§7h): `dev_max` is distance from the DRAWN SKETCH, so it is large
+// whenever the user drew far from any road — under BOTH tiers. The gate then read "far from the network"
+// as "the cheap corridor clipped something" and paid the fat tier to reproduce an identical route; 8 of
+// 12 escalations were pure loss. Scaling by the corridor's own margin asks the question the gate is
+// actually for — *did the route stray to where the tube's ways run out?* — and needs no constant fitted
+// to a corpus, only a ratio.
+//
+// K = 6, swept on `tools/corpus_tube.loft` (26 sketches incl. the app's own, cycling_road):
+//   K=5 → 11 accepted, app sketch ESCALATES · K=6 → 13, WORSE 0 · K=8 → 16, WORSE 0 · K=9 → WORSE 1.
+// So 8 is cost-optimal and 6 is chosen anyway: §3's asymmetry — the gate can only make us ESCALATE
+// (spend more), never accept something the fat tier would improve on — makes headroom cheap and a wrong
+// acceptance the only real failure. 6 sits two full steps below the first bad acceptance and still
+// accepts the sketch the app actually runs.
+//
+// These are `cycling_road` numbers. §3's third condition (PEN_TOL) is deliberately NOT wired: on this
+// profile accepted and worse cases had fully overlapping pen_share, so it carries no signal. Expect it
+// to matter on walking/trail, where penalties dominate rather than bonuses — re-tune there.
+DEV_MARGIN_K = 6.0;
+
+fn tier_ok(q: MatchQuality, margin: float) -> boolean {
+  q.bridged_m == 0.0 && q.dev_max <= margin * DEV_MARGIN_K
+}
 
 pub fn session_new() -> MatchSession {
-  MatchSession { cways: [], cg: build_graph([]), covs: [], mstate: match_state_new(), built: false }
+  MatchSession { cways: [], cg: build_graph([]), covs: [], mstate: match_state_new(), built: false, tier: TIER_BBOX }
 }
 
 // True when EVERY point lies well inside SOME corridor this session already built — so the accumulated
@@ -239,15 +291,45 @@ pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trac
                                  on_tick: fn(integer)) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
   margin = corridor_margin(trace);
-  if !covered(s, trace, margin) {
+  // Captured BEFORE the rebuild, because building the tube sets `covered` true for the next call — the
+  // gate has to know whether THIS match is the one that just chose a tier.
+  covered_before = covered(s, trace, margin);
+  if !covered_before {
+    // TIER 1 — the cell tube (PLAN-PERF steps 20/22): only the tiles near the polyline, not every tile
+    // in its bbox rectangle. ~65% fewer ways, so the corridor read, build_graph AND the search all
+    // shrink. Kept only if the gate below accepts it.
+    //
     // The REBUILD is the other un-interruptible block: streaming the stretches left the corridor read
     // and build_graph as one ~11s freeze on a cold match (PLAN-PERF §6b A). Yield inside both.
-    s.cways = tiles_corridor_ways_streamed(roads, trace, margin, on_tick);
+    s.cways = tiles_corridor_ways_tube_streamed(roads, trace, margin, on_tick);
     s.cg = build_graph_streamed(s.cways, on_tick);
     s.covs = [Corridor { pts: trace, margin: margin }];
     s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;
+    s.tier = TIER_TUBE;
   }
   s.mstate = match_incremental_streamed(s.mstate, s.cg, trace, profile, on_stretch, on_tick);
+
+  // THE GATE (PLAN-MATCH §3), applied to the match that JUST BUILT the tube — the cold path only.
+  //
+  // Not to warm edits, deliberately. `covered()` already requires every point of the new sketch to lie
+  // within `margin * 0.85` of a corridor this session built, so a warm edit that is covered is by
+  // construction inside the tube that was accepted; re-gating it can only re-derive the same answer.
+  // Gating warm edits was tried and is what a first measurement showed as a 4.6x spread on the warm
+  // number: an edit that tripped the threshold turned a ~700 ms incremental match into a full corridor
+  // rebuild. `covered()` is the warm-path guard; the gate is for choosing a tier at build time.
+  //
+  // Escalation REPLACES the corridor and re-matches from a fresh state, so the session ends holding the
+  // tier that was actually accepted — a later warm edit continues from the fat corridor, and the tube is
+  // not retried until the next corridor miss. The fat corridor is always the floor: the gate can only
+  // make us spend more, never accept something this rebuild would have improved on.
+  if s.tier == TIER_TUBE && !covered_before {
+    if !tier_ok(match_quality(s.mstate, trace, match_state_result(s.cg, s.mstate)), margin) {
+      s.cways = tiles_corridor_ways_streamed(roads, trace, margin, on_tick);
+      s.cg = build_graph_streamed(s.cways, on_tick);
+      s.mstate = match_incremental_streamed(match_state_new(), s.cg, trace, profile, on_stretch, on_tick);
+      s.tier = TIER_BBOX;
+    }
+  }
   emit_route(match_state_result(s.cg, s.mstate).pts, len(s.cways), profile);
 }

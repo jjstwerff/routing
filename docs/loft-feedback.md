@@ -1696,3 +1696,100 @@ a gate that would have caught the fallback. `tools/par_copy_probe.loft` is now G
 offered as the consumer-side smoke test.
 
 **Step 18 is unblocked** — `par` over the stretches is designable again.
+
+---
+
+## 2026-07-22 — `expose` RE-FLATTENS the whole collection on every call, and the pin forces you to call it repeatedly
+
+**Installed loft 2026.7.2.** This is the sequel to the iteration finding above, and the two compound: that
+one says you must `release` before loft touches the store, this one says re-`expose`ing afterwards is
+**O(collection)**. Together they make a per-frame bridge cost proportional to the data, which is exactly
+what the consumer adopted the bridge to escape.
+
+### What the contract implies vs what it costs
+
+`BROWSER_INTEROP.md:297` and the stdlib comment both frame `expose` as the *long-lived* variant —
+*"pins the value's store; read it each frame"* — which reads as **expose once, hold it, JS reads for
+free**. That is true only if loft never touches the store again. A consumer that still iterates it (here:
+`do_view_bbox` walks the layout to emit its text, during the additive overlap of a migration) must
+bracket every command as `release` → walk → `expose`. And each `expose` runs the full Phase 3 pipeline
+again (`ffi_deliver.rs:56` → `collect_keyed` → `build_hash_sorted_vec`): a fresh **key-sorted
+materialisation of every element**, a scratch record allocation, and a descriptor-JSON rebuild.
+
+### Measured (A/B on the same binary, same store, same harness)
+
+Enschede layout store: 20 MB, **1089 `PTile`s, ~230k nested features**. Headless Chromium at
+`CPU_THROTTLE=4`, medians of 6, via `tools/map_profile.sh`. The only difference is the two-line bracket:
+
+| | with `release`/`expose` per view | without | delta |
+|---|---|---|---|
+| **empty-bbox view** — emits NOTHING, so this is scan + bracket only | **483 ms** | 253 ms | **+230 ms** |
+| full view, kernel | **1141 ms** | 721 ms | +420 ms |
+| full view, total | **1447 ms** | 927 ms | **+56%** |
+| wasm binary | 1 098 479 B | 1 048 840 B | +48 KB |
+
+The empty-bbox row is the clean one: it emits no features, so ~230 ms is the bracket alone. **Not a
+leak** — wasm working set was 254.9 MB with the bracket vs 265.1 MB without, i.e. no growth attributable
+to the repeated scratch allocations.
+
+### Ask (either one removes it; the second is better)
+
+1. **Make re-`expose` cheap on an unmodified store** — cache the flattening and the descriptor, and
+   invalidate on write. A `release`/`expose` pair that brackets a pure read would then cost ~nothing,
+   which is what the "read it each frame" contract already implies to a reader.
+2. **Let loft ITERATE a pinned store.** The bracket exists only because a read-only iteration claims a
+   cursor record inside the pinned store (the finding above). Fix that and the consumer never releases,
+   so the re-flattening never happens — one `expose` per session, as the docs suggest.
+
+Failing both, the docs should say plainly that `expose` is **O(collection) per call**, so a consumer can
+see that bracketing it per frame is not viable.
+
+### Consequence for routing
+
+Absorbed deliberately and temporarily: PLAN-PERF steps 11–12 land the store-read path *beside* the text
+path, so the overlap pays both. **Step 13 deletes the text emit**, after which nothing in loft iterates
+the layout, the bracket collapses to a single `expose` at load, and this cost goes to zero. Recorded so
+the interim number is not mistaken for a regression in the bridge itself — the bridge is fine; calling it
+per frame is what costs.
+
+---
+
+## 2026-07-22 — codegen: a text field read off a struct-RETURNING CALL emits `&str` where `String` is expected
+
+**loft:** 2026.7.2 (installed, `/usr/local/bin/loft`) · **backend:** `--native` only (the interpreter is fine)
+
+Reading a `text` field **directly off a call that returns a struct** fails to build natively. Binding the
+returned struct to a local first compiles and behaves identically.
+
+```loft
+struct WayTags { const highway: text, /* … */ }
+fn etags(g: Graph, e: GEdge) -> WayTags { g.wtags[e.w] ?? empty_tags() }
+
+c = road_class(etags(g, e).highway);   // ✗ native build fails
+et = etags(g, e);                      // ✓ same thing, bound first
+c = road_class(et.highway);
+```
+
+The generated Rust returns a `&str` into a slot typed `String`:
+
+```
+error[E0308]: mismatched types
+  --> lib/routing_kernel/native-auto/loft_auto_routing_kernel.rs:2225:87
+     let mut var___ret_1: String = {{ let db = (var___lift_1);
+         if db.rec == 0 { loft::state::STRING_NULL } else { … store.get_str(…) } }};
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^ expected `String`, found `&str`
+```
+
+rustc even names the fix in its own hint — `STRING_NULL.to_string()` — so the lift path for a
+store-backed `text` is missing an owned conversion on this one shape. Note the error is reported at the
+generated-Rust level, i.e. it escapes loft's own type checking: the loft program is well-typed and the
+failure surfaces as a rustc error against a file the user did not write.
+
+**Where it bit:** `lib/routing_kernel/src/routing_kernel.loft`, moving per-edge tags behind a per-way
+table (edges went from 14 fields to 4; cold match 2721 → 1820 ms). Two sites needed the local-binding
+workaround and carry a comment pointing here.
+
+**Not a blocker** — the workaround is one line and arguably reads better. Filed because the *shape* is
+ordinary (accessor function returning a record, read one field), it only fails on `--native`, and it
+fails as a rustc error rather than a loft diagnostic, which is a poor first experience for anyone who
+meets it without knowing to bind the struct.
