@@ -93,7 +93,11 @@ memoised (flat + lazy, so a warm edit never pays for points it did not touch). C
 ⚠ **What is left is NOT a refactor.** `dijkstra_win` is 131 ms of the anchor pass — one full search per
 interior point — and sharing or bounding those searches changes WHICH ANCHOR is chosen, hence the route.
 That is a §7h-class change needing the 26-sketch corpus as its gate ("0 worse accepted"), not a
-fingerprint. Everything in §7i–§7m was route-identical; this one cannot be.
+fingerprint. **§7n attempted it and REJECTED it**: a deviation prune on the anchor search is −28% at a cap
+of 400 m but makes routes *longer* by up to 62%, and every cap loose enough to preserve routes is inside
+the ~3.4% run-to-run noise. The corpus's own `dev_max` reaches ~1056 m, so any useful cap severs
+legitimate paths. **A geometric prune is closed** — what is left must reduce the NUMBER of anchor
+searches, not their extent. `tools/corpus_anchor.loft` is the gate to use.
 Also note `spatial<T[x,y]>`'s exact `nearest`/`within` are NOT wired to the stdlib
 (`#![allow(dead_code)]`); only the box slice is sound, and it returns a superset.
 

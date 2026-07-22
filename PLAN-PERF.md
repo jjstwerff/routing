@@ -1197,10 +1197,37 @@ Routes byte-identical. Quiet box, spreads 1.0×.
 interior point, on top of pass 2's search per stretch. Sharing those searches between neighbours, or
 bounding them, changes **which anchor is chosen** and therefore the route.
 
-**That makes it a §7h-class change, not an optimisation** — it needs the 26-sketch corpus as its gate
-(`tools/corpus_tube.loft`), judged on the §7 quality numbers with "0 worse accepted", exactly as step 22
-was. It was deliberately not attempted here: every change in §7i–§7m has been route-identical and provable
-by fingerprint, and this one cannot be.
+**That makes it a §7h-class change, not an optimisation** — it needs the 26-sketch corpus as its gate,
+judged on the §7 quality numbers with "0 worse accepted", exactly as step 22 was.
+
+### 7n — it was attempted, corpus-gated, and REJECTED
+
+`tools/corpus_anchor.loft` (new) prints the §7 quality numbers per sketch over step 22's corpus — 25
+lattice sketches plus, at i=25, the app's own — so a diff of two runs is the verdict. Baseline captured
+first, then a deviation **prune** was added to the anchor search only (`dev_cap`; pass 2 kept `BIG`, so
+its behaviour was untouched), and the cap swept:
+
+| cap | routes changed | corpus match_ms |
+|---|---|---|
+| 400 m | many — sketch 0 **len 3964 → 6443 m (+62%)**, sketch 1 +26%, sketch 2 +17% | 1156 (−28%) |
+| 1200 m | 5 | 1583 (−0.9%) |
+| 2000 m | 2 | 1472 (−8%) |
+| — | baseline | 1597 |
+
+**There is no setting that buys speed without changing routes, and the reason is structural.** The
+corpus's own `dev_max` runs to ~1056 m, so a cap tight enough to prune meaningfully is tight enough to
+sever legitimate paths — the route then detours, which is why lengths *grow* by up to 62% while `dev_max`
+barely moves. The deviation term already makes distant nodes expensive, so the search was never
+exploring much far field to cut.
+
+⚠ **And the loose caps' "wins" are inside the noise floor.** Two runs of byte-identical code gave
+`match_ms` 1597 vs 1652 (~3.4%), so −0.9% is nothing and −8% is barely outside it. The harness now marks
+its timing line `(not golden)` for exactly this reason — *a corpus is an acceptance gate, not a
+stopwatch.*
+
+**Reverted; all 26 quality rows verified identical to baseline.** So the remaining 131 ms needs a change
+that reduces the NUMBER of anchor searches (a semantic change to how anchors are chosen), not their
+extent. A geometric prune is closed.
 
 ⚠ And a note for anyone reaching for `spatial<T[x,y]>` elsewhere: it is sound but **not wired to its own
 exact queries**. `loft2/src/spatial.rs` carries exact `nearest`/`within`, but it is `#![allow(dead_code)]`
