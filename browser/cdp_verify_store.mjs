@@ -82,5 +82,18 @@ else if (!sa.contained) { console.log(`  FAIL: the finished ROUTE is not contain
 else console.log(`  ✓ the route streams: ${sa.stretches} stretches in ${sa.deliveries} delivery batches, all before #EOR`);
 if (sa && sa.contained) console.log(`  ✓ the streamed line CONTAINS the final route in order (${sa.streamedPts} pts streamed → ${sa.routePts} after spur removal)`);
 
+// 4. PLAN-PERF §6c — a ring in the store IS an interleaved Int32Array, readable with ZERO copy.
+//
+// The whole "where does the loft/JS split live" question turns on this one fact, so it is asserted
+// rather than assumed: loft-deliver stores struct vector elements INLINE at storeBase + vRec*8 + 8 with
+// stride sizeOf(elem), so a vector<Coord> of two 4-byte ints is already the flat layout a renderer wants.
+// If loft's record layout ever changes — Coord growing a field, a different stride, padding — the render
+// path would silently read garbage coordinates, which is exactly the failure a count cannot see. The
+// probe compares every coordinate of a real ring against loft's own reader.
+const cl = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.coordLayout()))()')) || 'null');
+if (!cl || cl.err) { console.log('  FAIL: coordLayout —', JSON.stringify(cl)); ok = false; }
+else if (!cl.zeroCopyOk) { console.log(`  FAIL: a ring is NOT a zero-copy Int32Array —`, JSON.stringify(cl)); ok = false; }
+else console.log(`  ✓ a ring is a zero-copy Int32Array view: Coord ${cl.layout.size}B (x@${cl.layout.fields[0].pos}, y@${cl.layout.fields[1].pos}), ${cl.ringLen} coords, 0 mismatches vs loft's reader`);
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);

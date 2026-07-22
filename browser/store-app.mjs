@@ -351,6 +351,61 @@ window.__perfHooks = {
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
+  // Is a `vector<Coord>` already the flat layout we want — readable as a ZERO-COPY Int32Array view over
+  // wasm memory? (PLAN-PERF §6c: where the loft/JS split should live.)
+  //
+  // loft-deliver's `vector` case stores struct elements INLINE at `storeBase + vRec*8 + 8`, stride
+  // sizeOf(elem) — so if Coord is two 4-byte ints at offsets 0 and 4, a ring IS an interleaved Int32Array
+  // and JS never needs to copy or retain it. That would mean the 33 MB / 239k objects exist purely
+  // because `readLoftValue` materialises structs, not because the data is shaped badly.
+  //
+  // This is the feasibility probe for that claim, and it does not take the layout on faith: it derives
+  // the ring's address with loft-deliver's own formulas, maps an Int32Array over it, and compares every
+  // coordinate against what loft's reader materialises for the same ring.
+  coordLayout() {
+    const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+    if (!h) return { err: 'no layout handle' };
+    const mem = kernel.memory(), d = h.desc, sb = Number(h.storeBase);
+    const u32 = (a) => new DataView(mem.buffer).getUint32(a, true);
+    const sizeOf = (id) => (d.sizes && d.sizes[id] != null ? +d.sizes[id] : 0);
+    // Reach Coord STRUCTURALLY (PTile.areas → Area.ring → its element type) rather than by name: the
+    // descriptor keeps names in a side table, and a structural walk is what the render path would do.
+    const dRec = Number((d.flat && d.flat[`${Number(h.rec)}_${Number(h.pos)}`]) || 0);
+    const nTiles = u32(sb + dRec * 8 + 4);
+    const tileElem = d.nodes[d.nodes[h.typeId].elem];
+    const fAreas = tileElem.fields.find((f) => f.name === 'areas');
+    const areaVec = d.nodes[fAreas.content];                 // vector<Area>
+    const areaId = areaVec.elem, area = d.nodes[areaId];
+    const fRing = area.fields.find((f) => f.name === 'ring');
+    const ringVec = d.nodes[fRing.content];                  // vector<Coord>
+    const coordId = ringVec.elem, coord = d.nodes[coordId];
+    const layout = { coordId, kind: coord.kind, size: sizeOf(coordId), areaSize: sizeOf(areaId),
+                     fields: (coord.fields || []).map((f) => ({ name: f.name, pos: f.pos, kind: d.nodes[f.content]?.kind })) };
+    for (let i = 0; i < nTiles; i++) {
+      const tRec = u32(sb + dRec * 8 + 8 + 4 * i);
+      if (!tRec) continue;
+      const aRec = u32(sb + tRec * 8 + 8 + Number(fAreas.pos));
+      if (!aRec) continue;
+      const nAreas = u32(sb + aRec * 8 + 4);
+      if (!nAreas) continue;
+      const aPos = 8 + sizeOf(areaId) * 0;                   // area 0, inline in the vector
+      const rRec = u32(sb + aRec * 8 + aPos + Number(fRing.pos));
+      if (!rRec) continue;
+      const n = u32(sb + rRec * 8 + 4);
+      if (n < 3) continue;
+      // ZERO-COPY: the ring as an interleaved Int32Array straight over wasm memory.
+      const flat = new Int32Array(mem.buffer, sb + rRec * 8 + 8, n * 2);
+      // loft's own reader, materialising the same ring into JS objects.
+      const ref = flatField(mem, h, i, 'areas')[0].ring;
+      let bad = 0;
+      for (let k = 0; k < n; k++) if (flat[k * 2] !== ref[k].x || flat[k * 2 + 1] !== ref[k].y) bad++;
+      return { layout, tile: i, ringLen: n, refLen: ref.length, mismatches: bad,
+               zeroCopyOk: bad === 0 && ref.length === n && layout.size === 8,
+               first: [flat[0], flat[1]], firstRef: [ref[0].x, ref[0].y],
+               vecElemStride: sizeOf(ringVec.elem) };
+    }
+    return { layout, err: 'no ring found' };
+  },
   // What does the JS side RETAIN between frames, and in what shape? (PLAN-PERF §6 R / §6c)
   //
   // Long-lived JS structures are where a JS renderer loses to loft, and the loss is not in the arithmetic
