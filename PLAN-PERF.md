@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
-**Status (2026-07-22):** steps **1–14, 16 and 20–22 IMPLEMENTED** (16 including its presentation half —
-§6b(2); 14 rescoped by measurement — §6c); **open: 15** (per-tile rasters, re-size first),
+**Status (2026-07-22):** steps **1–16 and 20–22 IMPLEMENTED** (16 including its presentation half —
+§6b(2); 14 rescoped by measurement — §6c; 15 landed and ON — §6d); **open:**
 **18** (`par`), **19** (persist the graph). **Nothing is blocked upstream** — re-validated against the
 installed loft **2026.7.2**, see §7c. All five gates pass on it (`test`, `test-native`, `test-wasm`,
 `test-map`, `match_parity.sh`), including through the breaking @PLN110 `len`/`size` flip.
@@ -27,9 +27,9 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 @PLN105's bridge; `view` emits roads only — steps 9–13).
 
 **Open, in the order the evidence favours:**
-- **15 — per-tile rasters.** ⚠ **Re-size before starting:** step 14 (§6c) took the pan frame to **20 ms**
-  and the view to **126 ms**, so 15's "pan <16 ms" is now a small step, not the main event. A frame is now
-  **rasterisation, not projection** (projection is 4% of it), which is exactly what 15 targets.
+- **18 — `par` over the stretches**, and **19 — persist the graph** (⚠ re-size 19 first). The render path
+  is done: steps 14–15 took a pan frame **76 → 0.6 ms** and a view **946 → 146 ms**. What is left is all
+  in the MATCH.
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
   **re-sized against 3327 ms, not 5899** (§7a says to do exactly this).
@@ -72,7 +72,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **12** ✅ | `browser/map.mjs`, `store-app.mjs`, `cdp_verify_store.mjs` | Switch render to the store-read areas (`areaRenderList` mirrors `parseAreas`'s tail — same <3-vertex drop, same `minZoom`); keep the text emit as the **parity gate**, now asserted on the app's own view in `make test-map`, not only in the probe. | **DONE** — `✓ areas render from the store, 2252 == loft's 2252 text areas`; `# view:` counts unchanged. **⚠ Interim cost measured, see §7f: view total 927 → 1447 ms** — not step 12's read, but step 9's per-view `expose`, which re-flattens all 1089 tiles. Step 13 removes it. | **render source** |
 | **13** ✅ | `map.mjs`, `store-app.mjs`, `map_kernel`, web kernel | Repeat 11–12 per kind (buildings, lines, pois, labels→places+streetLabels), then delete the layout text emit: `view` is now **roads-only** (`do_view_roads_bbox`). The full emit survives as the gate-only `viewtext` command so the parity reference does not die with it. | **DONE** — every kind store==text (`2252 · 16646 · 1231 · 4460 · 2 · 1439`). At `CPU_THROTTLE=4`: **kernel 1141 → 63 ms**, parse 202 → 12, text **4.25 MB → 398 KB**, empty-bbox view 483 → **21 ms**, and step 9's per-view `expose` bracket collapsed to one per session. **View total 1447 → 606 ms** (946 before the whole bridge). ⚠ **`storeRead` is now 468 ms of the 606** — see §7f. | one kind per commit |
 | **14** ✅ | `browser/map.mjs`, **`browser/store-geom.mjs`** (new), `store-app.mjs` | **Its premise was half wrong — see §6c.** Landed as two orthogonal fixes: **14a** screen features by lat/lon bounds BEFORE projecting (the frame projected 214,455 vertices to draw ~7,000), and **14b** stop COPYING the store into JS at all — a `vector<Coord>` is already an interleaved `Int32Array`, so the renderer reads coordinates straight out of wasm memory. "Typed arrays" would have been the wrong fix: still a copy. | **DONE.** Quiet box, `CPU_THROTTLE=4`, spreads 1.1–1.5×: **view 277 → 126 ms**, **storeRead 129 → 29 ms**, **pan frame 64 → 20 ms**, retained objects **239,135 → 4,609**, JS heap 33.3 → 24.6 MB. Streets cannot come from the store (the matcher iterates it) but parse into a flat column instead. Gated on a canvas PIXEL HASH, identical (`c85280c8`) across every variant — counts cannot see a ring read at a wrong offset. | **perf only (pixel-identical)** |
-| **15** ⚠ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **IMPLEMENTED, EXPLAINED, NOT ENABLED (`map.blocked = false`) — see §6d.** Warm pan frame **0.9 ms** vs 20 ms (~22×), cold frame ~91 ms, 6 blocks. Its difference from a direct render is now fully accounted for: an origin-key bug (35,424 px, fixed), a latent POI edge-cull bug in the DIRECT renderer (fixed — a real app fix), and **canvas-size rasterisation rounding, which is a platform property** proven by a minimal control and cannot be removed. Gate is two equalities (cached==baked, labels exact) and one bound (maxDelta ≤ 16). Enabling it is a visual decision — the origin snap moves the image up to one device pixel. | **would be a visual change** |
+| **15** ✅ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **DONE and ON — see §6d.** Pan frame **20 → 0.6 ms**; view 126 → 146 ms (one amortised bake). Bakes are bounded per frame after the first version made `view` 4× worse. Its difference from a direct render is fully accounted for: an origin-key bug (35,424 px, fixed), a latent POI edge-cull bug in the DIRECT renderer (fixed — a real app fix), and **canvas-size rasterisation rounding, which is a platform property** proven by a minimal control and cannot be removed. Gate is three equalities (cached==baked, data-load invalidates, labels exact) and one bound (maxDelta ≤ 16). | **visual: the origin snaps to a whole device pixel** |
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
 | **18** | `lib/routing_kernel` + kernel | **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
@@ -547,20 +547,31 @@ probes contradicted each other: `layerFootprint` said 0 retained features while 
 went stale against the app it mirrors. *A probe that mirrors the app must be re-synced when the app moves
 — and the way you find out is by making two probes disagree.*
 
-## 6d. Step 15 — the block raster cache: measured, NOT landed (2026-07-22)
+## 6d. Step 15 — the block raster cache: LANDED and ON (2026-07-22)
 
-**Status: implemented, `map.blocked = false`, and it stays off until it can be shown equal.** The app's
-render path is untouched; every §6c gate is green, pixel hash `c85280c8` unchanged.
+**Status: enabled.** `map.blocked = true`. Every gate green.
 
-### The prize is real
+| | before | after |
+|---|---|---|
+| **pan frame** (cache warm) | 20 ms | **0.6 ms** |
+| **view total** | 126 ms | **146 ms** (+20 ms: one bake, which starts warming the cache) |
+| cache settle after a data change | — | 7 frames, worst 66 ms |
 
-| | |
-|---|---|
-| warm pan frame (pure blit, 6 blocks) | **0.6 ms** vs 20 ms direct — ~33× |
-| cold frame (all 6 blocks bake) | ~135 ms |
+### The prize, and the trap next to it
 
-The cost moves off every frame and onto the first frame after a zoom or a data change. That is §1's
-invariant applied to the frame, and it works.
+A warm pan frame is **0.6 ms** against 20 ms. But the first version baked every block a viewport needs in
+ONE frame, and that made `view` **26 → 387 ms** (total 126 → 509) — a **4× regression on a user-visible
+interaction**, spent to make the frames after it free. Caught only by profiling after enabling; the gates
+were all green, because it was a cost regression, not a correctness one. §0's rule 5 in action: *the step
+moved a number it was not supposed to move.*
+
+**Bakes are amortised.** A frame bakes at most `BLOCK_BAKES_PER_FRAME` blocks; while the cache cannot yet
+cover the viewport the frame is drawn DIRECTLY — from the **same snapped origin** the blocks use, so the
+image does not jump by a device pixel when the cache takes over — and asks for another frame. A view pays
+one bake (+20 ms) and every pan frame after costs 0.6 ms.
+
+*An amortised cache's number is not its total: it is FRAMES TO SETTLE and the WORST single frame on the
+way there, because that is what a user feels.* The gate reports both.
 
 ### Why it CANNOT be pixel-identical — inherent, not a shortcut
 
@@ -637,8 +648,28 @@ block, and `coldVsWarm == 0` asserts it. *A probe that always starts cold cannot
 - **vs snapped-direct** — *bounded*: a small per-channel delta is what "no structural difference" looks
   like once #3 is understood. A `maxDelta > 16` means something real broke.
 
-`map.blocked` stays **false**. This section explains and bounds the difference; enabling it is a visual
-decision (the snap moves the image up to one device pixel), not a correctness one.
+### Three things it needed before it could be ON, and two gates that were lying
+
+- **Invalidation.** A block is baked from whatever features were loaded, and the store index is built for
+  ONE viewport window — so a block baked before a data load can be missing features that window did not
+  include. **A stale raster is a failure that looks like a correct map.** `loadView`/`loadRoadsFlat`/
+  `setStoreIndex` now invalidate.
+- **A byte budget, not a block count.** A block is `(512+64)² × dpr² × 4` bytes, so a phone at dpr 3
+  stores 9× what this desktop does — a fixed cap of 24 would have been a ~250 MB cache there. Capped at
+  48 MB, minimum 4 blocks.
+- **DOM-free degradation.** `map.test.mjs` drives the renderer against a stub canvas on purpose, so
+  `render()` falls back to the direct path when there is no `document` or no `drawImage`.
+
+And two gates that would have passed **vacuously** — both found by trying to make them fail:
+
+- `storeRenderParity` toggles `_sidx` and re-renders. With blocking on, both renders blit the **same
+  cached blocks** and agree no matter what: it would have been comparing a cache against itself. It now
+  drives the direct path. (Its hash returning to `917244eb` is how the fix was confirmed.)
+- The staleness check first reloaded the **same** text, which leaves stale blocks correct — so it passed
+  with invalidation deliberately disabled. It now loads an EMPTY road set: **93,080 stale px without
+  invalidation, 0 with.**
+
+*A gate that cannot fail is worse than no gate, because it reads as evidence.*
 
 ### The method note, which is the reusable part
 

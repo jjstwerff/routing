@@ -30,7 +30,8 @@ Three structural changes got it there, and each is worth more than its number:
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
 at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 3327 ms**,
-**warm match ~880 → 644 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c).
+**warm match ~880 → 644 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
+frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
 
@@ -72,14 +73,12 @@ fine**, and `release`/`expose` brackets it.
 
 **What to do next, in the order the evidence favours:**
 
-1. **Step 15 — block rasters. IMPLEMENTED AND EXPLAINED, still OFF** (`map.blocked = false`) — read
-   `PLAN-PERF` §6d. Warm pan frame **0.9 ms** vs 20 ms. Its difference from a direct render is now fully
-   accounted for and gated (cached==baked exact, labels exact, maxDelta ≤ 16). **Turning it on is a
-   VISUAL decision, not a correctness one**: the origin must snap to a whole device pixel, which moves the
-   image by up to one device pixel — that is the only thing left to decide. Two facts §6d establishes so
-   they are not re-derived: an offscreen round-trip IS exact at identical canvas size, but Chromium's
-   rasterisation is **not invariant to canvas dimensions**, so a bleed margin makes pixel-equality
-   unreachable by construction.
+1. **Steps 14–15 are DONE — the render path is finished.** A pan frame is **0.6 ms** (was 76) and a view
+   **146 ms** (was 946). What is left is all in the MATCH. Before touching the renderer read `PLAN-PERF`
+   §6d: the block cache is ON, it **snaps the render origin** to a whole device pixel, and it can never be
+   pixel-identical (Chromium's rasterisation is not invariant to canvas dimensions — proven, not assumed),
+   so its gate is three equalities plus a bounded delta. **Anything that replaces layer data must call
+   `map.invalidateBlocks()`** or the map shows stale tiles that panning does not repair.
    **Read `PLAN-PERF` §6c before touching the render path**: the app no longer copies the store into JS —
    a `vector<Coord>` IS an interleaved `Int32Array` and `browser/store-geom.mjs` indexes it, so geometry
    is read straight out of wasm memory. Two rules that costs come with: **`memory.grow` DETACHES the
