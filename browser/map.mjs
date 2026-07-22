@@ -21,6 +21,11 @@ const BLOCK = 512, BLOCK_MARGIN = 32;
 // Cap the raster cache by BYTES, not by block count: a block is (BLOCK+2*MARGIN)^2 * dpr^2 * 4 bytes, so
 // a phone at dpr 3 stores 9x what this desktop does and a fixed count would be a 250 MB cache there.
 const BLOCK_CACHE_BYTES = 48 * 1024 * 1024;
+// Bakes are amortised over frames. Baking every block a viewport needs in ONE frame made a `view` cost a
+// full cold bake — measured 26 -> 387 ms at CPU_THROTTLE=4, a 4x regression on a user-visible
+// interaction, to make the frames AFTER it free. Bounded instead: a frame bakes at most this many blocks
+// and draws directly until the cache can cover the viewport, so no single frame pays for all of them.
+const BLOCK_BAKES_PER_FRAME = 1;
 const MAX_LAT = 85.05112877980659;        // Web-Mercator latitude limit (where y → ±∞)
 const MIN_ZOOM = 2, MAX_ZOOM = 19;        // pan/zoom clamp (M1)
 const clampLat = (lat) => Math.max(-MAX_LAT, Math.min(MAX_LAT, lat));
@@ -707,7 +712,6 @@ export class RouteMap {
     const ctx = this.ctx, W = this.width, H = this.height;
     if (this._blockZoom !== z) { this._blocks = new Map(); this._blockZoom = z; }
     this._blockStats = { areas: 0, lines: 0, buildings: 0, streets: 0, pois: 0 };
-    this._buildingLabels = [];                             // accumulated across this frame's blocks
     const cache = this._blocks || (this._blocks = new Map());
     // The blit takes a SUB-RECTANGLE of the block (its interior, inside the bleed margin). With smoothing
     // on, Chromium filters at the sub-rect edges even at 1:1 scale, which shows up as antialiasing-
@@ -715,14 +719,25 @@ export class RouteMap {
     // `offscreenRoundTrip`), so this is the difference between that control and the block path.
     const smooth = ctx.imageSmoothingEnabled;
     ctx.imageSmoothingEnabled = false;
+    this._buildingLabels = [];
     const bx0 = Math.floor(ox / B), bx1 = Math.floor((ox + W) / B);
     const by0 = Math.floor(oy / B), by1 = Math.floor((oy + H) / B);
+    // Two passes: bake a bounded number of the missing blocks, then decide whether the cache can cover
+    // the viewport. If it cannot, the caller draws this frame directly — a partial blit would show holes.
     let baked = 0;
+    for (let by = by0; by <= by1 && baked < BLOCK_BAKES_PER_FRAME; by++) {
+      for (let bx = bx0; bx <= bx1 && baked < BLOCK_BAKES_PER_FRAME; bx++) {
+        if (!cache.has(bx + ',' + by)) { cache.set(bx + ',' + by, this._bakeBlock(bx, by)); baked++; }
+      }
+    }
+    this._blocksBaked = baked;
+    for (let by = by0; by <= by1; by++) {
+      for (let bx = bx0; bx <= bx1; bx++) if (!cache.has(bx + ',' + by)) { ctx.imageSmoothingEnabled = smooth; return null; }
+    }
     for (let by = by0; by <= by1; by++) {
       for (let bx = bx0; bx <= bx1; bx++) {
         const key = bx + ',' + by;
-        let cv = cache.get(key);
-        if (!cv) { cv = this._bakeBlock(bx, by); cache.set(key, cv); baked++; }
+        const cv = cache.get(key);
         // Label anchors are cached WITH the block. Only a bake produces them, so a fully-cached frame
         // would otherwise reset the list and never refill it — every building label would vanish on the
         // second frame of a pan. The bisect never saw this because it cleared the cache every time.
@@ -737,7 +752,6 @@ export class RouteMap {
       }
     }
     ctx.imageSmoothingEnabled = smooth;
-    this._blocksBaked = baked;
     const blockBytes = Math.pow((B + 2 * M) * this.dpr, 2) * 4;
     const maxBlocks = Math.max(4, Math.floor(BLOCK_CACHE_BYTES / blockBytes));
     if (cache.size > maxBlocks) {                          // keep what is on screen, drop the rest
@@ -866,7 +880,17 @@ export class RouteMap {
     // the direct path rather than requiring a DOM.
     const canBlock = this.blocked && typeof document !== 'undefined' && !!document.createElement
                      && typeof ctx.drawImage === 'function';
-    const base = canBlock ? ((snapOrigin = this.renderBlocked()), this._blockStats || {}) : this._drawBase(z);
+    let base;
+    if (canBlock && (snapOrigin = this.renderBlocked())) base = this._blockStats || {};
+    else if (canBlock) {
+      // Cache cannot cover the viewport yet (it is still baking). Draw directly, but from the SAME snapped
+      // origin the blocks use, so the image does not jump by a device pixel when the cache takes over.
+      const o = this._originWorld();
+      snapOrigin = { x: Math.round(o.x * this.dpr) / this.dpr, y: Math.round(o.y * this.dpr) / this.dpr };
+      this._origin = snapOrigin;
+      try { base = this._drawBase(z); } finally { this._origin = null; }
+      this.requestRender();                                // keep baking on following frames
+    } else base = this._drawBase(z);
     mark('base');
     if (snapOrigin) this._origin = snapOrigin;
     let rtN = 0, lab;

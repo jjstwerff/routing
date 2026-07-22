@@ -525,7 +525,9 @@ window.__perfHooks = {
   //      per-channel delta, which is what "no structural difference" actually looks like here.
   blockRaster() {
     const M = map;
-    const cold = () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); };
+    // Bakes are amortised (BLOCK_BAKES_PER_FRAME), so a "fully blocked" frame is only reached after the
+    // cache settles — render until it does, which is what a real pan does over its first few frames.
+    const cold = () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; for (let i = 0; i < 16; i++) M.render(); };
     const warm = () => { M.blocked = true; M.render(); };
     const snap = () => { M.blocked = false; M.renderSnappedDirect(); };
     const coldVsWarm = this.renderDiff(cold, warm);
@@ -539,8 +541,17 @@ window.__perfHooks = {
     const vsSnapped = this.renderDiff(snap, cold);
     const roundTrip = this.offscreenRoundTrip(0).diff;
     // The numbers the step exists for.
+    // The settle cost: how many frames until the cache covers the viewport, and the WORST single frame
+    // on the way there — which is the number that matters, since it is what a user feels.
     M.blocked = true; M._blocks = new Map(); M._blockZoom = null;
-    const t0 = performance.now(); M.render(); const coldMs = performance.now() - t0;
+    let settleFrames = 0, worstMs = 0, settleMs = 0;
+    for (let i = 0; i < 24; i++) {
+      const t = performance.now(); M.render(); const d = performance.now() - t;
+      settleMs += d; settleFrames++;
+      if (d > worstMs) worstMs = d;
+      if (M._blocksBaked === 0) break;                     // nothing left to bake
+    }
+    const coldMs = settleMs;
     const w = [];
     for (let i = 0; i < 6; i++) { const t = performance.now(); M.render(); w.push(performance.now() - t); }
     const blocks = M._blocks.size;
@@ -559,6 +570,7 @@ window.__perfHooks = {
                                       () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); }).diff;
     M.loadRoadsFlat(lastViewText || '');                    // restore the real roads
     return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip, staleness,
+             settleFrames, worstFrameMs: +worstMs.toFixed(1),
              vsSnapped: vsSnapped.diff, vsSnappedMaxDelta: vsSnapped.maxDelta,
              pct: +(vsSnapped.diff / vsSnapped.total * 100).toFixed(2),
              coldMs: +coldMs.toFixed(1), warmMs: +med(w).toFixed(2), blocks };

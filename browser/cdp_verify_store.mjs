@@ -118,7 +118,7 @@ else if (br.coldVsWarm !== 0) { console.log(`  FAIL: a CACHED block frame differ
 else if (br.staleness !== 0) { console.log(`  FAIL: a data load did NOT invalidate the block cache (${br.staleness} px stale) — the map would show old tiles`); ok = false; }
 else if (br.labelDiffs.places || br.labelDiffs.streets || br.labelDiffs.buildings) { console.log('  FAIL: a label pass differs under block rendering —', JSON.stringify(br.labelDiffs)); ok = false; }
 else if (br.vsSnappedMaxDelta > 16) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > 16), not just by rasterisation rounding`); ok = false; }
-else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm / ${br.coldMs}ms cold, ${br.blocks} blocks`);
+else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm · settles in ${br.settleFrames} frames, worst ${br.worstFrameMs}ms, ${br.blocks} blocks`);
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);
