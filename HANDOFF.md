@@ -29,8 +29,8 @@ Three structural changes got it there, and each is worth more than its number:
    ~230 ms per re-expose), so they parse into a flat column instead. 239,135 → 4,609 retained objects.
 
 Measured at `CPU_THROTTLE=4` (≈ a phone — **always profile with it; desktop flatters ~4×**), medians of 6
-at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1820 ms**,
-**warm match ~880 → 526 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
+at 1.1–1.5× spread: **view 946 → 126 ms**, **pan frame 76 → 20 ms**, **cold match 6370 → 1831 ms**,
+**warm match ~880 → 395 ms**. JS now retains **4,609** objects for geometry, not 239,135 (§6c), and a pan
 frame is **0.6 ms** (§6d).
 Every step was gated on the route staying **byte-identical** (`tools/match_parity.sh`), and step 22 — the
 only route-affecting one — additionally on a 26-sketch corpus with **0 worse accepted**.
@@ -74,8 +74,14 @@ fine**, and `release`/`expose` brackets it.
 ⚠ **`PLAN-PERF` §0 has nothing open.** 18 and 19b are both ⛔ and measured, not guessed. The graph build
 was then attacked directly (**§7i**): edges now reference their source way instead of copying its 11 text
 tags, and `precompute_edges` computes costs **per way** rather than per edge — **cold match 2721 → 1820
-ms**, warm 644 → 526, routes byte-identical. Native split is now corridor 20 · build_graph 93 · match 115,
-so **the SEARCH is the largest slice for the first time** and is where the next attack belongs.
+ms**, warm 644 → 526, routes byte-identical. Then the SEARCH (**§7j**): `nearest_nodes` allocated a graph-sized vector and ran
+4 full scans over every node, ~3x per sketch point — **anchoring cost more than routing**. One pass
+keeping the best K, identical tie-breaking, identical routes: **warm match 526 → 395 ms**. Native split
+is now corridor 20 · build_graph 93 · match 88.
+**Next, in size order:** `precompute_edges` (~27 ms — five arrays of 37.6k entries the hot loop could
+index per-WAY via `g.edges[ei].w`), then `nearest_nodes` is still O(nodes) per call — loft's
+`spatial<T[x,y]>` would make it O(log n), but the candidate SET and its tie-breaking must come out
+identical, so the border gate + `match_parity` are its acceptance.
 
 **What to do next, in the order the evidence favours:**
 

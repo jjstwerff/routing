@@ -18,8 +18,8 @@ it measures it and ranks it against everything else.
 | **view** (pan past the box) | 946 ms | **126 ms** | 7.5× — §7g(2), §6c |
 | **pan frame** (camera moved, no reload) | 76 ms | **20 ms** | 3.8× — §6c |
 | JS objects retained for geometry | 239,135 | **4,609** | −98.1% — §6c |
-| **cold match** (first click / corridor miss) | 6370 ms | **1820 ms** | 3.5× — §7h(2), §7a(2), §7i |
-| **warm match** (one point moved — what users do) | ~880 ms | **526 ms** | 1.7× — §7i |
+| **cold match** (first click / corridor miss) | 6370 ms | **1831 ms** | 3.5× — §7h(2), §7a(2), §7i |
+| **warm match** (one point moved — what users do) | ~880 ms | **395 ms** | 2.2× — §7i, §7j |
 | repeat match (nothing changed) | ~450 ms | **367 ms** | 1.5× |
 | layout text loft serialises per view | 4.25 MB / 29 144 lines | **0** | §0 step 13 |
 
@@ -1074,6 +1074,55 @@ is the harness that tunes and then guards that gate; it prints the §7 numbers (
 bridged_m/class_m) for both tiers per sketch.
 
 ---
+
+## 7j. Attacking the SEARCH — anchoring cost more than routing (2026-07-22)
+
+Once §7i fixed the graph build, the search became the largest slice. Same method: attribute first, with
+temporary phase timing inside `build_state`.
+
+| phase | cost (3-point sketch, 114 ms search) |
+|---|---|
+| **anchors (3 points)** | **60 ms — 53%** |
+| `precompute_edges` | 27 ms |
+| stretches (2) | 18 ms |
+| `new_scratch` | 7 ms |
+
+**Anchoring cost more than routing** — and unlike the stretches it is per POINT, so a realistic 40-point
+sketch pays it forty times (this is the ~8 s freeze §6b A recorded for a dense sketch).
+
+### The scan nobody had looked at
+
+`nearest_nodes` is called ~3× per point. It allocated a `taken` vector **the size of the graph** (33,948
+booleans) and then ran **`VITERBI_K` = 4 full selection scans over every node**. The comment above it
+records that the *metric* was already optimised from Vincenty to flat-earth multiplies — *"turns ~17M
+Vincenty calls into cheap multiplies"* — but **the scan itself was never touched.** One pass keeping the
+best K replaces four passes plus the allocation.
+
+**The result is IDENTICAL, not merely equivalent, and the tie-breaking is why.** The old code scanned
+ascending with a strict `d < bestd`, so among equal distances the LOWEST node index won. The insertion
+shifts only while `d < bd[pos-1]` — also strict — so an equal-distance node stays behind the one found
+earlier. Anchors feed the Viterbi, so a different tie is a different route.
+
+| | before | after |
+|---|---|---|
+| search (native) | 115 ms | **88 ms** (−23%; median of 10, 83–94, spread 1.16×) |
+| cold match (native, TUBE) | 223 ms | ~205 ms |
+| **warm match (browser, `CPU_THROTTLE=4`)** | 526 ms | **395 ms (−25%)** |
+| cold match (browser) | 1820 ms | 1831 ms — **unchanged, within the 1.1× spread** |
+
+**The win lands on the WARM match, and that is the point.** `update_state` recomputes only the edited
+window, so a warm match is almost entirely anchor work — while a cold match is still dominated by the
+corridor read and `build_graph`, where a 27 ms search saving disappears into the noise. Warm is *"the
+interaction users actually perform"* (this document's own words), so an improvement that shows up only
+there is the one worth having.
+
+Routes byte-identical: all four tile-border fingerprints and all three `match_parity` lengths.
+
+**Still open in the search**, in size order: `precompute_edges` (~27 ms — it materialises five arrays of
+37.6k entries that the hot loop could instead index per-WAY via `g.edges[ei].w`), and `nearest_nodes` is
+still **O(nodes) per call** — loft has `spatial<T[x,y]>` (Morton/Z-order, with proximity range-slices)
+which would make it O(log n), but the candidate SET and its tie-breaking must come out identical, so it
+needs the border gate and `match_parity` as its acceptance.
 
 ## 7i. Attacking the corridor read and the graph build directly (2026-07-22)
 
