@@ -106,6 +106,27 @@ const stubCanvas = () => {
            getBoundingClientRect: () => ({ width: 800, height: 600 }) };
 };
 
+console.log('\n§6 R · the cached view invalidates when the camera is mutated IN PLACE');
+{
+  // view() is memoised because project() runs once per VERTEX (214k in a frame), and rebuilding a view
+  // per call cost an extra projectWorld plus three allocations each time. The arithmetic is provably
+  // unchanged (makeView is pure, same inputs), so the only risk the cache introduces is STALENESS — and
+  // pan/zoom mutate this.camera in place, which is exactly the case a naive identity check would miss.
+  const m = new RouteMap(stubCanvas(), { ...ENSCHEDE, zoom: 13, interactive: false });
+  const a = m.project(52.25, 6.90);
+  m.camera.lat += 0.01;                                     // pan mutates the camera object in place
+  const b = m.project(52.25, 6.90);
+  const fresh = makeView({ ...m.camera }, m.width, m.height).project(52.25, 6.90);
+  ok(b.y !== a.y && b.x === fresh.x && b.y === fresh.y,
+     `a pan invalidates it (y ${a.y.toFixed(2)} → ${b.y.toFixed(2)}, equals a freshly built view)`);
+  m.camera.zoom += 1;
+  const c = m.project(52.25, 6.90);
+  const f2 = makeView({ ...m.camera }, m.width, m.height).project(52.25, 6.90);
+  ok(c.x === f2.x && c.y === f2.y, 'a zoom invalidates it');
+  const d = m.project(52.25, 6.90);
+  ok(d.x === c.x && d.y === c.y, 'an unchanged camera reuses it (same answer)');
+}
+
 console.log('\n§6b(2) · a STRETCH line parses to its index and points');
 {
   const s = parseStretch('STRETCH 7;52.1,6.1;52.2,6.2');

@@ -351,6 +351,67 @@ window.__perfHooks = {
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
     return { n, total, stretches, frames: gaps.length, longestGap: Math.max(...gaps), expectedFrames: Math.round(total / 16.7) };
   },
+  // What does the JS side RETAIN between frames, and in what shape? (PLAN-PERF §6 R / §6c)
+  //
+  // Long-lived JS structures are where a JS renderer loses to loft, and the loss is not in the arithmetic
+  // — it is in the shape. A vertex held as `[lat, lon]` is a separate heap object: header, elements
+  // pointer, two boxed doubles, scattered. 200k of them are 200k GC-traced allocations and a projection
+  // loop that is memory-bound rather than compute-bound. The same vertices in one Float64Array are
+  // contiguous, GC-invisible (typed arrays are not traced element-wise) and iterate at cache speed.
+  //
+  // So this reports the two numbers that decide whether that matters here: how many objects the layers
+  // actually retain, and what the same geometry would cost FLAT. Read with a forced GC before it, or it
+  // reports garbage that was merely not collected yet.
+  layerFootprint() {
+    const arrays = [['areas', map.areas, (a) => a.ring], ['buildings', map.buildings, (b) => b.ring],
+                    ['streets', map.streets, (s) => s.line], ['lines', map.lines, (l) => l.geom],
+                    ['streetLabels', map.streetLabels, (s) => s.line], ['pois', map.pois, null],
+                    ['places', map.places, null]];
+    const per = {}; let verts = 0, objs = 0;
+    for (const [name, list, geomOf] of arrays) {
+      let v = 0;
+      if (geomOf) for (const f of list) v += geomOf(f).length;
+      else v = list.length;
+      per[name] = { features: list.length, verts: v };
+      verts += v; objs += list.length + (geomOf ? v : 0);   // one object per feature + one per vertex pair
+    }
+    const m = performance.memory || {};
+    return { per, verts, objects: objs,
+             heapUsedMB: m.usedJSHeapSize ? +(m.usedJSHeapSize / 1048576).toFixed(1) : null,
+             flatFloat64MB: +(verts * 16 / 1048576).toFixed(2),      // 2 x f64 per vertex, contiguous
+             flatInt32MB: +(verts * 8 / 1048576).toFixed(2) };       // deg*1e7 fixed point, as the store holds it
+  },
+  // A fingerprint of what is actually ON the canvas, for changes that must be PURELY representational.
+  // §6 R's steps reorganise how geometry reaches the rasteriser and are supposed to leave every pixel
+  // where it was; "supposed to" is not a gate, and counts cannot see a shifted or dropped feature. Cheap
+  // FNV-1a over the raw pixel bytes — compare it across the commit, not against a stored golden, so it
+  // survives a store regeneration.
+  canvasFingerprint() {
+    map.render();
+    const c = document.getElementById('map');
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < d.length; i++) { h ^= d[i]; h = Math.imul(h, 0x01000193); }
+    return { hash: (h >>> 0).toString(16), bytes: d.length, w: c.width, h: c.height,
+             camera: { ...map.camera }, counts: { ...map._stats } };
+  },
+  // PLAN-PERF §6 R: WHERE does a frame's 73 ms go? Steps 14 and 15 bet on different halves of it — 14
+  // that per-frame projection dominates, 15 that rasterisation does — and one aggregate number cannot
+  // referee that. Renders the CURRENT view n times with per-layer timing on, and separately times the
+  // projection walk alone, which is the hard CEILING on what step 14 can win.
+  async renderBudget(n) {
+    map._timeLayers = true;
+    const runs = [];
+    for (let i = 0; i < n; i++) { const t0 = performance.now(); map.render(); runs.push({ total: performance.now() - t0, ms: { ...map._layerMs } }); }
+    map._timeLayers = false;
+    const proj = [];
+    let verts = 0;
+    for (let i = 0; i < n; i++) { const t0 = performance.now(); const r = map.projectionCost(); proj.push(performance.now() - t0); verts = r.verts; }
+    const med = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+    const layers = {};
+    for (const k of Object.keys(runs[0].ms)) layers[k] = med(runs.map((r) => r.ms[k]));
+    return { total: med(runs.map((r) => r.total)), layers, projection: med(proj), verts, counts: { ...map._stats } };
+  },
   // §6b(2)'s observable: do the STRETCH lines reach JS *while the match runs*, or only at the end?
   //
   // Step 16 made loft EMIT per stretch, but `runKernel` buffered the whole response, so JS learned

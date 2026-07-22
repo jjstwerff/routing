@@ -70,6 +70,7 @@ const probe = `(async () => {
   if (K.matchWarm) for (let i = 0; i < ${N}; i++) out.matchWarm.push(await K.matchWarm(SKETCH));
   out.matchExtend = [];
   if (K.matchExtend) for (let i = 0; i < ${N}; i++) out.matchExtend.push(await K.matchExtend(SKETCH));
+  out.renderBudget = K.renderBudget ? await K.renderBudget(${N}) : null;
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.stream = K.streamProgress ? await K.streamProgress() : null;
@@ -169,7 +170,24 @@ if (res.matchWarm?.length && res.matchCold?.length) {
 if (globalThis.__db) {
   const db = globalThis.__db, dr = globalThis.__dr;
   const vk = med(res.runs.map((r) => r.kernel)), mk = med(res.matchCold.map((r) => r.kernel));
-  console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
+  if (res.renderBudget) {
+  // PLAN-PERF §6 R. The point of this block is to REFEREE steps 14 and 15 before either is written:
+  // 14 hoists projection out of the frame, 15 caches rasters — and they are bets on different halves.
+  const rb = res.renderBudget;
+  console.log('\n=== RENDER BUDGET — where one frame goes (median of ' + (process.env.PROFILE_RUNS || 6) + ') ===');
+  const rows = Object.entries(rb.layers).sort((a, b) => b[1] - a[1]);
+  for (const [k, v] of rows) {
+    const n = rb.counts[k] ?? '';
+    console.log('  ' + k.padEnd(12) + String(Math.round(v)).padStart(5) + ' ms  ' + (v / rb.total * 100).toFixed(0).padStart(3) + '%   ' + (n === '' ? '' : n + ' drawn'));
+  }
+  console.log('  ' + 'TOTAL'.padEnd(12) + String(Math.round(rb.total)).padStart(5) + ' ms');
+  console.log('\n  projection alone ' + Math.round(rb.projection) + ' ms over ' + rb.verts + ' vertices'
+    + '  = ' + (rb.projection / rb.total * 100).toFixed(0) + '% of the frame');
+  console.log('    → this is the CEILING on step 14 (pre-project into typed arrays): hoisting projection');
+  console.log('      out of the frame cannot save more than projection costs. The remainder is');
+  console.log('      rasterisation, which is step 15 (cache per-tile rasters, blit on pan).');
+}
+console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
   console.log('  match_true_cold: decode(roads)' + fmt(dr) + ' + compute ' + fmt(mk - dr) + '  = kernel ' + fmt(mk));
 }

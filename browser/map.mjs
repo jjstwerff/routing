@@ -405,6 +405,9 @@ export class RouteMap {
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
     this.route = opts.route || [];            // [[lat,lon], …]            — the matched route (read-only)
     this._stats = {};                         // per-render draw counts (gate hook)
+    this._timeLayers = false;                 // opt-in per-layer render timing (PLAN-PERF §6 R)
+    this._layerMs = null;
+    this._bboxCache = new WeakMap();          // layer array → per-feature lat/lon bounds (step 14)
     this._moveCbs = []; this._moveT = 0;      // debounced camera-settle callbacks (M4 tile loading)
     this.width = 1; this.height = 1; this.dpr = 1;
     this._renderCbs = [];
@@ -506,7 +509,24 @@ export class RouteMap {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
 
-  view() { return makeView(this.camera, this.width, this.height); }
+  // The current view, rebuilt only when the camera or the viewport actually moves.
+  //
+  // This used to construct a fresh one per call, and `project()` is called once PER VERTEX — 214 455 of
+  // them in a frame of this viewport (PLAN-PERF §6 R). So every vertex paid an extra `projectWorld` for
+  // the camera centre plus three allocations, to compute a value identical for the whole frame.
+  //
+  // The camera is mutated IN PLACE by pan/zoom (`this.camera.lat = …`), so the cached view must hold a
+  // COPY of the camera fields: comparing against the same object it was built from would compare a value
+  // with itself, and the cache would never invalidate. Same arithmetic either way — makeView is pure and
+  // gets identical inputs — so the pixels are unchanged, which is what the gate asserts.
+  view() {
+    const c = this.camera, v = this._view;
+    if (!v || v.width !== this.width || v.height !== this.height
+        || v.camera.lat !== c.lat || v.camera.lon !== c.lon || v.camera.zoom !== c.zoom) {
+      this._view = makeView({ lat: c.lat, lon: c.lon, zoom: c.zoom }, this.width, this.height);
+    }
+    return this._view;
+  }
   project(lat, lon) { return this.view().project(lat, lon); }
   unproject(x, y) { return this.view().unproject(x, y); }
 
@@ -572,19 +592,41 @@ export class RouteMap {
 
   render() {
     const ctx = this.ctx, W = this.width, H = this.height, z = this.camera.zoom;
+    // Per-layer attribution (PLAN-PERF §6 R). `render` was one 73 ms number, and steps 14/15 each bet on
+    // a DIFFERENT half of it — 14 that projection math dominates, 15 that rasterisation does. One
+    // aggregate cannot referee that bet, and the step that guesses wrong moves nothing. `now` is read
+    // once: performance.now() itself is not free at ~26k features, and an absent clock (node stub canvas
+    // in map.test.mjs) must cost nothing at all.
+    const clk = this._timeLayers && typeof performance !== 'undefined' ? () => performance.now() : null;
+    const t = clk ? { at: clk(), ms: {} } : null;
+    const mark = (k) => { if (t) { const n = clk(); t.ms[k] = n - t.at; t.at = n; } };
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#f2efe9';                 // Carto land background
     ctx.fillRect(0, 0, W, H);
+    mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     let areasN = 0;
-    for (const a of this.areas) if (z >= a.minZoom) { this.drawArea(a); areasN++; }
+    const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+    for (let i = 0; i < this.areas.length; i++) {
+      const a = this.areas[i];
+      if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+      this.drawArea(a); areasN++;
+    }
+    mark('areas');
     const lnN = this.drawLines();              // streams / rails / barriers, above terrain
+    mark('lines');
     const bN = this.drawBuildings();
+    mark('buildings');
     const sN = this.drawStreets();
+    mark('streets');
     const poiN = this.drawPois();              // point glyphs, above roads
+    mark('pois');
     const rtN = this.drawRoute();              // matched route, above the base map
+    mark('route');
     const lab = this.layoutLabels();
+    mark('labels');
     this._stats = { areas: areasN, lines: lnN, buildings: bN, streets: sN, pois: poiN, route: rtN, placeLabels: lab.placeLabels, streetLabels: lab.streetLabels, buildingLabels: lab.buildingLabels };
+    if (t) this._layerMs = t.ms;
     // M0 probe: optional test dots (empty once real layers are loaded).
     for (const p of this.points) {
       const s = this.project(p.lat, p.lon);
@@ -593,6 +635,30 @@ export class RouteMap {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
     }
     for (const cb of this._renderCbs) cb(ctx, this);
+  }
+
+  // Probe (PLAN-PERF §6 R, step 14): what does a frame spend on PROJECTION alone?
+  //
+  // Step 14 is "pre-project geometry into typed arrays once per view, not per frame", and its entire
+  // value is bounded by this number — hoisting projection out of the frame cannot save more than
+  // projection costs. Walks exactly the geometry `render()` walks, calls the same `project()`, and
+  // discards the result, so what it returns is the CEILING on step 14's win. If that ceiling is a small
+  // fraction of the measured render, step 14 is the wrong step and the cost is in rasterisation (15).
+  //
+  // `sink` defeats dead-code elimination: without consuming the coordinates a JIT is free to delete the
+  // whole loop and report a projection cost of ~0, which would send step 14 to the scrapyard for free.
+  projectionCost() {
+    const z = this.camera.zoom;
+    let sink = 0, verts = 0;
+    const walk = (g) => { for (const p of g) { const s = this.project(p[0], p[1]); sink += s.x + s.y; verts++; } };
+    for (const a of this.areas) if (z >= a.minZoom) walk(a.ring);
+    for (const b of this.buildings) walk(b.ring);
+    for (const s of this.streets) walk(s.line);
+    for (const l of this.lines) walk(l.geom);
+    for (const p of this.pois) { const s = this.project(p.at[0], p.at[1]); sink += s.x + s.y; verts++; }
+    for (const p of this.places) { const s = this.project(p.at[0], p.at[1]); sink += s.x + s.y; verts++; }
+    for (const s of this.streetLabels) walk(s.line);
+    return { verts, sink };
   }
 
   // M2: one filled path per area, coloured by Carto cover class.
@@ -619,6 +685,67 @@ export class RouteMap {
 
   _projLine(g) { const px = new Array(g.length); for (let i = 0; i < g.length; i++) px[i] = this.project(g[i][0], g[i][1]); return px; }
   _inView(px, pad = 60) { for (const p of px) if (p.x >= -pad && p.x <= this.width + pad && p.y >= -pad && p.y <= this.height + pad) return true; return false; }
+
+  // --- The geometry screen (PLAN-PERF §0 step 14 / §6 R) ---------------------------------------------
+  //
+  // Every draw loop below used to PROJECT a feature's whole ring and only then ask `_inView` whether any
+  // of it landed on screen. Measured on the app's own viewport: 214 455 vertices projected per frame to
+  // draw 1 895 buildings of 16 646 loaded — ~89% of the projection thrown away, every frame, and 82% of
+  // the frame's 64 ms (CPU_THROTTLE=4). That is §1's invariant violated at frame scale: work proportional
+  // to the loaded data instead of to what is on screen.
+  //
+  // WHY THIS IS PIXEL-IDENTICAL, and not merely "close enough". `_inView(px, pad)` keeps a feature iff
+  // some VERTEX lands in the viewport padded by `pad` pixels. `_screen` is the same rectangle unprojected
+  // to lat/lon — exact, because Mercator is monotonic per axis, so the pixel rect and the degree rect are
+  // the same region. If a vertex is inside the pixel rect its lat/lon is inside the degree rect, so the
+  // feature's bounding box necessarily OVERLAPS it. Contrapositive: a feature whose bbox misses the rect
+  // has no vertex in view and `_inView` would have rejected it anyway. The screen is therefore a
+  // conservative SUPERSET of the existing test — it can only skip work that was already being discarded,
+  // never change what is drawn. (It is a strict superset: a long line crossing the viewport with both
+  // ends outside overlaps the rect but has no vertex in it. The screen keeps it; `_inView` still rejects
+  // it. Cheaper is not the same as equal, and the gate asserts equal.)
+  //
+  // ⚠ And for AREAS a bbox test is not merely cheaper, it is the only correct one. Areas are FILLED and
+  // had no cull at all — deliberately, it turns out: a polygon big enough to contain the whole viewport
+  // has no vertex on screen yet paints every pixel of it, so culling areas by `_inView` would erase
+  // lakes and forests exactly when zoomed in far enough to be inside one. A bbox overlap keeps them,
+  // because containment implies overlap. This is why the screen is expressed as bounds and not as
+  // "is any vertex visible".
+  //
+  // A single pad of 60 is used for every layer even though buildings pass 20. Larger pad = larger window =
+  // fewer features skipped, which is the SAFE direction; the selectivity lost is negligible.
+  _screen() {
+    const v = this.view(), pad = 60;
+    const nw = v.unproject(-pad, -pad), se = v.unproject(this.width + pad, this.height + pad);
+    return { mnla: se.lat, mxla: nw.lat, mnlo: nw.lon, mxlo: se.lon };
+  }
+
+  // Per-feature lat/lon bounds for a layer, built ONCE per layer array and reused every frame — the
+  // "once per view, not per frame" of step 14. Keyed on the array itself, so replacing a layer (loadView,
+  // or a store read) misses the cache automatically and there is no invalidation to forget.
+  _geoBounds(list, geomOf) {
+    let bb = this._bboxCache.get(list);
+    if (bb) return bb;
+    bb = new Float64Array(list.length * 4);
+    for (let i = 0; i < list.length; i++) {
+      const g = geomOf(list[i]);
+      let mnla = Infinity, mxla = -Infinity, mnlo = Infinity, mxlo = -Infinity;
+      for (let k = 0; k < g.length; k++) {
+        const la = g[k][0], lo = g[k][1];
+        if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+        if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+      }
+      bb[i * 4] = mnla; bb[i * 4 + 1] = mxla; bb[i * 4 + 2] = mnlo; bb[i * 4 + 3] = mxlo;
+    }
+    this._bboxCache.set(list, bb);
+    return bb;
+  }
+  // Does feature `i`'s bbox overlap the screen rect? Empty geometry leaves +Inf/-Inf and misses, matching
+  // `_inView([])` — which is also false.
+  _onScreen(bb, i, w) {
+    const o = i * 4;
+    return bb[o + 1] >= w.mnla && bb[o] <= w.mxla && bb[o + 3] >= w.mnlo && bb[o + 2] <= w.mxlo;
+  }
   _strokePx(px) { const ctx = this.ctx; ctx.beginPath(); for (let i = 0; i < px.length; i++) { if (i === 0) ctx.moveTo(px[i].x, px[i].y); else ctx.lineTo(px[i].x, px[i].y); } ctx.stroke(); }
 
   // M3/S13 + B5: fill building footprints (only from z14, S13) and collect named ones for a label at ≥z16.
@@ -627,7 +754,10 @@ export class RouteMap {
     this._buildingLabels = [];
     if (this.camera.zoom < BUILDINGS_MINZOOM) return 0;
     const wantLabels = this.camera.zoom >= BUILDING_LABEL_MINZOOM; let n = 0;
-    for (const b of this.buildings) {
+    const win = this._screen(), bb = this._geoBounds(this.buildings, (b) => b.ring);
+    for (let i = 0; i < this.buildings.length; i++) {
+      if (!this._onScreen(bb, i, win)) continue;          // step 14: reject before projecting, not after
+      const b = this.buildings[i];
       const px = this._projLine(b.ring);
       if (px.length < 3 || !this._inView(px, 20)) continue;
       this._fillPx(px, BUILDING_FILL, BUILDING_STROKE); n++;
@@ -648,7 +778,10 @@ export class RouteMap {
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     // Project + cull once, bucket by class, dropping any class not shown at this zoom.
     const byClass = {}, vis = [];
-    for (const st of this.streets) {
+    const win = this._screen(), sbb = this._geoBounds(this.streets, (s) => s.line);
+    for (let i = 0; i < this.streets.length; i++) {
+      if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
+      const st = this.streets[i];
       const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
       const entry = { st, px }; (byClass[st.cls] || (byClass[st.cls] = [])).push(entry); vis.push(entry);
@@ -669,7 +802,10 @@ export class RouteMap {
     if (!this.lines.length) return 0;
     const z = this.camera.zoom, ctx = this.ctx; let n = 0;
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    for (const ln of this.lines) {
+    const win = this._screen(), lbb = this._geoBounds(this.lines, (l) => l.geom);
+    for (let i = 0; i < this.lines.length; i++) {
+      if (!this._onScreen(lbb, i, win)) continue;         // step 14: reject before projecting, not after
+      const ln = this.lines[i];
       const st = LINE_STYLES[ln.kind]; if (!st || z < st.minZoom) continue;
       const px = this._projLine(ln.geom); if (px.length < 2 || !this._inView(px)) continue;
       ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
