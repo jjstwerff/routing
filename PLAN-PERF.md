@@ -34,8 +34,12 @@ once — steps 4–8), and **loft is out of the view path entirely** (JS reads t
 - **The cold match is now 1820 ms** (§7i: edges reference their way instead of copying its tags; costs
   computed per way, not per edge). Native split is now corridor 20 · build_graph 93 · match 115 — the
   SEARCH is the largest slice for the first time.
-- **18 is ⏸ DEFERRED** — `par` is a no-op in the browser today (proven from the shipped wasm), but loft
-  plans browser `par`; `tools/wasm_threads.mjs` fails the day it lands, and that is the cue (§6e).
+- **18 is ⏸ DEFERRED, and its loft-side blocker is GONE** (2026-07-29) — loft's browser `par` **landed**
+  (@PLN117) and is verified working on the installed 2026.7.2: a `loft --html` bundle dispatches `par`
+  across **8 Web Workers** with the interpreter's value. The kernel is still unthreaded only because it
+  has **no reachable `par`**. What gates 18 now is the **deploy host**: Tier 2 needs COOP/COEP and GitHub
+  Pages cannot send it. ⚠ `tools/wasm_threads.mjs` was **BLIND** and is fixed — it is not, and never was,
+  the cue for step 18 (§6e).
 - **18 — `par` over the stretches.** Unblocked 2026-07-22 (@PLN108's copy elision is live).
 - **19 — persist the built graph.** ⚠ Its "~41% of a cold match" premise predates steps 20–22 and must be
   **re-sized against 3327 ms, not 5899** (§7a says to do exactly this).
@@ -81,7 +85,7 @@ Rules that make these steps safe, and that every row below obeys:
 | **15** ✅ | `browser/map.mjs` | Cache per-block rasters in WORLD-PIXEL space; blit on pan. | **DONE and ON — see §6d.** Pan frame **20 → 0.6 ms**; view 126 → 146 ms (one amortised bake). Bakes are bounded per frame after the first version made `view` 4× worse. Its difference from a direct render is fully accounted for: an origin-key bug (35,424 px, fixed), a latent POI edge-cull bug in the DIRECT renderer (fixed — a real app fix), and **canvas-size rasterisation rounding, which is a platform property** proven by a minimal control and cannot be removed. Gate is three equalities (cached==baked, data-load invalidates, labels exact) and one bound (maxDelta ≤ 16). | **visual: the origin snaps to a whole device pixel** |
 | **16** ✅ | `lib/routing_kernel` + kernel, then `store-kernel.mjs` + `map.mjs` + `store-app.mjs` | **Stream per stretch** (§6b A): emit each `SubPath` as it is matched, `frame_yield()` between — **and render it**. | **DONE, in two halves.** *Frozen frame* (2026-07-22, first): the `frame_yield()`s broke the one un-interruptible block up — 3-point cold match worst gap **~4212 → ~1300 ms**. ⚠ **This row's original "40-point route, 39 stretches, worst gap 384 ms" is STALE and has been re-measured** — step 22 landed after it; see §6b(3). *Presentation* (2026-07-22, second): `runKernel` gained an opt-in line sink drained per yield in a microtask, and `map` grew `beginStretches`/`applyStretch`, so the line now GROWS in travel order on the app's own click path. Gated in `make test-map` on three non-timing assertions — `deliveries >= stretches`, `growSteps >= 2`, and the final ROUTE being an in-order **subsequence** of the streamed line — plus a DOM-free restart test in `map.test.mjs` (§6b(3)). Cost of the growing line, `CPU_THROTTLE=4`, two runs: **−125 ms (0.97×) and −245 ms (0.94×)** — not distinguishable from zero. See §6b(2). | **responsiveness + presentation** |
 | **17** ⚠ | throwaway probe | **DONE but its CONCLUSION WAS WRONG** — kept only as the record of a mis-read. I read *"only the loop element may be a reference"* as "workers can't read captured state, put the data in the ELEMENT". loft's THREADING fix (`97af1b52`, my own finding) says the opposite: **large state is CAPTURED read-only and never passed** — only *extra scalar args* have that restriction. See §6b B, which is superseded. | — | none |
-| **18** ⏸ | `lib/routing_kernel` + kernel | **DEFERRED — `par` is a no-op in the browser TODAY, but loft PLANS browser `par` (§6e).** Build it when `tools/wasm_threads.mjs` starts failing. The app's wasm has `shared=false` and Rust's no-threads std linked in; loft's WASM (single) profile compiles `threading` OFF so `par()` runs Tier 1 (sequential), and Tier 2 needs COEP/COOP headers that GitHub Pages cannot set. Its own verify line says "~3× **native**" — i.e. the server, not this plan's subject. `tools/wasm_threads.mjs` gates the claim and fails the day it stops holding. Original note follows. **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
+| **18** ⏸ | `lib/routing_kernel` + kernel | **DEFERRED — `par` is a no-op in THIS kernel, but loft's browser `par` has LANDED (@PLN117) and is verified (§6e, 2026-07-29).** ⚠ Do **not** wait for `tools/wasm_threads.mjs` to fail: that gate watches OUR artifact, which only gains threads once we add a reachable `par`, so it cannot announce a toolchain change — and until 2026-07-29 it could not even see a threaded wasm. The remaining gate is COOP/COEP on the deploy host. The app's wasm has `shared=false` and Rust's no-threads std linked in; loft's WASM (single) profile compiles `threading` OFF so `par()` runs Tier 1 (sequential), and Tier 2 needs COEP/COOP headers that GitHub Pages cannot set. Its own verify line says "~3× **native**" — i.e. the server, not this plan's subject. `tools/wasm_threads.mjs` gates the claim and fails the day it stops holding. Original note follows. **UNBLOCKED 2026-07-22 — design it.** `par` over the stretches (§6b B). The blocker was `clone_for_worker()` byte-copying every ACTIVE parent store per worker, so par's cost tracked the **session's live heap** (RSS ~175 MB) rather than the workload — 0→122 MB of *unrelated* heap took a fixed workload **2 → 205 ms**, and 1→16 threads took it **36 → 178 ms**. On the installed **2026.7.2** that is **flat**: 1–3 ms across 0 / 61 / 122 MB and across 1 / 8 / 16 threads, with `LOFT_PAR_SHARE` **unset** (sharing is now the default dispatch; upstream `ae0c266b`, "@PLN108 par-store single-impl"). Re-measured with the same `tools/par_copy_probe.loft` that reported the blockage, per this row's own unblock criterion. **Read §6b B, not step 17's row** — 17's conclusion ("put the data in the ELEMENT") was a mis-read; large state is CAPTURED read-only. | `tools/par_copy_probe.loft` stays flat vs heap; route byte-identical (`tools/match_parity.sh`); ~3× native on the stretch loop | **perf only** |
 | **19a** ✅ | `lib/routing_kernel` | Replace the TEXT node-dedup key (`"{lat},{lon}"`, formatted per vertex of every way) with the fixed-point degrees packed into one i64. | **DONE** — cold match **3327 → 2721 ms** browser, 375 → 311 native; routes byte-identical (5 `match_parity` cases, and the §7a(2) border gate). Safe because the text key was proven INJECTIVE first (44,739 vertices → 33,948 distinct nodes under both keyings). No format change. | **perf only** |
 | **19b** ⛔ | `tools/gen-tiles.loft` + kernel + **regenerate the stores** | Persist the **built graph** per tile (PLAN-TILES §268) and union it at match time. | **MEASURED AND REJECTED — §7a(2).** The union is only ~13–21% cheaper than building (it must still hash ~34k part-nodes vs 44.7k vertices, copy every edge, rebuild the CSR), so 19b is worth ~8% of a cold match for a format change, a redeploy, and the plan's riskiest row. The acceptance gate and the reference `union_graphs` are kept. | **not built** |
 | **20** ✅ | `lib/routing_kernel` | Cell-tube corridor **beside** bbox; bbox still default. `tools/tube_probe.loft`. | **DONE** — drops 43–60% of the ways, read −40…−64%, **route identical** on all 3 sketches. See §7b. | **none** (inert) |
@@ -560,16 +564,16 @@ went stale against the app it mirrors. *A probe that mirrors the app must be re-
 of the shipped artifact, not an opinion, and it was established BEFORE writing any loft, which is the only
 reason no time was spent on it.
 
-⚠ **But this is a DEFERRAL, not a dead end.** The maintainer confirms (2026-07-22) that **loft has a plan
-to allow `par` in browsers**; it is queued behind another bug. So the right posture is not "step 18 is
-impossible" but "step 18 is waiting on a capability that is coming" — which is exactly what
-`tools/wasm_threads.mjs` is for: it fails the day the kernel wasm gains threads, and that failure is the
-signal to build it. §6b B's determinism design is kept for that day, not as a museum piece.
+⚠ **But this is a DEFERRAL, not a dead end.** The maintainer confirmed (2026-07-22) that **loft has a plan
+to allow `par` in browsers**; it was queued behind another bug. So the right posture is not "step 18 is
+impossible" but "step 18 is waiting on a capability that is coming". **That capability has since ARRIVED —
+see § "The capability landed" below** — and §6b B's determinism design is kept for that day, not as a
+museum piece.
 
 ### The evidence, from the app's own wasm
 
 ```
-kernel wasm: memories=1 shared=false noThreadsStd=true
+kernel wasm: memory=DEFINED shared=false tlsExports=none noThreadsStd=true
 ```
 
 - **The memory is not shared.** A wasm module with threads carries a SHARED memory (flags bit 1). The
@@ -600,9 +604,59 @@ platform, not a design that was wrong.
 
 ### The tripwire, so this does not have to be re-derived
 
-`tools/wasm_threads.mjs`, wired into `make test-map`, asserts the state written above. **The day loft's
-browser build gains threads, that gate FAILS** and says to revisit step 18 — rather than this section
-quietly staying wrong. *A blocked step should leave behind the check that unblocks it.*
+`tools/wasm_threads.mjs`, wired into `make test-map`, asserts the state written above: if the app's kernel
+ever gains threads, that gate FAILS and says to revisit step 18 — rather than this section quietly staying
+wrong. *A blocked step should leave behind the check that unblocks it.* ⚠ **But read the next section
+before trusting it as the CUE for step 18 — it is not one, and for eight weeks it could not even see a
+threaded wasm.**
+
+### The capability landed — verified, and the tripwire was BLIND (2026-07-29)
+
+**loft's browser `par` ships.** @PLN117 ("browser multi-threading") is done and CI-gated upstream: `par`
+runs on real Web Worker threads over shared wasm memory on one loft-owned runtime, `loft --html` picks the
+threaded runtime when the program has a **reachable `par`**, and `--threads` / `--no-threads` override
+(neither appears in `--help`). Confirmed here on the **installed** loft — `/usr/local/bin/loft`, reinstalled
+2026-07-29 22:54, md5-identical to `../loft`'s build; `--version` still prints **2026.7.2**, so the version
+string does not discriminate the binary.
+
+Probe = loft's own `tests/wasm/html-thread-proof.sh` shape, driving the installed binary instead of the dev
+tree (48-row `par` over a CPU-heavy `heavy()`, interpreter reference `par_sum=36023`):
+
+| case | result |
+|---|---|
+| threaded bundle, COOP/COEP host | `coi=true` pool 24 · **`distinct_workers=8`** · `par_sum=36023` ✅ |
+| **the same bundle**, host without isolation | `coi=false threads=0` · `distinct_workers=1` · `par_sum=36023` ✅ |
+| `--no-threads` bundle, COOP/COEP host | `par_sum=36023` ✅ |
+
+Static shape of the two bundles, which is what the gate has to recognise:
+
+```
+threaded   : IMPORTED memory env.memory shared=true min=17 max=16384 · __wasm_init_tls/__tls_size/__tls_align/__tls_base exported
+--no-threads: DEFINED memory shared=false min=17 · no TLS exports        ← identical to today's store-kernel.wasm
+```
+
+Build cost is a non-issue (**0.7 s** threaded, 0.5 s sequential): the atomics std is prebuilt in
+`/usr/local/share/loft/html-mt/`, so there is no cold `build-std`. Bundle 765 KB vs 626 KB.
+
+⛔ **`tools/wasm_threads.mjs` reported that threaded bundle as SINGLE-THREADED.** It read the SHARED flag
+out of the memory **section** — but a threaded wasm defines no memory, it **imports** a shared one, so the
+section is empty and the check saw `memories=0 shared=?`, failed its `shared === true` test, and printed
+`✓ single-threaded`. **Fixed:** the import section is parsed too, the TLS bootstrap exports are read out of
+the export section as an independent second signal, and **three hand-assembled control modules
+(imported-shared / defined-plain / TLS-only) are asserted on every invocation** — a detector that has never
+been shown a positive case is a comment. Verified against all three real artifacts: today's kernel PASSES,
+the real threaded bundle FAILS, the real `--no-threads` bundle PASSES.
+
+**Two corrections this forces on the plan.** (1) The tripwire is **not the cue for step 18** and never
+could be: it watches OUR artifact, and our kernel only gains threads once we add a reachable `par`. It is a
+*regression* gate on this section's claim, not a *capability* detector — the toolchain moved on 2026-07-24
+and it stayed green, correctly and uselessly. (2) The remaining blocker is entirely the **deploy host**:
+Tier 2 needs COOP/COEP, GitHub Pages cannot send it, and the fallback is proven graceful
+(`distinct_workers=1`, same value) — so the first piece of step-18 work is a **service-worker COEP shim**,
+not `par` in the kernel. Until that exists, adding `par` buys the deployed app nothing.
+
+*The pattern, for the fourth time in this plan: this was a probe no case ever exercised. It was written
+against the shape of the artifact we HAD, so it could only ever confirm it.*
 
 ## 6d. Step 15 — the block raster cache: LANDED and ON (2026-07-22)
 
