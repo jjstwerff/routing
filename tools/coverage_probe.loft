@@ -1,0 +1,50 @@
+// PLAN-SCALE §1 sizing instrument: what area does a layout store cover, and what is in it?
+// Every size estimate in PLAN-SCALE §1 is this output x an area ratio, so re-run it per generated
+// block (PLAN-SCALE S0) instead of trusting the density factor.
+//   loft --native --lib lib tools/coverage_probe.loft <layout.store>
+#cwd
+
+use basemap::PTile;
+
+struct Cov { mnx: integer, mxx: integer, mny: integer, mxy: integer, n: integer,
+             areas: integer, buildings: integer, lines: integer, labels: integer, pois: integer,
+             coords: integer }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: coverage_probe <layout.store>"); return; }
+
+  layout: hash<PTile[tkey]> = [];
+  store_load(layout, a[0] ?? "");
+
+  c = Cov { mnx: 0, mxx: 0, mny: 0, mxy: 0, n: 0, areas: 0, buildings: 0, lines: 0, labels: 0, pois: 0, coords: 0 };
+  for t in layout {
+    if c.n == 0 { c.mnx = t.ox; c.mxx = t.ox; c.mny = t.oy; c.mxy = t.oy; }
+    if t.ox < c.mnx { c.mnx = t.ox; }
+    if t.ox > c.mxx { c.mxx = t.ox; }
+    if t.oy < c.mny { c.mny = t.oy; }
+    if t.oy > c.mxy { c.mxy = t.oy; }
+    c.n += 1;
+    c.areas += len(t.areas); c.buildings += len(t.buildings); c.lines += len(t.lines);
+    c.labels += len(t.labels); c.pois += len(t.pois);
+    for ar in t.areas { c.coords += len(ar.ring); }
+    for bl in t.buildings { c.coords += len(bl.ring); }
+    for ln in t.lines { c.coords += len(ln.geom); }
+    for lb in t.labels { c.coords += len(lb.line); }
+  }
+
+  lat_lo = (c.mny as float) / 10000000.0;
+  lat_hi = (c.mxy as float) / 10000000.0;
+  lon_lo = (c.mnx as float) / 10000000.0;
+  lon_hi = (c.mxx as float) / 10000000.0;
+  // Rough metric span at this latitude: 111.2 km per degree of latitude, 68.6 km per degree of
+  // longitude at 52°N.  Good enough to size a country against a sample.
+  km_ns = (lat_hi - lat_lo) * 111.2;
+  km_ew = (lon_hi - lon_lo) * 68.6;
+  println("tiles={c.n}");
+  println("tile origins span lat {lat_lo:4.4}..{lat_hi:4.4}  lon {lon_lo:4.4}..{lon_hi:4.4}");
+  println("≈ {km_ns:6.1} km N-S x {km_ew:6.1} km E-W = {km_ns * km_ew:8.0} km2 (origins only, add one tile edge)");
+  println("features: areas={c.areas} buildings={c.buildings} lines={c.lines} labels={c.labels} pois={c.pois}");
+  println("total features={c.areas + c.buildings + c.lines + c.labels + c.pois}  coords={c.coords}");
+}

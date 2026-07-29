@@ -1,0 +1,91 @@
+// PLAN-SCALE §2 / §7 R5 gate: does a WORKING-SET (paged) load return the SAME tile as a whole load?
+//
+// The WE read path (PLAN-SCALE D3) is loft's working-set loader and nothing of our own. This is the
+// standing check that it stays sound on OUR two real tile shapes — promoted from a design probe to a
+// gate, because a probe outside a gate is a comment.
+//
+// P1 showed store_load_key returns true for both shapes and fetches ~192 KB instead of the file — but the
+// layout entry came back with areas=0 buildings=0, and tile_bbox_probe reports NO empty tiles in that
+// store. A loader that returns `true` and drops the nested vectors is worse than a refusal, so this
+// compares the SAME key both ways, field by field. The richest tile is chosen deliberately: an empty
+// answer on a tile that really is empty proves nothing.
+//   loft --native --lib lib tools/paged_probe.loft <layout.store> <roads.store>
+// Driven by tools/paged_gate.sh; LOFT_LOADER_STATS=1 additionally prints bytes_fetched vs file size.
+#cwd
+
+use basemap::(PTile, Area, Building, Line, Label, Poi, Coord);
+use routing_kernel::(TTile, TRoad, TStep);
+
+struct Shape { areas: integer, buildings: integer, lines: integer, labels: integer, pois: integer, coords: integer }
+
+fn shape_of(t: PTile) -> Shape {
+  s = Shape { areas: len(t.areas), buildings: len(t.buildings), lines: len(t.lines),
+              labels: len(t.labels), pois: len(t.pois), coords: 0 };
+  for ar in t.areas { s.coords += len(ar.ring); }
+  for bl in t.buildings { s.coords += len(bl.ring); }
+  for ln in t.lines { s.coords += len(ln.geom); }
+  for lb in t.labels { s.coords += len(lb.line); }
+  s
+}
+fn show(tag: text, s: Shape) {
+  println("  {tag}: areas={s.areas} buildings={s.buildings} lines={s.lines} labels={s.labels} pois={s.pois} coords={s.coords}");
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: paged_probe <layout.store> <roads.store>"); return; }
+  layout_path = a[0] ?? "";
+  roads_path = a[1] ?? "";
+
+  // --- the RICHEST layout tile, so "empty" cannot be the honest answer.
+  whole: hash<PTile[tkey]> = [];
+  store_load(whole, layout_path);
+  best = 0; best_n = 0; seen = 0;
+  for lt in whole {
+    n = len(lt.areas) + len(lt.buildings) + len(lt.lines) + len(lt.labels) + len(lt.pois);
+    if n > best_n { best_n = n; best = lt.tkey; }
+    seen += 1;
+  }
+  println("layout: {seen} tiles; richest tkey={best} with {best_n} features");
+
+  whole_shape = Shape { areas: 0, buildings: 0, lines: 0, labels: 0, pois: 0, coords: 0 };
+  for wt in whole { if wt.tkey == best { whole_shape = shape_of(wt); } }
+  show("whole load ", whole_shape);
+
+  ws: hash<PTile[tkey]> = [];
+  ok = store_load_key(ws, layout_path, best);
+  paged_shape = Shape { areas: 0, buildings: 0, lines: 0, labels: 0, pois: 0, coords: 0 };
+  got = 0;
+  for pt in ws { got += 1; paged_shape = shape_of(pt); }
+  println("  store_load_key -> {ok}, entries={got}");
+  show("paged load ", paged_shape);
+  same = paged_shape.areas == whole_shape.areas && paged_shape.buildings == whole_shape.buildings
+      && paged_shape.lines == whole_shape.lines && paged_shape.labels == whole_shape.labels
+      && paged_shape.pois == whole_shape.pois && paged_shape.coords == whole_shape.coords;
+  if same { println("  LAYOUT: paged == whole ✓"); } else { println("  LAYOUT: ⛔ PAGED DIFFERS FROM WHOLE — nested vectors lost"); }
+
+  // --- and the same test for the roads shape (flat vector<struct-of-scalars>).
+  rwhole: hash<TTile[tkey]> = [];
+  store_load(rwhole, roads_path);
+  rbest = 0; rbest_n = 0;
+  for rt in rwhole { if len(rt.roads) + len(rt.steps) > rbest_n { rbest_n = len(rt.roads) + len(rt.steps); rbest = rt.tkey; } }
+  wr_roads = 0; wr_steps = 0;
+  for rw in rwhole { if rw.tkey == rbest { wr_roads = len(rw.roads); wr_steps = len(rw.steps); } }
+  rws: hash<TTile[tkey]> = [];
+  rok = store_load_key(rws, roads_path, rbest);
+  pr_roads = 0; pr_steps = 0; rgot = 0;
+  for pr in rws { rgot += 1; pr_roads = len(pr.roads); pr_steps = len(pr.steps); }
+  println("roads: richest tkey={rbest}; whole roads={wr_roads} steps={wr_steps} | paged({rok}, entries={rgot}) roads={pr_roads} steps={pr_steps}");
+  roads_same = pr_roads == wr_roads && pr_steps == wr_steps && rgot == 1;
+  if roads_same { println("  ROADS: paged == whole ✓"); } else { println("  ROADS: ⛔ PAGED DIFFERS FROM WHOLE"); }
+
+  // One line the gate greps. Non-vacuity is part of the verdict: an empty tile would pass trivially,
+  // so the richest tile must actually carry features.
+  rich = whole_shape.areas + whole_shape.buildings + whole_shape.lines + whole_shape.labels + whole_shape.pois;
+  if same && roads_same && got == 1 && rich > 100 && wr_roads > 10 {
+    println("#P ALL PASS  layout_features={rich} roads={wr_roads}");
+  } else {
+    println("#P FAIL  layout_paged_ok={same} roads_paged_ok={roads_same} layout_features={rich} roads={wr_roads}");
+  }
+}

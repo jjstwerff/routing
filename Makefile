@@ -198,6 +198,7 @@ test-native: check-rustc
 	done
 	@echo "  NATIVE KERNEL SUITE PASSES"
 	@./tools/tile_border_gate.sh
+	@./tools/paged_gate.sh
 
 test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh

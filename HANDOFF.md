@@ -176,8 +176,11 @@ browser `par`, has shipped — see §2's step-18 row.)
 
 ### If you are looking for the next thing to do
 
-`PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. The candidates, in the order
-the evidence favours:
+`PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. **The next body of work is
+scoped in [`PLAN-SCALE.md`](PLAN-SCALE.md)** (2026-07-30) — coverage: one 283 km² block → Western Europe,
+plus the refresh procedure that keeps it current. Its S0/S1 are measurements, not code, and S1 (does
+loft's paged Range reader work in a `--html` build?) gates everything else. Smaller candidates, in the
+order the evidence favours:
 
 1. **A service-worker COEP shim** — the one thing standing between the app and step 18. loft's browser
    `par` works (8 workers, verified on the installed binary), but GitHub Pages cannot send COOP/COEP, so

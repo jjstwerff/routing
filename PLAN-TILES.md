@@ -242,6 +242,13 @@ Drive the current app over the Overijssel set to surface UX rough spots *before*
   verify Leaflet path `mousedown` fires on touch on-device.)
 
 ## Western Europe — full build routine
+
+> ⚠ **Folded into [`PLAN-SCALE.md`](PLAN-SCALE.md) §7 (2026-07-30), which is now the plan of record for
+> both the WE build AND the recurring refresh.** The generation half below survives nearly intact — the
+> osmium passes, Hilbert packing, rolling 0.5 GB shards, and splitting ways at tile borders are all still
+> the design. What changed: the **client** half (an `index.tiles` directory we author, mmap reload) is
+> superseded — loft's working-set loader reads a store's own index by pages, so the only thing we author
+> is a tiny bbox → block index. The **~6–10 GB / 12–20 files** estimate is roads-only.
 Batch, on your machine → the sharded dataset (`~0.5 GB` files + `index.tiles`). Generalises S1–S4.
 
 0. **Prereqs:** `osmium-tool`; disk for the source extract + terrain cache; the compiled generator.
