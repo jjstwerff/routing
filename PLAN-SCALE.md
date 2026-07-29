@@ -6,8 +6,10 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 # PLAN-SCALE — from one city to Western Europe
 
 **Status: design, nothing built (2026-07-30).** Plan of record for taking the app from its single
-283 km² block to WE-wide coverage, *and* for the procedure that keeps that data fresh (§7 — the recurring
-cost, and the part that is easiest to under-plan).
+283 km² block to WE-wide coverage **that is actually current**. Three parts, and the last two are the ones
+usually missing: the **capabilities** (§6), the **coverage ladder** that gets there in small revertible
+rungs (§6b), and the **refresh procedure + freshness target** that keep it up to date once it exists
+(§7–§8 — the recurring cost, and the part that is easiest to under-plan).
 
 Supersedes the scale sections of the older plans, which were written against a premise that has since
 died — see **§4**. `PLAN-PERF.md` owns per-interaction performance; this doc owns *coverage*. The
@@ -126,7 +128,9 @@ needs the asyncify `fetch()` bridge; whether `paged_reader.rs`'s Range path is w
 | **D5** | **Blocks are per-country or per-split, ≤ 2 GB, and the dataset VERSION is in the URL.** | a client must never mix versions mid-session; per-block regeneration is what makes a hotfix cheap (§7) |
 | **D6** | **The top index is ours and tiny** — bbox → block URL + version, one row per block (12–40 rows). | the store is its own directory (D3), so the only thing we author is the map from geography to block |
 | **D7** | **Cross-block continuity rides the existing border rule** — ways split at tile borders, border nodes grid-snapped so neighbours merge exactly — extended to blocks, with its own gate. | `tools/tile_border_gate.sh` already proves this across *tiles*; blocks are the same rule at a bigger seam |
-| **D8** | **Overpass fallback stays** for outside-coverage sketches. | it is the only thing that makes a partial rollout usable |
+| **D8** | **Overpass fallback stays** for outside-coverage sketches. | it is the only thing that makes a partial rollout usable — and every rung of §6b is a partial rollout |
+| **D9** | **The refresh runs on the maintainer's machine or a self-hosted runner**, resumably; CI validates the manifest and the published index but does not build the data. | ~30 GB of source and hours of CPU against Actions' ~14 GB disk / 6 h job (§7 R10) |
+| **D10** | **Coverage grows by RUNGS (§6b), each one live and revertible by an index flip**, and the refresh loop runs from the first rung. | a wall found at 1 block costs a day; the same wall found at 40 blocks costs the dataset |
 
 ---
 
@@ -164,6 +168,20 @@ top index (ours, ~KB, cached)      bbox → block URL @version
 ---
 
 ## 6. Steps — one commit, one observable, gates green
+
+**Every step is safe by construction, and that is a requirement, not a hope.** Five rules, so no step can
+take the app down and none of them needs a flag day:
+
+1. **The shipped app keeps working throughout.** New coverage arrives as a *new dataset version at a new
+   URL*; the running app points at whatever the top index says. Nothing is edited in place.
+2. **The index is the only switch.** Publishing data changes nothing user-visible; flipping one small
+   index file does. **Rollback = flip it back**, and the previous version is still there.
+3. **Every rung is proven against the rung below it** on the geography they share: the same corpus of
+   sketches must route identically (`match_parity.sh` shape). Growing coverage must not change a route
+   inside the old coverage — that is the whole safety property, and it is checkable.
+4. **No step both grows coverage and changes a format.** Migrations are their own steps, with their own
+   parity gate, so a bad day has one suspect.
+5. **A step that cannot be measured does not ship.** Each one below names its observable and its gate.
 
 **S0 · Size it for real.** Generate three representative blocks — dense urban (Randstad), rural (central
 France), mountain (Alps) — and record bytes/km² per layer with **`tools/coverage_probe.loft`** (the
@@ -221,6 +239,37 @@ anywhere in coverage; the base map offers a region download. *Gate:* the 26-sket
 `CPU_THROTTLE=4` warm match inside its current budget.
 
 **S11 · The refresh procedure** — §7, and it is a project of its own.
+
+---
+
+## 6b. The coverage ladder — how it actually gets to WE
+
+The steps above are *capabilities*; this is the *rollout*, and it is deliberately a ladder of small,
+boring, revertible rungs. Each rung is a **real deployment** that a user can route on, each is entered only
+when the named gates are green, and each can be the last one for a while without anything being
+half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it is still cheap to hit.**
+
+| rung | coverage | ≈ blocks / bytes (roads + layout) | needs | what it proves for the first time | entry gate |
+|---|---|---|---|---|---|
+| **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
+| **C1** | **the same block, read PAGED** | 1 / 24 MB | S1, S2 | the working-set read path in the browser, and keyed reads replacing scans — **at a size where a mistake is visible and cheap** | `match_parity.sh` byte-identical; `bytes_fetched` ≪ file; corridor tiles-touched a function of the sketch |
+| **C2** | **Netherlands** | ~2 + ~4 / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
+| **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
+| **C4** | **WE roads, base map per region** (D1) | ~10–16 roads blocks / 7–15 GB; layout on demand | S10 | the product: a cold visitor routes anywhere in WE | C3 stable; 26-sketch corpus 0-worse; warm match inside its `CPU_THROTTLE=4` budget |
+| **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
+
+**The refresh loop runs from C1, not from C4.** Whatever the rung, the dataset it serves is produced by
+§7's procedure — so the automation is exercised while it costs one small block, and by the time it manages
+40 blocks it is the same script that has been running for months. *This is the one sequencing decision in
+this plan that actually determines whether WE coverage is ever up to date* (§8).
+
+Each rung's dataset is published under its own `v<date>/`, and **the rung below stays live** until the new
+one has served real traffic. Rolling back a rung is flipping the index (rule 2), not regenerating anything.
+
+⚠ **C5 is a genuine decision point, not a formality.** If S0's measurement puts the base map near the top
+of its band, the honest options are: keep it per-region on demand forever (C4 is then the end state, and it
+is a good one), reduce its detail (drop buildings outside urban cells, coarser cells at low zoom), or
+source the map externally and keep loft on the route. Do not pre-commit storage to C5 before S0 reports.
 
 ---
 
@@ -284,12 +333,55 @@ representative block × the region count: osmium hours, generation hours, peak d
 figure lands in this section, and a **single-region hotfix** is timed separately — that is the number that
 matters on a bad day.
 
-⚠ **Sequence R deliberately before S10.** Shipping WE-wide data you cannot regenerate is how a dataset
-becomes frozen: the first schema change or OSM correction strands it.
+**R9 · Rolling refresh, not a big bang.** The unit of refresh is **one block**, so the steady state is a
+queue: regenerate the K oldest blocks each run, publish, flip the index once per run. Whole-WE freshness
+then follows from K and the cadence rather than from anyone finding a free weekend. *Observable:* a run
+touches only the blocks it claimed and leaves the rest of the index alone. *Gate:* a run that fails
+mid-queue leaves a fully consistent index (the previous version for every block it did not finish).
+
+**R10 · Where it runs (D9).** WE needs ~30 GB of source, tens of GB of intermediates and hours of CPU, and
+GitHub Actions gives ~14 GB of disk and a 6 h job — so the refresh runs on the **maintainer's machine or a
+self-hosted runner**, driven by `tools/build-blocks.sh`, resumable (R2) so one run may span days. CI's job
+is the *checks*, not the build: it validates the manifest (R0) and the published index. *Gate:* a run
+interrupted by a reboot resumes and produces byte-identical blocks.
+
+⚠ **Sequence R deliberately before S10 — and start it at C1.** Shipping WE-wide data you cannot regenerate
+is how a dataset becomes frozen: the first schema change or OSM correction strands it. Running the
+procedure when the dataset is one block is nearly free and is the only way the 40-block version is ever
+trustworthy.
 
 ---
 
-## 8. Still open — with the instrument named
+## 8. "Up to date" — the steady state, and how we know
+
+A rung is not done when the data is *published*; it is done when the data is **current and visibly so**.
+This is the part that has no natural forcing function, so it gets an explicit target and an alarm.
+
+- **The target.** Every block in coverage is regenerated **at least every 30 days**, aiming at 14. OSM
+  moves daily and Geofabrik republishes daily; a month-old cycling network is fine, a year-old one is
+  wrong in ways users notice (a new bridge, a closed path).
+- **The arithmetic that makes it true.** ~40 blocks at C5 (~16 at C4) ÷ a 14-day cycle = **~3 blocks per
+  day at C5, ~1 at C4**. That is the K in R9, and it is what the cadence has to sustain — if R8's measured
+  per-block cost makes that impossible, the answer is fewer/bigger blocks or a longer target, decided on
+  the number rather than discovered by drift.
+- **Freshness is data, not folklore.** Each block carries `generated_at` and its source PBF's date; the
+  top index aggregates them. The app **shows the age of the data under the cursor** — partly honesty,
+  partly because a visible number is the only staleness monitor that never gets muted.
+- **The alarm.** A scheduled check reads the published index and **fails when any block exceeds the
+  target**, naming it. That check is the difference between a plan that claims freshness and a dataset
+  that has it. *Gate:* it fails today against a hand-made block older than 30 days — which is exactly what
+  the current one is, so the alarm is provably wired to reality before it is trusted.
+- **Regeneration must be boring.** Anything that makes a refresh scary (a manual step, a broken elevation
+  cache, no resumability, a format change without a parity gate) will make refreshes rare, and rare
+  refreshes are the failure mode. Every R-step above exists to keep this one property.
+
+**Definition of done for the whole plan:** a cold visitor on a phone routes anywhere in coverage; the
+oldest block in the index is inside the target; a single stale region is one block's work to fix; and no
+step in doing any of that required a codec of our own.
+
+---
+
+## 9. Still open — with the instrument named
 
 | | question | how it gets answered |
 |---|---|---|
@@ -302,7 +394,7 @@ becomes frozen: the first schema change or OSM correction strands it.
 
 ---
 
-## 9. Risks
+## 10. Risks
 
 - **The base map's size is the project's shape.** If S0 comes in at the high end (~90 GB), D1 is not a
   preference — the base map has to become vector-tile-ish or externally sourced, and that is a different
