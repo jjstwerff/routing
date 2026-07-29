@@ -1428,7 +1428,10 @@ export class RouteMap {
     for (let i = 0; i < pts.length; i++) px[i] = this.project(pts[i].lat, pts[i].lon);
 
     ctx.save();
-    if (px.length > 1) {
+    // `_roughNoLine` is the second probe switch (see `_roughNoShadow`): the dashed line and the dots scale
+    // with different things — the line with the path's LENGTH, the dots with their COUNT — so roughBudget
+    // separates them rather than reporting one number nobody can act on.
+    if (px.length > 1 && !this._roughNoLine) {
       ctx.beginPath();
       ctx.moveTo(px[0].x, px[0].y);
       for (let i = 1; i < px.length; i++) ctx.lineTo(px[i].x, px[i].y);
@@ -1440,7 +1443,11 @@ export class RouteMap {
     }
     // Two passes, so a later dot's drop shadow can never land on an earlier dot's white ring: fill every
     // dot (with the shadow), then ring every dot (without it).
-    ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+    //
+    // `_roughNoShadow` is a probe switch, not a feature: a canvas shadow forces an offscreen blur per
+    // fill, and roughBudget uses this to ATTRIBUTE the overlay's cost between the shadow and the arcs
+    // instead of guessing which one it is.
+    if (!this._roughNoShadow) { ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1; }
     for (let i = 0; i < px.length; i++) {
       const role = roughRole(i, px.length);
       ctx.beginPath(); ctx.arc(px[i].x, px[i].y, ROUGH_DOT[role] / 2, 0, 2 * Math.PI);

@@ -74,6 +74,7 @@ const probe = `(async () => {
   if (K.matchInsert) for (let i = 0; i < ${N}; i++) out.matchInsert.push(await K.matchInsert(SKETCH));
   if (K.matchDelete) for (let i = 0; i < ${N}; i++) out.matchDelete.push(await K.matchDelete(SKETCH));
   out.renderBudget = K.renderBudget ? await K.renderBudget(${N}) : null;
+  out.roughBudget = K.roughBudget ? await K.roughBudget(${N}) : null;
   out.stats = K.kernelStats ? K.kernelStats() : null;
   out.appFirstViewMs = window.__storeApp?.firstViewMs || null;
   out.stream = K.streamProgress ? await K.streamProgress() : null;
@@ -204,6 +205,33 @@ if (globalThis.__db) {
   console.log('    → this is the CEILING on step 14 (pre-project into typed arrays): hoisting projection');
   console.log('      out of the frame cannot save more than projection costs. The remainder is');
   console.log('      rasterisation, which is step 15 (cache per-tile rasters, blit on pan).');
+  // The `rough` row above is measured on whatever is on screen, and the profiler's session never draws a
+  // sketch — so it reads 0 ms / 0 drawn and proves only that the row exists. This measures it (E7's gap).
+  if (res.roughBudget) {
+    const reps = Object.values(res.roughBudget)[0]?.reps || 1;
+    console.log(`\n  the SKETCH overlay, seeded and amplified x${reps} (PLAN-EDIT E7 — the \`rough\` row above draws nothing,`);
+    console.log('  and one draw sits under performance.now()\'s ~100 µs clamp):');
+    for (const [k, v] of Object.entries(res.roughBudget)) {
+      const pct = rb.total ? (v.ms / rb.total * 100).toFixed(2) : '0';
+      const us = (x) => (x * 1000).toFixed(0);
+      // A shadow delta at or below zero is the measurement's own noise, not a negative cost. Say so
+      // rather than printing "-156 µs" as though it were a result.
+      const sh = v.ms - v.msNoShadow;
+      const shTxt = sh > v.ms * 0.05 ? `${us(sh)} µs` : 'within noise';
+      console.log(`    ${String(k).padStart(3)} points  ${us(v.ms).padStart(5)} µs  ${pct.padStart(5)}% of a ${Math.round(rb.total)} ms frame`
+        + `   (${v.drawn} drawn · dots ${us(v.msDotsOnly)} µs · line ${us(Math.max(0, v.ms - v.msDotsOnly))} µs · shadow ${shTxt})`);
+    }
+    const dense = res.roughBudget[40];
+    if (dense) {
+      const line = dense.ms - dense.msDotsOnly;
+      const which = line > dense.msDotsOnly ? 'the DASHED LINE' : 'the DOTS';
+      console.log(`    → a 40-point sketch — the honest dense case — costs ${(dense.ms * 1000).toFixed(0)} µs, `
+        + `${rb.total ? (dense.ms / rb.total * 100).toFixed(1) : '?'}% of the frame,`);
+      console.log(`      and ${which} dominates it (${((Math.max(line, dense.msDotsOnly) / dense.ms) * 100).toFixed(0)}%).`);
+      console.log('      ⚠ the line scales with the path\'s LENGTH, not its point count, and this probe\'s');
+      console.log('        synthetic path zig-zags harder than a real drawn route — treat it as an upper bound.');
+    }
+  }
 }
 console.log('\n=== ATTRIBUTION (each command minus the decode IT actually pays) ===');
   console.log('  view:  decode(both) ' + fmt(db) + ' + serialize ' + fmt(vk - db) + '  = kernel ' + fmt(vk));
