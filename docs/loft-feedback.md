@@ -1793,3 +1793,68 @@ workaround and carry a comment pointing here.
 ordinary (accessor function returning a record, read one field), it only fails on `--native`, and it
 fails as a rustc error rather than a loft diagnostic, which is a poor first experience for anyone who
 meets it without knowing to bind the struct.
+
+---
+
+## 2026-07-30 — the working-set (paged) store loaders are ABSENT from the browser target, and the failure is a rustc error in generated code
+
+**Context.** `PLAN-SCALE.md` designs Western-Europe coverage on loft's working-set loaders: the app must
+read a few map tiles out of a multi-GB hosted block instead of downloading it. That is loft's documented
+capability — `store_load_key(s)` / `store_load_key_text` / `store_load_range` read *"only the pages a
+lookup touches, from a local file or an `http(s)://` Range server"* (`DATABASE.md` § working-set loader,
+`src/paged_reader.rs`'s `HttpRangeProvider`). Routing's whole read path is that loader by design: **we do
+not author a store codec**, because a store is already loft's own wire format.
+
+**What works (installed loft 2026.7.2, `tools/paged_http_gate.sh`).** Native, both providers, on our real
+3.5 MB roads block, asking for one tile that carries 1577 roads:
+
+```
+[1] native, local file : RESULT ok=true entries=1 roads=1577 steps=8287   VERDICT PASS
+[2] native, http Range : RESULT ok=true entries=1 roads=1577 steps=8287   VERDICT PASS
+    store_load_keys: asked=1 loaded=1 bytes_fetched=262144 file=3580472      ← 7.3% of the file
+```
+
+Also confirmed on our two *real* tile shapes that a paged entry is byte-for-byte what a whole load gives
+(`tools/paged_gate.sh`), including `PTile`, whose elements carry a `text` **and** a nested
+`vector<Coord>` — i.e. the relocator handles more than the surface doc for `store_load_key` claims (see
+the doc note at the end).
+
+**What does not work: the browser.** `loft --html` on the *same* program does not compile:
+
+```
+error[E0599]: no method named `load_key` found for mutable reference `&mut Stores` in the current scope
+   --> /tmp/loft_html_.../prog.rs:585:32
+error: aborting due to 1 previous error
+loft: browser WASM compilation failed
+```
+
+**Control, same session, same lib:** the identical program using whole-file `store_load` builds fine
+(500 KB html / 353 KB wasm). So this is specific to the paged family, not to stores under wasm.
+
+### Two asks, and the second is cheap whatever happens to the first
+
+1. **The capability.** Make the working-set loaders available on the browser target, with HTTP going
+   through the asyncify `fetch()` bridge that `store_load_url_trusted` already uses (`Range: bytes=a-b`
+   GETs instead of one whole-file GET). `HttpRangeProvider` is built on `ureq`, which cannot work in
+   wasm32 — the byte source has to be the host bridge, while the paged reader, traversal and relocation
+   above it are unchanged. **This is the single thing gating map coverage beyond one city for a
+   browser-hosted app**: without it, coverage grows only as fast as a phone can download whole blocks.
+2. **The diagnostic.** Even if paged loads stay native-only, `loft --html` should refuse at the *loft*
+   level — "`store_load_key` is not available on the browser target" naming the call site — rather than
+   emitting a call the wasm runtime does not have and surfacing `E0599` from generated Rust. A consumer
+   cannot tell that error from a bug in their own program: it points at `prog.rs`, a file they did not
+   write. The general shape: **the browser target's supported builtin surface should be checked before
+   codegen, not discovered by rustc.**
+
+### Definition-relevant note
+
+`default/02_files.loft`'s doc for `store_load_key` says it returns false when *"the collection is not an
+integer-keyed hash of a **FLAT (scalar-field) struct**"*, but `DATABASE.md` says every copyable shape is
+handled with `vector<text>` / `vector<vector>` refused — and empirically our nested, text-bearing `PTile`
+loads correctly. The reference the consumer reads first (the stdlib doc comment) is the stricter, staler
+one; it would have talked us out of the design that in fact works.
+
+**Filed:** [loft#678](https://github.com/loft-lang/loft/issues/678) (`bug · wa:partial · sev:medium · area:wasm · area:stdlib · area:codegen · hit-by:routing`).
+
+**Reproducer:** `tools/paged_http_gate.sh` in `jjstwerff/routing` (three cases: native-local, native-http,
+browser; prints the E0599 tail). `tools/paged_gate.sh` is the shape-parity half.

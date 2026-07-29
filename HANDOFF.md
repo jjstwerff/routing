@@ -165,14 +165,24 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
   order-insensitivity), `corpus_anchor.loft` (§7 quality per sketch — the gate for ROUTE-AFFECTING
   changes), `corpus_tube.loft`, `match_phase_probe.loft` (cold-match split, 3-point **and** 40-point),
   `union_probe.loft`, `nodekey_probe.loft`, `spatial_probe.loft`, `wasm_threads.mjs`,
-  `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`.
+  `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`,
+  `coverage_probe.loft` (bytes/km² per layer — PLAN-SCALE §1's sizing instrument), `paged_gate.sh` +
+  `paged_http_gate.sh` (the working-set read path, local + HTTP Range + browser), `range_server.py`
+  (a static server that really honours `Range` — `python -m http.server` does not), and
+  **`ws_poke.mjs`** — speak the server's WebSocket protocol by hand, one frame in / every reply out.
+  Debugging a client through the server: **[`docs/debug-websocket.md`](docs/debug-websocket.md)**.
   ⚠ **`wasm_threads.mjs` is a REGRESSION gate on our own wasm, not a capability detector** — read its
   header before treating a green run as news. It was BLIND until 2026-07-29 (it checked the memory
   *section*, and a threaded wasm *imports* its shared memory), so it passed a genuinely threaded bundle;
   it now checks the import section + the TLS exports and **self-tests three control modules on every run**.
 
-**Nothing is blocked upstream.** (Re-validated 2026-07-29: the last upstream dependency in the plan,
-browser `par`, has shipped — see §2's step-18 row.)
+**PERFORMANCE is not blocked upstream** (re-validated 2026-07-29: the last dependency there, browser
+`par`, has shipped — §2's step-18 row). ⛔ **COVERAGE is** — `PLAN-SCALE`'s browser read path needs
+[loft#678](https://github.com/loft-lang/loft/issues/678): the working-set loaders
+(`store_load_key/keys/range`) are absent from the wasm target, so `loft --html` fails to build with an
+`E0599` inside generated Rust. Native Range reads work today at **7.3% of a block's bytes**, so the
+server and the whole generation pipeline are unblocked; only the browser half waits.
+`tools/paged_http_gate.sh` is the standing check and turns green by itself when the fix lands.
 
 ### If you are looking for the next thing to do
 

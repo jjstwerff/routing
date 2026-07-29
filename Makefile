@@ -216,3 +216,4 @@ test-map:
 	@./tools/map_render_gate.sh
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
+	@./tools/paged_http_gate.sh

@@ -111,9 +111,36 @@ Three things this buys and one it charges:
   ~18 MB per view if pages do not overlap. **Hilbert ordering within a block** (PLAN-TILES step 5 already
   specifies it) plus batched `store_load_keys` is the fix, and S1 measures whether it works.
 
-**Still unproven, and it gates everything: does the paged reader work in the BROWSER?** `store_load_url*`
-needs the asyncify `fetch()` bridge; whether `paged_reader.rs`'s Range path is wired through it in a
-`--html` build is unknown. **S1 answers this before anything else is built.**
+### S1 ANSWERED (2026-07-30): native Range works, the BROWSER cannot build it
+
+`tools/paged_http_gate.sh` — one generated program, three ways to run it, same store, same key:
+
+```
+[1] native, local file : RESULT ok=true entries=1 roads=1577 steps=8287   VERDICT PASS
+[2] native, http Range : RESULT ok=true entries=1 roads=1577 steps=8287   VERDICT PASS
+    store_load_keys: asked=1 loaded=1 bytes_fetched=262144 file=3580472      ← 7.3% of the file
+[3] browser            : BUILD FAILED
+    error[E0599]: no method named `load_key` found for mutable reference `&mut Stores`
+```
+
+**Control:** the same program using whole-file `store_load` builds for `--html` fine (353 KB wasm). So the
+paged family is compiled out of the wasm target — `HttpRangeProvider` is `ureq`-based, which cannot exist
+in wasm32, and nothing routes it through the asyncify `fetch()` bridge that `store_load_url_trusted` uses.
+
+**Consequences, in order of importance:**
+
+- ⛔ **The browser read path of this plan is BLOCKED UPSTREAM: [loft#678](https://github.com/loft-lang/loft/issues/678)**
+  (`bug · wa:partial · sev:medium · area:wasm/stdlib/codegen · hit-by:routing`), with this gate and an
+  8-line standalone repro attached, plus a second, cheaper ask: `loft --html` should refuse at the loft
+  level rather than surfacing `E0599` from generated Rust that names `prog.rs`. Write-up:
+  `docs/loft-feedback.md` 2026-07-30.
+- ✅ **Everything native is unblocked** — `server/server.loft` can page a corridor out of a big block
+  *today*, at 7.3% of the bytes. The server is where WE-scale data can be exercised first.
+- ➡ **The ladder re-orders around it** (§6b): the work that needs no browser paging — end the
+  full-collection scans, stream the generator, blocks + index, Hilbert ordering — comes first, and
+  coverage grows meanwhile on **small whole-file blocks** (D11).
+- 🚫 **We do not write our own Range reader** to get around this (the rule at the top). The interim is
+  smaller blocks, not a private codec.
 
 ---
 
@@ -131,6 +158,7 @@ needs the asyncify `fetch()` bridge; whether `paged_reader.rs`'s Range path is w
 | **D8** | **Overpass fallback stays** for outside-coverage sketches. | it is the only thing that makes a partial rollout usable — and every rung of §6b is a partial rollout |
 | **D9** | **The refresh runs on the maintainer's machine or a self-hosted runner**, resumably; CI validates the manifest and the published index but does not build the data. | ~30 GB of source and hours of CPU against Actions' ~14 GB disk / 6 h job (§7 R10) |
 | **D10** | **Coverage grows by RUNGS (§6b), each one live and revertible by an index flip**, and the refresh loop runs from the first rung. | a wall found at 1 block costs a day; the same wall found at 40 blocks costs the dataset |
+| **D11** | **Until the browser can page (S1), coverage grows on SMALL WHOLE-FILE blocks** — city-sized, ~20–50 MB, the app loading the one or two its viewport needs — and switches to working-set reads the day `store_load_key` compiles for `--html`, with no format change (same stores, same keys). | it is the only honest interim: the block SIZE is the only lever a whole-file loader has, and it costs block count and index rows, not a codec. ⚠ It does NOT reach C4/C5 — a phone cannot whole-file its way through WE — so it buys coverage growth and pipeline experience while the upstream ask lands, and the plan's end state still depends on it |
 
 ---
 
@@ -252,13 +280,19 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | rung | coverage | ≈ blocks / bytes (roads + layout) | needs | what it proves for the first time | entry gate |
 |---|---|---|---|---|---|
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
-| **C1** | **the same block, read PAGED** | 1 / 24 MB | S1, S2 | the working-set read path in the browser, and keyed reads replacing scans — **at a size where a mistake is visible and cheap** | `match_parity.sh` byte-identical; `bytes_fetched` ≪ file; corridor tiles-touched a function of the sketch |
-| **C2** | **Netherlands** | ~2 + ~4 / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
+| **C1a** | the same block, **no full-collection scans** (in-memory keyed access; server pages for real) | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
+| **C1b** | the same block, **read PAGED in the browser** | 1 / 24 MB | ⛔ [loft#678](https://github.com/loft-lang/loft/issues/678) | the working-set read path where the app actually runs | S1's gate flips to `browser=pass` (it is the standing check) |
+| **C2** | **Netherlands**, on small whole-file blocks (D11) | ~20–40 city blocks / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
 | **C4** | **WE roads, base map per region** (D1) | ~10–16 roads blocks / 7–15 GB; layout on demand | S10 | the product: a cold visitor routes anywhere in WE | C3 stable; 26-sketch corpus 0-worse; warm match inside its `CPU_THROTTLE=4` budget |
 | **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
 
-**The refresh loop runs from C1, not from C4.** Whatever the rung, the dataset it serves is produced by
+⚠ **C1b is blocked upstream, and that re-orders the ladder rather than stopping it.** C1a, C2 and C3's
+generation-side work need nothing from loft; coverage grows on D11's small whole-file blocks meanwhile, and
+**the day loft#678 lands, C1b is a URL policy change — same stores, same keys, no format change.** What
+cannot be reached without it is C4/C5: a phone cannot whole-file its way across a continent.
+
+**The refresh loop runs from C1a, not from C4.** Whatever the rung, the dataset it serves is produced by
 §7's procedure — so the automation is exercised while it costs one small block, and by the time it manages
 40 blocks it is the same script that has been running for months. *This is the one sequencing decision in
 this plan that actually determines whether WE coverage is ever up to date* (§8).
@@ -385,7 +419,7 @@ step in doing any of that required a codec of our own.
 
 | | question | how it gets answered |
 |---|---|---|
-| 1 | Does the paged Range reader work in a `--html` build? | **S1** — blocks everything |
+| 1 | ~~Does the paged Range reader work in a `--html` build?~~ | **ANSWERED 2026-07-30: no — it does not compile.** Native Range works (7.3% of the file). ⛔ [loft#678](https://github.com/loft-lang/loft/issues/678); `tools/paged_http_gate.sh` is the standing check and flips to PASS when it lands |
 | 2 | What does a realistic viewport working set actually cost in bytes? | S1 + S3 with `LOFT_LOADER_STATS=1` |
 | 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
