@@ -1,7 +1,8 @@
 # HANDOFF — resume state
 
-Single entry point for picking this up on another machine. Reflects the repo as of the branch that
-added this file. **Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` docs; this file is the
+Single entry point for picking this up on another machine. **Reflects `main` at `e608918`
+(2026-07-29)** — everything described here is merged; there is no work parked on a branch.
+**Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` docs; this file is the
 *status + how-to-resume* layer on top of them.
 
 ---
@@ -12,8 +13,13 @@ The **standalone/serverless browser app runs in a real browser** (`browser/store
 `PLAN-BUILD.md`): it fetches the two loft stores by URL (`store_load_url_trusted`), runs the **loft-wasm
 kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched route, and needs **no server**.
 
-**`PLAN-PERF.md` §0 has nothing open** (2026-07-22). Steps 1–16 and 20–22 are done; **18 and 19b are ⛔
-closed on measurement, not skipped** (see §2 below).
+**`PLAN-PERF.md` §0 has nothing open.** Steps 1–16 and 20–22 are done; **19b is ⛔ closed on measurement,
+not skipped**, and **18 is ⏸ deferred on a DEPLOY constraint, no longer on a missing loft capability**
+(see §2 below). **`PLAN-EDIT.md` E0–E7 are done** — the app can reshape a sketch, not just append (§2a).
+
+**Everything is on `main` — nothing is in flight** (2026-07-29). `main` is at `e608918`; PRs #17–#22 all
+merged and their branches deleted, so `git ls-remote --heads` shows exactly one head. Start any new work
+on a fresh branch off `main` (it is protected: PR + green `build-test`, never a direct push).
 
 ### The numbers, `CPU_THROTTLE=4` (≈ a phone — always profile with it; desktop flatters ~4×)
 
@@ -81,7 +87,7 @@ past it after it has quietly opened.
 
 | | verdict | evidence |
 |---|---|---|
-| **18 — `par` over the stretches** | ⏸ **DEFERRED, not dead — loft plans browser `par`** | Today the app's wasm has `shared=false` and Rust's no-threads std linked in (WASM-single compiles `threading` OFF → Tier 1 sequential), so `par` is a literal no-op. **⚠ UPDATE 2026-07-29 — that capability LANDED (@PLN117) and is verified on the installed loft: a `loft --html` bundle dispatches `par` over 8 Web Workers with the interpreter's value (PLAN-PERF §6e).** Our kernel is still unthreaded only because it has no reachable `par`. And **`tools/wasm_threads.mjs` was BLIND** — it read the SHARED flag from the memory *section*, but a threaded wasm IMPORTS a shared memory and defines none, so it passed a genuinely threaded bundle as single-threaded; now fixed (import section + TLS exports + three self-test controls). It is a regression gate on our artifact, **not** the cue for step 18: the cue is a **COOP/COEP deploy host**, which GitHub Pages is not. §6b B's determinism design (order the source before par; hash iteration is unordered; `gen` is loop-carried; keep reductions out of the workers) is kept for exactly that day. ⚠ Still check the DEPLOY side then: Tier 2 needs COEP/COOP headers, and GitHub Pages cannot set them — a service-worker COEP shim may be needed. |
+| **18 — `par` over the stretches** | ⏸ **DEFERRED on the DEPLOY host — the loft capability LANDED (2026-07-29)** | Today the app's wasm has `shared=false`, no TLS exports and Rust's no-threads std linked in (re-verified 2026-07-29), so `par` is a literal no-op *in it* — because `loft --html` only picks the threaded runtime for a program with a **reachable `par`**, and the kernel has none. **⚠ UPDATE 2026-07-29 — that capability LANDED (@PLN117) and is verified on the installed loft: a `loft --html` bundle dispatches `par` over 8 Web Workers with the interpreter's value (PLAN-PERF §6e).** Our kernel is still unthreaded only because it has no reachable `par`. And **`tools/wasm_threads.mjs` was BLIND** — it read the SHARED flag from the memory *section*, but a threaded wasm IMPORTS a shared memory and defines none, so it passed a genuinely threaded bundle as single-threaded; now fixed (import section + TLS exports + three self-test controls). It is a regression gate on our artifact, **not** the cue for step 18: the cue is a **COOP/COEP deploy host**, which GitHub Pages is not. §6b B's determinism design (order the source before par; hash iteration is unordered; `gen` is loop-carried; keep reductions out of the workers) is kept for exactly that day. ⚠ Still check the DEPLOY side then: Tier 2 needs COEP/COOP headers, and GitHub Pages cannot set them — a service-worker COEP shim may be needed. |
 | **19b — persist the graph per tile** | ⛔ **not worth it** | The union is only ~13–21% cheaper than building: it must still hash ~34k part-nodes against a build's 44.7k vertices, copy every edge and rebuild the CSR, and the parts duplicate just 1.5% of their nodes so no cleverer format helps. ~8% of a cold match for a store-format change, a redeploy and the plan's riskiest row (§7a(2)). |
 | **`spatial<T[x,y]>` for `nearest_nodes`** | ⛔ **built, measured, reverted** | Correct (routes byte-identical) but a net loss: **+275 ms** of per-corridor index build for **zero** match improvement. Its value was finding that `nearest_nodes` was not the bottleneck at all (§7l). |
 | **Pruning the anchor search** | ⛔ **corpus-rejected** | −28% at a 400 m cap but routes get *longer* by up to 62%; the corpus's own `dev_max` reaches ~1056 m so any useful cap severs legitimate paths, and every cap loose enough to preserve routes is inside the ~3.4% noise floor (§7n). |
@@ -128,12 +134,24 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
    what makes undo, the coalescer and the match count all come out right.
 
 
-## 3. Resume here (2026-07-23)
+## 3. Resume here (2026-07-29)
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
   the matcher work. Then `CLAUDE.md` § "Read the reference before you write".
-- **Toolchain:** installed loft is **2026.7.2**. Routing absorbed the @PLN110 `len`/`size` flip with no
-  source edits.
+- **Repo:** `main` @ `e608918`, clean, one remote head, **no open PRs**. Nothing is parked on a branch —
+  if something here looks unfinished, it is unstarted, not stashed elsewhere.
+- **Toolchain:** installed loft reports **2026.7.2** — and ⚠ **that string does not identify the binary.**
+  `/usr/local/bin/loft` was reinstalled **2026-07-29 22:54** (md5-identical to `../loft`'s build on branch
+  `tuxedo-diagnostics2`) and gained capabilities the previous install lacked while printing the same
+  version as a week earlier. **Anchor any toolchain claim to the binary's mtime + md5, not `--version`.**
+  `make test` is green on it. Routing absorbed the @PLN110 `len`/`size` flip with no source edits.
+  Two capabilities present in this binary and not in the docs' assumptions:
+  **`--native-android`** (signed APK cross-compile), and **threaded `--html`** — @PLN117's browser `par`,
+  which `loft --html` selects when the program has a reachable `par` (`--threads` / `--no-threads`
+  override; neither is listed in `--help`). The atomics std is prebuilt in
+  `/usr/local/share/loft/html-mt/`, so a threaded build costs **~0.7 s**, not a cold `build-std`.
+  ⚠ That sysroot was **not** refreshed by the 2026-07-29 install (dated jul 24) — it works, but check it
+  before trusting a threaded build after the next reinstall.
 - **Gates** — `make test`, `test-native` (now includes **`tools/tile_border_gate.sh`**), `test-wasm`,
   `test-map` (browser render + the @PLN105 bridge probes + the step-18 threading tripwire + **the whole
   rough-editor gesture suite**, driven with real `Input.dispatchMouseEvent` / keystrokes / SHIFT), and
@@ -148,8 +166,32 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
   changes), `corpus_tube.loft`, `match_phase_probe.loft` (cold-match split, 3-point **and** 40-point),
   `union_probe.loft`, `nodekey_probe.loft`, `spatial_probe.loft`, `wasm_threads.mjs`,
   `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`.
+  ⚠ **`wasm_threads.mjs` is a REGRESSION gate on our own wasm, not a capability detector** — read its
+  header before treating a green run as news. It was BLIND until 2026-07-29 (it checked the memory
+  *section*, and a threaded wasm *imports* its shared memory), so it passed a genuinely threaded bundle;
+  it now checks the import section + the TLS exports and **self-tests three control modules on every run**.
 
-**Nothing is blocked upstream.**
+**Nothing is blocked upstream.** (Re-validated 2026-07-29: the last upstream dependency in the plan,
+browser `par`, has shipped — see §2's step-18 row.)
+
+### If you are looking for the next thing to do
+
+`PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. The candidates, in the order
+the evidence favours:
+
+1. **A service-worker COEP shim** — the one thing standing between the app and step 18. loft's browser
+   `par` works (8 workers, verified on the installed binary), but GitHub Pages cannot send COOP/COEP, so
+   the deployed page would run `distinct_workers=1`. A local COI host would let you measure the win on
+   OUR workload before the deploy problem is solved (@PLN117's own bench gets ~5.2× at 8 workers on a
+   CPU-heavy `par` — that is loft's number, not ours), and §6b B's determinism design is already written.
+2. **The cold match's `build_graph`** (93 of 201 native) — the remaining bulk, with persistence rejected
+   (§2). Anything here is making the build itself cheaper.
+3. **A dense sketch is the honest case** — on 40 points the anchor SEARCH is ~75% of a cold match against
+   ~35% on 3 points. Measure the case you intend to improve; `match_phase_probe.loft` runs both.
+
+⚠ Whatever you pick: **re-measure the premise before building on it** (`CLAUDE.md` § "Measure before you
+design"). Several numbers in this file are weeks old, and a doc's premise goes stale when a different
+commit removes its justification.
 
 ### Where the remaining time actually is
 
@@ -229,9 +271,9 @@ match 88**. In the browser a cold match is 1450 ms and a warm one 343 ms.
 
 ## 5. Open PRs
 
-- **#8** `ci-wasm-note` — corrects the CI comment to point at loft#521 (my first note wrongly blamed
-  "wasmtime 46"). Safe to merge when green.
-- **(this)** `handoff` — this file + the rescued pipeline tools.
+**None (2026-07-29).** PR #8 was closed unmerged; #17–#22 are merged and their branches deleted. The
+working agreement: push every branch as a safety net, but open a PR only when asked or for genuinely
+PR-worthy work — and `main` only ever moves through a PR with a green `build-test`.
 
 ---
 
