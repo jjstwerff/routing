@@ -243,6 +243,21 @@ window.__rough = rough;
 window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // PLAN-SCALE C2 — run a match through the APP's own path with a caller-supplied sketch, and report the
+  // covering set the app named for it. The cross-block gate needs both halves: the route, to compare
+  // against the single-block answer, and the URL list, to prove the command really addressed two blocks
+  // rather than quietly falling back to one.
+  matchSpec: async (spec) => {
+    const roads = roadsForSketch(spec);
+    await kernel.runKernel(`${LAYOUT}\n${roads}\nreset`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${roads}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+    const summary = (text.split('\n').find((l) => l.startsWith('SUMMARY')) || '').trim();
+    // A hash of the ROUTE lines, not just the summary: two different routes can share a length to 0.1 m.
+    const route = text.split('\n').filter((l) => l.startsWith('ROUTE')).join('\n');
+    let h = 0;
+    for (let i = 0; i < route.length; i++) h = (Math.imul(h, 31) + route.charCodeAt(i)) | 0;
+    return { roads, blocks: roads.split(',').length, summary, routeHash: (h >>> 0).toString(16), routeBytes: route.length };
+  },
   // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
   exposeInfo: () => {
     const e = kernel.exposedValue ? kernel.exposedValue(1) : null;

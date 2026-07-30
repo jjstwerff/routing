@@ -303,10 +303,21 @@ distinguish from a single block.
 - The **base map stays single-block**: `expose` pins one store, and re-scoping that is S5/C3.
 
 *What C2 still needs is data and nothing else* — generate NL blocks, add them to `data/coverage.toml`,
-rebuild the index. ⚠ One hole is stated rather than papered over: the two-block path is gated in the unit
-tests and natively (S8), but the BROWSER runs it only as a set of one until two real blocks exist. The
-cheap way to close that early is to split the shipped block into `_site` and drive the app across the
-seam — worth doing before the first real generation, not after.
+rebuild the index. ✅ **And the browser runs it** (`tools/cross_block_browser_gate.sh`, in `make test-map`). The hole — the
+app only ever exercising a set of ONE — is closed the same way S8 closed its own: the shipped block is
+split beside itself in `_site`, the page's own coverage index is swapped for one naming both halves, and
+the SAME sketch is matched twice:
+
+```
+split at cell 345 (6.9°): west tiles=44 roads=16561 · east tiles=44 roads=9410
+single block : 1 url  · SUMMARY ways=7138 route_pts=213 len=13138.0m · routeHash=bb724a2c
+two blocks   : 2 urls · SUMMARY ways=7138 route_pts=213 len=13138.0m · routeHash=bb724a2c
+✓ two blocks, paged: 49 range reads total; route identical to the single block
+```
+
+The gate asserts the split run **named two blocks** before comparing anything — a fallback to one would
+otherwise pass while testing nothing — and the halves are temporary, built and removed per run, so the
+fixture cannot drift from the block it came from.
 
 ✅ **The browser runs it too** (same day): [loft#681](https://github.com/loft-lang/loft/issues/681) — the
 `--html` import-validation regression that had pinned `store-kernel.wasm` to the previous kernel — was

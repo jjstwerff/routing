@@ -223,3 +223,4 @@ test-map:
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
 	@./tools/paged_http_gate.sh
+	@./tools/cross_block_browser_gate.sh
