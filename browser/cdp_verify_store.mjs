@@ -500,7 +500,9 @@ await sleep(1500);
 await click(320, 240); await click(560, 360);
 await sleep(3000);
 const ks = JSON.parse(await ev('(() => JSON.stringify(window.__perfHooks.kernelStats()))()') || 'null');
-const ROADS_BYTES = 3580472;
+// The shipped block's size. Reported, not asserted (see the note below), so a stale value skews a number
+// rather than breaking a gate — but keep it in step when the block is regenerated.
+const ROADS_BYTES = 3816152;
 if (!ks) { console.log('  FAIL: no kernel stats'); ok = false; }
 else if (!(ks.rangeReads > 0)) {
   console.log(`  FAIL: no RANGE reads — the kernel fetched its roads whole (storeLoads=${ks.storeLoads}), C1b is not in effect`); ok = false;

@@ -62,7 +62,7 @@ fn main() {
   ci = 1;
   while ci <= copies {
     for ct in base {
-      shifted = ct.tkey + ci * 4000 * 1000000;
+      shifted = ct.tkey + ci * 4000 * 18003;   // whole rows away, in the kernel's TKEY_ROW
       big += TTile { tkey: shifted, ox: ct.ox, oy: ct.oy + ci * 4000 * 200000, oh: ct.oh, roads: [], steps: [] };
     }
     ci += 1;

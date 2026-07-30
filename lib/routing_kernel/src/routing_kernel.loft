@@ -301,15 +301,32 @@ pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, marg
 // found within the margin, and can only ever drop tiles the corridor did not need.
 TILE_HALF_DIAG_M = 1415.0;   // half-diagonal of a TILE_CELL (0.02° ≈ 2 km) cell, in metres
 
-// Cell → tile key, and it MUST match `tools/gen-tiles.loft` exactly (`key = ty * 1000000 + tx`), because
-// the corridor now looks tiles up by key instead of walking the store. A mismatch would silently return
-// nothing rather than fail, so the border gate (which routes ACROSS tiles) is what proves it.
-// ⚠ The packing is only unambiguous for tx >= 0: with a negative cell index, `ty * TKEY_ROW + tx`
-// aliases the previous row (ty=100,tx=-5 collides with ty=99,tx=999995), and truncating division also
-// folds the two cells either side of the meridian onto tx=0. Harmless for this block (all of it is east
-// of Greenwich) and a DATA-FORMAT bug for PLAN-SCALE — Western Europe spans the meridian, so the key
-// scheme must be fixed at generation (§7 R4) before FR/ES/UK/IE blocks exist, not here.
-TKEY_ROW = 1000000;
+// Cell → tile key. It MUST match `tools/gen-tiles.loft` exactly, because the corridor looks tiles up by
+// key instead of walking the store: a mismatch returns nothing rather than failing, so the border gate
+// (which routes ACROSS tiles) is what proves the two agree.
+//
+// This is basemap's parametric packing (`lib/basemap` `tkey`/`cell_ix`), duplicated rather than imported
+// — `routing_kernel` must not pull in basemap, since the server links it without the map (HANDOFF §1).
+// The scheme it REPLACES was `ty * 1000000 + tx` over truncating division, which is wrong in two ways
+// that `client/basemap/grid_test.loft` already demonstrates:
+//   * a NEGATIVE tx aliases the previous row (ty=100,tx=-5 collides with ty=99,tx=999995), and
+//     truncating division folds the two cells either side of the meridian onto tx=0;
+//   * and at a finer cell the row multiplier overflows outright (tx can exceed 1e6).
+// Invisible for a block east of Greenwich; silent data loss for FR / ES / UK / IE / PT, i.e. most of
+// Western Europe. Fixed HERE, at one block, rather than after the blocks exist (PLAN-SCALE §7 R4).
+fn floordiv(a: integer, b: integer) -> integer {
+  q = (a / b) ?? 0;
+  if (a % b ?? 0) != 0 && ((a < 0) != (b < 0)) { return q - 1; }
+  q
+}
+// Cell index of a fixed-point coordinate — FLOORED, so a coordinate just west of 0° lands in cell -1.
+pub fn cell_ix(fixed: integer) -> integer { floordiv(fixed, TILE_CELL) }
+// Bias both axes non-negative so any hemisphere keys cleanly, and use a row multiplier wider than the
+// world's tx span at this cell size, so distinct cells cannot collide.
+BIAS_X = 9001;        // ±180° / 0.02° = ±9000 cells
+BIAS_Y = 4501;        //  ±90° / 0.02° = ±4500 cells
+TKEY_ROW = 18003;     // > 2 * BIAS_X: the widest biased tx
+pub fn tile_cell_key(tx: integer, ty: integer) -> integer { (ty + BIAS_Y) * TKEY_ROW + (tx + BIAS_X) }
 
 pub fn tiles_corridor_ways_tube(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
   corridor_ways_impl2(store, pts, margin, drop_tick, true)
@@ -377,12 +394,12 @@ fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: 
 // first vertex and its geometry can reach back into the box from the neighbouring cell.
 pub fn bbox_cell_keys(mnla: integer, mnlo: integer, mxla: integer, mxlo: integer) -> vector<integer> {
   bkeys: vector<integer> = [];
-  bx0 = mnlo / TILE_CELL - 1; bx1 = mxlo / TILE_CELL + 1;
-  by0 = mnla / TILE_CELL - 1; by1 = mxla / TILE_CELL + 1;
+  bx0 = cell_ix(mnlo) - 1; bx1 = cell_ix(mxlo) + 1;
+  by0 = cell_ix(mnla) - 1; by1 = cell_ix(mxla) + 1;
   byy = by0;
   while byy <= by1 {
     bxx = bx0;
-    while bxx <= bx1 { bkeys += [byy * TKEY_ROW + bxx]; bxx += 1; }
+    while bxx <= bx1 { bkeys += [tile_cell_key(bxx, byy)]; bxx += 1; }
     byy += 1;
   }
   bkeys
@@ -400,8 +417,8 @@ pub fn corridor_cell_keys(pts: vector<GeoPoint>, margin: float, tube: boolean) -
   kdlon = margin / (111320.0 * cos(((knlat + kxlat) / 2.0) * PI / 180.0)) ?? 0.0;
   kgx0 = round((knlon - kdlon) * TILE_UNIT) as integer; kgx1 = round((kxlon + kdlon) * TILE_UNIT) as integer;
   kgy0 = round((knlat - kdlat) * TILE_UNIT) as integer; kgy1 = round((kxlat + kdlat) * TILE_UNIT) as integer;
-  ktx0 = kgx0 / TILE_CELL - 1; ktx1 = kgx1 / TILE_CELL + 1;
-  kty0 = kgy0 / TILE_CELL - 1; kty1 = kgy1 / TILE_CELL + 1;
+  ktx0 = cell_ix(kgx0) - 1; ktx1 = cell_ix(kgx1) + 1;
+  kty0 = cell_ix(kgy0) - 1; kty1 = cell_ix(kgy1) + 1;
   cy = kty0;
   while cy <= kty1 {
     cx = ktx0;
@@ -414,7 +431,7 @@ pub fn corridor_cell_keys(pts: vector<GeoPoint>, margin: float, tube: boolean) -
         clon = ((cx * TILE_CELL + TILE_CELL / 2) as float) / TILE_UNIT;
         want = point_polyline_m(GeoPoint { lat: clat, lon: clon }, pts) <= margin + TILE_HALF_DIAG_M;
       }
-      if want { keys += [cy * TKEY_ROW + cx]; }
+      if want { keys += [tile_cell_key(cx, cy)]; }
       cx += 1;
     }
     cy += 1;

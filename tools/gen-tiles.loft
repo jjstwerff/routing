@@ -9,7 +9,7 @@
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
-use routing_kernel::(GeoPoint, Way, parse_ways, TStep, TRoad, TTile);
+use routing_kernel::(GeoPoint, Way, parse_ways, TStep, TRoad, TTile, cell_ix, tile_cell_key);
 
 fn class_of(hw: text) -> integer {
   if hw == "motorway" || hw == "motorway_link" { return 0; }
@@ -35,7 +35,7 @@ fn flags_of(w: Way) -> integer {
   if s == "ground" || s == "gravel" || s == "unpaved" || s == "compacted" { f = f + 2; }
   f
 }
-CELL = 200000;
+CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_key are keyed to it
 
 fn build(osm: text) -> hash<TTile[tkey]> {
   ways = parse_ways(file(osm).content());
@@ -44,8 +44,11 @@ fn build(osm: text) -> hash<TTile[tkey]> {
     if len(w.coords) < 2 { continue; }
     gx0 = round(w.coords[0].lon * 10000000.0) as integer;
     gy0 = round(w.coords[0].lat * 10000000.0) as integer;
-    tx = gx0 / CELL; ty = gy0 / CELL;
-    key = ty * 1000000 + tx;
+    // The kernel looks tiles up by key (PLAN-SCALE C1a), so this MUST be its packing — imported, not
+    // re-derived. It used to be `ty * 1000000 + tx` over truncating division, which collides west of
+    // Greenwich and at finer cells (see routing_kernel's note and client/basemap/grid_test.loft).
+    tx = cell_ix(gx0); ty = cell_ix(gy0);
+    key = tile_cell_key(tx, ty);
     t = idx[key];
     if t == null {
       idx += TTile { tkey: key, ox: tx * CELL, oy: ty * CELL, oh: 0, roads: [], steps: [] };

@@ -450,12 +450,24 @@ the point where `h: 0` finally gets populated (HANDOFF §11 — gradient routing
 it is). *Gate:* second run fetches 0 tiles; a known relief profile matches within tolerance.
 
 **R4 · Generate one block.** Native loft, streaming input (S6), Hilbert-ordered (S3), `.dschema` written,
-output named `<region>-v<YYYY-MM-DD>.store`. ⛔ **Fix the cell-key packing FIRST — it is wrong west of
-Greenwich.** `tools/gen-tiles.loft` packs `key = ty * 1000000 + tx` with truncating division, so a negative
+output named `<region>-v<YYYY-MM-DD>.store`. ✅ **The cell-key packing is fixed (2026-07-30) — it was wrong
+west of Greenwich.** `tools/gen-tiles.loft` packs `key = ty * 1000000 + tx` with truncating division, so a negative
 `tx` aliases the previous row (`ty=100,tx=-5` collides with `ty=99,tx=999995`) and the two cells either
 side of the meridian both fold onto `tx=0`. Invisible for this block (all of it is east of Greenwich) and
-**silent data loss for FR / ES / UK / IE / PT**, which is most of the coverage. It is a data-format change,
-so it must land before any block west of 0° is generated, not after. *Gate:* per-block counts within a band of the previous
+**silent data loss for FR / ES / UK / IE / PT**, which is most of the coverage. It was a data-format
+change, so it landed **before** any block west of 0° exists rather than after — at one block, which is the
+cheapest this migration will ever be.
+
+*The fix was already written, one library over.* `lib/basemap` keys its layout tiles with a parametric
+packing — biased axes, a row multiplier that scales with cell size, floored `cell_ix` — and
+`client/basemap/grid_test.loft` already **proved the routing packing collides** at a finer cell. Routing
+now uses the same scheme (duplicated, not imported: the server links `routing_kernel` without the map).
+`tools/rekey_tiles.loft` migrated the shipped block — 88 tiles, all moved, roads/steps untouched, and it
+refuses to write if two tiles ever land on one key. Route byte-identical throughout: the border gate's
+three golden fingerprints, `match_parity`, and the browser's pixel hash `917244eb`.
+
+**That tool is also the template for R4's every future migration**: read the old image, write a new one,
+prove the route is identical, keep the old file until it is. *Gate:* per-block counts within a band of the previous
 version — a block that suddenly loses 30% of its ways fails rather than ships.
 
 **R5 · Verify per block, before anything is published.** Four checks, because a bad block is invisible
