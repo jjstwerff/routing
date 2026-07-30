@@ -27,7 +27,10 @@ manifest="${COVERAGE_MANIFEST:-$here/data/coverage.toml}"
 # At the SITE ROOT, not inside stores/: the block URLs in the manifest are relative to the root, and a
 # URL is resolved against the file that CONTAINS it. An index one directory down turns "stores/x.store"
 # into "stores/stores/x.store" — every block 404s and the app boots into an empty map.
-out="${1:-$here/_site/coverage.json}"
+# Default output is the COMMITTED site index. It describes the blocks that ship with the app, which are
+# committed too, so it changes only when they do — and the Pages deploy job has no loft to measure extents
+# with. `browser/build-site.mjs` copies it into _site; `tools/index_fresh_gate.sh` proves it still matches.
+out="${1:-$here/browser/coverage.json}"
 root="$here/_site"                      # where the block paths in the manifest are rooted
 version="${DATASET_VERSION:-$(date -u +v%Y-%m-%d)}"
 [ -f "$manifest" ] || { echo "FAIL: no manifest at $manifest"; exit 1; }
