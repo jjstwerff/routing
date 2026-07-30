@@ -160,6 +160,78 @@ function ptHits(ox, oy, c, fbox) {
 const degRing = (ox, oy, ring) => ring.map((c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7]);
 const degPt = (ox, oy, c) => [(oy + c.y) / 1e7, (ox + c.x) / 1e7];
 
+// --- the tile index: a view must not touch every tile (PLAN-SCALE C1a, JS half) -------------------
+//
+// The extent screen below is exact and cheap PER TILE — but it was applied to EVERY tile, so a view cost
+// 5 scalar reads × the whole store (1089 tiles today) to render ~72 of them. That is the plan's invariant
+// inverted: work proportional to the map, not to the viewport. At WE scale (~12M layout tiles) it is the
+// difference between a frame and a minute.
+//
+// A cell-key window would NOT be sound. Features are keyed by their FIRST VERTEX and never clipped, so a
+// tile's geometry overhangs its cell — measured at up to ~9 km for lines (PLAN-PERF §7g). The index is
+// therefore built on the tiles' own SEALED EXTENTS, and the exact extent test still runs per candidate;
+// the index only decides which candidates are worth testing.
+//
+// Two tiers, because one bucket size cannot fit both a house and a river:
+//   * tiles whose extent fits in a bucket or two land in those buckets;
+//   * tiles wider than that (a long river, a railway) go in `wide`, which every query checks;
+//   * tiles with NO extent (`fcount == 0` — an empty tile, or a store predating the field) go in
+//     `noExtent`, which every query also checks, so an older store stays correct rather than blank.
+const BUCKET = 400000;             // 0.04° in fixed-point units — comfortably wider than a typical extent
+const MAX_SPAN = 4;                // a tile spanning more buckets than this per axis is "wide"
+const tileIndexCache = new WeakMap();
+const bkey = (bx, by) => by * 100000 + bx;
+
+// Built once per exposed store and reused across views. Keyed on the handle object; a changed tile count
+// (a re-expose, a different store) rebuilds it. The index holds numbers only — no DataViews — so
+// `memory.grow` detaching the buffer cannot stale it.
+export function tileIndex(mem, handle, deps) {
+  const { flatCount, flatField } = deps;
+  const n = flatCount(mem, handle);
+  const cached = tileIndexCache.get(handle);
+  if (cached && cached.n === n) return cached;
+
+  const buckets = new Map(), wide = [], noExtent = [];
+  for (let i = 0; i < n; i++) {
+    const fcount = Number(flatField(mem, handle, i, 'fcount'));
+    if (!(fcount > 0)) { noExtent.push(i); continue; }
+    const mnla = Number(flatField(mem, handle, i, 'fmnla')), mxla = Number(flatField(mem, handle, i, 'fmxla'));
+    const mnlo = Number(flatField(mem, handle, i, 'fmnlo')), mxlo = Number(flatField(mem, handle, i, 'fmxlo'));
+    const bx0 = Math.floor(mnlo / BUCKET), bx1 = Math.floor(mxlo / BUCKET);
+    const by0 = Math.floor(mnla / BUCKET), by1 = Math.floor(mxla / BUCKET);
+    if (bx1 - bx0 >= MAX_SPAN || by1 - by0 >= MAX_SPAN) { wide.push({ i, mnla, mxla, mnlo, mxlo }); continue; }
+    for (let by = by0; by <= by1; by++) {
+      for (let bx = bx0; bx <= bx1; bx++) {
+        const k = bkey(bx, by);
+        const list = buckets.get(k);
+        if (list) list.push({ i, mnla, mxla, mnlo, mxlo }); else buckets.set(k, [{ i, mnla, mxla, mnlo, mxlo }]);
+      }
+    }
+  }
+  const idx = { n, buckets, wide, noExtent };
+  tileIndexCache.set(handle, idx);
+  return idx;
+}
+
+// The tiles a box could touch: bucket hits (extent-tested) + every wide and extent-less tile.
+// Returns indices in ascending order, so the emitted feature order matches the old full walk exactly —
+// the parity gate compares emitted sets, and a reordering would show up there as a diff.
+function tileCandidates(idx, fbox) {
+  const hit = (t) => !(t.mxla < fbox.mnla || t.mnla > fbox.mxla || t.mxlo < fbox.mnlo || t.mnlo > fbox.mxlo);
+  const out = new Set(idx.noExtent);
+  for (const t of idx.wide) if (hit(t)) out.add(t.i);
+  const bx0 = Math.floor(fbox.mnlo / BUCKET), bx1 = Math.floor(fbox.mxlo / BUCKET);
+  const by0 = Math.floor(fbox.mnla / BUCKET), by1 = Math.floor(fbox.mxla / BUCKET);
+  for (let by = by0; by <= by1; by++) {
+    for (let bx = bx0; bx <= bx1; bx++) {
+      const list = idx.buckets.get(bkey(bx, by));
+      if (!list) continue;
+      for (const t of list) if (hit(t)) out.add(t.i);
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 // Read the requested layer kinds out of the exposed store in ONE walk over the tiles. Mirrors
 // `emit_areas`/`emit_buildings`/`emit_lines`/`emit_pois`/`emit_labels` exactly — same hit tests, same
 // per-kind shapes, and (for labels) the same split into street labels vs places by `kind == "street"`.
@@ -178,24 +250,11 @@ export function viewFromStore(mem, handle, fbox, deps, want) {
   out.tilesRead = 0; out.tilesTotal = n;
   const need = (k) => want.includes(k);
   const wantLabels = need('places') || need('streetLabels');
-  for (let i = 0; i < n; i++) {
-    // PLAN-PERF §7g — skip the tile on its SEALED FEATURE EXTENT before decoding anything. Five scalar
-    // reads decide what would otherwise cost ~1500 coordinate decodes, and on a real viewport this reads
-    // 72 of 1089 tiles. It is exact, not conservative: the extent is the union of the tile's own
-    // features, so a skipped tile provably has nothing in the box.
-    //
-    // `fcount == 0` means the extent is absent — an empty tile, or a store written before the field
-    // existed. Do NOT skip then: falling back to the full scan keeps an older store correct (slow) rather
-    // than silently blank. (Such a store does not currently load at all, but the filter must not be the
-    // thing that decides that.)
-    const fcount = Number(flatField(mem, handle, i, 'fcount'));
-    if (fcount > 0) {
-      const mnla = Number(flatField(mem, handle, i, 'fmnla'));
-      const mxla = Number(flatField(mem, handle, i, 'fmxla'));
-      const mnlo = Number(flatField(mem, handle, i, 'fmnlo'));
-      const mxlo = Number(flatField(mem, handle, i, 'fmxlo'));
-      if (mxla < fbox.mnla || mnla > fbox.mxla || mxlo < fbox.mnlo || mnlo > fbox.mxlo) continue;
-    }
+  // PLAN-PERF §7g's extent screen is exact and cheap per tile, but it used to run on EVERY tile. The
+  // index above answers "which tiles could this box touch" without reading the rest, so a view now costs
+  // the viewport instead of the store; the screen itself is unchanged, it just runs on the candidates.
+  // `fcount == 0` tiles are always candidates, so a store predating the extent field stays correct.
+  for (const i of tileCandidates(tileIndex(mem, handle, deps), fbox)) {
     out.tilesRead += 1;
     const ox = Number(flatField(mem, handle, i, 'ox'));
     const oy = Number(flatField(mem, handle, i, 'oy'));

@@ -286,7 +286,27 @@ fixed within the afternoon, the wasm rebuilt, and the browser gate reproduced th
 `ways=7138 route_pts=213 len=13138.0m`, identical to the pre-C1a run. `map_render_gate.sh`'s staleness
 guard is now FATAL, so a kernel change that never reaches the wasm fails the gate instead of passing it.
 
-**Still open in S2:** the viewport filter's walk on the JS side.
+✅ **The JS viewport filter too (2026-07-30).** `viewFromStore` read 5 scalars from EVERY tile to apply
+§7g's extent screen — exact, cheap per tile, and proportional to the MAP. It now queries an index built
+over the tiles' own sealed extents (`tileIndex` in `map.mjs`), cached per exposed store.
+
+*A cell-key window would have been unsound here* and that is the whole reason the index is built on
+extents: features are keyed by their FIRST VERTEX and never clipped, so a tile's geometry overhangs its
+cell — measured at up to ~9 km for lines (PLAN-PERF §7g). Two tiers keep one bucket size from having to
+fit both a house and a river: tiles wider than `MAX_SPAN` buckets go in a `wide` list every query checks,
+and `fcount == 0` tiles (no extent — an empty tile, or a store predating the field) stay candidates so an
+older store degrades to slow rather than blank. **The exact extent test still runs per candidate; the
+index only decides who is worth testing.**
+
+| evidence | |
+|---|---|
+| **reads per view** (DOM-free, injected deps count the calls) | **3, whether the store holds 59 tiles or 5009** — the old path read 298 and 25,048. Deterministic: a count, not a timing |
+| emitted set | identical to a full scan, asserted against one computed in the test |
+| real store, headless | layer counts unchanged (buildings 16646 · areas 2252 · lines 1231 · pois 4460 · streetLabels 1439 · places 2) and the **render pixel hash unchanged (`917244eb`)** |
+| `CPU_THROTTLE=4`, load 1.9, spreads 1.1–1.5× | storeRead **22 ms**, view total **142 ms** — within noise of the 146 ms on record. The gain today is small because 1089 tiles is small; **the gain is the exponent, not the constant** |
+
+The index build is O(n) once per store — 5 reads × 1089 tiles, i.e. exactly what ONE view used to cost —
+and every view after it is free. **S2 is complete.**
 
 **S3 · Page-locality: Hilbert ordering.** Order tiles within a block on a Hilbert curve at generation.
 *Observable:* `bytes_fetched` for a realistic viewport working set, before vs after. *Gate:* a probe that
