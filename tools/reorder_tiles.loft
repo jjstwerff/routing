@@ -1,0 +1,84 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Rewrite a roads block with its tiles laid out in a chosen ORDER (PLAN-SCALE S3).
+//
+// A paged read fetches PAGES, not tiles — measured at ~64 KB each — so what a viewport costs depends on
+// whether the cells it wants sit near each other in the file. A store's records are allocated as they are
+// inserted, so the insertion order IS the page layout, and it is decided once, at generation.
+//
+//   hilbert  a space-filling curve: cells that are near on the map are near in the file
+//   row      row-major (ty, then tx) — the order a naive generator produces
+//   keep     insertion order as found, for a control
+//
+// The point is measurable, not aesthetic: `tools/page_locality_probe.loft` reads the same viewport out of
+// two orderings and compares bytes fetched. Do the measurement before believing the curve.
+//
+//   loft --native --lib lib tools/reorder_tiles.loft <in.store> <out.store> hilbert|row|keep
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep, cell_ix, tile_cell_key);
+
+// A tile's place in the chosen order. `sorted` gives the ordered walk without a sort of our own.
+struct Slot { const d: integer, const tkey: integer }
+
+// Hilbert distance of (x, y) on a 2^k square — the standard xy2d, iterating from the top bit down and
+// rotating the quadrant as it descends. `n` must be a power of two larger than any coordinate.
+fn hilbert_d(n: integer, x0: integer, y0: integer) -> integer {
+  x = x0; y = y0; d = 0; s = n / 2;
+  while s > 0 {
+    rx = 0; ry = 0;
+    if (x & s) > 0 { rx = 1; }
+    if (y & s) > 0 { ry = 1; }
+    d += s * s * ((3 * rx) ^ ry);
+    if ry == 0 {
+      if rx == 1 { x = s - 1 - x; y = s - 1 - y; }
+      t = x; x = y; y = t;
+    }
+    s = s / 2;
+  }
+  d
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 3 { println("usage: reorder_tiles <in.store> <out.store> hilbert|row|keep"); return; }
+  mode = a[2] ?? "hilbert";
+
+  old: hash<TTile[tkey]> = [];
+  store_load(old, a[0] ?? "");
+
+  // Order the tiles first, then rebuild in that order. 32768 covers the whole world at this cell size
+  // (±9000 cells of longitude, ±4500 of latitude, biased non-negative by the key packing).
+  order: sorted<Slot[d]> = [];
+  n = 0;
+  for t in old {
+    bx = cell_ix(t.ox) + 9001;      // the same bias the key packing uses, so the curve sees ≥ 0
+    by = cell_ix(t.oy) + 4501;
+    d = 0;
+    if mode == "hilbert" { d = hilbert_d(32768, bx, by); }
+    else if mode == "row" { d = by * 100000 + bx; }
+    else { d = n; }                  // keep: insertion order as found
+    order += Slot { d: d, tkey: t.tkey };
+    n += 1;
+  }
+
+  fresh: hash<TTile[tkey]> = [];
+  written = 0; roads = 0; steps = 0;
+  for sl in order {
+    src = old[sl.tkey];
+    if src != null {
+      fresh += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
+      dst = fresh[src.tkey];
+      if dst != null {
+        for r in src.roads { dst.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; roads += 1; }
+        for s in src.steps { dst.steps += [TStep { x: s.x, y: s.y, h: s.h }]; steps += 1; }
+      }
+      written += 1;
+    }
+  }
+  println("reordered {written} tiles ({mode}) roads={roads} steps={steps}");
+  ok = store_persist_bind(fresh, a[1] ?? "");
+  println("persist {ok}");
+}

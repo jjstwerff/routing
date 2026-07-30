@@ -183,7 +183,7 @@ tracking here: it is the reason this plan's §2 was written against a read path 
 | **D1** | **Router WE-wide first; base map per-region on demand.** Ship roads (7–15 GB) as continuous coverage; treat layout blocks as an opt-in download per region. | §1(1) — the map is 6× the bytes of the thing that makes this app worth using, and `CLAUDE.md`'s split already says *loft does the ROUTE, JS does the MAP* |
 | **D2** | **Object storage with Range + CORS** (R2/B2), app shell stays on GitHub Pages. | Pages caps a site around 1 GB and a Release asset at 2 GB (re-verify before sizing) — neither hosts 50 GB. R2 has no egress fee, which is the cost model that decides this |
 | **D3** | **loft's working-set loader is the read path** — no codec, no JS range machinery, per the rule above. A gap in it is an **issue on `loft-lang/loft`**, and this plan waits on the fix rather than routing around it. | proven in §2 on both shapes; the one thing a hand-rolled reader would buy is speed, at the cost of hiding the gap the test-bed exists to find |
-| **D4** | **Keep the two cell sizes** (roads 0.02°, layout 0.005°), **Hilbert-order tiles within a block.** | changing cell size is a data migration; ordering is free at generation and is what makes page reads overlap |
+| **D4** | **Keep the two cell sizes** (roads 0.02°, layout 0.005°). ~~Hilbert-order tiles within a block.~~ **AMENDED 2026-07-30: the ordering is decided by MEASUREMENT at C2** — on today's block a viewport wants 42 of 88 cells, so no layout can win, and Hilbert measured worse (S3). | changing cell size is a data migration; ordering is a layout, not a format, so it stays free to change — and routes are byte-identical under every ordering tried |
 | **D5** | **Blocks are per-country or per-split, ≤ 2 GB, and the dataset VERSION is in the URL.** | a client must never mix versions mid-session; per-block regeneration is what makes a hotfix cheap (§7) |
 | **D6** | **The top index is ours and tiny** — bbox → block URL + version, one row per block (12–40 rows). | the store is its own directory (D3), so the only thing we author is the map from geography to block |
 | **D7** | **Cross-block continuity rides the existing border rule** — ways split at tile borders, border nodes grid-snapped so neighbours merge exactly — extended to blocks, with its own gate. | `tools/tile_border_gate.sh` already proves this across *tiles*; blocks are the same rule at a bigger seam |
@@ -308,9 +308,32 @@ index only decides who is worth testing.**
 The index build is O(n) once per store — 5 reads × 1089 tiles, i.e. exactly what ONE view used to cost —
 and every view after it is free. **S2 is complete.**
 
-**S3 · Page-locality: Hilbert ordering.** Order tiles within a block on a Hilbert curve at generation.
-*Observable:* `bytes_fetched` for a realistic viewport working set, before vs after. *Gate:* a probe that
-fails if a 60-tile viewport costs more than N MB (N set by S1's measurement, recorded, not guessed).
+**S3 · Page-locality: Hilbert ordering.** ⏸ **MEASURED AND DEFERRED (2026-07-30) — the instrument exists,
+the decision belongs at C2.** The plan assumed a Hilbert curve was the answer (D4). Measured on the block
+we have, it is not evaluable here and, as implemented, it is a net loss:
+
+| ordering | file | bytes fetched for a 42-cell viewport |
+|---|---|---|
+| as generated (row-major) | 3,816,152 | **3,211,264** (84% of the file) |
+| explicit `row` | 3,816,152 | 3,211,264 |
+| **`hilbert`** | **8,904,352** | **3,604,480** — *more absolute bytes, out of a 2.3× file* |
+
+**Why it cannot be evaluated at this size:** a realistic viewport wants **42 of the block's 88 cells**, so
+any layout fetches most of the file. Locality has nothing to win until a viewport is a small *fraction* of
+a block, which is C2 onwards. Routes are byte-identical under all three orderings (the border probe's
+three golden fingerprints), so the ordering is free to change later — it is a layout, not a format.
+
+⚠ **An unexplained 2.33× file, recorded rather than diagnosed.** Rewriting the block in Hilbert order
+yields 8,904,352 bytes for identical content — 88 tiles, 25,971 roads, 159,993 steps — reproducibly, from
+any input ordering; rewriting it back gives exactly 3,816,152 again. But a standalone repro (2,000 records
+of 200 values, inserted ascending vs scattered) shows **1.00×**, so *"scattered insertion inflates a
+store"* is NOT established and nothing was filed upstream: a report whose repro does not reproduce is
+noise. What is known is written down, with `tools/reorder_tiles.loft` to re-check it at C2 scale, where
+the answer actually matters.
+
+**D4 is amended:** tile ordering is decided **by this measurement at C2**, not assumed now. The tooling is
+the deliverable — `tools/reorder_tiles.loft` (hilbert / row / keep) and
+`tools/page_locality_probe.loft` (a fixed viewport's `bytes_fetched`, via `LOFT_LOADER_STATS=1`).
 
 **S4 · Working-set lifecycle + eviction (W3).** Bounded LRU over loaded tiles; a session that pans across
 a country holds a bounded footprint. *Observable:* peak wasm memory across a scripted pan of 500 km.
