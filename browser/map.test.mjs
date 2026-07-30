@@ -7,6 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore } from './map.mjs';
+import { pickBlock, blocksForBox, resolveCoverage } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1151,6 +1152,42 @@ console.log('\nC1a · a view reads the viewport, not the store');
   const rBig = readsAfterBuild([...near, ...far(5000)]);
   ok(rSmall === rBig, `a view reads the same ${rSmall} field(s) with 59 tiles and with 5009 (${rSmall} vs ${rBig})`);
   ok(rBig < 20, `and it is a handful of reads, not a scan (${rBig})`);
+}
+
+// --- PLAN-SCALE S7 · the top index resolves a point to a block ----------------------------------
+//
+// The one piece of routing logic in the coverage layer, so it is tested without a browser: which block
+// covers this point, what a viewport spanning a border needs, and — the case that decides whether a
+// visitor sees a map or a blank page — what happens when nothing covers them.
+console.log('\nS7 · coverage index → block');
+{
+  const bbox = (mnla, mnlo, mxla, mxlo) => ({ mnla, mnlo, mxla, mxlo });
+  const blk = (id, box) => ({ id, readMode: 'whole', roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
+  // NL-ish and BE-ish, plus a small city block INSIDE the NL one — the overlap case a country plus a
+  // detailed city creates, and the reason "smallest area wins" is a rule rather than an accident.
+  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000));
+  const be = blk('be', bbox(494000000, 25000000, 516000000, 64000000));
+  const ens = blk('enschede', bbox(521477887, 67600000, 523292661, 69998845));
+  const index = { version: 'v-test', unit: 'fixed-1e-7', blocks: [nl, be, ens] };
+
+  ok(pickBlock(index, 52.2215, 6.8937)?.id === 'enschede', 'a point in the city block picks the CITY, not the country around it');
+  ok(pickBlock(index, 52.37, 4.89)?.id === 'nl', 'Amsterdam picks nl');
+  ok(pickBlock(index, 50.85, 4.35)?.id === 'be', 'Brussels picks be');
+  ok(pickBlock(index, 48.85, 2.35) === null, 'Paris is outside every block → null (not a wrong answer)');
+  ok(pickBlock(null, 52.2, 6.9) === null && pickBlock({}, 52.2, 6.9) === null, 'a missing or malformed index resolves to null');
+
+  // A viewport that straddles the NL/BE border needs both, which is what C2's cross-block work stands on.
+  const both = blocksForBox(index, 51.3, 4.2, 51.6, 4.6).map((b) => b.id).sort();
+  ok(both.length === 2 && both[0] === 'be' && both[1] === 'nl', `a border viewport needs both blocks (${both.join(',')})`);
+
+  // The fallbacks, stated rather than implied.
+  const fakeFetch = (body) => async () => ({ ok: true, json: async () => body });
+  const inside = await resolveCoverage('x', 52.2215, 6.8937, fakeFetch(index));
+  ok(inside.block.id === 'enschede' && !inside.outside, 'resolveCoverage inside coverage → the covering block');
+  const outside = await resolveCoverage('x', 48.85, 2.35, fakeFetch(index));
+  ok(outside.block.id === 'nl' && outside.outside === true, 'outside coverage → the first block, FLAGGED outside (a map to pan from, not a blank page)');
+  const missing = await resolveCoverage('x', 52.2, 6.9, async () => { throw new Error('404'); });
+  ok(missing.block === null && missing.outside === true, 'no index at all → null block, so the caller can say so');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

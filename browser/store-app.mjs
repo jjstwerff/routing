@@ -9,20 +9,36 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
+import { resolveCoverage } from './coverage.mjs';
 
 // PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
 // the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
 // it is 3.5 MB ≈ 56 pages, so a session that pans the region touches 80% of them anyway and pays 46
 // round trips to do it (+~200 ms on a localhost cold start, worse over a real RTT). The switch exists
 // because the answer flips with block SIZE, not with code — at C2 the top index carries it per block.
-window.__readMode = window.__readMode || 'whole';
-const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
-const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
 const PROFILE = 'cycling_road';
 
 const canvas = document.getElementById('map');
 const hud = document.getElementById('hud');
 const map = new RouteMap(canvas, { lat: 52.2215, lon: 6.8937, zoom: 16 });
+
+// PLAN-SCALE S7 — the TOP INDEX says which block covers the camera, and how to read it. The store URLs
+// used to be hardcoded here, which is exactly as far as one block goes: a second region would have meant
+// a second build of the app. Now the app ships one index lookup and the DATA decides.
+//
+// `readMode` comes from the index too (C1b): a small block is downloaded whole, a large one is read by
+// byte range. That is a property of the block, so it belongs next to the block's URL, not in this file.
+const INDEX_URL = new URL('./coverage.json', location.href).href;
+const coverage = await resolveCoverage(INDEX_URL, map.camera.lat, map.camera.lon);
+if (!coverage.block) {
+  hud.textContent = 'no coverage index — the app has no data to show';
+  throw new Error('no coverage index at ' + INDEX_URL);
+}
+const LAYOUT = new URL(coverage.block.base.url, INDEX_URL).href;
+const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
+window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
+window.__coverage = coverage;
+if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
 hud.textContent = 'loading kernel…';
 const kernel = await createKernel(new URL('./store-kernel.wasm', location.href).href);

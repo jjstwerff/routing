@@ -357,9 +357,34 @@ highway map must cover EVERY class the store can hold, including the ones the co
 `tile_hw` maps only the routable ones, so using it would have dropped those roads and let the round trip
 "pass" by losing data.
 
-**S7 · Blocks + top index (D5/D6).** Rolling ~2 GB shards, `.dschema` beside each, version in the path;
-top index authored from the manifest. *Observable:* a point in each region resolves to the right block.
-*Gate:* every block opens, `store_load_key` spot-checks pass, index round-trips.
+**S7 · Blocks + top index (D5/D6).** ✅ **The index and the resolver are DONE (2026-07-30);** rolling
+shards wait for a second block, i.e. for data.
+
+- **`data/coverage.toml`** is the manifest (§7 R0) — the only place a region enters coverage. It
+  deliberately does **not** declare bounding boxes: a block's extent is a fact about the data (osmium
+  clips, a generator drops what it cannot classify), so a declared bbox that outran its data would be a
+  hole in the map the index insisted was covered.
+- **`tools/build_index.sh`** opens every block, reads its MEASURED extent (`tools/store_extent.loft`),
+  and writes `_site/coverage.json` — 617 bytes for one block: url, bytes, **sha256**, tiles, features,
+  bbox, and the per-block `readMode` (C1b's switch, now a property of the DATA as promised). The hash is
+  what lets R6 publish against `store_load_url`, the loader that VERIFIES.
+- **`browser/coverage.mjs`** resolves: `pickBlock` (smallest covering block wins, so a city inside a
+  country wins), `blocksForBox` (what a viewport straddling a border needs — C2's cross-block case,
+  already answered), and `resolveCoverage` with its fallbacks stated rather than implied: no index → null
+  and the app says so; index but no cover → the first block, **flagged**, so a visitor outside coverage
+  gets a map to pan from instead of a blank page.
+- **The app no longer hardcodes its stores.** Two `const`s at the top of `store-app.mjs` were exactly as
+  far as one block goes — a second region would have meant a second build of the app.
+
+*Gate:* nine DOM-free assertions in `map.test.mjs` (city-inside-country, two countries, a point in
+neither, a border viewport needing both, and all three fallbacks), plus the browser gate now REGENERATES
+the index and boots the app through it. Route, layer counts and pixel hash `917244eb` all unchanged.
+
+⚠ **The bug this caught is the one to remember.** The index first lived at `_site/stores/index.json`, and
+a URL resolves against the file that CONTAINS it — so `"stores/enschede.roads.store"` became
+`stores/stores/…`, every block 404'd, and the app booted into an empty map. Nothing in the unit tests
+could see it; the browser gate failed on the first run. **The index belongs at the site root**, which is
+what the block URLs are relative to.
 
 **S8 · Cross-block stitch (D7).** A route crossing a block seam. *Observable:* no gap, no bridge edge at
 the seam. *Gate:* extend `tile_border_gate.sh` to a **block** seam, both directions, order-insensitive.

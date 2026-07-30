@@ -1,0 +1,73 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// A block's ACTUAL extent and size, for the top index (PLAN-SCALE S7 / D6).
+//
+// The index says which block covers a point, so its bbox has to be a fact about the DATA, not the
+// intent in the manifest. A region generated from a bbox that osmium clipped differently, or a block
+// that lost its western tiles to a bad key packing, must show up as a smaller extent here — not as a
+// correct-looking manifest entry over a hole in the map.
+//
+// Emits one machine-readable line (fixed-point 1e-7°, the store's own units):
+//   EXTENT <mnla> <mnlo> <mxla> <mxlo> <tiles> <features>
+//
+//   loft --native --lib lib tools/store_extent.loft <store> roads|base
+//
+// ⚠ The kind is `base`, not `layout`, and that is not a preference: loft's CLI takes an argument that
+// spells a SUBCOMMAND for itself, so `… store_extent.loft <store> layout` runs `loft layout` and the
+// script never starts. `--` does not stop it either (loft#684).
+#cwd
+
+use routing_kernel::TTile;
+use basemap::(PTile, Area, Building, Line, Label, Poi);
+
+struct Ext { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer, n: integer, feats: integer }
+
+fn note(e: Ext, mnla: integer, mnlo: integer, mxla: integer, mxlo: integer, feats: integer) {
+  if e.n == 0 { e.mnla = mnla; e.mnlo = mnlo; e.mxla = mxla; e.mxlo = mxlo; }
+  else {
+    if mnla < e.mnla { e.mnla = mnla; }
+    if mnlo < e.mnlo { e.mnlo = mnlo; }
+    if mxla > e.mxla { e.mxla = mxla; }
+    if mxlo > e.mxlo { e.mxlo = mxlo; }
+  }
+  e.n += 1;
+  e.feats += feats;
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: store_extent <store> roads|base"); return; }
+  path = a[0] ?? "";
+  kind = a[1] ?? "roads";
+  e = Ext { mnla: 0, mnlo: 0, mxla: 0, mxlo: 0, n: 0, feats: 0 };
+
+  if kind == "roads" {
+    // A road tile's geometry is its origin plus i32 deltas, so the extent is the union of the actual
+    // step coordinates — NOT the cell origins, which would understate a block by up to a cell.
+    tiles: hash<TTile[tkey]> = [];
+    store_load(tiles, path);
+    for t in tiles {
+      tmnla = t.oy; tmxla = t.oy; tmnlo = t.ox; tmxlo = t.ox;
+      for s in t.steps {
+        la = t.oy + (s.y as integer); lo = t.ox + (s.x as integer);
+        if la < tmnla { tmnla = la; } if la > tmxla { tmxla = la; }
+        if lo < tmnlo { tmnlo = lo; } if lo > tmxlo { tmxlo = lo; }
+      }
+      note(e, tmnla, tmnlo, tmxla, tmxlo, len(t.roads));
+    }
+  } else {
+    // The layout store already carries a sealed per-tile feature extent (PLAN-PERF §7g) — the union of
+    // those IS the block's extent, and it costs five scalars a tile instead of a walk of the geometry.
+    layout: hash<PTile[tkey]> = [];
+    store_load(layout, path);
+    for p in layout {
+      if p.fcount > 0 {
+        note(e, p.fmnla, p.fmnlo, p.fmxla, p.fmxlo,
+             len(p.areas) + len(p.buildings) + len(p.lines) + len(p.labels) + len(p.pois));
+      }
+    }
+  }
+  println("EXTENT {e.mnla} {e.mnlo} {e.mxla} {e.mxlo} {e.n} {e.feats}");
+}
