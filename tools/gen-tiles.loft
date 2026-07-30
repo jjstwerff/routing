@@ -9,7 +9,8 @@
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
-use routing_kernel::(GeoPoint, Way, parse_ways, parse_way_feature, TStep, TRoad, TTile, cell_ix, tile_cell_key,
+use routing_kernel::(GeoPoint, Way, Barrier, parse_ways, parse_way_feature, parse_barrier_feature,
+                     TStep, TRoad, TTile, TBarrier, cell_ix, tile_cell_key,
                      RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
 
 fn class_of(hw: text) -> integer {
@@ -85,6 +86,28 @@ fn add_way(idx: hash<TTile[tkey]>, w: Way) {
   t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: (flags_of(w) & 255) as u8, steps: (n & 255) as u8 }];
 }
 
+// Bin ONE barrier node into the tile that CONTAINS it. Unlike a way — keyed by its first vertex and free
+// to overhang its cell — a point falls squarely in one cell, so no margin is involved.
+//
+// A barrier in a cell that holds no roads still gets a tile: the corridor read looks tiles up by key, and
+// a barrier the read cannot reach is a barrier the router does not apply. (Rare, and cheap when it
+// happens — a tile with an empty roads vector.)
+fn add_barrier(idx: hash<TTile[tkey]>, b: Barrier) {
+  if b.lat == 0.0 && b.lon == 0.0 { return; }    // not a barrier point
+  if b.flags == 0 { return; }                    // stops nobody we route — do not store it
+  gx = round(b.lon * 10000000.0) as integer;
+  gy = round(b.lat * 10000000.0) as integer;
+  btx = cell_ix(gx); bty = cell_ix(gy);
+  bkey = tile_cell_key(btx, bty);
+  bt = idx[bkey];
+  if bt == null {
+    idx += TTile { tkey: bkey, ox: btx * CELL, oy: bty * CELL, oh: 0, roads: [], steps: [], barriers: [] };
+    bt = idx[bkey];
+  }
+  bt.barriers += [TBarrier { x: (gx - bt.ox) as i32? ?? (0 as i32), y: (gy - bt.oy) as i32? ?? (0 as i32),
+                             flags: (b.flags & 255) as u8 }];
+}
+
 // WHOLE-FILE input: one Overpass JSON document. Fine for a city, impossible for a country — the document
 // arrives as a single `text` value and `parse_ways` materialises every way before the first is binned.
 fn build(osm: text) -> hash<TTile[tkey]> {
@@ -99,6 +122,15 @@ fn build(osm: text) -> hash<TTile[tkey]> {
 // Each pass reads a chunk, uses only the part up to its LAST newline, and seeks back to just after it —
 // so a chunk boundary can never split a line, and never leaves a partial multi-byte character to decode.
 // Memory is the chunk, whatever the file. A line longer than the chunk doubles it and retries.
+// One `geojsonseq` record, whichever kind it is. osmium writes linestrings and points into ONE file, and
+// each parser returns its own "not mine" answer cheaply (a Way with <2 coords, a Barrier at 0,0), so the
+// dispatch needs no separate type sniff.
+fn feed(idx: hash<TTile[tkey]>, line: text) {
+  w = parse_way_feature(line);
+  if len(w.coords) >= 2 { add_way(idx, w); return; }
+  add_barrier(idx, parse_barrier_feature(line));
+}
+
 fn build_stream(path: text) -> hash<TTile[tkey]> {
   idx: hash<TTile[tkey]> = [];
   f = file(path);
@@ -115,7 +147,7 @@ fn build_stream(path: text) -> hash<TTile[tkey]> {
     for ch in chunk { if ch == '\n' { last_nl = ch#index; } }
     if last_nl < 0 {
       if pos + want >= total {
-        if chunk != "" { add_way(idx, parse_way_feature(chunk)); nlines += 1; }
+        if chunk != "" { feed(idx, chunk); nlines += 1; }
         pos = total;
       } else {
         chunk_size = chunk_size * 2;      // one line is longer than the chunk — grow and re-read
@@ -123,7 +155,7 @@ fn build_stream(path: text) -> hash<TTile[tkey]> {
     } else {
       part = chunk[0..last_nl];
       for ln in part.split('\n') {
-        if ln != "" { add_way(idx, parse_way_feature(ln)); nlines += 1; }
+        if ln != "" { feed(idx, ln); nlines += 1; }
       }
       pos = pos + last_nl + 1;
     }
@@ -140,8 +172,9 @@ fn main() {
   idx: hash<TTile[tkey]> = [];
   if src.ends_with(".geojsonseq") || src.ends_with(".jsonl") { idx = build_stream(src); }
   else { idx = build(src); }
-  nt = 0; nr = 0; for t in idx { nt = nt + 1; nr = nr + len(t.roads); }
-  println("built: tiles={nt} roads={nr}");
+  nt = 0; nr = 0; nb = 0;
+  for t in idx { nt = nt + 1; nr = nr + len(t.roads); nb = nb + len(t.barriers); }
+  println("built: tiles={nt} roads={nr} barriers={nb}");
   ok = store_persist_bind(idx, a[0]);
   println("persist {ok}");
 }

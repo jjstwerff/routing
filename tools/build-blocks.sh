@@ -86,9 +86,25 @@ if [ -n "$bbox" ]; then
 else
   base_pbf="$pbf"
 fi
+# ⚠ RESUMABILITY IS KEYED ON THE RECIPE TOO, not just on mtimes. These steps skip when their output is
+# newer than their input — which silently reused a way-only `geojsonseq` the day `n/barrier` and
+# `--geometry-types=…,point` were added here, and produced a "successfully regenerated" country block
+# with zero barriers in it. The fingerprint below is the filter+export recipe; change either and the
+# cached intermediates are stale by definition.
+recipe="w/highway n/barrier | linestring,point"
+rfp="$work/$id.recipe"
+if [ ! -f "$rfp" ] || [ "$(cat "$rfp" 2>/dev/null)" != "$recipe" ]; then
+  echo "  recipe changed — discarding cached filter/export intermediates"
+  rm -f "$roads" "$seq"
+  printf '%s' "$recipe" > "$rfp"
+fi
 if newer "$roads" "$base_pbf"; then echo "  roads filter up to date"; else
-  echo "  osmium tags-filter w/highway"
-  osmium tags-filter --overwrite -o "$roads" "$base_pbf" w/highway || { echo "FAIL: osmium tags-filter"; exit 1; }
+  echo "  osmium tags-filter w/highway n/barrier"
+  # BOTH ways and barrier NODES. A gate across a path is a node, so a way-only filter cannot see one —
+  # `w/highway` alone left 19 gates, 5 swing gates and 2 lift gates invisible in a single Enschede box,
+  # and the router walked through all of them.
+  osmium tags-filter --overwrite -o "$roads" "$base_pbf" w/highway n/barrier \
+    || { echo "FAIL: osmium tags-filter"; exit 1; }
 fi
 echo "  roads pbf: $(du -h "$roads" | cut -f1)"
 
@@ -97,7 +113,8 @@ echo "  roads pbf: $(du -h "$roads" | cut -f1)"
 # converted this to Overpass-shaped JSON first; streaming removed that step entirely.
 echo "== R2b export geojsonseq =="
 if newer "$seq" "$roads"; then echo "  geojsonseq up to date"; else
-  osmium export "$roads" -f geojsonseq --geometry-types=linestring --overwrite -o "$seq" \
+  # …and export points alongside linestrings, or the barrier nodes just filtered in are dropped here.
+  osmium export "$roads" -f geojsonseq --geometry-types=linestring,point --overwrite -o "$seq" \
     || { echo "FAIL: osmium export"; exit 1; }
 fi
 echo "  geojsonseq: $(du -h "$seq" | cut -f1), $(wc -l < "$seq") features"

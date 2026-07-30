@@ -15,7 +15,8 @@
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, MatchQuality, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
-                     build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
+                     tiles_corridor_barriers, build_graph, build_graph_streamed, build_graph_barriers,
+                     build_graph_barriers_streamed, match_route, corridor_margin, path_length_m,
                      point_polyline_m, match_state_new, match_incremental, match_incremental_streamed,
                      match_state_result, match_quality, tier_ok, TIER_TUBE, TIER_BBOX);
 
@@ -175,8 +176,12 @@ pub fn parse_sketch(spec: text) -> vector<GeoPoint> {
 // A long-lived front-end should use `do_match_session` instead — see below.
 pub fn do_match(roads: hash<TTile[tkey]>, trace: vector<GeoPoint>, profile: text) {
   if len(trace) < 2 { println("SUMMARY error=need>=2pts"); return; }
-  ways = tiles_corridor_ways(roads, trace, corridor_margin(trace));
-  route = match_route(build_graph(ways), trace, profile);
+  osm = corridor_margin(trace);
+  ways = tiles_corridor_ways(roads, trace, osm);
+  // `tiles_corridor_ways` is the FAT (bbox) read, so its barriers must be read the same way — tube=false.
+  // Reading them with the other tier would leave a gate missing exactly where the corridor is widest.
+  route = match_route(build_graph_barriers(ways, tiles_corridor_barriers(roads, trace, osm, false)),
+                      trace, profile);
   emit_route(route, len(ways), profile);
 }
 
@@ -277,7 +282,7 @@ pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trac
     // The REBUILD is the other un-interruptible block: streaming the stretches left the corridor read
     // and build_graph as one ~11s freeze on a cold match (PLAN-PERF §6b A). Yield inside both.
     s.cways = tiles_corridor_ways_tube_streamed(roads, trace, margin, on_tick);
-    s.cg = build_graph_streamed(s.cways, on_tick);
+    s.cg = build_graph_barriers_streamed(s.cways, tiles_corridor_barriers(roads, trace, margin, true), on_tick);
     s.covs = [Corridor { pts: trace, margin: margin }];
     s.mstate = match_state_new();     // fresh graph ⇒ every cached anchor is stale
     s.built = true;
@@ -301,7 +306,7 @@ pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trac
   if s.tier == TIER_TUBE && !covered_before {
     if !tier_ok(match_quality(s.mstate, trace, match_state_result(s.cg, s.mstate)), margin) {
       s.cways = tiles_corridor_ways_streamed(roads, trace, margin, on_tick);
-      s.cg = build_graph_streamed(s.cways, on_tick);
+      s.cg = build_graph_barriers_streamed(s.cways, tiles_corridor_barriers(roads, trace, margin, false), on_tick);
       s.mstate = match_incremental_streamed(match_state_new(), s.cg, trace, profile, on_stretch, on_tick);
       s.tier = TIER_BBOX;
     }

@@ -261,6 +261,37 @@ pub fn parse_way_feature(line: text) -> Way {
   }
 }
 
+// The same, for a barrier NODE: one `geojsonseq` Point feature → a `Barrier`, or lat/lon 0 when the line
+// is not one. The generator streams a mixed file (osmium exports linestrings and points into one
+// sequence), so both parsers must tolerate seeing the other's records and say so cheaply.
+//
+// `flags == 0` is a real answer, not a failure: most barriers stop nobody we route. It is the lat/lon
+// that says "this was not a barrier point", which is why they are checked rather than the flags.
+pub fn parse_barrier_feature(line: text) -> Barrier {
+  if line == "" { return Barrier { lat: 0.0, lon: 0.0, flags: 0 }; }
+  // RFC 8142 record separator, exactly as parse_way_feature handles it.
+  body = line;
+  bcut = 0 - 1;
+  for bch in line { if bch == '{' { bcut = bch#index; break; } }
+  if bcut < 0 { return Barrier { lat: 0.0, lon: 0.0, flags: 0 }; }
+  if bcut > 0 { body = line[bcut..line.size()]; }
+  root = json_parse(body);
+  geom = root.field("geometry");
+  if tag(geom, "type") != "Point" { return Barrier { lat: 0.0, lon: 0.0, flags: 0 }; }
+  props = root.field("properties");
+  bar = tag(props, "barrier");
+  if bar == "" { return Barrier { lat: 0.0, lon: 0.0, flags: 0 }; }
+  cs = geom.field("coordinates");
+  if len(cs) < 2 { return Barrier { lat: 0.0, lon: 0.0, flags: 0 }; }
+  // GeoJSON is [lon, lat].
+  Barrier {
+    lat:   cs.item(1).as_number(),
+    lon:   cs.item(0).as_number(),
+    flags: barrier_flags(bar, tag(props, "access"), tag(props, "foot"), tag(props, "bicycle"),
+                         tag(props, "locked")),
+  }
+}
+
 // Parse an Overpass JSON response into the corridor's ways. Missing tags read as "".
 pub fn parse_ways(response: text) -> vector<Way> {
   root = json_parse(response);
@@ -313,10 +344,36 @@ TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
 pub struct TStep { const x: i32, const y: i32, const h: i32 }
 pub struct TRoad { const tp: u8, const flags: u8, const steps: u8 }
+
+// --- barriers ---------------------------------------------------------------------------------
+// A gate across a path is a NODE, not a tag on the way, so nothing in a way-only pipeline can see it:
+// `osmium tags-filter w/highway` and Overpass's `way["highway"]` both take ways alone. One 1.8 × 3.6 km
+// box near Enschede holds 49 of them — 19 gates, 5 swing gates, 2 lift gates, a cycle barrier, a stile —
+// and the map routed straight through every one.
+//
+// Stored per tile, as an offset from the tile origin exactly like a TStep, so a barrier costs 9 bytes and
+// lands in the cell that CONTAINS it (a point needs no overhang margin — unlike a way, which is keyed by
+// its first vertex and can reach far outside its cell).
+//
+// ⚠ Adding this field does NOT invalidate existing blocks: a store written without it reads back with an
+// empty vector (verified against a block generated before the field existed). Blocks that predate it
+// simply have no barriers — missing data, not breakage.
+pub struct TBarrier { const x: i32, const y: i32, const flags: u8 }
+
+// A barrier resolved to world coordinates, as the corridor read hands it to the graph.
+pub struct Barrier { const lat: float, const lon: float, const flags: integer }
+
+// What a barrier STOPS. Most barriers stop nobody we route: a bollard, a lift gate and a jersey barrier
+// are all there to keep cars out, and a router that treated them as walls would be more wrong than one
+// that ignored them. The blocking cases are narrow and specific.
+pub const BF_FOOT_NO       = 1;   // impassable on foot
+pub const BF_BIKE_NO       = 2;   // impassable by bike
+pub const BF_BIKE_DISMOUNT = 4;   // passable, but you are getting off (cycle barrier, chicane)
 // All fields const: tkey/ox/oy/oh are set at construction, and roads/steps are only ever GROWN
 // (`t.roads += […]` in tools/gen-tiles.loft), never rebound — an append is a contents mutation, which
 // const permits on a collection field.
-pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, const roads: vector<TRoad>, const steps: vector<TStep> }
+pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, const roads: vector<TRoad>, const steps: vector<TStep>,
+                   const barriers: vector<TBarrier> }
 
 // RoadType code → a representative OSM highway value, so the existing tag-based cost model works
 // unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
@@ -359,6 +416,46 @@ pub const RF_BIKE_YES  = 16;   // bicycle=yes|designated|permissive
 pub const RF_FOOT_NO   = 32;   // foot=no|private
 pub const RF_FOOT_YES  = 64;   // foot=yes|designated|permissive
 pub const RF_SVC_LOCAL = 128;  // service=driveway|alley|parking_aisle — not a through-route
+
+// What does this barrier node stop? Lives HERE, next to the bits, because the generator writes the flags
+// and the router reads them — the access byte already taught us what happens when those two agree only
+// by coincidence (the dump tool round-tripped a lossy writer against a lossy reader and passed).
+//
+// The node's OWN tags win where present, because they are a survey result and the type is only a prior:
+// a `barrier=gate` tagged `foot=yes` is a gate somebody has walked through. Otherwise the type decides,
+// and the default is PASSABLE. That default is the important one — `bollard`, `block`, `lift_gate`,
+// `chain` and `jersey_barrier` all exist to stop CARS, and treating them as walls would reroute a
+// cyclist around every quiet street entrance in the country.
+pub fn barrier_flags(bar: text, access: text, foot: text, bicycle: text, locked: text) -> integer {
+  f = 0;
+  // A locked barrier stops everyone, whatever it is.
+  if locked == "yes" { return BF_FOOT_NO + BF_BIKE_NO; }
+
+  // These are physical geometry, not a gate: a fence, wall or hedge sitting ON a routable node means the
+  // way does not continue through it.
+  if bar == "fence" || bar == "wall" || bar == "hedge" || bar == "ditch" || bar == "guard_rail" {
+    f = BF_FOOT_NO + BF_BIKE_NO;
+  }
+  // Passable on foot by design, impossible with a bike — you cannot lift a loaded bike over a stile.
+  else if bar == "stile" || bar == "kissing_gate" || bar == "turnstile" || bar == "full-height_turnstile" {
+    f = BF_BIKE_NO;
+  }
+  // Built to slow cyclists, not stop them.
+  else if bar == "cycle_barrier" || bar == "chicane" {
+    f = BF_BIKE_DISMOUNT;
+  }
+
+  // Explicit access overrides the type in BOTH directions.
+  if access == "no" || access == "private" { f = f | BF_FOOT_NO | BF_BIKE_NO; }
+  if foot == "no" || foot == "private" { f = f | BF_FOOT_NO; }
+  else if foot == "yes" || foot == "designated" || foot == "permissive" { f = f & ~BF_FOOT_NO; }
+  if bicycle == "no" || bicycle == "private" { f = f | BF_BIKE_NO; }
+  else if bicycle == "yes" || bicycle == "designated" || bicycle == "permissive" {
+    f = f & ~BF_BIKE_NO; f = f & ~BF_BIKE_DISMOUNT;
+  }
+  else if bicycle == "dismount" { f = f | BF_BIKE_DISMOUNT; }
+  f
+}
 
 // Reconstruct Way structs from the tiles covering the corridor (its bbox buffered by `margin` metres,
 // plus a one-cell ring for the assign-by-first-node fringe). Feeds build_graph exactly like parse_ways.
@@ -467,6 +564,31 @@ fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: 
     if t != null { append_tile_ways(t, ways); }
   }
   ways
+}
+
+// The barriers in the same cell window the ways came from. A SEPARATE walk rather than a second output
+// of `corridor_ways_impl2`, because that function's return type is what every consumer binds — and the
+// walk it duplicates is arithmetic over an already-resident hash, not a store read. Measured on the
+// Enschede block: the whole pass is under a millisecond, against a corridor read of tens.
+//
+// Read it with the SAME `tube` the ways were read with, or a barrier will be missing exactly where the
+// route is (`tiles_corridor_ways_tube` → tube = true).
+pub fn tiles_corridor_barriers(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float,
+                               tube: boolean) -> vector<Barrier> {
+  out: vector<Barrier> = [];
+  if len(pts) < 1 { return out; }
+  bkeys: vector<integer> = corridor_cell_keys(pts, margin, tube);
+  for bk in bkeys {
+    bt = store[bk];
+    if bt != null {
+      for b in bt.barriers {
+        out += [Barrier { lat: (bt.oy + b.y) as float / TILE_UNIT,
+                          lon: (bt.ox + b.x) as float / TILE_UNIT,
+                          flags: b.flags as integer }];
+      }
+    }
+  }
+  out
 }
 
 // The cells a corridor read will look up — the SAME enumeration `corridor_ways_impl2` performs, exported
@@ -594,6 +716,22 @@ CYCLE_INFRA_DEV_FACTOR = 0.4; // cyclists go out of their way for a cycle route:
 // used only when it is the ONLY connection.
 DISMOUNT_PER_M = 1500.0;
 ILLEGAL_PER_M  = 20000.0;
+// The same two tiers as a fixed per-NODE cost, for barriers — but a barrier is a POINT and every tier
+// above is per-metre, so it needs a notional length to be comparable at all. Getting that wrong is
+// silent: the first version charged one metre's worth (20 000) and changed no route anywhere, because
+// this is a map-MATCHER and deviation is also per-metre. A 1 120 m detour lying 220 m off the drawn line
+// costs 1120 * (1 + DEV_K * 220) ≈ 740 000 — so a 20 000 gate is rounding error, and the route walked
+// straight through it while every count in the pipeline looked healthy.
+//
+// Both are stated as "what would this cost me if it were a stretch of way?", which is a physical
+// question with a defensible answer:
+//   BLOCK    — as bad as a kilometre of a way you are not allowed on. Beats any detour the matcher will
+//              entertain, and stays finite so a route with no alternative still draws (DESIGN §5).
+//   DISMOUNT — as bad as walking the bike 30 m, which is roughly what a chicane physically costs. It
+//              must NOT be large: a cycle barrier is an annoyance, not a wall, and a route that detours
+//              200 m around one is worse than the route that rides through it.
+BARRIER_BLOCK    = ILLEGAL_PER_M * 1000.0;
+BARRIER_DISMOUNT = DISMOUNT_PER_M * 30.0;
 VITERBI_K = 4;        // candidate nodes per rough point the joint negotiation chooses among
 ANCHOR_BAND_M = 40.0; // tap accuracy: nodes within nearest+band are candidate joints. Generous
                       // because taps are IMPRECISE (fat-fingered) — the band must reach the ways
@@ -618,6 +756,10 @@ pub struct Graph {
   wtags: vector<WayTags>,
   index: hash<CoordIdx[coord]>,   // packed fixed-point coord → node idx (dedup)
   nodes: vector<GNode>,
+  // Parallel to `nodes`: the barrier flags AT that node, 0 for the overwhelming majority. A column
+  // rather than a field on GNode because it is filled in a second pass — the nodes do not exist until
+  // the ways have been walked, and a barrier is located by coordinate, not by way.
+  nbar: vector<integer>,
   edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
   // CSR adjacency (FLAT vectors — not nested, so no O(n^2) interpreter trap): the arcs leaving node
   // u are adj_to[adj_head[u] .. adj_head[u+1]]. Each undirected edge contributes two arcs (a→b, b→a);
@@ -656,6 +798,7 @@ fn node_idx(g: Graph, lat: float, lon: float) -> integer {
   if hit != null { return hit.idx; }
   idx = len(g.nodes);
   g.nodes += [GNode { lat: lat, lon: lon }];
+  g.nbar += [0];                    // stays parallel to `nodes` — apply_barriers indexes by node idx
   g.index += [CoordIdx { coord: k, idx: idx }];
   idx
 }
@@ -712,7 +855,7 @@ fn etags(g: Graph, e: GEdge) -> WayTags { g.wtags[e.w] ?? empty_tags() }
 // union merges exactly the nodes a global build would. `tools/tile_border_gate.sh` is the acceptance:
 // four corridors spanning 4-14 tiles, routes byte-identical.
 pub fn union_graphs(parts: vector<Graph>) -> Graph {
-  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [], nbar: [] };
   for p in parts {
     // Each part indexes its OWN tag table, so concatenate them and shift this part's edge references by
     // however many entries are already in the union.
@@ -741,8 +884,50 @@ pub fn union_graphs(parts: vector<Graph>) -> Graph {
 // cold match (PLAN-MATCH splits an 886ms match as build 367 + search 519).
 pub fn build_graph_streamed(ways: vector<Way>, on_tick: fn(integer)) -> Graph { build_graph_impl(ways, on_tick) }
 pub fn build_graph(ways: vector<Way>) -> Graph { build_graph_impl(ways, drop_tick) }
+
+// With barrier nodes applied. This would read better as `build_graph(ways, barriers = [])`, leaving the
+// 40-odd existing call sites untouched — but a `vector` parameter with a `= []` default panics the
+// parser (loft#699, filed with a two-line repro; `wa:clean`). A second entry point costs a name and
+// nothing else.
+pub fn build_graph_barriers(ways: vector<Way>, barriers: vector<Barrier>) -> Graph {
+  g = build_graph_impl(ways, drop_tick);
+  apply_barriers(g, barriers);
+  g
+}
+
+// The same for the browser's yielding path — `build_graph` is ~41% of a cold match, so it hands the
+// frame back every TICK_EVERY ways (PLAN-PERF §6b). Applying barriers afterwards adds one pass over a
+// list that is ~1% of the node count and needs no yield of its own.
+pub fn build_graph_barriers_streamed(ways: vector<Way>, barriers: vector<Barrier>, on_tick: fn(integer)) -> Graph {
+  g = build_graph_impl(ways, on_tick);
+  apply_barriers(g, barriers);
+  g
+}
+
+// How many graph nodes carry a barrier. The gate's non-vacuity check: a barrier that is in the store,
+// read into the corridor, and lands on NO node changes no route — and every count upstream of this one
+// would still look healthy.
+pub fn graph_barrier_nodes(g: Graph) -> integer {
+  n = 0;
+  for i in 0..len(g.nbar) { if (g.nbar[i] ?? 0) != 0 { n += 1; } }
+  n
+}
+
+// Land each barrier on the node that shares its coordinate. `node_key` is the graph's own identity, so a
+// barrier tagged on a way's vertex matches exactly; one that sits between vertices matches nothing and is
+// dropped, which is the honest outcome — the route does not pass through a point that is not a node.
+fn apply_barriers(g: Graph, barriers: vector<Barrier>) {
+  for b in barriers {
+    if b.flags == 0 { continue; }              // most barriers stop nobody we route
+    hit = g.index[node_key(b.lat, b.lon)];
+    if hit != null {
+      i = hit.idx;
+      if i >= 0 && i < len(g.nbar) { g.nbar[i] = (g.nbar[i] ?? 0) | b.flags; }
+    }
+  }
+}
 fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
-  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [] };
+  g = Graph { wtags: [], index: [], nodes: [], edges: [], adj_head: [], adj_to: [], adj_edge: [], nbar: [] };
   nw = 0;
   for wi in 0..len(ways) {
     w = ways[wi] ?? empty_source_way();
@@ -1305,10 +1490,13 @@ pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, co
 // one entry per edge meant five arrays of ~37.6k built per cold match — ~188k appends — to hold ~7.1k
 // distinct values. The hot loop already loads `e = g.edges[ei]`, so `e.w` is free there and the arrays
 // are 5x smaller. PLAN-PERF §7k.
-struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur: vector<float>, const afwd: vector<boolean>, const abwd: vector<boolean> }
+struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur: vector<float>, const afwd: vector<boolean>, const abwd: vector<boolean>,
+                   // …plus one per-NODE column: what it costs to pass THROUGH a node. A barrier is not a
+                   // property of any way, so it cannot ride on the four above.
+                   const nsur: vector<float> }
 
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
-  ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [] };
+  ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [], nsur: [] };
   cyc = profile.starts_with("cycling");
   // One entry PER WAY. `way_penalty` alone is ~40 string comparisons, and a corridor has ~7.1k ways
   // behind ~37.6k edges — so this used to do the same string work five times over and then materialise
@@ -1322,6 +1510,25 @@ fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
     ec.sur += [edge_surcharge(profile, t)];
     ec.afwd += [dir_allowed(profile, t.oneway, t.onewaybike, true)];
     ec.abwd += [dir_allowed(profile, t.oneway, t.onewaybike, false)];
+  }
+  // Per-node: what passing through this node costs, for THIS profile.
+  //
+  // A FIXED cost, not a per-metre one — a gate is a point, so charging it by the length of the edge that
+  // happens to reach it would make the same gate cheap on a short edge and dear on a long one. The sizes
+  // mirror the way tiers deliberately: BARRIER_BLOCK is large enough that any detour under ~20 km wins,
+  // and finite for the same reason ILLEGAL_PER_M is finite — a route with no other option must still
+  // produce a line rather than gapping (DESIGN §5 "degrade, don't fail"). A locked gate on the only path
+  // to a farm should route you there and look terrible, not refuse to answer.
+  for ni in 0..len(g.nbar) {
+    bf = g.nbar[ni] ?? 0;
+    c = 0.0;
+    if profile.starts_with("cycling") {
+      if (bf & BF_BIKE_NO) == BF_BIKE_NO { c = BARRIER_BLOCK; }
+      else if (bf & BF_BIKE_DISMOUNT) == BF_BIKE_DISMOUNT { c = BARRIER_DISMOUNT; }
+    } else if profile.starts_with("walking") || profile.starts_with("running") {
+      if (bf & BF_FOOT_NO) == BF_FOOT_NO { c = BARRIER_BLOCK; }
+    }
+    ec.nsur += [c];
   }
   ec
 }
@@ -1383,7 +1590,9 @@ fn dijkstra_win(g: Graph, src: integer, tgts: vector<integer>, win: vector<GeoPo
       if edev < 0.0 { edev = 0.0; }
       f = 1.0 + (ec.dw[e.w] ?? DEV_K) * edev + (ec.pen[e.w] ?? 0.0);
       if f < 0.1 { f = 0.1; }
-      nd = du + e.length * f + e.length * (ec.sur[e.w] ?? 0.0);
+      // + the cost of entering node v itself (a barrier there). Charged on ENTRY, so a gate is paid
+      // once by whoever passes through it, and never by a route that merely ends beside it.
+      nd = du + e.length * f + e.length * (ec.sur[e.w] ?? 0.0) + (ec.nsur[v] ?? 0.0);
       dv = BIG;
       if (sc.seen[v] ?? -1) == gen { dv = sc.dist[v] ?? BIG; }
       if nd < dv { sc.seen[v] = gen; sc.dist[v] = nd; sc.prev[v] = u; heap_push(h, nd, v); }

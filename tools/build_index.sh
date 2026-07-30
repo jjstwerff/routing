@@ -66,6 +66,17 @@ regions=""; n=0
 id=""; name=""; roads=""; base=""; mode=""; ubase=""
 flush() {
   [ -n "$id" ] || return 0
+  # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
+  # (loft#700: store_load ignores the sidecar's schema hash and maps old records at the new stride).
+  # An index is the app's list of what to load, so a stale-schema block must not get into one.
+  # The SOURCE locations only — `_site` is a build artifact that build-site.mjs rewrites, and a stale
+  # copy there says nothing about the block this index will describe.
+  for sc in "$here/browser/$roads.dschema" "$here/blocks/$(basename "$roads" 2>/dev/null).dschema"; do
+    if [ -f "$sc" ] && ! grep -q "barriers@" "$sc"; then
+      echo "  FAIL: $id's block predates the barriers field — regenerate it (tools/build-blocks.sh); loft#700"
+      exit 1
+    fi
+  done
   # A region with `url_base` lives in a release/bucket. The SITE index must not name it: the page would
   # resolve a block it cannot fetch (release assets send no CORS header), and the app would boot into a
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.

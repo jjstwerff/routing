@@ -71,6 +71,40 @@ rows.append(feat({"highway": "track", "surface": "ground"}, [[6.8700, 52.2100], 
 # closed to traffic, walkers explicitly welcome
 rows.append(feat({"highway": "path", "access": "no", "foot": "yes"},
                  [[6.8700, 52.2200], [6.8750, 52.2200]]))
+
+# --- the barrier half -------------------------------------------------------------------------
+# Same shape as above, 0.01 deg north, but the shortcut is BLOCKED BY A NODE rather than by a tag:
+#   C ── residential, with a locked gate at its midpoint ── D     680 m
+#    \__ residential detour _______________________________/     1120 m
+# The gate node must be a VERTEX of the way (M below), because a barrier is landed on a graph node by
+# coordinate — a barrier between vertices matches nothing, which is the honest outcome.
+C, D = [6.8500, 52.2100], [6.8600, 52.2100]
+M    = [6.8550, 52.2100]
+SW, SE = [6.8500, 52.2080], [6.8600, 52.2080]
+rows.append(feat({"highway": "residential"}, [C, M, D]))
+rows.append(feat({"highway": "residential"}, [C, SW]))
+rows.append(feat({"highway": "residential"}, [SW, SE]))
+rows.append(feat({"highway": "residential"}, [SE, D]))
+if acc:   # the "open" variant drops the barrier too, which is what makes this discriminating
+    rows.append("\x1e" + json.dumps({"type": "Feature",
+                                     "properties": {"barrier": "gate", "locked": "yes"},
+                                     "geometry": {"type": "Point", "coordinates": M}},
+                                    separators=(",", ":")) + "\n")
+# A stile, with its own detour — because a barrier on a path that has NO alternative proves nothing:
+# the route goes through it either way ("degrade, don't fail"), and walking and cycling return the
+# identical line. Give it somewhere else to go and the modes separate, which IS the claim:
+#   E ── path, stile at its midpoint ── F      680 m   bike: no.  foot: yes.
+#    \__ residential detour ___________/      1120 m
+E, F = [6.8500, 52.2300], [6.8600, 52.2300]
+G    = [6.8550, 52.2300]
+NW2, NE2 = [6.8500, 52.2320], [6.8600, 52.2320]
+rows.append(feat({"highway": "path", "foot": "yes", "bicycle": "yes"}, [E, G, F]))
+rows.append(feat({"highway": "residential"}, [E, NW2]))
+rows.append(feat({"highway": "residential"}, [NW2, NE2]))
+rows.append(feat({"highway": "residential"}, [NE2, F]))
+rows.append("\x1e" + json.dumps({"type": "Feature", "properties": {"barrier": "stile"},
+                                 "geometry": {"type": "Point", "coordinates": G}},
+                                separators=(",", ":")) + "\n")
 open(out, "w").write("".join(rows))
 PY
 }
@@ -113,18 +147,56 @@ echo "  walking an access=no + foot=yes path: len=${wlen} m"
 awk -v l="$wlen" 'BEGIN{exit !(l > 100)}' \
   || { echo "  FAIL: over-blocked — OSM signs this one foot=yes, it must stay walkable"; rc=1; }
 
-# 4. the class split
+# 4. a LOCKED GATE on the shortcut — a node, not a tag on any way
+# ⚠ Two points, and NEITHER is the gate. A drawn point is an ANCHOR — the matcher routes THROUGH
+# it — so a trace whose middle point sits on the barrier pins the route to it and the assertion
+# tests nothing. That is how the first version of this check "failed".
+BTRACE="52.2100,6.8500;52.2100,6.8600"
+gotb="$(run route "$work/private.store" "$BTRACE")"
+blen="$(echo "$gotb" | sed 's/.*len_m=\([0-9.]*\).*/\1/')"
+echo "  cycling at a locked gate:          len=${blen} m"
+awk -v l="$blen" 'BEGIN{exit !(l > 900)}' \
+  || { echo "  FAIL: len=${blen} m — the route went through a locked gate instead of round it"; rc=1; }
+gotb_open="$(run route "$work/open.store" "$BTRACE")"
+blen_open="$(echo "$gotb_open" | sed 's/.*len_m=\([0-9.]*\).*/\1/')"
+echo "  same fixture, gate removed:        len=${blen_open} m   (the shortcut is only taken when open)"
+awk -v l="$blen_open" 'BEGIN{exit !(l < 800)}' \
+  || { echo "  FAIL: not discriminating — the ungated shortcut was not taken either (len=${blen_open} m)"; rc=1; }
+
+# 5. a stile: the SAME node, two modes, two answers. This is the whole claim of the per-mode bits —
+#    a single-mode check cannot tell "blocks bikes" from "blocks everyone".
+STRACE="52.2300,6.8500;52.2300,6.8600"
+lenof() { run route "$work/private.store" "$STRACE" "$1" | sed 's/.*len_m=\([0-9.]*\).*/\1/'; }
+swalk="$(lenof walking_paved)"; sbike="$(lenof cycling_road)"
+echo "  a stile: walking len=${swalk} m (through it), cycling len=${sbike} m (around it)"
+awk -v l="$swalk" 'BEGIN{exit !(l < 800)}' \
+  || { echo "  FAIL: a stile blocked WALKING (len=${swalk} m) — it is passable on foot"; rc=1; }
+awk -v l="$sbike" 'BEGIN{exit !(l > 900)}' \
+  || { echo "  FAIL: a stile did not block CYCLING (len=${sbike} m) — you cannot lift a bike over it"; rc=1; }
+
+# 6. the class split
 cnt="$(run count "$work/private.store")"
 echo "  fixture: $cnt"
 echo "$cnt" | grep -q "track=1" || { echo "  FAIL: highway=track did not land in class 12"; rc=1; }
 echo "$cnt" | grep -q "access_no=2" || { echo "  FAIL: the access bits are not in the store"; rc=1; }
+echo "$cnt" | grep -q "barriers=2" || { echo "  FAIL: the barrier NODES are not in the store"; rc=1; }
 
-# 5. real data — the shipped block must actually carry these, or the pipeline regressed
+# 7. real data — the shipped block must actually carry these, or the pipeline regressed
 block="$here/browser/stores/enschede.roads.store"
-if [ -f "$block" ]; then
+# ⚠ SCHEMA FIRST. A block written before `barriers` existed does not read as "no barriers" — it reads
+# GARBAGE (loft#700: store_load ignores the sidecar's schema hash and maps old records at the new
+# stride, so `len(t.barriers)` came back as 20981984713). So check the schema the block was WRITTEN
+# with before believing any count taken from it.
+if [ -f "$block.dschema" ] && ! grep -q "barriers@" "$block.dschema"; then
+  echo "  FAIL: $block predates the barriers field — its counts would be garbage, not zero (loft#700)."
+  echo "        Regenerate it: tools/build-blocks.sh"
+  rc=1
+  block=""
+fi
+if [ -n "$block" ] && [ -f "$block" ]; then
   real="$(run count "$block")"
   echo "  shipped block: $real"
-  for field in track access_no; do
+  for field in track access_no barriers; do
     n="$(echo "$real" | sed "s/.*$field=\([0-9]*\).*/\1/")"
     [ "${n:-0}" -gt 0 ] || { echo "  FAIL: the shipped block has $field=0 — it predates the fix (regenerate it)"; rc=1; }
   done
