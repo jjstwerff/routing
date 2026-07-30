@@ -457,6 +457,26 @@ routes before: 13491979666115 13491979666115 2009382494520 1467589415931
 routes after : 13491979666115 13491979666115 2009382494520 1467589415931
 ```
 
+✅ **The BASE generator streams too (2026-07-30).** `client/basemap/build_store.loft` read six Overpass
+documents with `file().content()`, so a country's base map meant six whole documents plus every parsed
+element resident at once — the same wall the roads generator had, six times over. It now reads
+`.geojsonseq` layers line by line and shares one set of `bin_*` functions with the whole-file path, and
+`osmium export`'s **Polygon** shape (a closed way with an area tag) is handled beside LineString and Point.
+Gate: `tools/base_stream_gate.sh` in `make test-native` — the same fixtures, built both ways, every layer
+count equal (1089 tiles · 28,773 areas · 130,402 buildings · 11,310 labels · 6,585 lines · 27,912 pois).
+A mixed invocation is refused rather than half-honoured.
+
+⚠ **Two traps that cost an hour between them, both worth knowing:**
+- **A helper that RETURNS a tile silently loses every write.** The first draft had
+  `fn tile_at(…) -> PTile`; a whole-value bind COPIES a heap value (loft C86), so it created all 1089
+  tiles and binned nothing into them — a store that is structurally perfect and empty. The helper returns
+  a KEY now, and each caller re-reads `idx[key]`, which is a live view.
+- **`store_persist_bind` binds to an existing image rather than replacing it.** Every corrected run
+  afterwards reloaded the *old* empty tiles from the file the broken run had left behind, with
+  persist/load/verify all reporting true — so the fix looked like it had not worked. The generator now
+  deletes the target first, which is what `tools/build-blocks.sh` already did for roads without my knowing
+  why it mattered.
+
 ⚠ The **flat-memory claim is structural, not yet measured**: the reader provably holds one chunk, but
 "a country-sized input generates in bounded memory" needs a country-sized input, which is C2's data half.
 The emitter (`tools/tiles_to_geojsonseq.loft`) carries the one subtlety worth remembering: its class →
