@@ -118,21 +118,23 @@ if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.str
 // BOUNDED delta — and the bound is a property of the DATA, not of the code. Denser geometry puts more
 // pixels on the snapped-origin boundary, so the same renderer differs by more.
 //
-// Re-baselined 2026-07-30 when the app moved to the real Netherlands block. The rule is unchanged —
-// ONE POINT above the observed maximum — only the data moved:
+// The rule is ONE POINT above the observed maximum, and the observation belongs to the DATA:
 //
-//   Enschede block   1.47% of pixels, maxDelta 15  → bound 16
-//   Netherlands      1.51% of pixels, maxDelta 25  → bound 26   (3112 → 4197 roads in view, +35%)
+//   Enschede block (ships with the app)   1.47% of pixels, maxDelta 15  → bound 16   ← in force
+//   Netherlands block (release-hosted)    1.51% of pixels, maxDelta 25  → bound 26
 //
-// Measured three times, identical each run: this is deterministic rasterisation rounding, not noise, so
-// the margin can stay at one point. Note the AREA barely moved (1.47% → 1.51%) while the peak nearly
-// doubled — more thin lines on the snapped-origin boundary, which is exactly §6d's mechanism, and not the
-// signature a rendering defect would leave (that would move the area too).
+// Both measured three times, identical each run: deterministic rasterisation rounding, not noise, so a
+// one-point margin is right. The app resolves to the Enschede block (release assets send no CORS header,
+// so the browser cannot read the NL ones), and the bound follows the data it actually renders — a bound
+// set for a denser dataset would sit far above this one's noise and stop being able to catch anything.
+// Note the AREA barely moved between the two while the peak nearly doubled: that is §6d's mechanism
+// (more thin lines on the snapped-origin boundary), not the signature of a rendering defect, which would
+// have moved the area too. If the app ever renders NL data, raise this to 26 and say why.
 //
 // ⚠ Raise it only WITH a measurement and a reason, never to make a red gate green: its whole job is to
 // tell a rounding difference from a rendering defect, and a bound set above the noise it was chosen for
 // stops being able to.
-const BLOCK_DELTA_MAX = Number(process.env.BLOCK_DELTA_MAX || 26);
+const BLOCK_DELTA_MAX = Number(process.env.BLOCK_DELTA_MAX || 16);
 const br = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.blockRaster()))()')) || 'null');
 if (!br) { console.log('  FAIL: blockRaster hook missing'); ok = false; }
 else if (br.roundTrip !== 0) { console.log(`  FAIL: an offscreen round-trip is not exact (${br.roundTrip} px) — the platform assumption broke`); ok = false; }

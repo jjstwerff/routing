@@ -34,32 +34,57 @@ extent() {  # $1 = store path, $2 = roads|base  → "mnla mnlo mxla mxlo tiles f
   "$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$1" "$2" 2>/dev/null \
     | grep -oP '^EXTENT \K.*'
 }
-block_json() {  # $1 = path relative to root, $2 = roads|base
-  local rel="$1" kind="$2" abs="$root/$1"
+# RELEASE_BASE turns the index into one a consumer can resolve with nothing but the tag: the urls become
+# absolute release-asset URLs instead of paths relative to the site. Same extents, same hashes — only where
+# the bytes live changes, which is exactly what the index is for.
+block_json() {  # $1 = path relative to root, $2 = roads|base, $3 = per-region url base ("" = site-relative)
+  local rel="$1" kind="$2" ubase="${3:-}" abs="$root/$1"
+  # A region can live beside the app (site-relative) or at an absolute base — a release, a bucket. Per
+  # REGION, not per run: a small block ships with the site while a country block is published elsewhere,
+  # and the index is the only thing that has to know.
+  local url="$rel"
+  [ -n "${RELEASE_BASE:-}" ] && url="$RELEASE_BASE/$(basename "$rel")"
+  [ -n "$ubase" ] && url="$ubase/$(basename "$rel")"
+  [ -f "$abs" ] || abs="$here/blocks/$(basename "$rel")"
   [ -f "$abs" ] || { echo "FAIL: manifest names a missing block: $rel" >&2; return 1; }
   local e; e="$(extent "$abs" "$kind")"
   [ -n "$e" ] || { echo "FAIL: could not read the extent of $rel" >&2; return 1; }
   set -- $e
   printf '{"url":"%s","bytes":%s,"sha256":"%s","tiles":%s,"features":%s,"bbox":{"mnla":%s,"mnlo":%s,"mxla":%s,"mxlo":%s}}' \
-    "$rel" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)" "$5" "$6" "$1" "$2" "$3" "$4"
+    "$url" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)" "$5" "$6" "$1" "$2" "$3" "$4"
 }
 
 echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; mode=""
+id=""; name=""; roads=""; base=""; mode=""; ubase=""
 flush() {
   [ -n "$id" ] || return 0
+  # A region with `url_base` lives in a release/bucket. The SITE index must not name it: the page would
+  # resolve a block it cannot fetch (release assets send no CORS header), and the app would boot into a
+  # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
+  if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
+    echo "  $id: published at $ubase — not in the site index"
+    id=""; name=""; roads=""; base=""; mode=""; ubase=""
+    return 0
+  fi
+  # …and the mirror of it: a site-only region has a RELATIVE url, which a consumer resolving against the
+  # release index would turn into a 404. Each index names only what it can actually serve.
+  if [ -z "$ubase" ] && [ "${RELEASE_INDEX:-0}" = "1" ]; then
+    echo "  $id: ships with the site — not in the release index"
+    id=""; name=""; roads=""; base=""; mode=""; ubase=""
+    return 0
+  fi
   local rj bj
-  rj="$(block_json "$roads" roads)" || exit 1
-  bj="$(block_json "$base" base)" || exit 1
+  rj="$(block_json "$roads" roads "$ubase")" || exit 1
+  bj="$(block_json "$base" base "$ubase")" || exit 1
   local entry
   entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","roads":%s,"base":%s}' "$id" "$name" "$mode" "$rj" "$bj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
   echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+') tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+') tiles · read=$mode"
-  id=""; name=""; roads=""; base=""; mode=""
+  id=""; name=""; roads=""; base=""; mode=""; ubase=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -69,6 +94,7 @@ while IFS= read -r line; do
     roads*=*)      roads="$(echo "$line"| cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;
+    url_base*=*)   ubase="$(echo "$line" | cut -d'"' -f2)" ;;
   esac
 done < <(grep -v '^\s*#' "$manifest")
 flush

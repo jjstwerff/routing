@@ -24,6 +24,177 @@ fn atag(obj: JsonValue, name: text) -> text {
 CELL_P = 50000;        // presentation cell (~500 m)
 STREET_EPS = 10.0;     // metres — street centerline simplification tolerance
 
+
+// --- PLAN-SCALE S6, base half: plain-data binning, shared by both input paths -----------------------
+//
+// The six loops below used to read Overpass JSON and bin in one breath, which is why the whole document
+// had to be resident. Each layer now has a `bin_*` that takes PLAIN DATA — the tags already read, the
+// geometry already converted — so a streaming reader can feed it one feature at a time and the two paths
+// cannot drift (the same lesson `gen-tiles` learned: one binning function, two readers).
+//
+// Plain data is also a constraint, not a preference: a JsonValue does not survive being passed into a
+// cross-package function (see `atag` above), so geometry crosses these boundaries as `LL`, never as JSON.
+struct LL { lat: float, lon: float }
+
+// Ensure the tile a coordinate falls in exists, and return its KEY.
+//
+// ⚠ It returns a key, not the tile, and that is load-bearing: a whole-value bind COPIES a heap value
+// (loft C86), so a `-> PTile` version compiles, runs, creates every tile — and every append lands in the
+// copy. The first draft did exactly that and produced 1089 tiles holding 0 areas, 0 buildings, 0 labels:
+// a store that looks structurally right and is empty. Each caller re-reads `idx[key]`, which is a live
+// view into the store.
+fn ensure_tile(idx: hash<PTile[tkey]>, cell: integer, lon: float, lat: float) -> integer {
+  tx = cell_ix(to_fixed(lon), cell); ty = cell_ix(to_fixed(lat), cell);
+  key = tkey(tx, ty, cell);
+  if idx[key] == null {
+    idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] };
+  }
+  key
+}
+
+fn ring_of(t: PTile, pts: vector<LL>) -> vector<Coord> {
+  r: vector<Coord> = [];
+  for p in pts {
+    r += [Coord { x: (to_fixed(p.lon) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(p.lat) - t.oy) as i32? ?? (0 as i32) }];
+  }
+  r
+}
+
+fn bin_area(idx: hash<PTile[tkey]>, cell: integer, cover: text, pts: vector<LL>) {
+  if len(pts) < 3 { return; }
+  p0 = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  t = idx[ensure_tile(idx, cell, p0.lon, p0.lat)];
+  if t != null { t.areas += [Area { cover: cover, ring: ring_of(t, pts) }]; }
+}
+
+fn bin_building(idx: hash<PTile[tkey]>, cell: integer, name: text, pts: vector<LL>) {
+  if len(pts) < 4 { return; }
+  p0 = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  t = idx[ensure_tile(idx, cell, p0.lon, p0.lat)];
+  if t != null { t.buildings += [Building { name: name, ring: ring_of(t, pts) }]; }
+}
+
+fn bin_place(idx: hash<PTile[tkey]>, cell: integer, name: text, kind: text, rank: integer, at: LL) {
+  if rank <= 0 || name == "" { return; }
+  t = idx[ensure_tile(idx, cell, at.lon, at.lat)];
+  if t != null { t.labels += [Label { name: name, kind: kind, rank: rank, line: ring_of(t, [at]) }]; }
+}
+
+fn bin_street(idx: hash<PTile[tkey]>, cell: integer, label: text, pts: vector<LL>) {
+  if label == "" || len(pts) < 2 { return; }
+  p0 = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  mlon = 111320.0 * cos(p0.lat * (PI / 180.0));
+  xs: vector<float> = []; ys: vector<float> = [];
+  for p in pts { xs += [(p.lon - p0.lon) * mlon]; ys += [(p.lat - p0.lat) * 111320.0]; }
+  keep = dp_mask(xs, ys, STREET_EPS);
+  t = idx[ensure_tile(idx, cell, p0.lon, p0.lat)];
+  kept: vector<LL> = [];
+  for j in 0..len(pts) { if keep[j] ?? false { kept += [pts[j] ?? p0]; } }
+  if t != null { t.labels += [Label { name: label, kind: "street", rank: 0, line: ring_of(t, kept) }]; }
+}
+
+fn bin_line(idx: hash<PTile[tkey]>, cell: integer, kind: text, lname: text, pts: vector<LL>) {
+  if kind == "" || len(pts) < 2 { return; }
+  p0 = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  t = idx[ensure_tile(idx, cell, p0.lon, p0.lat)];
+  if t != null { t.lines += [Line { kind: kind, name: lname, geom: ring_of(t, pts) }]; }
+}
+
+fn bin_poi(idx: hash<PTile[tkey]>, cell: integer, kind: text, name: text, at: LL) {
+  if kind == "" { return; }
+  t = idx[ensure_tile(idx, cell, at.lon, at.lat)];
+  if t != null { t.pois += [Poi { kind: kind, name: name, at: ring_of(t, [at])[0] ?? Coord { x: 0 as i32, y: 0 as i32 } }]; }
+}
+
+
+// --- the streaming reader (PLAN-SCALE S6, base half) -----------------------------------------------
+//
+// `lines()` is built on `content()`, so both hold the whole file; the binary idiom seeks instead. Each
+// pass reads a chunk, uses only the part up to its LAST newline, and seeks back to just after it — so a
+// chunk boundary can never split a line, and a partial multi-byte character is never decoded. Memory is
+// the chunk, whatever the file, which is what a country-sized base map needs.
+//
+// Layers: 0 areas · 1 buildings · 2 places · 3 streets · 4 lines · 5 pois.
+fn feature_pts(geom: JsonValue) -> vector<LL> {
+  pts: vector<LL> = [];
+  gt = atag(geom, "type");
+  cs = geom.field("coordinates");
+  // osmium emits a POLYGON for a closed way with an area tag and a LineString otherwise, so both shapes
+  // arrive on the same layer. A polygon's first ring is its outer boundary — the footprint we bin.
+  ring = if gt == "Polygon" { cs.item(0) } else { cs };
+  if gt == "Point" {
+    pts += [LL { lat: cs.item(1).as_number(), lon: cs.item(0).as_number() }];
+    return pts;
+  }
+  for i in 0..len(ring) {
+    pair = ring.item(i);
+    if len(pair) >= 2 { pts += [LL { lat: pair.item(1).as_number(), lon: pair.item(0).as_number() }]; }
+  }
+  pts
+}
+
+fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text) {
+  cut = 0 - 1;
+  for ch in line { if ch == '{' { cut = ch#index; break; } }   // RFC 8142 record separator, if present
+  if cut < 0 { return; }
+  root = json_parse(line[cut..line.size()]);
+  props = root.field("properties");
+  pts = feature_pts(root.field("geometry"));
+  if len(pts) < 1 { return; }
+  at = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  if layer == 0 { bin_area(idx, cell, area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure")), pts); }
+  else if layer == 1 { if atag(props, "building") != "" { bin_building(idx, cell, atag(props, "name"), pts); } }
+  else if layer == 2 { bin_place(idx, cell, atag(props, "name"), atag(props, "place"), place_rank(atag(props, "place")), at); }
+  else if layer == 3 {
+    nm = atag(props, "name"); rf = atag(props, "ref");
+    if atag(props, "highway") != "" { bin_street(idx, cell, if nm != "" { nm } else { rf }, pts); }
+  }
+  else if layer == 4 { bin_line(idx, cell, line_kind(atag(props, "waterway"), atag(props, "railway"), atag(props, "barrier")), atag(props, "name"), pts); }
+  else { bin_poi(idx, cell, poi_kind(atag(props, "natural"), atag(props, "amenity"), atag(props, "tourism"),
+                                     atag(props, "man_made"), atag(props, "historic"), atag(props, "leisure"),
+                                     atag(props, "highway")), atag(props, "name"), at); }
+}
+
+// Build the whole store from six streamed layers. It CREATES the hash and returns it, mirroring
+// `build_store`, rather than filling one the caller owns — see the note at the call site.
+fn build_stream(p0: text, p1: text, p2: text, p3: text, p4: text, p5: text, cell: integer) -> hash<PTile[tkey]> {
+  idx: hash<PTile[tkey]> = [];
+  n0 = stream_layer(idx, cell, p0, 0);
+  n1 = stream_layer(idx, cell, p1, 1);
+  n2 = stream_layer(idx, cell, p2, 2);
+  n3 = stream_layer(idx, cell, p3, 3);
+  n4 = stream_layer(idx, cell, p4, 4);
+  n5 = stream_layer(idx, cell, p5, 5);
+  println("streamed features: areas={n0} buildings={n1} places={n2} streets={n3} lines={n4} pois={n5}");
+  seal_extents(idx);
+  idx
+}
+
+fn stream_layer(idx: hash<PTile[tkey]>, cell: integer, path: text, layer: integer) -> integer {
+  f = file(path);
+  total = f.size;
+  pos = 0; chunk_size = 1048576; nlines = 0;
+  while pos < total {
+    f#next = pos;
+    want = chunk_size;
+    if pos + want > total { want = total - pos; }
+    chunk = f#read(want) as text;
+    last_nl = 0 - 1;
+    for ch in chunk { if ch == '\n' { last_nl = ch#index; } }
+    if last_nl < 0 {
+      if pos + want >= total {
+        if chunk != "" { bin_feature(idx, cell, layer, chunk); nlines += 1; }
+        pos = total;
+      } else { chunk_size = chunk_size * 2; }
+    } else {
+      part = chunk[0..last_nl];
+      for ln in part.split('\n') { if ln != "" { bin_feature(idx, cell, layer, ln); nlines += 1; } }
+      pos = pos + last_nl + 1;
+    }
+  }
+  nlines
+}
+
 fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_osm: text, lines_osm: text, pois_osm: text, cell: integer) -> hash<PTile[tkey]> {
   idx: hash<PTile[tkey]> = [];
 
@@ -203,13 +374,31 @@ fn main() {
   if len(a) < 6 { println("usage: build_store <areas.json> <buildings.json> <places.json> <streets.json> <lines.json> <pois.json> [out.store]"); return; }
   out_path = a[6] ?? "";
 
-  areas_txt     = file(a[0] ?? "").content();
-  buildings_txt = file(a[1] ?? "").content();
-  places_txt    = file(a[2] ?? "").content();
-  streets_txt   = file(a[3] ?? "").content();
-  lines_txt     = file(a[4] ?? "").content();
-  pois_txt      = file(a[5] ?? "").content();
-  idx = build_store(areas_txt, buildings_txt, places_txt, streets_txt, lines_txt, pois_txt, CELL_P);
+  // PLAN-SCALE S6 (base half) — the FORM of each input picks its reader, exactly as `gen-tiles` does.
+  // A `.geojsonseq` layer is streamed line by line (one chunk resident, whatever the file); anything else
+  // is the whole-document Overpass path this tool was born with. They share the same `bin_*` functions,
+  // so a streamed layer and a whole-file one cannot produce different tiles.
+  streamed = 0;
+  for k in 0..6 {
+    pth = a[k] ?? "";
+    if pth.ends_with(".geojsonseq") || pth.ends_with(".jsonl") { streamed += 1; }
+  }
+  // ⚠ The store is built INSIDE `build_stream` and returned, exactly as the whole-file path does with
+  // `build_store`. Filling a hash declared HERE produced a store whose tiles persisted while their
+  // vectors did not — 1089 tiles reloading with 0 areas, 0 buildings, 0 labels, with persist/load/verify
+  // all reporting true. In memory it was correct; only the image was empty.
+  idx: hash<PTile[tkey]> = [];
+  if streamed == 6 {
+    idx = build_stream(a[0] ?? "", a[1] ?? "", a[2] ?? "", a[3] ?? "", a[4] ?? "", a[5] ?? "", CELL_P);
+  } else if streamed > 0 {
+    // Refused rather than half-honoured: a mixed invocation would silently read some layers whole, which
+    // is the memory the streaming path exists to avoid, and the counts would not say which.
+    println("ERR mixed inputs: {streamed} of 6 are .geojsonseq — give all six in one form");
+    return;
+  } else {
+    idx = build_store(file(a[0] ?? "").content(), file(a[1] ?? "").content(), file(a[2] ?? "").content(),
+                      file(a[3] ?? "").content(), file(a[4] ?? "").content(), file(a[5] ?? "").content(), CELL_P);
+  }
 
   nt = 0; na = 0; nb = 0; nl = 0; nln = 0; npo = 0; named_bld = false; a1 = false;
   for t in idx {
@@ -223,6 +412,13 @@ fn main() {
   println("tiles={nt} areas={na} buildings={nb} labels={nl} lines={nln} pois={npo} | named_building={named_bld} A1_label={a1}");
 
   if out_path != "" {
+    // ⚠ Remove an existing image first. `store_persist_bind` BINDS to whatever is already at the path
+    // rather than replacing it, so regenerating over a previous run's file can report persist/load/verify
+    // all true and reload the OLD contents. That cost an hour here: a first draft wrote 1089 empty tiles
+    // (a C86 copy bug), and every corrected run afterwards kept reloading those empty tiles from the file
+    // the broken run had left behind — the fix looked like it had not worked.
+    _ = delete(out_path);
+    _ = delete("{out_path}.dschema");
     ok = store_persist_bind(idx, out_path);
     dst: hash<PTile[tkey]> = [];
     lok = store_load(dst, out_path);

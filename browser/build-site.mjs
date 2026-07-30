@@ -5,7 +5,7 @@
 // surprises), and copies the store-app kernel wasm + the two loft stores. At runtime the app fetches the
 // stores + the wasm by relative URL and reads them with loft-wasm: `view <bbox>` → base map, `match` →
 // route, on a 2D canvas — no server.
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, cpSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,5 +57,14 @@ if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 's
 // index can name every block with one kind of URL. They are copied rather than committed: a country block
 // is ~300 MB and is rebuilt from OSM, so it is output, not source.
 const blocks = join(here, '..', 'blocks');
-if (existsSync(blocks)) cpSync(blocks, join(site, 'stores'), { recursive: true });
+if (existsSync(blocks)) {
+  // Only SMALL blocks ship beside the app. A country block is published as a release asset and named by
+  // an absolute URL in the index (PLAN-SCALE §7 R6), so copying it here would add gigabytes to every
+  // site build and every gate run for a file the page never fetches from this origin.
+  const LIMIT = 64 * 1024 * 1024;
+  for (const f of readdirSync(blocks)) {
+    const p = join(blocks, f);
+    if (statSync(p).size <= LIMIT) cpSync(p, join(site, 'stores', f));
+  }
+}
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);

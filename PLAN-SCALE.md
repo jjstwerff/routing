@@ -457,6 +457,26 @@ routes before: 13491979666115 13491979666115 2009382494520 1467589415931
 routes after : 13491979666115 13491979666115 2009382494520 1467589415931
 ```
 
+✅ **The BASE generator streams too (2026-07-30).** `client/basemap/build_store.loft` read six Overpass
+documents with `file().content()`, so a country's base map meant six whole documents plus every parsed
+element resident at once — the same wall the roads generator had, six times over. It now reads
+`.geojsonseq` layers line by line and shares one set of `bin_*` functions with the whole-file path, and
+`osmium export`'s **Polygon** shape (a closed way with an area tag) is handled beside LineString and Point.
+Gate: `tools/base_stream_gate.sh` in `make test-native` — the same fixtures, built both ways, every layer
+count equal (1089 tiles · 28,773 areas · 130,402 buildings · 11,310 labels · 6,585 lines · 27,912 pois).
+A mixed invocation is refused rather than half-honoured.
+
+⚠ **Two traps that cost an hour between them, both worth knowing:**
+- **A helper that RETURNS a tile silently loses every write.** The first draft had
+  `fn tile_at(…) -> PTile`; a whole-value bind COPIES a heap value (loft C86), so it created all 1089
+  tiles and binned nothing into them — a store that is structurally perfect and empty. The helper returns
+  a KEY now, and each caller re-reads `idx[key]`, which is a live view.
+- **`store_persist_bind` binds to an existing image rather than replacing it.** Every corrected run
+  afterwards reloaded the *old* empty tiles from the file the broken run had left behind, with
+  persist/load/verify all reporting true — so the fix looked like it had not worked. The generator now
+  deletes the target first, which is what `tools/build-blocks.sh` already did for roads without my knowing
+  why it mattered.
+
 ⚠ The **flat-memory claim is structural, not yet measured**: the reader provably holds one chunk, but
 "a country-sized input generates in bounded memory" needs a country-sized input, which is C2's data half.
 The emitter (`tools/tiles_to_geojsonseq.loft`) carries the one subtlety worth remembering: its class →
@@ -593,6 +613,48 @@ onwards. The gate switches it on explicitly so the mechanism cannot rot unexerci
 ⚠ **A correction worth keeping.** A first reading blamed paging for a cold-start move (458 → 650 ms).
 Re-measured with paging OFF in the same build: still ~650. The cause is the bigger wasm / newer binary,
 not round trips — *the number moved, but not for the reason the change made obvious.*
+
+---
+
+### The Netherlands base map, and a published dataset (2026-07-30)
+
+```
+osmium layers            areas 3.2 GB · buildings 8.7 GB · pois 303 MB · lines 199 MB · places 2.8 MB
+                         streets: the roads export, reused (884 MB)
+build_store (streaming)  24m33s, ~5 GB resident → 184,839 tiles · 17,167,067 features · 3.2 GB
+                         areas 2,658,318 · buildings 11,560,787 · labels 1,242,645 · lines 520,570 · pois 1,184,747
+extent                   lat 50.7182..54.2223  lon 2.6837..7.2957
+```
+
+S6's flat-memory claim now has a country behind it: 13.3 GB of input, one chunk resident per layer.
+
+**A GitHub release asset stops at 2 GB, so a 3.2 GB base map cannot ship whole** — which forces the
+regions §7 R0 already calls the unit. Both stores are cut at **5.40°E** (`tools/split_base.loft`, the
+presentation counterpart of `split_block.loft`), giving `nl-west` and `nl-east`, each roads 264 MB + base
+1.44 GB. Cut by CELL, so nothing is clipped and S8's gate covers the seam.
+
+**Published: [`data-v2026-07-30`](https://github.com/jjstwerff/routing/releases/tag/data-v2026-07-30)** —
+8 assets, 3.2 GB, each verified to answer a `206` with the exact size uploaded **before** the index that
+names them was published (§7 R6's order). And a paged read works against it end to end:
+
+```
+store_load_keys: asked=1 loaded=1 bytes_fetched=1179648 file=263942480
+RELEASE ok=true entries=1 roads=6488 steps=25883        ← 1.18 MB of a 264 MB asset = 0.45%
+```
+
+⚠ **What a GitHub release cannot do, measured rather than assumed:**
+
+| surface | `Range` | CORS with `Origin` | ceiling |
+|---|---|---|---|
+| release asset | ✅ 206 + `Content-Range` | ❌ **no `Access-Control-Allow-Origin`** | 2 GB/asset |
+| `raw.githubusercontent.com` | ✅ | ✅ `*` | git limits (~50–100 MB) |
+
+So the release serves **downloads, the native server and offline use**, and a browser on another origin
+cannot read it. That is D2 restated by measurement, not a surprise — the browser path needs a CORS host.
+The manifest therefore carries a per-region `url_base`, and **each index names only what it can serve**:
+the site index has the block that ships beside the app, the release index has the published regions. A
+region in the wrong index would resolve to a URL the consumer cannot fetch, which is a blank map rather
+than an error.
 
 ---
 
