@@ -1,9 +1,107 @@
 # HANDOFF — resume state
 
-Single entry point for picking this up on another machine. **Reflects `main` at `e608918`
-(2026-07-29)** — everything described here is merged; there is no work parked on a branch.
-**Plan of record:** `DESIGN.md` (north-star) + the `PLAN-*.md` docs; this file is the
-*status + how-to-resume* layer on top of them.
+Single entry point for picking this up on another machine. **Plan of record:** `DESIGN.md`
+(north-star) + the `PLAN-*.md` docs; this file is the *status + how-to-resume* layer on top.
+
+---
+
+## 0. START HERE (2026-07-31) — there IS work parked on a branch
+
+⚠ Unlike every earlier revision of this file, **not everything is merged.**
+
+| | |
+|---|---|
+| `main` | `c20c4cf` — protected (PR + green `build-test`, never a direct push) |
+| **branch `fix-access-tags`** | **`9dd5a33`, 2 commits ahead, pushed, NOT PR'd** |
+
+Both commits fix defects **reported from the live map**, and both are gate-backed. Open the PR when
+you want them on `main`; nothing else is in flight.
+
+### What those two commits did
+
+Three separate map defects were reported: *"there are paths that are blocked (fences) and not allowed
+for public walking, but they show up as normal paths and are probably used for routing too"*, plus a
+missing dirt road. They had three different causes and only two were ours.
+
+1. **`166ddc8` — closed ways were routable.** A stored road is 3 bytes (class, flags, vertex count) and
+   the corridor read rebuilt every way with `access:"" bicycle:"" svc:""`, so `bike_never`/`foot_never`
+   — which do test those — could never fire on a tile-sourced way. 43 ways tagged `access=private|no`
+   in one 1.8×3.6 km box were stored as open. The 6 free bits of the flags byte now carry them
+   (`RF_*` in `routing_kernel.loft`). Same commit: `track` had been folded into `path`, so every dirt
+   road was drawn at `path`'s minZoom 15 instead of `track`'s 14 — present in the data, invisible at
+   zoom 14. It has class 12 now.
+2. **`9dd5a33` — barrier nodes.** A gate across a path is a NODE and both fetch paths took ways only.
+   Now `w/highway n/barrier` + point export → `TTile.barriers` → `build_graph_barriers`.
+
+**Viekerweg, the third report, is not ours**: OSM has it as `highway=track, motor_vehicle=no` with no
+`access`/`foot`/`bicycle` restriction, so the router is faithful to the data. It needs an OSM edit.
+
+### The one thing most likely to mislead you
+
+**GitHub Pages DOES serve byte ranges.** This repo said the opposite until 2026-07-30, in
+`PLAN-SCALE` D2, `data/coverage.toml` and `tools/cors_host_gate.sh`, and that claim is why the
+Netherlands blocks live in a GitHub *release*. It was measured against `python3 -m http.server`, which
+ignores `Range` and returns the whole file, and python's answer was recorded as GitHub's. Re-measured
+against the live site: **206, 16 bytes asked → 16 transferred, correct bytes at three offsets.** All
+three docs are corrected on this branch. Consequence: **D2 is not a wall and no bucket is needed** —
+what limits GitHub hosting is SIZE (Pages ~1 GB/site; NL roads 504 MB fits, roads+base 3.2 GB does not).
+
+### Regenerating a block is now MANDATORY, not optional
+
+`TTile` gained a `barriers` collection, and a store written before it **does not read as empty — it
+reads garbage** (a count came back as `20981984713`). That is
+[loft#700](https://github.com/loft-lang/loft/issues/700): `store_load` ignores the sidecar's schema hash
+and maps old records at the new stride. Every block in the tree is already regenerated;
+`tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks
+`barriers@`, so a stale one cannot reach the app.
+
+### New in `tools/`
+
+- **`access_gate.sh`** (in `make test-native`) — the legality gate. Fixtures where the SHORT way is
+  private / gated / stiled and the detour is longer, each with a control that removes the tag or node
+  and checks the shortcut IS then taken, so it is verified to fail. Plus one stile asserted from both
+  sides: walking 682 m *through* it, cycling 1127 m *around* it.
+- **`access_probe.loft`** — `count` (what a block carries) and `route` (metres of a route on restricted
+  ways, and where along it).
+- `index_fresh_gate.sh` — `browser/coverage.json` is a COMMITTED generated file (the Pages deploy job
+  has no loft to measure extents with); this regenerates it and requires byte-identity.
+
+### Two loft issues filed from this work
+
+- [**#699**](https://github.com/loft-lang/loft/issues/699) `sev:medium` — a `vector` parameter with a
+  `= []` default panics the parser. Why the API is `build_graph_barriers(ways, barriers)` and not a
+  defaulted argument.
+- [**#700**](https://github.com/loft-lang/loft/issues/700) `sev:high` — the silent store corruption above.
+
+### Still open on this work (also PLAN-SCALE §9)
+
+- `oneway=` is still dropped by the store — the flags byte is **full at 8/8**, so it needs a wider
+  field and therefore a regeneration of every block.
+- **`server.loft`'s Overpass fallback corridor is still ways-only**, so it walks through gates. The
+  tile path (what the app uses) is fixed.
+- A barrier tagged BETWEEN way vertices is dropped (it matches no graph node).
+
+### Traps this work walked into — do not re-pay them
+
+- **`nohup … &` reports "completed" the moment it detaches.** I started a second country build against
+  the same output path; the older, stale-recipe run finished last and overwrote the good block. I then
+  chased it as a loft scale bug through two synthetic sweeps. Check `ps` before re-running a long build.
+- **`build-blocks.sh` resumability was keyed on mtimes, not on the recipe** — it happily reused a
+  way-only `geojsonseq` after the filter changed and produced a "successfully regenerated" country
+  block with zero barriers. Now keyed on a recipe fingerprint; `split_block` asserts CONSERVATION.
+- **A cost tier for a POINT needs a notional length.** Every tier here is per-metre. Charging a barrier
+  one metre's worth (20 000) changed no route anywhere, because a 1 120 m detour 220 m off the drawn
+  line costs ~740 000. Both barrier tiers are now "what would this cost as a stretch of way?".
+- **A drawn point is an ANCHOR.** A test trace whose point sits on the barrier pins the route through
+  it, and the assertion tests nothing.
+- **Piping a script to `tail` replaces its exit status.** `overpass_fetch.py` correctly exits 1 on a
+  failed chunk; `| tail -6` turned that into 0 and I built a block from a half-fetched region.
+- Overpass's public mirrors were timing out and erroring on 2026-07-30. **The osmium path is the
+  documented one and takes seconds** — `tools/build-blocks.sh` over the cached
+  `~/.cache/routing-blocks/*.osm.pbf`. It also revealed the old Enschede block was missing whole road
+  classes (no `service`, no `unclassified`): 25 971 ways → **49 613**.
+
+---
 
 ---
 
@@ -17,9 +115,10 @@ kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched ro
 not skipped**, and **18 is ⏸ deferred on a DEPLOY constraint, no longer on a missing loft capability**
 (see §2 below). **`PLAN-EDIT.md` E0–E7 are done** — the app can reshape a sketch, not just append (§2a).
 
-**Everything is on `main` — nothing is in flight** (2026-07-29). `main` is at `e608918`; PRs #17–#22 all
-merged and their branches deleted, so `git ls-remote --heads` shows exactly one head. Start any new work
-on a fresh branch off `main` (it is protected: PR + green `build-test`, never a direct push).
+⚠ **Superseded by §0**: as of 2026-07-31 `main` is `c20c4cf` and **two commits are parked on
+`fix-access-tags`** (pushed, not PR'd). `main` is protected — PR + green `build-test`, never a direct
+push. The sentence this replaces said "everything is on main, nothing is in flight", which was true on
+2026-07-29 and is not true now.
 
 ### The numbers, `CPU_THROTTLE=4` (≈ a phone — always profile with it; desktop flatters ~4×)
 
@@ -134,7 +233,7 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
    what makes undo, the coalescer and the match count all come out right.
 
 
-## 3. Resume here (2026-07-29)
+## 3. Resume here (earlier context, 2026-07-29 — §0 supersedes where they disagree)
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
   the matcher work. Then `CLAUDE.md` § "Read the reference before you write".
@@ -333,6 +432,21 @@ fetches one by URL, which is what the PLAN-BUILD store app runs on (`browser/sto
 ---
 
 ## 7. The tile data + how to regenerate it
+
+⚠ **2026-07-31: regeneration is MANDATORY after a `TTile` schema change, and a stale block reads
+GARBAGE rather than failing** (loft#700 — see §0). The recipe also changed: `osmium tags-filter
+w/highway n/barrier` and `osmium export --geometry-types=linestring,point`, because a gate across a
+path is a NODE. `tools/build-blocks.sh` now invalidates its cached intermediates when that recipe
+changes; `tools/split_block.loft` asserts that no barriers are lost across a split.
+
+Current blocks (all carry `barriers@` in their `.dschema`):
+
+| block | ways | barriers |
+|---|---|---|
+| `browser/stores/enschede.roads.store` (ships with the app) | 49 613 | 989 |
+| `blocks/nl-west.roads.store` | 1 388 733 | 17 581 |
+| `blocks/nl-east.roads.store` | 1 395 633 | 17 929 |
+
 
 - The block **`soverijssel.tiles`** (21 MB, southern-Overijssel, 1215 tiles) is **gitignored** (`*.tiles`)
   — it does not travel. The server matches from it if present in the launch dir, else Overpass.

@@ -8,7 +8,12 @@
 # WHY IT EXISTS. Neither GitHub surface can do this, measured 2026-07-30:
 #
 #   release asset   Range ✅ (206 + Content-Range)   CORS ❌ (no ACAO, even with an Origin header)
-#   GitHub Pages    Range ❌ (advertises accept-ranges, answers 200 with the WHOLE file)   CORS n/a (same origin)
+#   GitHub Pages    Range ✅ (real 206 + Content-Range)                       CORS n/a (same origin, sends ACAO:*)
+#
+# ⚠ That Pages row READ "Range ❌" until 2026-07-30 and was wrong: the measurement behind it was taken
+# against `python3 -m http.server`, which ignores Range and returns the whole file. Pages itself is fine.
+# This gate is still the acceptance test for a THIRD-PARTY host; it is no longer evidence that one is
+# needed.
 #
 # So the browser has only ever read blocks that ship beside it, and "a CORS host would work" was an
 # assumption. This makes it a test: any candidate host (R2, B2, a bucket behind a CDN) either passes it or
