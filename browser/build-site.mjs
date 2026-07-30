@@ -53,6 +53,12 @@ writeFileSync(join(site, 'index.html'), html);
 if (existsSync(join(here, 'store-kernel.wasm'))) cpSync(join(here, 'store-kernel.wasm'), join(site, 'store-kernel.wasm'));
 else console.log('build-site: WARNING — browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)');
 if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 'stores'), { recursive: true });
+// The coverage index the app resolves against (PLAN-SCALE S7). Committed rather than generated here: it
+// measures extents and hashes out of the stores, which needs loft, and the Pages deploy job has none. Its
+// absence is not subtle — the app boots to "no coverage index — the app has no data to show", which is
+// exactly what the deployed site did between S7 landing and this line existing.
+if (existsSync(join(here, 'coverage.json'))) cpSync(join(here, 'coverage.json'), join(site, 'coverage.json'));
+else console.log('build-site: WARNING — no browser/coverage.json; the app will have no data (run tools/build_index.sh)');
 // Generated blocks (tools/build-blocks.sh → blocks/, gitignored) land in the same place, so the coverage
 // index can name every block with one kind of URL. They are copied rather than committed: a country block
 // is ~300 MB and is rebuilt from OSM, so it is output, not source.
