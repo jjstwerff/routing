@@ -360,7 +360,7 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 |---|---|---|---|---|---|
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
 | **C1a** | ✅ **DONE 2026-07-30, native AND browser** — no full-collection scans | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
-| **C1b** | the same block, **read PAGED in the browser** | 1 / 24 MB | ✅ unblocked — [loft#678](https://github.com/loft-lang/loft/issues/678) landed 2026-07-30 | the working-set read path where the app actually runs | ✅ S1's gate reports `browser=pass` (it is the standing check, and it flipped on its own) |
+| **C1b** | ✅ **DONE 2026-07-30** — the app can read its roads block by BYTE RANGE (`readMode: 'paged'`), route-identical; shipped OFF for this block, see below | 1 / 24 MB | ✅ [loft#678](https://github.com/loft-lang/loft/issues/678) | the working-set read path where the app actually runs | ✅ route + pixel hash unchanged; the gate asserts range reads happen and reports the fraction |
 | **C2** | **Netherlands**, on small whole-file blocks (D11) | ~20–40 city blocks / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
 | **C4** | **WE roads, base map per region** (D1) | ~10–16 roads blocks / 7–15 GB; layout on demand | S10 | the product: a cold visitor routes anywhere in WE | C3 stable; 26-sketch corpus 0-worse; warm match inside its `CPU_THROTTLE=4` budget |
@@ -383,6 +383,39 @@ one has served real traffic. Rolling back a rung is flipping the index (rule 2),
 of its band, the honest options are: keep it per-region on demand forever (C4 is then the end state, and it
 is a good one), reduce its detail (drop buildings outside urban cells, coarser cells at low zoom), or
 source the map externally and keep loft on the route. Do not pre-commit storage to C5 before S0 reports.
+
+---
+
+### C1b — done, and shipped OFF on purpose (2026-07-30)
+
+The app can read its roads block **by byte range**: `corridor_cell_keys` / `view_cell_keys` name the cells
+a command is about to read, `store_load_keys` fetches the ones this session has not asked for yet, and the
+working set ACCUMULATES (verified — a second paged load keeps the first entry), so a warm edit inside
+loaded area fetches nothing. Route and render are unchanged: `ways=7138 route_pts=213 len=13138.0m`,
+pixel hash `917244eb`.
+
+Three things it took that the plan did not predict:
+
+1. **The app's own JS host had to grow the range bridge.** routing drives the wasm from
+   `browser/store-kernel.mjs`, not loft's page, so `loft_host_http_range` / `_range_total` are implemented
+   there (mirroring `doc/loft-gl-wasm.js`) — an import loft's page provides is not automatically ours.
+2. **The gate's server could not serve Range at all.** `python3 -m http.server` ignores it; the gate now
+   uses `tools/range_server.py`, or it would have been measuring whole-file responses that the shim
+   silently sliced.
+3. **Two loft constraints shaped the code.** The working set cannot live in a struct field (the paged
+   loaders refuse a field-declared collection, loft#632) and `marks += …` through a `&hash` parameter
+   does not compile, so the mark-and-fetch stays inline on the loop's own locals.
+
+**And it ships OFF for this block, which is the honest result.** Measured: a session that pans and matches
+across the region fetches **44–80% of the 3.5 MB block anyway, in 25–46 separate requests**, because the
+block is only ~56 pages wide. Cheap on localhost; 25–46 round trips over a real RTT. So the read strategy
+belongs to the **data**, not the code: `readMode` is a per-block choice that the top index will carry
+(§7 R6), `'whole'` today, `'paged'` the moment a viewport is a small fraction of a block — which is C2
+onwards. The gate switches it on explicitly so the mechanism cannot rot unexercised.
+
+⚠ **A correction worth keeping.** A first reading blamed paging for a cold-start move (458 → 650 ms).
+Re-measured with paging OFF in the same build: still ~650. The cause is the bigger wasm / newer binary,
+not round trips — *the number moved, but not for the reason the change made obvious.*
 
 ---
 

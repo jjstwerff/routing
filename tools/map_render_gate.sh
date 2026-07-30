@@ -88,7 +88,10 @@ rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
 srv=""; chr=""; rc=0
 cleanup() { kill "$chr" "$srv" 2>/dev/null; }
 trap cleanup EXIT
-python3 -m http.server "$httpport" --directory "$here/_site" >/dev/null 2>&1 &
+# PLAN-SCALE C1b: the kernel reads its roads block by BYTE RANGE now, and `python3 -m http.server` does
+# not implement Range at all — it would answer every page request with the whole 3.5 MB file. The shim
+# slices a 200 so the answer stays correct, but the gate would be measuring the wrong thing entirely.
+python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
 srv=$!
 "$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
   --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &

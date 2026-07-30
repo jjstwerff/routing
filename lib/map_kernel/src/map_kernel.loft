@@ -13,7 +13,7 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, MatchQuality,
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, MatchQuality, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
                      build_graph, build_graph_streamed, match_route, corridor_margin, path_length_m,
                      point_polyline_m, match_state_new, match_incremental, match_incremental_streamed,
@@ -148,6 +148,13 @@ pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: t
 // Roads still come over as text: the roads store is not exposed, and `match` — not the map — is what
 // reads it. `client/basemap_kernel.loft` (native CLI) keeps calling `do_view_bbox` for the full emit,
 // and the browser keeps it reachable as `viewtext` so the parity gate has something to compare against.
+// The road cells a `view <bbox>` will read — so a PAGED consumer can fetch exactly those first
+// (PLAN-SCALE C1b). Same parse as `do_view_roads_bbox` so the fetch list cannot drift from the read.
+pub fn view_cell_keys(bbox: text) -> vector<integer> {
+  vb = parse_fbox(bbox);
+  bbox_cell_keys(vb.mnla, vb.mnlo, vb.mxla, vb.mxlo)
+}
+
 pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {
   nr = emit_roads(roads, parse_fbox(bbox));
   println("# view: R={nr}");

@@ -348,28 +348,78 @@ fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: 
   // costs arithmetic and no store access at all. A tile's `ox`/`oy` are `tx * TILE_CELL` by
   // construction, so the test sees exactly what it saw before.
   seen = 0;
-  cy = ty0;
-  while cy <= ty1 {
-    cx = tx0;
-    while cx <= tx1 {
-      seen += 1;
-      if seen % TICK_EVERY == 0 { on_tick(seen); }   // hand the frame back mid-read
+  // ⚠ The vector is bound to a LOCAL first, and it has to be. Iterating the call directly —
+  // `for k in corridor_cell_keys(…)` — makes `k` untyped because the callee is declared BELOW, and the
+  // hash lookup then fails to compile with "Invalid index key" pointing at this line rather than at the
+  // cause (loft#683, both backends). A typed local fixes it and costs nothing; moving the callee above
+  // would too, but ordering a file for the type-checker is the wrong reason to order a file.
+  ckeys: vector<integer> = corridor_cell_keys(pts, margin, tube);
+  for k in ckeys {
+    seen += 1;
+    if seen % TICK_EVERY == 0 { on_tick(seen); }   // hand the frame back mid-read
+    t = store[k];
+    if t != null { append_tile_ways(t, ways); }
+  }
+  ways
+}
+
+// The cells a corridor read will look up — the SAME enumeration `corridor_ways_impl2` performs, exported
+// so a PAGED consumer can fetch exactly those keys before reading (PLAN-SCALE C1b). One definition on
+// purpose: a fetch list that drifts from the read list does not fail, it silently returns fewer roads,
+// and the route just gets worse.
+//
+// `tube` selects the tier: true = the cell tube near the polyline (what a cold match reads), false = the
+// fat bbox window (what the ladder escalates to). A consumer that may escalate should fetch the FALSE
+// window, which is a superset of the TRUE one.
+// The cells a fixed-point BOX covers — the viewport counterpart of `corridor_cell_keys`, for a consumer
+// that must fetch pages before reading (PLAN-SCALE C1b). Bounds are fixed-point (1e-7°), as `FBox` holds
+// them. One cell of padding on each side, matching the corridor's own `-1`/`+1`: a road is keyed by its
+// first vertex and its geometry can reach back into the box from the neighbouring cell.
+pub fn bbox_cell_keys(mnla: integer, mnlo: integer, mxla: integer, mxlo: integer) -> vector<integer> {
+  bkeys: vector<integer> = [];
+  bx0 = mnlo / TILE_CELL - 1; bx1 = mxlo / TILE_CELL + 1;
+  by0 = mnla / TILE_CELL - 1; by1 = mxla / TILE_CELL + 1;
+  byy = by0;
+  while byy <= by1 {
+    bxx = bx0;
+    while bxx <= bx1 { bkeys += [byy * TKEY_ROW + bxx]; bxx += 1; }
+    byy += 1;
+  }
+  bkeys
+}
+
+pub fn corridor_cell_keys(pts: vector<GeoPoint>, margin: float, tube: boolean) -> vector<integer> {
+  keys: vector<integer> = [];
+  if len(pts) < 1 { return keys; }
+  knlat = pts[0].lat; kxlat = pts[0].lat; knlon = pts[0].lon; kxlon = pts[0].lon;
+  for kp in pts {
+    if kp.lat < knlat { knlat = kp.lat; } if kp.lat > kxlat { kxlat = kp.lat; }
+    if kp.lon < knlon { knlon = kp.lon; } if kp.lon > kxlon { kxlon = kp.lon; }
+  }
+  kdlat = margin / 111320.0;
+  kdlon = margin / (111320.0 * cos(((knlat + kxlat) / 2.0) * PI / 180.0)) ?? 0.0;
+  kgx0 = round((knlon - kdlon) * TILE_UNIT) as integer; kgx1 = round((kxlon + kdlon) * TILE_UNIT) as integer;
+  kgy0 = round((knlat - kdlat) * TILE_UNIT) as integer; kgy1 = round((kxlat + kdlat) * TILE_UNIT) as integer;
+  ktx0 = kgx0 / TILE_CELL - 1; ktx1 = kgx1 / TILE_CELL + 1;
+  kty0 = kgy0 / TILE_CELL - 1; kty1 = kgy1 / TILE_CELL + 1;
+  cy = kty0;
+  while cy <= kty1 {
+    cx = ktx0;
+    while cx <= ktx1 {
       want = true;
       if tube {
-        // Cell-level tube test: the cell's centre against the drawn polyline.
+        // Cell-level tube test: the cell's centre against the drawn polyline. Done HERE, before the
+        // caller ever touches the store, so a cell outside the tube costs arithmetic and no page fetch.
         clat = ((cy * TILE_CELL + TILE_CELL / 2) as float) / TILE_UNIT;
         clon = ((cx * TILE_CELL + TILE_CELL / 2) as float) / TILE_UNIT;
         want = point_polyline_m(GeoPoint { lat: clat, lon: clon }, pts) <= margin + TILE_HALF_DIAG_M;
       }
-      if want {
-        t = store[cy * TKEY_ROW + cx];
-        if t != null { append_tile_ways(t, ways); }
-      }
+      if want { keys += [cy * TKEY_ROW + cx]; }
       cx += 1;
     }
     cy += 1;
   }
-  ways
+  keys
 }
 
 // Append one tile's roads to `out` as matcher `Way`s. Split out of the corridor walk when that became a

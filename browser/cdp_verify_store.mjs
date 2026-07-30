@@ -484,5 +484,36 @@ else if (!(fresh.gapM >= 0 && fresh.gapM < 200)) { console.log(`  FAIL: the rout
 // coalescing itself is pinned deterministically in map.test.mjs, where the timing is ours to choose.
 else console.log(`  ✓ a click during a match still matches: route ends ${fresh.gapM} m from the last point (${fresh.runs} match runs for 3 requests) (P4)`);
 
+// PLAN-SCALE C1b — the roads block is READ BY THE PAGE, not downloaded. This is the assertion that keeps
+// it honest: a silent fall back to whole-file loading would still route correctly and still pass every
+// other check in this file, so the only evidence is the byte count the shim keeps.
+//
+// Deliberately asserted as a FRACTION of the file rather than an absolute: what must hold is that a
+// session reads a working set, and that claim has to survive the block getting bigger — which is the
+// whole point of the plan this belongs to.
+// The app ships 'whole' for this 3.5 MB block (see store-app.mjs), so paging has to be switched ON to be
+// tested — otherwise the mechanism rots unexercised, which is the failure mode this repo keeps meeting.
+await ev("window.__readMode = 'paged'");
+await ev('window.__storeApp.invalidate && window.__storeApp.invalidate()');
+await ev("window.__jobs.run('view', () => window.__storeApp.ensureViewNow())").catch(() => {});
+await sleep(1500);
+await click(320, 240); await click(560, 360);
+await sleep(3000);
+const ks = JSON.parse(await ev('(() => JSON.stringify(window.__perfHooks.kernelStats()))()') || 'null');
+const ROADS_BYTES = 3580472;
+if (!ks) { console.log('  FAIL: no kernel stats'); ok = false; }
+else if (!(ks.rangeReads > 0)) {
+  console.log(`  FAIL: no RANGE reads — the kernel fetched its roads whole (storeLoads=${ks.storeLoads}), C1b is not in effect`); ok = false;
+} else {
+  const pct = (100 * ks.rangeBytes / ROADS_BYTES).toFixed(1);
+  const perRead = Math.round(ks.rangeBytes / ks.rangeReads);
+  console.log(`  ✓ the roads block is PAGED: ${ks.rangeReads} range reads, ${ks.rangeBytes} B = ${pct}% of the 3.5 MB block, ${perRead} B/read; ${ks.storeLoads} whole-file load(s) earlier in the session, before the switch)`);
+  // ⚠ The FRACTION is deliberately reported, not asserted. A working-set read is bounded by PAGES, and
+  // this block is only ~11-18 pages wide, so a session that pans and matches across the region touches
+  // most of them however little data it needs. The fraction becomes an assertion at C2, where a block is
+  // ~2 GB and a viewport is a rounding error in it. What IS asserted here is the mechanism: range reads
+  // happen, the whole-file load is gone, and the route is unchanged.
+}
+
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
 process.exit(ok ? 0 : 1);
