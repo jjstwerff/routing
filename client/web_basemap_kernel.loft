@@ -37,8 +37,9 @@ struct CellMark { const k: integer }
 
 // Which of `keys` this session has not asked the host for yet. READ-ONLY on purpose — the marking and
 // the fetch happen at the call site, on the loop's own locals, for two reasons that are both loft's:
-//   * `marks += …` through a `&hash` parameter does not compile (the checker reads the append as a
-//     reassignment of the reference itself);
+//   * `marks += …` through a `&hash` parameter does not compile — the checker reads the append as a
+//     reassignment of the reference itself. (A BY-VALUE hash param does propagate appends, so a helper
+//     is possible; it is inline here because the fetch also needs `roads`, which must stay a bare local.)
 //   * and the store CANNOT live in a struct field to be passed as one — the paged loaders refuse a
 //     field-declared collection (loft#632), which is the whole mechanism this path runs on.
 // So the caller keeps both collections as bare locals and this only decides what is missing.

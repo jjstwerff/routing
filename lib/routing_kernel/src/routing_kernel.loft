@@ -196,6 +196,47 @@ fn tag(obj: JsonValue, name: text) -> text {
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
+// Parse ONE GeoJSON `Feature` line — the `geojsonseq` form osmium exports — into a Way (PLAN-SCALE S6).
+// Returns a Way with EMPTY coords for anything unusable (a blank line, a non-LineString, a feature with
+// fewer than 2 points); the caller already skips those, so a malformed line costs a skip, not a crash.
+//
+// This exists so a generator can consume a country-sized extract line by line. `parse_ways` takes the
+// whole Overpass document as one `text` value, which is fine for a city and impossible for France.
+pub fn parse_way_feature(line: text) -> Way {
+  none = Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+               onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] };
+  if line == "" { return none; }
+  root = json_parse(line);
+  geom = root.field("geometry");
+  if tag(geom, "type") != "LineString" { return none; }
+  cs = geom.field("coordinates");
+  fcoords: vector<GeoPoint> = [];
+  for ci in 0..len(cs) {
+    pair = cs.item(ci);
+    // GeoJSON is [lon, lat] — the opposite order to Overpass's named fields, and getting it backwards
+    // puts the Netherlands in Somalia rather than failing.
+    if len(pair) >= 2 {
+      fcoords += [GeoPoint { lat: pair.item(1).as_number(), lon: pair.item(0).as_number() }];
+    }
+  }
+  if len(fcoords) < 2 { return none; }
+  props = root.field("properties");
+  Way {
+    highway:   tag(props, "highway"),
+    surface:   tag(props, "surface"),
+    tracktype: tag(props, "tracktype"),
+    bicycle:   tag(props, "bicycle"),
+    access:    tag(props, "access"),
+    oneway:    tag(props, "oneway"),
+    onewaybike:tag(props, "oneway:bicycle"),
+    svc:       tag(props, "service"),
+    cycleway:  tag(props, "cycleway"),
+    cyclestreet:tag(props, "cyclestreet"),
+    name:      tag(props, "name"),
+    coords:    fcoords,
+  }
+}
+
 // Parse an Overpass JSON response into the corridor's ways. Missing tags read as "".
 pub fn parse_ways(response: text) -> vector<Way> {
   root = json_parse(response);

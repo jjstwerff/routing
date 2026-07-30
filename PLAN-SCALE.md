@@ -325,10 +325,37 @@ O(collection) — filed with this probe as the reproducer — **not** a reader o
 Interim, the render path can fall back to whole-block loads for the *base map only* (D1 already makes it
 an opt-in per region), which is slower but changes no format.
 
-**S6 · Streaming generator input (W1).** Teach the generator to read `geojsonseq` line-by-line (PLAN-TILES
-step 2 already suggests it, *"removes this step"*) instead of one `file().content()` text. *Observable:* a
-country-sized input generates with flat memory. *Gate:* the Enschede block regenerates **byte-identical**
-to today's store from the same source — the parity that makes this refactor safe.
+**S6 · Streaming generator input (W1).** ✅ **DONE (2026-07-30).** `gen-tiles` reads a `.geojsonseq` /
+`.jsonl` input line by line and holds one chunk whatever the file size; the whole-document Overpass path
+stays for small inputs, and the FORM of the input picks the reader. PLAN-TILES' recipe already ends in
+`osmium export -f geojsonseq` and then converts — streaming reads that file directly, so the conversion
+step disappears.
+
+*loft has no streaming line reader:* `lines()` is built on `content()`, so both hold the whole file. The
+binary idiom does stream — seek, read a chunk, use only the part up to its LAST newline, seek back to just
+after it. That last detail is what makes it safe: a chunk boundary can never split a line, and a partial
+multi-byte character at the end of a chunk is never decoded (proven on a 64-byte file with a multi-byte
+character read in 12-byte chunks).
+
+*Gate:* `tools/gen_stream_gate.sh`, in `make test-native`. The original Overpass JSON is long gone, so the
+round trip is closed against the store itself — **block → `geojsonseq` → streamed generator → block'** —
+and the assertion is the **route**, not the counts: the border probe's golden fingerprints must be
+unchanged, because equal tile counts would not catch geometry that moved a centimetre.
+
+```
+wrote 25971 features / 159993 coords (6393262 bytes)
+streamed: 25971 features from 6393262 bytes in 1048576-byte chunks
+built: tiles=88 roads=25971
+routes before: 13491979666115 13491979666115 2009382494520 1467589415931
+routes after : 13491979666115 13491979666115 2009382494520 1467589415931
+```
+
+⚠ The **flat-memory claim is structural, not yet measured**: the reader provably holds one chunk, but
+"a country-sized input generates in bounded memory" needs a country-sized input, which is C2's data half.
+The emitter (`tools/tiles_to_geojsonseq.loft`) carries the one subtlety worth remembering: its class →
+highway map must cover EVERY class the store can hold, including the ones the corridor ignores (14, 15).
+`tile_hw` maps only the routable ones, so using it would have dropped those roads and let the round trip
+"pass" by losing data.
 
 **S7 · Blocks + top index (D5/D6).** Rolling ~2 GB shards, `.dschema` beside each, version in the path;
 top index authored from the manifest. *Observable:* a point in each region resolves to the right block.

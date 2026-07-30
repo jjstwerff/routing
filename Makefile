@@ -199,6 +199,7 @@ test-native: check-rustc
 	@echo "  NATIVE KERNEL SUITE PASSES"
 	@./tools/tile_border_gate.sh
 	@./tools/paged_gate.sh
+	@./tools/gen_stream_gate.sh
 	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \
 	  echo "$$out" | grep -E '^stores|^identity|^invariance|^#C'; \
 	  echo "$$out" | grep -q '^#C ALL PASS' \
