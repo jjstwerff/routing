@@ -9,7 +9,8 @@
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
-use routing_kernel::(GeoPoint, Way, parse_ways, parse_way_feature, TStep, TRoad, TTile, cell_ix, tile_cell_key);
+use routing_kernel::(GeoPoint, Way, parse_ways, parse_way_feature, TStep, TRoad, TTile, cell_ix, tile_cell_key,
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
 
 fn class_of(hw: text) -> integer {
   if hw == "motorway" || hw == "motorway_link" { return 0; }
@@ -20,7 +21,13 @@ fn class_of(hw: text) -> integer {
   if hw == "living_street" { return 5; }
   if hw == "service" { return 6; }
   if hw == "cycleway" { return 7; }
-  if hw == "path" || hw == "track" || hw == "bridleway" { return 8; }
+  if hw == "path" || hw == "bridleway" { return 8; }
+  // `track` was folded into `path` here, and class 12 sat unused. A dirt road is not a footpath: the
+  // cost model tests `hw == "track"` in four places (all dead on tile-sourced ways while the two
+  // shared a class), and the browser styles `track` at minZoom 14 against `path`'s 15 — so every
+  // farm track in the data was simply not drawn at zoom 14. It looked like missing data and was a
+  // collapsed class.
+  if hw == "track" { return 12; }
   if hw == "footway" { return 9; }
   if hw == "pedestrian" { return 10; }
   if hw == "steps" { return 11; }
@@ -28,11 +35,24 @@ fn class_of(hw: text) -> integer {
   if hw == "platform" { return 14; }
   15
 }
+
+// Pack the tags the cost model tests into the one flags byte (see routing_kernel's RF_* block for why
+// each bit exists, and what it costs to leave one out).
 fn flags_of(w: Way) -> integer {
   f = 0;
-  if w.cyclestreet == "yes" || w.cycleway == "lane" || w.cycleway == "track" { f = f + 1; }
+  if w.cyclestreet == "yes" || w.cycleway == "lane" || w.cycleway == "track" { f = f + RF_CYCLEWAY; }
   s = w.surface;
-  if s == "ground" || s == "gravel" || s == "unpaved" || s == "compacted" { f = f + 2; }
+  if s == "ground" || s == "gravel" || s == "unpaved" || s == "compacted" { f = f + RF_UNPAVED; }
+  a = w.access;
+  if a == "no" || a == "private" { f = f + RF_ACCESS_NO; }
+  b = w.bicycle;
+  if b == "no" || b == "private" || b == "use_sidepath" { f = f + RF_BIKE_NO; }
+  else if b == "yes" || b == "designated" || b == "permissive" { f = f + RF_BIKE_YES; }
+  ft = w.foot;
+  if ft == "no" || ft == "private" { f = f + RF_FOOT_NO; }
+  else if ft == "yes" || ft == "designated" || ft == "permissive" { f = f + RF_FOOT_YES; }
+  sv = w.svc;
+  if sv == "driveway" || sv == "alley" || sv == "parking_aisle" { f = f + RF_SVC_LOCAL; }
   f
 }
 CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_key are keyed to it

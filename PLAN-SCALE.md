@@ -879,6 +879,9 @@ step in doing any of that required a codec of our own.
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
 | 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9 |
+| 7 | `oneway=` is still dropped by the store | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
+| 8 | The NL blocks predate the access bits | `nl-west`/`nl-east` were generated before the flags carried `access`/`bicycle`/`foot`, so their restricted ways still read as open. They LOAD fine (the new bits simply read zero — the field width did not change), so this is missing data, not breakage. Re-run `tools/build-blocks.sh`; `tools/access_gate.sh`'s count check is what says whether a block has them |
+| 9 | Barrier NODES are never fetched | `osmium tags-filter w/highway` and the Overpass query both take WAYS only, so the 19 gates / 5 swing gates measured in one Enschede box are invisible. A gate on a way is a tag; a gate across a path is a node, and nothing in the pipeline carries nodes |
 
 ---
 

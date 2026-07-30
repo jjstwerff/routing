@@ -198,6 +198,7 @@ test-native: check-rustc
 	done
 	@echo "  NATIVE KERNEL SUITE PASSES"
 	@./tools/tile_border_gate.sh
+	@./tools/access_gate.sh
 	@./tools/index_fresh_gate.sh
 	@./tools/paged_gate.sh
 	@./tools/gen_stream_gate.sh

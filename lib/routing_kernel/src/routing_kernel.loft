@@ -110,6 +110,9 @@ pub struct Way {
   const tracktype: text,   // `tracktype=` or ""
   const bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
   const access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
+  const foot:      text = "",  // `foot=` (yes/designated/no/private/…) — legal WALKING access, or ""
+                           // Defaulted so the 40-odd existing Way{} sites need no edit; set it where
+                           // the tags are actually known (parse_way_feature, append_tile_ways).
   const oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
   const onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
   const svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
@@ -247,6 +250,7 @@ pub fn parse_way_feature(line: text) -> Way {
     tracktype: tag(props, "tracktype"),
     bicycle:   tag(props, "bicycle"),
     access:    tag(props, "access"),
+    foot:      tag(props, "foot"),
     oneway:    tag(props, "oneway"),
     onewaybike:tag(props, "oneway:bicycle"),
     svc:       tag(props, "service"),
@@ -278,6 +282,7 @@ pub fn parse_ways(response: text) -> vector<Way> {
         tracktype: tag(tags, "tracktype"),
         bicycle:   tag(tags, "bicycle"),
         access:    tag(tags, "access"),
+        foot:      tag(tags, "foot"),
         oneway:    tag(tags, "oneway"),
         onewaybike:tag(tags, "oneway:bicycle"),
         svc:       tag(tags, "service"),
@@ -328,9 +333,32 @@ fn tile_hw(tp: integer) -> text {
   if tp == 9 { return "footway"; }
   if tp == 10 { return "pedestrian"; }
   if tp == 11 { return "steps"; }
+  if tp == 12 { return "track"; }
   if tp == 13 { return "busway"; }
   ""
 }
+
+// --- the `flags` byte -------------------------------------------------------------------------
+// A stored road is three bytes (class, flags, vertex count), so a tag only survives if it has a BIT.
+// Bits 0–1 were the original two; 2–7 carry the legal-access tags, which until now were reconstructed
+// as "" — meaning `bike_never`/`foot_never` (which DO test them) could never fire on a tile-sourced
+// way, and every `access=private` path routed as a public one. Measured before the fix: 43 ways tagged
+// `access=private`/`no` in one 1.8 × 3.6 km box near Enschede were all stored as ordinary open ways.
+//
+// The affirmative bits are not symmetry for its own sake — without them the fix OVER-blocks. OSM's
+// `access=no` + `foot=yes` (3 such ways in that same box) means "closed to traffic, walkers welcome",
+// and a store that kept only ACCESS_NO would ban the walk that is explicitly signed legal.
+//
+// All 8 bits are now spoken for, which is why `oneway=` is still dropped — it needs a wider field and
+// a regeneration of every block. Filed rather than half-done (§ PLAN-SCALE open).
+pub const RF_CYCLEWAY  = 1;    // cycleway=lane|track, or cyclestreet=yes
+pub const RF_UNPAVED   = 2;    // an unpaved surface
+pub const RF_ACCESS_NO = 4;    // access=no|private        — closed to general traffic
+pub const RF_BIKE_NO   = 8;    // bicycle=no|private|use_sidepath
+pub const RF_BIKE_YES  = 16;   // bicycle=yes|designated|permissive
+pub const RF_FOOT_NO   = 32;   // foot=no|private
+pub const RF_FOOT_YES  = 64;   // foot=yes|designated|permissive
+pub const RF_SVC_LOCAL = 128;  // service=driveway|alley|parking_aisle — not a through-route
 
 // Reconstruct Way structs from the tiles covering the corridor (its bbox buffered by `margin` metres,
 // plus a one-cell ring for the assign-by-first-node fringe). Feeds build_graph exactly like parse_ways.
@@ -511,8 +539,19 @@ fn append_tile_ways(t: TTile, out: &vector<Way>) {
     cnt = r.steps as integer;
     hw = tile_hw(r.tp as integer);
     cw = ""; surf = "";
-    if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
-    if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
+    fl = r.flags as integer;
+    if (fl & RF_CYCLEWAY) == RF_CYCLEWAY { cw = "lane"; }
+    if (fl & RF_UNPAVED) == RF_UNPAVED { surf = "unpaved"; }
+    // The access bits, decoded back to the representative tag VALUES the cost model already tests, so
+    // a tile-sourced way and an Overpass-sourced one take the same path through `bike_never` etc.
+    // "private" stands for the no/private pair — both are tested together everywhere.
+    acc = ""; bike = ""; ft = ""; sv = "";
+    if (fl & RF_ACCESS_NO) == RF_ACCESS_NO { acc = "private"; }
+    if (fl & RF_BIKE_NO) == RF_BIKE_NO { bike = "no"; }
+    else if (fl & RF_BIKE_YES) == RF_BIKE_YES { bike = "yes"; }
+    if (fl & RF_FOOT_NO) == RF_FOOT_NO { ft = "no"; }
+    else if (fl & RF_FOOT_YES) == RF_FOOT_YES { ft = "yes"; }
+    if (fl & RF_SVC_LOCAL) == RF_SVC_LOCAL { sv = "driveway"; }
     coords: vector<GeoPoint> = [];
     for j in 0..cnt {
       s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
@@ -520,8 +559,8 @@ fn append_tile_ways(t: TTile, out: &vector<Way>) {
     }
     o = o + cnt;
     if hw != "" && len(coords) >= 2 {
-      out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: "", access: "",
-                    oneway: "", onewaybike: "", svc: "", cycleway: cw, cyclestreet: "", name: "", coords: coords }];
+      out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: bike, access: acc, foot: ft,
+                    oneway: "", onewaybike: "", svc: sv, cycleway: cw, cyclestreet: "", name: "", coords: coords }];
     }
   }
 }
@@ -640,6 +679,7 @@ struct WayTags {
   const highway: text, const surface: text, const tracktype: text, const bicycle: text,
   const access: text, const oneway: text, const onewaybike: text, const svc: text,
   const cycleway: text, const cyclestreet: text, const name: text,
+  const foot: text = "",   // as on `Way`: defaulted, so the empty-tags and test sites need no edit
 }
 
 // A FUNCTION, not a constant: loft rejects struct-valued constants (they cannot be materialised at each
@@ -707,7 +747,7 @@ fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
   for wi in 0..len(ways) {
     w = ways[wi] ?? empty_source_way();
     g.wtags += [WayTags { highway: w.highway, surface: w.surface, tracktype: w.tracktype,
-                          bicycle: w.bicycle, access: w.access, oneway: w.oneway,
+                          bicycle: w.bicycle, access: w.access, foot: w.foot, oneway: w.oneway,
                           onewaybike: w.onewaybike, svc: w.svc, cycleway: w.cycleway,
                           cyclestreet: w.cyclestreet, name: w.name }];
     nw += 1;
@@ -1003,7 +1043,12 @@ fn bike_never(hw: text, bicycle: text, access: text, svc: text) -> boolean {
   if hw == "busway" { return true; }                                    // dedicated bus guideway
   if hw == "steps" { return true; }                                     // can't get an (e-)bike up stairs
   if svc == "driveway" || svc == "alley" || svc == "parking_aisle" { return true; }  // not through-routes
-  if access == "no" || access == "private" { return true; }             // closed to general traffic
+  // Closed to general traffic — UNLESS bikes are signed in. This is what the header above always
+  // claimed ("a road with access=no but bicycle=yes is legal") and what the code did not do: the
+  // affirmative permission was never consulted here. It could not show until now, because tile-sourced
+  // ways carried access="" and the branch was unreachable; with the access bits stored it decides real
+  // routes, and OSM's `access=no` + `bicycle=yes` means exactly "closed to cars, cyclists welcome".
+  if access == "no" || access == "private" { return !bike_permitted(bicycle); }
   false
 }
 
@@ -1020,12 +1065,24 @@ fn bike_dismount(hw: text, bicycle: text) -> boolean {
   false
 }
 
-// Off-limits on foot (ILLEGAL tier): a dedicated busway, a motorway, or a way closed to all traffic.
-// Foot modes may otherwise use footways, paths, pedestrian areas and steps — a much shorter list.
-fn foot_never(hw: text, access: text) -> boolean {
+// `foot=` value that AFFIRMATIVELY permits walking, mirroring `bike_permitted`.
+fn foot_permitted(foot: text) -> boolean {
+  foot == "yes" || foot == "designated" || foot == "permissive"
+}
+
+// Off-limits on foot (ILLEGAL tier): a dedicated busway, a motorway, a way signed closed to walkers,
+// or a way closed to all traffic. Foot modes may otherwise use footways, paths, pedestrian areas and
+// steps — a much shorter list.
+//
+// `foot=` is read here for the first time. It has to be, now that `access` survives the store: OSM's
+// `access=no` + `foot=yes` ("closed to traffic, walkers welcome") is common on exactly the field paths
+// this repo routes over — 3 of the 43 restricted ways in the Enschede sample — and blanket-banning
+// them on the access tag alone would trade one wrong answer for another.
+fn foot_never(hw: text, access: text, foot: text) -> boolean {
+  if foot == "no" || foot == "private" { return true; }                 // signed closed to walkers
   if hw == "busway" { return true; }                                    // guided busway — no pedestrians
   if hw == "motorway" || hw == "motorway_link" { return true; }         // no pedestrians on the motorway
-  if access == "no" || access == "private" { return true; }             // closed to all traffic
+  if access == "no" || access == "private" { return !foot_permitted(foot); }
   false
 }
 
@@ -1075,7 +1132,7 @@ fn edge_surcharge(profile: text, t: WayTags) -> float {
     if bike_never(t.highway, t.bicycle, t.access, t.svc) { return ILLEGAL_PER_M; }
     if bike_dismount(t.highway, t.bicycle) { return DISMOUNT_PER_M; }
   } else if profile.starts_with("walking") || profile.starts_with("running") {
-    if foot_never(t.highway, t.access) { return ILLEGAL_PER_M; }
+    if foot_never(t.highway, t.access, t.foot) { return ILLEGAL_PER_M; }
   }
   0.0
 }

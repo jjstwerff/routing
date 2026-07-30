@@ -17,10 +17,11 @@
 //   loft --native --lib lib tools/tiles_to_geojsonseq.loft <roads.store> <out.geojsonseq>
 #cwd
 
-use routing_kernel::(TTile, TRoad, TStep);
+use routing_kernel::(TTile, TRoad, TStep,
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
 
 // The inverse of `class_of` — one representative highway value per class, chosen so `class_of` maps it
-// straight back. Class 12 is unreachable (nothing in `class_of` produces it).
+// straight back. Class 12 is `track`, which used to share class 8 with `path` (see gen-tiles).
 fn hw_of_class(tp: integer) -> text {
   if tp == 0 { return "motorway"; }
   if tp == 1 { return "primary"; }
@@ -34,6 +35,7 @@ fn hw_of_class(tp: integer) -> text {
   if tp == 9 { return "footway"; }
   if tp == 10 { return "pedestrian"; }
   if tp == 11 { return "steps"; }
+  if tp == 12 { return "track"; }
   if tp == 13 { return "busway"; }
   if tp == 14 { return "platform"; }
   "road"                       // class 15: anything `class_of` did not recognise, and it round-trips there
@@ -55,10 +57,19 @@ fn main() {
     o = 0;
     for r in t.roads {
       cnt = r.steps as integer;
-      // `flags_of`'s two bits, inverted: bit 0 is cycle infrastructure, bit 1 an unpaved surface.
-      cw = ""; surf = "";
-      if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
-      if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
+      // `flags_of` inverted — every bit it sets must come back out, or the round-trip gate is checking
+      // a lossy writer against a lossy reader and passing. The access bits (2–7) are the ones that make
+      // a private way private; emitting only the first two is how they went missing in the first place.
+      cw = ""; surf = ""; acc = ""; bike = ""; ft = ""; sv = "";
+      fl = r.flags as integer;
+      if (fl & RF_CYCLEWAY) == RF_CYCLEWAY { cw = "lane"; }
+      if (fl & RF_UNPAVED) == RF_UNPAVED { surf = "unpaved"; }
+      if (fl & RF_ACCESS_NO) == RF_ACCESS_NO { acc = "private"; }
+      if (fl & RF_BIKE_NO) == RF_BIKE_NO { bike = "no"; }
+      else if (fl & RF_BIKE_YES) == RF_BIKE_YES { bike = "yes"; }
+      if (fl & RF_FOOT_NO) == RF_FOOT_NO { ft = "no"; }
+      else if (fl & RF_FOOT_YES) == RF_FOOT_YES { ft = "yes"; }
+      if (fl & RF_SVC_LOCAL) == RF_SVC_LOCAL { sv = "driveway"; }
       // ⚠ Literal braces are DOUBLED: `{` opens interpolation in a loft string, and JSON is mostly
       // braces. `{{` / `}}` emit one.
       // RFC 8142 record separator (0x1E), because that is what `osmium export -f geojsonseq` writes —
@@ -67,6 +78,10 @@ fn main() {
       line = "{RS}{{\"type\":\"Feature\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
       if cw != "" { line += ",\"cycleway\":\"{cw}\""; }
       if surf != "" { line += ",\"surface\":\"{surf}\""; }
+      if acc  != "" { line += ",\"access\":\"{acc}\""; }
+      if bike != "" { line += ",\"bicycle\":\"{bike}\""; }
+      if ft   != "" { line += ",\"foot\":\"{ft}\""; }
+      if sv   != "" { line += ",\"service\":\"{sv}\""; }
       line += "}},\"geometry\":{{\"type\":\"LineString\",\"coordinates\":[";
       for j in 0..cnt {
         s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
