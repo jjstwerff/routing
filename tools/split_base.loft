@@ -1,0 +1,92 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Split a BASE MAP block in two along a meridian — the presentation-store counterpart of
+// `tools/split_block.loft` (PLAN-SCALE C2 / S7, and §7 R6's 2 GB reality).
+//
+// WHY. The Netherlands base map is 3.2 GB and a GitHub release asset stops at 2 GB, so a country's map
+// cannot ship as one file. Regions are the plan's unit anyway (§7 R0), and they are cut on CELL
+// boundaries — which is exactly what this does, so the halves are what a per-region generation would have
+// produced directly.
+//
+// The split is by CELL, never by geometry: a tile goes wholly to one side, so no feature is cut and no
+// coordinate changes. Extents are re-sealed per half, so each block's index entry describes ITS data
+// rather than the parent's.
+//
+//   loft --native --lib lib tools/split_base.loft <in.store> <west.store> <east.store> <lon_deg>
+#cwd
+
+use basemap::(PTile, Area, Building, Line, Label, Poi, Coord, cell_ix);
+
+// Extent sealing, inlined from `client/basemap/build_store.loft` — it is a generator-local function, not
+// part of the library, and each half's extent must describe ITS data rather than the parent's.
+fn note_extent(t: PTile, la: integer, lo: integer) {
+  if t.fcount == 0 { t.fmnla = la; t.fmxla = la; t.fmnlo = lo; t.fmxlo = lo; }
+  else {
+    if la < t.fmnla { t.fmnla = la; }
+    if la > t.fmxla { t.fmxla = la; }
+    if lo < t.fmnlo { t.fmnlo = lo; }
+    if lo > t.fmxlo { t.fmxlo = lo; }
+  }
+  t.fcount += 1;
+}
+
+fn seal_extents(idx: hash<PTile[tkey]>) {
+  for t in idx {
+    for sa in t.areas { for ca in sa.ring { note_extent(t, t.oy + (ca.y as integer), t.ox + (ca.x as integer)); } }
+    for sb in t.buildings { for cb in sb.ring { note_extent(t, t.oy + (cb.y as integer), t.ox + (cb.x as integer)); } }
+    for sl in t.lines { for cl in sl.geom { note_extent(t, t.oy + (cl.y as integer), t.ox + (cl.x as integer)); } }
+    for sk in t.labels { for ck in sk.line { note_extent(t, t.oy + (ck.y as integer), t.ox + (ck.x as integer)); } }
+    for sp in t.pois { note_extent(t, t.oy + (sp.at.y as integer), t.ox + (sp.at.x as integer)); }
+  }
+}
+
+fn copy_ring(ring: vector<Coord>) -> vector<Coord> {
+  r: vector<Coord> = [];
+  for c in ring { r += [Coord { x: c.x, y: c.y }]; }
+  r
+}
+
+fn copy_into(dst: hash<PTile[tkey]>, src: PTile) -> integer {
+  dst += PTile { tkey: src.tkey, ox: src.ox, oy: src.oy, areas: [], buildings: [], lines: [], labels: [], pois: [] };
+  t = dst[src.tkey];
+  n = 0;
+  if t != null {
+    for a in src.areas { t.areas += [Area { cover: a.cover, ring: copy_ring(a.ring) }]; n += 1; }
+    for b in src.buildings { t.buildings += [Building { name: b.name, ring: copy_ring(b.ring) }]; n += 1; }
+    for l in src.lines { t.lines += [Line { kind: l.kind, name: l.name, geom: copy_ring(l.geom) }]; n += 1; }
+    for lb in src.labels { t.labels += [Label { name: lb.name, kind: lb.kind, rank: lb.rank, line: copy_ring(lb.line) }]; n += 1; }
+    for p in src.pois { t.pois += [Poi { kind: p.kind, name: p.name, at: Coord { x: p.at.x, y: p.at.y } }]; n += 1; }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 4 { println("usage: split_base <in.store> <west.store> <east.store> <lon_deg>"); return; }
+  lon = (a[3] ?? "0") as float ?? 0.0;
+  CELL_P = 50000;   // the presentation cell — must match client/basemap/build_store.loft
+  cut = cell_ix(round(lon * 10000000.0) as integer, CELL_P);   // the CELL the split falls in, so tiles stay whole
+
+  src: hash<PTile[tkey]> = [];
+  store_load(src, a[0] ?? "");
+
+  west: hash<PTile[tkey]> = [];
+  east: hash<PTile[tkey]> = [];
+  wt = 0; et = 0; wr = 0; er = 0;
+  for t in src {
+    if cell_ix(t.ox, CELL_P) < cut { wt += 1; wr += copy_into(west, t); }
+    else { et += 1; er += copy_into(east, t); }
+  }
+  println("split at cell {cut} ({lon}): west tiles={wt} features={wr} · east tiles={et} features={er}");
+  if wt == 0 || et == 0 {
+    println("FAIL: the split put every tile on one side — pick a longitude inside the block");
+    return;
+  }
+  // Extents are a property of each half's own data, so they are re-sealed before persisting.
+  seal_extents(west);
+  seal_extents(east);
+  println("west persist {store_persist_bind(west, a[1] ?? \"\")}");
+  println("east persist {store_persist_bind(east, a[2] ?? \"\")}");
+}

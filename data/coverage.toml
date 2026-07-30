@@ -12,6 +12,15 @@
 #   whole  download once, keep it (right while a block is a few pages wide)
 #   paged  store_load_keys over HTTP Range, only the cells a command touches (right at C2 scale)
 
+# The block that ships WITH the app — small, committed, same-origin, and therefore the only one a browser
+# can read today (see the CORS note below). It is what every local gate runs against.
+[[region]]
+id        = "enschede"
+name      = "Enschede / south Overijssel"
+roads     = "stores/enschede.roads.store"
+base      = "stores/enschede.layout.store"
+read_mode = "whole"
+
 # ⚠ ROAD BLOCKS MUST NOT OVERLAP. The Enschede roads block was removed here when the Netherlands block
 # landed, because NL covers the same ground: with both listed, a sketch whose padded bbox escapes the small
 # block names BOTH, the same roads are read twice and fed to `build_graph` twice. It survived only because
@@ -22,18 +31,30 @@
 # The Enschede stores are still in the repo and still drive every native gate; they are simply no longer
 # a coverage region now that a real country block exists.
 
-# The whole Netherlands, generated 2026-07-30 from the Geofabrik extract (tools/build-blocks.sh).
-# 12,457 tiles · 2,784,366 roads · 322 MB — the first block where a viewport is a small FRACTION of the
-# data (a 42-cell read costs 3.1% of it), which is what `paged` is for and what the 3.5 MB block could
-# never show.
+# The Netherlands, as TWO regions cut at 5.40°E (tools/split_base.loft / split_block.loft).
 #
-# ⚠ `base` points at the Enschede layout store because that is the only base map that exists: the base
-# generator still reads its whole input (S6 fixed the ROADS generator only). The index records that
-# store's own measured extent, so nothing claims otherwise — outside Enschede this block routes without a
-# base map, which is exactly what D1 says to expect (the router is WE-wide first, the map per region).
+# Why two: the base map is 3.2 GB for the country and a GitHub release asset stops at 2 GB, so a country
+# cannot ship as one file. Regions are §7 R0's unit anyway and are cut on CELL boundaries, so these halves
+# are what a per-region generation would have produced directly — and S8's gate proves a route crossing
+# the seam is the route the whole region gives.
+#
+# `url_base` publishes them from the release rather than beside the app: 1.4 GB of base map is not
+# something a site build should copy. ⚠ Release assets serve Range but send NO CORS header (measured
+# 2026-07-30), so a BROWSER on another origin cannot read these — they serve downloads, the native server
+# and offline use. The browser path needs a CORS host (PLAN-SCALE D2).
+
 [[region]]
-id        = "netherlands"
-name      = "Netherlands"
-roads     = "stores/netherlands.roads.store"
-base      = "stores/enschede.layout.store"
+id        = "nl-west"
+name      = "Netherlands (west of 5.40°E)"
+roads     = "stores/nl-west.roads.store"
+base      = "stores/nl-west.base.store"
 read_mode = "paged"
+url_base  = "https://github.com/jjstwerff/routing/releases/download/data-v2026-07-30"
+
+[[region]]
+id        = "nl-east"
+name      = "Netherlands (east of 5.40°E)"
+roads     = "stores/nl-east.roads.store"
+base      = "stores/nl-east.base.store"
+read_mode = "paged"
+url_base  = "https://github.com/jjstwerff/routing/releases/download/data-v2026-07-30"

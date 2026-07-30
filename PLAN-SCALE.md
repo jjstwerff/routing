@@ -616,6 +616,48 @@ not round trips — *the number moved, but not for the reason the change made ob
 
 ---
 
+### The Netherlands base map, and a published dataset (2026-07-30)
+
+```
+osmium layers            areas 3.2 GB · buildings 8.7 GB · pois 303 MB · lines 199 MB · places 2.8 MB
+                         streets: the roads export, reused (884 MB)
+build_store (streaming)  24m33s, ~5 GB resident → 184,839 tiles · 17,167,067 features · 3.2 GB
+                         areas 2,658,318 · buildings 11,560,787 · labels 1,242,645 · lines 520,570 · pois 1,184,747
+extent                   lat 50.7182..54.2223  lon 2.6837..7.2957
+```
+
+S6's flat-memory claim now has a country behind it: 13.3 GB of input, one chunk resident per layer.
+
+**A GitHub release asset stops at 2 GB, so a 3.2 GB base map cannot ship whole** — which forces the
+regions §7 R0 already calls the unit. Both stores are cut at **5.40°E** (`tools/split_base.loft`, the
+presentation counterpart of `split_block.loft`), giving `nl-west` and `nl-east`, each roads 264 MB + base
+1.44 GB. Cut by CELL, so nothing is clipped and S8's gate covers the seam.
+
+**Published: [`data-v2026-07-30`](https://github.com/jjstwerff/routing/releases/tag/data-v2026-07-30)** —
+8 assets, 3.2 GB, each verified to answer a `206` with the exact size uploaded **before** the index that
+names them was published (§7 R6's order). And a paged read works against it end to end:
+
+```
+store_load_keys: asked=1 loaded=1 bytes_fetched=1179648 file=263942480
+RELEASE ok=true entries=1 roads=6488 steps=25883        ← 1.18 MB of a 264 MB asset = 0.45%
+```
+
+⚠ **What a GitHub release cannot do, measured rather than assumed:**
+
+| surface | `Range` | CORS with `Origin` | ceiling |
+|---|---|---|---|
+| release asset | ✅ 206 + `Content-Range` | ❌ **no `Access-Control-Allow-Origin`** | 2 GB/asset |
+| `raw.githubusercontent.com` | ✅ | ✅ `*` | git limits (~50–100 MB) |
+
+So the release serves **downloads, the native server and offline use**, and a browser on another origin
+cannot read it. That is D2 restated by measurement, not a surprise — the browser path needs a CORS host.
+The manifest therefore carries a per-region `url_base`, and **each index names only what it can serve**:
+the site index has the block that ships beside the app, the release index has the published regions. A
+region in the wrong index would resolve to a URL the consumer cannot fetch, which is a blank map rather
+than an error.
+
+---
+
 ## 7. Phase R — the update procedure (the recurring cost)
 
 Everything above is a one-off. **This is the part that runs forever**, and today it does not exist:
