@@ -7,7 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore } from './map.mjs';
-import { pickBlock, blocksForBox, resolveCoverage } from './coverage.mjs';
+import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1188,6 +1188,23 @@ console.log('\nS7 · coverage index → block');
   ok(outside.block.id === 'nl' && outside.outside === true, 'outside coverage → the first block, FLAGGED outside (a map to pan from, not a blank page)');
   const missing = await resolveCoverage('x', 52.2, 6.9, async () => { throw new Error('404'); });
   ok(missing.block === null && missing.outside === true, 'no index at all → null block, so the caller can say so');
+
+  // PLAN-SCALE C2 — the kernel's line 1 is the covering SET. One block is the C0/C1 case unchanged; a box
+  // over a border names both, which is what makes a cross-seam corridor possible (S8 proved the matcher
+  // side). The order is the index's, so the same box always yields the same string — that is what lets
+  // the kernel treat "the set changed" as "the session is stale" with a plain comparison.
+  const IDX = 'https://example.test/coverage.json';
+  const one = roadsUrlsFor(index, IDX, 52.20, 6.85, 52.23, 6.90);
+  ok(one === 'https://example.test/enschede.roads', `a box inside one block names exactly it (${one})`);
+  // A REAL straddle has to exceed both blocks: nl starts at 50.8°N and be ends at 51.6°N, so a box from
+  // 50.5 to 53.0 is contained by neither. (The first version of this case ran 51.3→51.6, which sits
+  // wholly inside be — it named one block and the test was wrong, not the code.)
+  const two = roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6);
+  ok(two.split(',').length === 2 && two.includes('nl.roads') && two.includes('be.roads'),
+     `a box no single block contains names BOTH (${two})`);
+  ok(roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6) === two, 'the same box always yields the same string, in index order');
+  const none = roadsUrlsFor(index, IDX, 40.0, 10.0, 40.1, 10.1, nl);
+  ok(none === 'https://example.test/nl.roads', 'a box covering nothing falls back to the resolved block, never to an empty command');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

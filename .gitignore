@@ -49,3 +49,7 @@ _site/
 
 # imaging round-trip test artefacts — each run re-creates them (lib/imaging/tests/15-regression.loft).
 lib/imaging/tests/_tmp_*.png
+
+# Generated map blocks (tools/build-blocks.sh) — output, not source. A country block is ~300 MB and
+# is rebuilt from OSM, so it belongs beside the site it is served from, never in git.
+blocks/

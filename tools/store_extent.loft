@@ -13,9 +13,10 @@
 //
 //   loft --native --lib lib tools/store_extent.loft <store> roads|base
 //
-// ⚠ The kind is `base`, not `layout`, and that is not a preference: loft's CLI takes an argument that
-// spells a SUBCOMMAND for itself, so `… store_extent.loft <store> layout` runs `loft layout` and the
-// script never starts. `--` does not stop it either (loft#684).
+// The kind is `base`, not `layout`. It had to be: loft's CLI took an argument that spelled a SUBCOMMAND
+// for itself, so `… store_extent.loft <store> layout` ran `loft layout` and the script never started, and
+// `--` did not stop it (loft#684 — fixed upstream, re-verified on the 2026-07-30 14:35 binary). The name
+// stays `base` because it pairs with `roads` better than `layout` does.
 #cwd
 
 use routing_kernel::TTile;

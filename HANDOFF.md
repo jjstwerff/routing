@@ -186,6 +186,13 @@ a keyed tile costing **262 KB in 5 range requests**; it turned green on its own,
 standing gate is for. ⚠ The fix is `fixed-pending-merge` on `tuxedo-diagnostics2`: it is in the
 binary installed here, **not** in a fresh install from loft `main`.
 
+**Six routing-filed issues landed within a day** — #678, #680, #681 in the morning; **#683** (an index key
+is type-checked once the whole file is known), **#684** (a program argument spelling a subcommand is no
+longer swallowed) and **#688** (the NRVO return buffer is freed on paths that do not deliver it — a store
+leak that killed the first country-sized generation at 65,535 records) by the afternoon. All re-verified
+against their original repros on the 14:35 binary. ⚠ The installed loft changed **five times** on
+2026-07-30 and reported `2026.7.2` every time. Earlier note:
+
 **Three routing-filed issues landed within a day** (all `fixed-pending-merge`, i.e. present in the
 installed binary, not yet in loft `main`): [#678](https://github.com/loft-lang/loft/issues/678) paged
 loaders in the browser (+ a follow-up making the SHA-verifying `store_load_url` browser-available too),

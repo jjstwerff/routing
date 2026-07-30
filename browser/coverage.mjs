@@ -46,6 +46,32 @@ export function blocksForBox(index, mnla, mnlo, mxla, mxlo) {
   });
 }
 
+// The roads URLs a command over `box` must be able to read, as the kernel's line 1 wants them: the
+// covering set, comma-separated, resolved against the index's own URL.
+//
+// It is a SET, not a block, because a corridor near a border needs both sides — and the kernel decides
+// its read strategy from the count (more than one can only be paged; a whole-file load adopts an image
+// rather than adding to one). One entry is the C0/C1 case and behaves exactly as it did.
+//
+// The order is the index's, so the same viewport always produces the same string — which is what lets the
+// kernel treat "the covering set changed" as "the session is stale" with a plain comparison.
+export function roadsUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) {
+  const hits = blocksForBox(index, mnla, mnlo, mxla, mxlo);
+  // ⚠ If one block CONTAINS the whole box, use the smallest such and nothing else.
+  //
+  // Real blocks are disjoint — regions are cut on cell boundaries — but the index cannot enforce that, and
+  // an overlap is exactly what a detailed city block inside a country block looks like. Naming both would
+  // feed the SAME roads to `build_graph` twice, and a duplicated way is not a slower match, it is a
+  // different one. Only when no single block covers the box (a genuine border case) is the set plural.
+  const covers = (b) => { const x = b.roads.bbox;
+    return x.mnla <= Math.round(mnla * FIXED) && x.mxla >= Math.round(mxla * FIXED)
+        && x.mnlo <= Math.round(mnlo * FIXED) && x.mxlo >= Math.round(mxlo * FIXED); };
+  const area = (b) => (b.roads.bbox.mxla - b.roads.bbox.mnla) * (b.roads.bbox.mxlo - b.roads.bbox.mnlo);
+  const whole = hits.filter(covers).sort((a, b) => area(a) - area(b));
+  const chosen = whole.length ? [whole[0]] : (hits.length ? hits : (fallback ? [fallback] : []));
+  return chosen.map((b) => new URL(b.roads.url, indexUrl).href).join(',');
+}
+
 // Resolve the block for a camera, with the fallbacks stated rather than implied:
 //   * no index at all      → null, and the caller says so (the app is not usable without data)
 //   * index but no cover   → the FIRST block, flagged `outside: true`, so a visitor who lands outside

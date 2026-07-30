@@ -9,7 +9,7 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
-import { resolveCoverage } from './coverage.mjs';
+import { resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 
 // PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
 // the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
@@ -35,7 +35,13 @@ if (!coverage.block) {
   throw new Error('no coverage index at ' + INDEX_URL);
 }
 const LAYOUT = new URL(coverage.block.base.url, INDEX_URL).href;
+// The single-block default. Every command below re-derives the covering SET for the box it is about to
+// read (PLAN-SCALE C2) — this is what it collapses to when one block covers everything, and the fallback
+// when a box covers none.
 const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
+// The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
+// stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
+const roadsFor = (b) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, coverage.block) || ROADS;
 window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
@@ -95,7 +101,7 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}\n\n${window.__readMode}`);
+  const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nview\n${bbox}\n\n${window.__readMode}`);
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -145,10 +151,28 @@ async function ensureViewNow() {
 // growing line is strictly a view of the same match, and `tools/match_parity.sh` is untouched by it.
 // `growSteps` records how many times the drawn route actually advanced, so the app's OWN path is
 // observable to the gate and not just the probe's.
+// The blocks a MATCH must be able to read: the sketch's own bbox, padded generously. The kernel widens a
+// corridor by its margin (up to ~1 km) plus a cell ring, so the padding here has to be at least that or a
+// corridor could want a block the app never named. 0.05° ≈ 5.5 km is comfortably beyond it, and naming a
+// block that turns out to hold nothing costs one request that returns nothing.
+const SKETCH_PAD_DEG = 0.05;
+function roadsForSketch(spec) {
+  let mnla = Infinity, mnlo = Infinity, mxla = -Infinity, mxlo = -Infinity;
+  for (const tok of String(spec).split(';')) {
+    const [la, lo] = tok.split(',').map(Number);
+    if (!Number.isFinite(la) || !Number.isFinite(lo)) continue;
+    if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+    if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+  }
+  if (!Number.isFinite(mnla)) return ROADS;
+  return roadsFor({ mnla: mnla - SKETCH_PAD_DEG, mnlo: mnlo - SKETCH_PAD_DEG,
+                    mxla: mxla + SKETCH_PAD_DEG, mxlo: mxlo + SKETCH_PAD_DEG });
+}
+
 async function streamedMatch(spec, isCurrent) {
   map.beginStretches();
   let growSteps = 0, lastLen = 0;
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
+  const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
     // A line sink is drained in a microtask, so one belonging to a SUPERSEDED match could still fire once
     // a newer match has begun and blend two routes into the same stretch accumulator (PLAN-EDIT failure
     // path 10). The generation check makes that impossible rather than unlikely.
@@ -219,6 +243,21 @@ window.__rough = rough;
 window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // PLAN-SCALE C2 — run a match through the APP's own path with a caller-supplied sketch, and report the
+  // covering set the app named for it. The cross-block gate needs both halves: the route, to compare
+  // against the single-block answer, and the URL list, to prove the command really addressed two blocks
+  // rather than quietly falling back to one.
+  matchSpec: async (spec) => {
+    const roads = roadsForSketch(spec);
+    await kernel.runKernel(`${LAYOUT}\n${roads}\nreset`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${roads}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+    const summary = (text.split('\n').find((l) => l.startsWith('SUMMARY')) || '').trim();
+    // A hash of the ROUTE lines, not just the summary: two different routes can share a length to 0.1 m.
+    const route = text.split('\n').filter((l) => l.startsWith('ROUTE')).join('\n');
+    let h = 0;
+    for (let i = 0; i < route.length; i++) h = (Math.imul(h, 31) + route.charCodeAt(i)) | 0;
+    return { roads, blocks: roads.split(',').length, summary, routeHash: (h >>> 0).toString(16), routeBytes: route.length };
+  },
   // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
   exposeInfo: () => {
     const e = kernel.exposedValue ? kernel.exposedValue(1) : null;
@@ -271,7 +310,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nviewtext\n${bbox}\n\n${window.__readMode}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nviewtext\n${bbox}\n\n${window.__readMode}`);
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -315,7 +354,7 @@ window.__perfHooks = {
     for (const [i, pts] of areas.entries()) {
       const t0 = performance.now();
       const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
-      const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+      const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
       const m = text.match(/ways=(\d+)/);
       rows.push({ i, ms: Math.round(performance.now() - t0), wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1), ways: m ? +m[1] : -1 });
     }
@@ -365,7 +404,7 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}\n\n${window.__readMode}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nview\n${bbox}\n\n${window.__readMode}`);
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();
@@ -901,7 +940,7 @@ window.__perfHooks = {
     await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     const d0 = kernel.stats().deliveries;
     let earlyStretches = 0, done = false, afterDone = 0;
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
+    const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
       if (!line.startsWith('STRETCH ')) return;
       if (done) afterDone++; else earlyStretches++;
     });

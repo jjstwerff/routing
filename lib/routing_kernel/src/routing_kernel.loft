@@ -196,6 +196,13 @@ fn tag(obj: JsonValue, name: text) -> text {
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
+// The "no usable way here" answer. A function rather than a local, so it is only ever CONSTRUCTED on the
+// path that returns it — see the note in `parse_way_feature`.
+fn empty_way() -> Way {
+  Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+        onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }
+}
+
 // Parse ONE GeoJSON `Feature` line — the `geojsonseq` form osmium exports — into a Way (PLAN-SCALE S6).
 // Returns a Way with EMPTY coords for anything unusable (a blank line, a non-LineString, a feature with
 // fewer than 2 points); the caller already skips those, so a malformed line costs a skip, not a crash.
@@ -203,12 +210,25 @@ fn tag(obj: JsonValue, name: text) -> text {
 // This exists so a generator can consume a country-sized extract line by line. `parse_ways` takes the
 // whole Overpass document as one `text` value, which is fine for a city and impossible for France.
 pub fn parse_way_feature(line: text) -> Way {
-  none = Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
-               onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] };
-  if line == "" { return none; }
-  root = json_parse(line);
+  // The "nothing usable" Way is built AT EACH RETURN, never once up front. That was forced by a leak —
+  // a struct owning a collection, constructed and then ABANDONED, never had its store reclaimed, and
+  // 65,535 of them killed the first country-sized run at "store table exhausted" (loft#688; fixed
+  // upstream as "the NRVO return buffer is freed on paths that do not deliver it", re-verified on the
+  // 2026-07-30 14:35 binary). The shape stays: constructing a fallback only where it is returned is
+  // clearer anyway, and it does not depend on the fix reaching every binary this repo runs on.
+  if line == "" { return empty_way(); }
+  // RFC 8142: a `geojsonseq` record may be prefixed with a RECORD SEPARATOR (0x1E), and osmium's
+  // `export -f geojsonseq` emits it. `json_parse` on `\x1e{…}` fails, and a parser that returns "no way"
+  // for every line produces an EMPTY BLOCK rather than an error — which is exactly what 2.78 million
+  // features did on the first real run. Start at the first `{` and both forms parse.
+  body = line;
+  cut = 0 - 1;
+  for ch in line { if ch == '{' { cut = ch#index; break; } }
+  if cut < 0 { return empty_way(); }
+  if cut > 0 { body = line[cut..line.size()]; }
+  root = json_parse(body);
   geom = root.field("geometry");
-  if tag(geom, "type") != "LineString" { return none; }
+  if tag(geom, "type") != "LineString" { return empty_way(); }
   cs = geom.field("coordinates");
   fcoords: vector<GeoPoint> = [];
   for ci in 0..len(cs) {
@@ -219,7 +239,7 @@ pub fn parse_way_feature(line: text) -> Way {
       fcoords += [GeoPoint { lat: pair.item(1).as_number(), lon: pair.item(0).as_number() }];
     }
   }
-  if len(fcoords) < 2 { return none; }
+  if len(fcoords) < 2 { return empty_way(); }
   props = root.field("properties");
   Way {
     highway:   tag(props, "highway"),
@@ -406,11 +426,11 @@ fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: 
   // costs arithmetic and no store access at all. A tile's `ox`/`oy` are `tx * TILE_CELL` by
   // construction, so the test sees exactly what it saw before.
   seen = 0;
-  // ⚠ The vector is bound to a LOCAL first, and it has to be. Iterating the call directly —
-  // `for k in corridor_cell_keys(…)` — makes `k` untyped because the callee is declared BELOW, and the
-  // hash lookup then fails to compile with "Invalid index key" pointing at this line rather than at the
-  // cause (loft#683, both backends). A typed local fixes it and costs nothing; moving the callee above
-  // would too, but ordering a file for the type-checker is the wrong reason to order a file.
+  // The vector is bound to a LOCAL first. It USED to be mandatory: iterating the call directly made `k`
+  // untyped when the callee was declared below, and the hash lookup failed to compile with "Invalid index
+  // key" pointing here rather than at the cause. Fixed upstream the same day (loft#683 — an index key is
+  // type-checked once the whole file is known), and re-verified on the 2026-07-30 14:35 binary. The local
+  // stays because it reads no worse and names the thing being iterated.
   ckeys: vector<integer> = corridor_cell_keys(pts, margin, tube);
   for k in ckeys {
     seen += 1;

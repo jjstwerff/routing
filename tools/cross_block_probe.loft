@@ -1,0 +1,87 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-SCALE S8 — a route across a BLOCK seam must be the route the whole region gives.
+//
+// At C2 the map is many blocks, and a corridor near a border draws its cells from more than one. The
+// question this answers is the one that would otherwise be found late, over real data, with nothing to
+// compare against: does a working set assembled from TWO blocks match what the single block produces?
+//
+// It is checkable now because a seam can be manufactured (`tools/split_block.loft`) over data whose
+// correct answer is already known — the same corridor against the unsplit block. Both routes are computed
+// in ONE run, so the comparison needs no recorded golden and cannot drift.
+//
+// The mechanism under test is the working set itself: `store_load_keys` ACCUMULATES, so the same local
+// collection is filled from each covering block in turn and the matcher never learns there was a seam.
+//
+//   loft --native --lib lib tools/cross_block_probe.loft <whole.store> <west.store> <east.store>
+#cwd
+
+use routing_kernel::(TTile, GeoPoint, Way, Graph, corridor_margin, corridor_cell_keys,
+                     tiles_corridor_ways_tube, build_graph, match_state_new, match_incremental,
+                     match_state_result);
+
+PROFILE = "cycling_road";
+
+// Position-weighted, so a reordered or shifted route differs — the same shape tile_border_probe uses.
+fn route_fp(pts: vector<GeoPoint>) -> integer {
+  h = 0;
+  for p in pts {
+    h = (h * 31 + (round(p.lat * 1000000.0) as integer) + (p#index * 7)) % 1000000007;
+    h = (h * 31 + (round(p.lon * 1000000.0) as integer)) % 1000000007;
+  }
+  h
+}
+
+fn match_with(ways: vector<Way>, trace: vector<GeoPoint>) -> vector<GeoPoint> {
+  g = build_graph(ways);
+  match_state_result(g, match_incremental(match_state_new(), g, trace, PROFILE)).pts
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 3 { println("usage: cross_block_probe <whole.store> <west.store> <east.store>"); return; }
+
+  // A sketch that genuinely crosses the seam at 6.88°E — west of it, east of it, and back.
+  trace: vector<GeoPoint> = [GeoPoint { lat: 52.2000, lon: 6.8500 },
+                             GeoPoint { lat: 52.2200, lon: 6.9000 },
+                             GeoPoint { lat: 52.2400, lon: 6.9200 }];
+  margin = corridor_margin(trace);
+
+  // --- the reference: one block holding everything
+  whole: hash<TTile[tkey]> = [];
+  store_load(whole, a[0] ?? "");
+  wways = tiles_corridor_ways_tube(whole, trace, margin);
+  wroute = match_with(wways, trace);
+  wfp = route_fp(wroute);
+  println("#X whole  ways={len(wways)} route_pts={len(wroute)} fp={wfp}");
+
+  // --- the same corridor, paged out of TWO blocks into one working set
+  keys: vector<integer> = corridor_cell_keys(trace, margin, false);
+  ws: hash<TTile[tkey]> = [];
+  gotw = store_load_keys(ws, a[1] ?? "", keys);
+  gote = store_load_keys(ws, a[2] ?? "", keys);
+  ntiles = 0;
+  for _ in ws { ntiles += 1; }
+  sways = tiles_corridor_ways_tube(ws, trace, margin);
+  sroute = match_with(sways, trace);
+  sfp = route_fp(sroute);
+  println("#X split  west_keys={gotw} east_keys={gote} tiles={ntiles} ways={len(sways)} route_pts={len(sroute)} fp={sfp}");
+
+  // Non-vacuity: the seam must actually be crossed, or this proves nothing. Both sides have to contribute
+  // cells, and the corridor has to be a real one.
+  if gotw < 1 || gote < 1 {
+    println("#X FAIL vacuous — the corridor drew cells from only one block (west={gotw} east={gote})");
+    return;
+  }
+  if len(wroute) < 20 {
+    println("#X FAIL vacuous — the reference route is too short to mean anything ({len(wroute)} pts)");
+    return;
+  }
+  if wfp != sfp {
+    println("#X FAIL — a route across the seam DIFFERS from the whole-region route ({sfp} vs {wfp})");
+    return;
+  }
+  println("#X ALL PASS — {gotw}+{gote} cells from two blocks route identically to the single block");
+}

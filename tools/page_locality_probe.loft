@@ -1,0 +1,27 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-SCALE S3's observable: what does ONE viewport cost to PAGE out of a block?
+//
+// A paged read fetches pages (~64 KB), not tiles, so what a viewport costs depends on whether the cells
+// it wants sit near each other in the file — which is decided by the order the generator inserts them
+// (`tools/reorder_tiles.loft`). This reads a fixed viewport out of whatever store it is given; run it
+// against two orderings of the same data and compare.
+//
+// Run it with LOFT_LOADER_STATS=1 — the line that matters is loft's, not ours:
+//   store_load_keys: asked=42 loaded=42 bytes_fetched=3211264 file=3816152
+//
+//   LOFT_LOADER_STATS=1 loft --native --lib lib tools/page_locality_probe.loft <store>
+#cwd
+use routing_kernel::(TTile, bbox_cell_keys);
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  // A realistic viewport over the covered area, in fixed-point 1e-7 degrees.
+  keys: vector<integer> = bbox_cell_keys(522000000, 68400000, 522600000, 69200000);
+  ws: hash<TTile[tkey]> = [];
+  got = store_load_keys(ws, a[0] ?? "", keys);
+  roads = 0;
+  for t in ws { roads += len(t.roads); }
+  println("asked={len(keys)} loaded={got} roads={roads}");
+}

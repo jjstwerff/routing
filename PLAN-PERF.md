@@ -660,6 +660,20 @@ against the shape of the artifact we HAD, so it could only ever confirm it.*
 
 ## 6d. Step 15 — the block raster cache: LANDED and ON (2026-07-22)
 
+⚠ **Its bounded delta was re-baselined 2026-07-30, and the rule did not change.** The gate is three
+equalities plus a bound on how far the block-cached render may differ from a direct one — a bound that is
+a property of the DATA, because denser geometry puts more pixels on the snapped-origin boundary:
+
+| dataset | roads in view | pixels differing | max delta | bound |
+|---|---|---|---|---|
+| Enschede block | 3,112 | 1.47% | 15 | 16 |
+| **Netherlands block** (PLAN-SCALE C2) | 4,197 | **1.51%** | **25** | **26** |
+
+Measured three times, identical each run — deterministic rounding, not noise, so the margin stays at one
+point. **The AREA barely moved while the peak nearly doubled**, which is the signature of §6d's mechanism
+(more thin lines on the boundary) and not of a rendering defect, which would have moved the area too.
+`BLOCK_DELTA_MAX` in `cdp_verify_store.mjs` carries that reasoning; raise it only with a measurement.
+
 **Status: enabled.** `map.blocked = true`. Every gate green.
 
 | | before | after |

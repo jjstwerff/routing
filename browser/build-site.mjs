@@ -53,4 +53,9 @@ writeFileSync(join(site, 'index.html'), html);
 if (existsSync(join(here, 'store-kernel.wasm'))) cpSync(join(here, 'store-kernel.wasm'), join(site, 'store-kernel.wasm'));
 else console.log('build-site: WARNING — browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)');
 if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 'stores'), { recursive: true });
+// Generated blocks (tools/build-blocks.sh → blocks/, gitignored) land in the same place, so the coverage
+// index can name every block with one kind of URL. They are copied rather than committed: a country block
+// is ~300 MB and is rebuilt from OSM, so it is output, not source.
+const blocks = join(here, '..', 'blocks');
+if (existsSync(blocks)) cpSync(blocks, join(site, 'stores'), { recursive: true });
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);

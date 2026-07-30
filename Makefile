@@ -200,6 +200,7 @@ test-native: check-rustc
 	@./tools/tile_border_gate.sh
 	@./tools/paged_gate.sh
 	@./tools/gen_stream_gate.sh
+	@./tools/cross_block_gate.sh
 	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \
 	  echo "$$out" | grep -E '^stores|^identity|^invariance|^#C'; \
 	  echo "$$out" | grep -q '^#C ALL PASS' \
@@ -222,3 +223,4 @@ test-map:
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
 	@./tools/paged_http_gate.sh
+	@./tools/cross_block_browser_gate.sh

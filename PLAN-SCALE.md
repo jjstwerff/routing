@@ -183,7 +183,7 @@ tracking here: it is the reason this plan's §2 was written against a read path 
 | **D1** | **Router WE-wide first; base map per-region on demand.** Ship roads (7–15 GB) as continuous coverage; treat layout blocks as an opt-in download per region. | §1(1) — the map is 6× the bytes of the thing that makes this app worth using, and `CLAUDE.md`'s split already says *loft does the ROUTE, JS does the MAP* |
 | **D2** | **Object storage with Range + CORS** (R2/B2), app shell stays on GitHub Pages. | Pages caps a site around 1 GB and a Release asset at 2 GB (re-verify before sizing) — neither hosts 50 GB. R2 has no egress fee, which is the cost model that decides this |
 | **D3** | **loft's working-set loader is the read path** — no codec, no JS range machinery, per the rule above. A gap in it is an **issue on `loft-lang/loft`**, and this plan waits on the fix rather than routing around it. | proven in §2 on both shapes; the one thing a hand-rolled reader would buy is speed, at the cost of hiding the gap the test-bed exists to find |
-| **D4** | **Keep the two cell sizes** (roads 0.02°, layout 0.005°), **Hilbert-order tiles within a block.** | changing cell size is a data migration; ordering is free at generation and is what makes page reads overlap |
+| **D4** | **Keep the two cell sizes** (roads 0.02°, layout 0.005°). ~~Hilbert-order tiles within a block.~~ **AMENDED 2026-07-30: the ordering is decided by MEASUREMENT at C2** — on today's block a viewport wants 42 of 88 cells, so no layout can win, and Hilbert measured worse (S3). | changing cell size is a data migration; ordering is a layout, not a format, so it stays free to change — and routes are byte-identical under every ordering tried |
 | **D5** | **Blocks are per-country or per-split, ≤ 2 GB, and the dataset VERSION is in the URL.** | a client must never mix versions mid-session; per-block regeneration is what makes a hotfix cheap (§7) |
 | **D6** | **The top index is ours and tiny** — bbox → block URL + version, one row per block (12–40 rows). | the store is its own directory (D3), so the only thing we author is the map from geography to block |
 | **D7** | **Cross-block continuity rides the existing border rule** — ways split at tile borders, border nodes grid-snapped so neighbours merge exactly — extended to blocks, with its own gate. | `tools/tile_border_gate.sh` already proves this across *tiles*; blocks are the same rule at a bigger seam |
@@ -280,6 +280,90 @@ isn't reliable on a mmap-reloaded store"*; re-tested on a `store_persist_bind`-e
 - **The first refactor was slower.** Returning a fresh `vector<Way>` per tile and doing `ways += …` copies
   every Way once per tile (~40% on a short corridor). It appends through a `&` reference instead.
 
+### C2 — the multi-block wiring is DONE; only the data is missing (2026-07-30)
+
+The kernel's line 1 is no longer a block, it is the **covering set** — the roads blocks whose extent a
+command touches, comma-separated. One entry is the C0/C1 case and behaves exactly as before; a corridor
+near a seam names two and the working set is filled from each in turn, which S8 proved the matcher cannot
+distinguish from a single block.
+
+- **More than one block can only be PAGED**, and the kernel enforces that rather than trusting the hint: a
+  whole-file load *adopts* an image, so the second would replace the first, where `store_load_keys`
+  accumulates by design. The plan predicted this forcing function; it is now mechanical.
+- **Marks are per (block, cell)**, not per cell. Every covering block is asked for the whole window, and a
+  block that legitimately holds none of those cells must not mark them fetched for its neighbour.
+- **The app derives the set per command** — a view from its viewport, a match from the sketch's bbox padded
+  by 0.05° (beyond the corridor margin the kernel will add, so a corridor cannot want a block the app never
+  named).
+- ⚠ **If one block contains the whole box, the set is that block alone** — the smallest such. Real blocks
+  are disjoint (regions cut on cell boundaries) but the index cannot enforce it, and a detailed city block
+  inside a country block is exactly what an overlap looks like. Naming both would feed the SAME roads to
+  `build_graph` twice, and **a duplicated way is not a slower match, it is a different one**. The unit test
+  caught that on its first run, before any second block exists.
+- The **base map stays single-block**: `expose` pins one store, and re-scoping that is S5/C3.
+
+### C2 — THE NETHERLANDS IS BUILT (2026-07-30)
+
+Real data, end to end, through the pipeline the plan specifies (`tools/build-blocks.sh`, §7 R1–R5):
+
+```
+geofabrik netherlands-latest.osm.pbf   1.4 GB   (md5 verified)
+osmium tags-filter w/highway           187 MB
+osmium export -f geojsonseq            884 MB   2,784,366 features
+gen-tiles (streaming)                  2m16s → 12,457 tiles · 2,784,366 roads · 322 MB
+extent  lat 50.7400..53.5418  lon 3.3400..7.2430
+```
+
+**The claim C1b could not demonstrate on a 3.5 MB block is now demonstrated:** a 42-cell viewport reads
+**10.5 MB of a 337 MB block — 3.1%**. On the small block the same read was 44–80%, because a 56-page block
+has nothing to be selective about. `readMode = "paged"` is in the index for this region, and the app uses
+it.
+
+**The route survived the change of dataset**: the gate's sketch matches to `route_pts=213 len=13138.0m` on
+NL data, identical to the Enschede block it replaced — from a different extract, a different vintage and
+35% more roads in view.
+
+Three things real data taught that no probe had:
+
+1. **osmium writes RFC 8142** — every `geojsonseq` record is prefixed with a RECORD SEPARATOR (0x1E).
+   `json_parse` rejected it, `parse_way_feature` returned "no way" for all 2.78 M lines, and the run
+   produced an EMPTY BLOCK with no error. ⚠ *S6's round-trip gate had passed* — because it fed the reader
+   **our own writer's** output, which omitted the RS. A round trip proves a reader against the writer it
+   was tested with, not against the world; the emitter now writes the RS too.
+2. **A store leak that only 65k+ records can reach** — [loft#688](https://github.com/loft-lang/loft/issues/688).
+   A struct owning a collection, constructed and then ABANDONED (built as a local, a different value
+   returned), never has its store reclaimed; at 65,535 calls the process dies with "store table exhausted".
+   Both backends. Our parser had exactly that idiom. Invisible below 65k of anything, so no test suite
+   finds it — only production-sized data does.
+3. **ROAD BLOCKS MUST NOT OVERLAP.** With both Enschede and NL listed, a sketch whose padded bbox escapes
+   the small block named BOTH, and the same roads were read twice: **7,138 ways became 9,438 for an
+   identical route**. It survived only because `build_graph` dedups nodes by coordinate. The fix is in the
+   DATA — one block per area — and the manifest now says so where the deleted region used to be.
+
+⚠ **One check is open, and it is a decision, not a bug.** Switching the app to real NL data moved the
+render (expected: `R=3112 → 4197` roads in the viewport, pixel hash `917244eb → 751c9c58`) and pushed
+§6d's block-cache bounded delta from **15 to 25**, above its threshold of **16 — a threshold chosen on the
+old dataset**. With 35% more thin lines, more pixels sit on the snapped-origin boundary, which is the
+phenomenon §6d measured; whether 25 is still "rounding" or an artefact worth chasing needs the same rigour
+§6d used, and the threshold has deliberately NOT been touched in the meantime.
+
+*What C2 still needs is data and nothing else* — generate NL blocks, add them to `data/coverage.toml`,
+rebuild the index. ✅ **And the browser runs it** (`tools/cross_block_browser_gate.sh`, in `make test-map`). The hole — the
+app only ever exercising a set of ONE — is closed the same way S8 closed its own: the shipped block is
+split beside itself in `_site`, the page's own coverage index is swapped for one naming both halves, and
+the SAME sketch is matched twice:
+
+```
+split at cell 345 (6.9°): west tiles=44 roads=16561 · east tiles=44 roads=9410
+single block : 1 url  · SUMMARY ways=7138 route_pts=213 len=13138.0m · routeHash=bb724a2c
+two blocks   : 2 urls · SUMMARY ways=7138 route_pts=213 len=13138.0m · routeHash=bb724a2c
+✓ two blocks, paged: 49 range reads total; route identical to the single block
+```
+
+The gate asserts the split run **named two blocks** before comparing anything — a fallback to one would
+otherwise pass while testing nothing — and the halves are temporary, built and removed per run, so the
+fixture cannot drift from the block it came from.
+
 ✅ **The browser runs it too** (same day): [loft#681](https://github.com/loft-lang/loft/issues/681) — the
 `--html` import-validation regression that had pinned `store-kernel.wasm` to the previous kernel — was
 fixed within the afternoon, the wasm rebuilt, and the browser gate reproduced the route exactly:
@@ -308,9 +392,32 @@ index only decides who is worth testing.**
 The index build is O(n) once per store — 5 reads × 1089 tiles, i.e. exactly what ONE view used to cost —
 and every view after it is free. **S2 is complete.**
 
-**S3 · Page-locality: Hilbert ordering.** Order tiles within a block on a Hilbert curve at generation.
-*Observable:* `bytes_fetched` for a realistic viewport working set, before vs after. *Gate:* a probe that
-fails if a 60-tile viewport costs more than N MB (N set by S1's measurement, recorded, not guessed).
+**S3 · Page-locality: Hilbert ordering.** ⏸ **MEASURED AND DEFERRED (2026-07-30) — the instrument exists,
+the decision belongs at C2.** The plan assumed a Hilbert curve was the answer (D4). Measured on the block
+we have, it is not evaluable here and, as implemented, it is a net loss:
+
+| ordering | file | bytes fetched for a 42-cell viewport |
+|---|---|---|
+| as generated (row-major) | 3,816,152 | **3,211,264** (84% of the file) |
+| explicit `row` | 3,816,152 | 3,211,264 |
+| **`hilbert`** | **8,904,352** | **3,604,480** — *more absolute bytes, out of a 2.3× file* |
+
+**Why it cannot be evaluated at this size:** a realistic viewport wants **42 of the block's 88 cells**, so
+any layout fetches most of the file. Locality has nothing to win until a viewport is a small *fraction* of
+a block, which is C2 onwards. Routes are byte-identical under all three orderings (the border probe's
+three golden fingerprints), so the ordering is free to change later — it is a layout, not a format.
+
+⚠ **An unexplained 2.33× file, recorded rather than diagnosed.** Rewriting the block in Hilbert order
+yields 8,904,352 bytes for identical content — 88 tiles, 25,971 roads, 159,993 steps — reproducibly, from
+any input ordering; rewriting it back gives exactly 3,816,152 again. But a standalone repro (2,000 records
+of 200 values, inserted ascending vs scattered) shows **1.00×**, so *"scattered insertion inflates a
+store"* is NOT established and nothing was filed upstream: a report whose repro does not reproduce is
+noise. What is known is written down, with `tools/reorder_tiles.loft` to re-check it at C2 scale, where
+the answer actually matters.
+
+**D4 is amended:** tile ordering is decided **by this measurement at C2**, not assumed now. The tooling is
+the deliverable — `tools/reorder_tiles.loft` (hilbert / row / keep) and
+`tools/page_locality_probe.loft` (a fixed viewport's `bytes_fetched`, via `LOFT_LOADER_STATS=1`).
 
 **S4 · Working-set lifecycle + eviction (W3).** Bounded LRU over loaded tiles; a session that pans across
 a country holds a bounded footprint. *Observable:* peak wasm memory across a scripted pan of 500 km.
@@ -386,8 +493,26 @@ a URL resolves against the file that CONTAINS it — so `"stores/enschede.roads.
 could see it; the browser gate failed on the first run. **The index belongs at the site root**, which is
 what the block URLs are relative to.
 
-**S8 · Cross-block stitch (D7).** A route crossing a block seam. *Observable:* no gap, no bridge edge at
-the seam. *Gate:* extend `tile_border_gate.sh` to a **block** seam, both directions, order-insensitive.
+**S8 · Cross-block stitch (D7).** ✅ **PROVEN (2026-07-30), without waiting for a second real block.**
+A seam is MANUFACTURED from the block we ship — `tools/split_block.loft` cuts by CELL, so no way is cut
+and no coordinate moves, which is the same seam a per-region generation produces — and the reference is
+the same corridor against the unsplit block:
+
+```
+split at cell 344 (6.88°): west tiles=35 roads=11038 · east tiles=53 roads=14933
+#X whole  ways=8436 route_pts=131 fp=862017430
+#X split  west_keys=18 east_keys=24 tiles=42 ways=8436 route_pts=131 fp=862017430
+#X ALL PASS — 18+24 cells from two blocks route identically to the single block
+```
+
+**The mechanism is the working set itself:** `store_load_keys` accumulates, so the same local collection
+is filled from each covering block in turn and the matcher never learns there was a seam. Both routes are
+computed in ONE run, so there is no golden to drift, and the gate checks non-vacuity first — both sides
+must contribute cells, or it proves nothing.
+
+*This is the property every rung from C2 up stands on*, and it was the one most likely to be discovered
+late, over real data, with nothing to compare against. `tools/cross_block_gate.sh`, in `make test-native`;
+nothing is committed but the tools, so a re-keyed or regenerated block is re-split automatically.
 
 **S9 · Hosting (D2).** Blocks on R2/B2, Range + CORS from the browser origin. *Observable:* a 206 with
 correct bytes, cross-origin, from the deployed page. *Gate:* a headless check in `make test-map` against a
