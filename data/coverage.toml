@@ -12,9 +12,28 @@
 #   whole  download once, keep it (right while a block is a few pages wide)
 #   paged  store_load_keys over HTTP Range, only the cells a command touches (right at C2 scale)
 
+# ⚠ ROAD BLOCKS MUST NOT OVERLAP. The Enschede roads block was removed here when the Netherlands block
+# landed, because NL covers the same ground: with both listed, a sketch whose padded bbox escapes the small
+# block names BOTH, the same roads are read twice and fed to `build_graph` twice. It survived only because
+# the graph dedups nodes by coordinate — 7138 ways became 9438 for an identical route. A duplicated way is
+# not reliably a slower match, it is a different one, so the fix is in the DATA: one block per area, cut on
+# cell boundaries (which is what a per-region generation produces anyway).
+#
+# The Enschede stores are still in the repo and still drive every native gate; they are simply no longer
+# a coverage region now that a real country block exists.
+
+# The whole Netherlands, generated 2026-07-30 from the Geofabrik extract (tools/build-blocks.sh).
+# 12,457 tiles · 2,784,366 roads · 322 MB — the first block where a viewport is a small FRACTION of the
+# data (a 42-cell read costs 3.1% of it), which is what `paged` is for and what the 3.5 MB block could
+# never show.
+#
+# ⚠ `base` points at the Enschede layout store because that is the only base map that exists: the base
+# generator still reads its whole input (S6 fixed the ROADS generator only). The index records that
+# store's own measured extent, so nothing claims otherwise — outside Enschede this block routes without a
+# base map, which is exactly what D1 says to expect (the router is WE-wide first, the map per region).
 [[region]]
-id        = "enschede"
-name      = "Enschede / south Overijssel"
-roads     = "stores/enschede.roads.store"
+id        = "netherlands"
+name      = "Netherlands"
+roads     = "stores/netherlands.roads.store"
 base      = "stores/enschede.layout.store"
-read_mode = "whole"
+read_mode = "paged"

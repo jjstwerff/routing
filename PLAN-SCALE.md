@@ -302,6 +302,51 @@ distinguish from a single block.
   caught that on its first run, before any second block exists.
 - The **base map stays single-block**: `expose` pins one store, and re-scoping that is S5/C3.
 
+### C2 — THE NETHERLANDS IS BUILT (2026-07-30)
+
+Real data, end to end, through the pipeline the plan specifies (`tools/build-blocks.sh`, §7 R1–R5):
+
+```
+geofabrik netherlands-latest.osm.pbf   1.4 GB   (md5 verified)
+osmium tags-filter w/highway           187 MB
+osmium export -f geojsonseq            884 MB   2,784,366 features
+gen-tiles (streaming)                  2m16s → 12,457 tiles · 2,784,366 roads · 322 MB
+extent  lat 50.7400..53.5418  lon 3.3400..7.2430
+```
+
+**The claim C1b could not demonstrate on a 3.5 MB block is now demonstrated:** a 42-cell viewport reads
+**10.5 MB of a 337 MB block — 3.1%**. On the small block the same read was 44–80%, because a 56-page block
+has nothing to be selective about. `readMode = "paged"` is in the index for this region, and the app uses
+it.
+
+**The route survived the change of dataset**: the gate's sketch matches to `route_pts=213 len=13138.0m` on
+NL data, identical to the Enschede block it replaced — from a different extract, a different vintage and
+35% more roads in view.
+
+Three things real data taught that no probe had:
+
+1. **osmium writes RFC 8142** — every `geojsonseq` record is prefixed with a RECORD SEPARATOR (0x1E).
+   `json_parse` rejected it, `parse_way_feature` returned "no way" for all 2.78 M lines, and the run
+   produced an EMPTY BLOCK with no error. ⚠ *S6's round-trip gate had passed* — because it fed the reader
+   **our own writer's** output, which omitted the RS. A round trip proves a reader against the writer it
+   was tested with, not against the world; the emitter now writes the RS too.
+2. **A store leak that only 65k+ records can reach** — [loft#688](https://github.com/loft-lang/loft/issues/688).
+   A struct owning a collection, constructed and then ABANDONED (built as a local, a different value
+   returned), never has its store reclaimed; at 65,535 calls the process dies with "store table exhausted".
+   Both backends. Our parser had exactly that idiom. Invisible below 65k of anything, so no test suite
+   finds it — only production-sized data does.
+3. **ROAD BLOCKS MUST NOT OVERLAP.** With both Enschede and NL listed, a sketch whose padded bbox escapes
+   the small block named BOTH, and the same roads were read twice: **7,138 ways became 9,438 for an
+   identical route**. It survived only because `build_graph` dedups nodes by coordinate. The fix is in the
+   DATA — one block per area — and the manifest now says so where the deleted region used to be.
+
+⚠ **One check is open, and it is a decision, not a bug.** Switching the app to real NL data moved the
+render (expected: `R=3112 → 4197` roads in the viewport, pixel hash `917244eb → 751c9c58`) and pushed
+§6d's block-cache bounded delta from **15 to 25**, above its threshold of **16 — a threshold chosen on the
+old dataset**. With 35% more thin lines, more pixels sit on the snapped-origin boundary, which is the
+phenomenon §6d measured; whether 25 is still "rounding" or an artefact worth chasing needs the same rigour
+§6d used, and the threshold has deliberately NOT been touched in the meantime.
+
 *What C2 still needs is data and nothing else* — generate NL blocks, add them to `data/coverage.toml`,
 rebuild the index. ✅ **And the browser runs it** (`tools/cross_block_browser_gate.sh`, in `make test-map`). The hole — the
 app only ever exercising a set of ONE — is closed the same way S8 closed its own: the shipped block is

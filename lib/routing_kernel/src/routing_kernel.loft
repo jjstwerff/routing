@@ -196,6 +196,13 @@ fn tag(obj: JsonValue, name: text) -> text {
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
+// The "no usable way here" answer. A function rather than a local, so it is only ever CONSTRUCTED on the
+// path that returns it — see the note in `parse_way_feature`.
+fn empty_way() -> Way {
+  Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+        onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] }
+}
+
 // Parse ONE GeoJSON `Feature` line — the `geojsonseq` form osmium exports — into a Way (PLAN-SCALE S6).
 // Returns a Way with EMPTY coords for anything unusable (a blank line, a non-LineString, a feature with
 // fewer than 2 points); the caller already skips those, so a malformed line costs a skip, not a crash.
@@ -203,12 +210,23 @@ fn tag(obj: JsonValue, name: text) -> text {
 // This exists so a generator can consume a country-sized extract line by line. `parse_ways` takes the
 // whole Overpass document as one `text` value, which is fine for a city and impossible for France.
 pub fn parse_way_feature(line: text) -> Way {
-  none = Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
-               onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] };
-  if line == "" { return none; }
-  root = json_parse(line);
+  // ⚠ The "nothing usable" Way is built AT EACH RETURN, never once up front. A struct that owns a
+  // collection and is then ABANDONED (constructed, and a different value returned instead) leaks its
+  // store — 65,535 of them and the process dies with "store table exhausted" (loft#688, both backends).
+  // Building it up front reads better and killed the first real country-sized run at ~65k features.
+  if line == "" { return empty_way(); }
+  // RFC 8142: a `geojsonseq` record may be prefixed with a RECORD SEPARATOR (0x1E), and osmium's
+  // `export -f geojsonseq` emits it. `json_parse` on `\x1e{…}` fails, and a parser that returns "no way"
+  // for every line produces an EMPTY BLOCK rather than an error — which is exactly what 2.78 million
+  // features did on the first real run. Start at the first `{` and both forms parse.
+  body = line;
+  cut = 0 - 1;
+  for ch in line { if ch == '{' { cut = ch#index; break; } }
+  if cut < 0 { return empty_way(); }
+  if cut > 0 { body = line[cut..line.size()]; }
+  root = json_parse(body);
   geom = root.field("geometry");
-  if tag(geom, "type") != "LineString" { return none; }
+  if tag(geom, "type") != "LineString" { return empty_way(); }
   cs = geom.field("coordinates");
   fcoords: vector<GeoPoint> = [];
   for ci in 0..len(cs) {
@@ -219,7 +237,7 @@ pub fn parse_way_feature(line: text) -> Way {
       fcoords += [GeoPoint { lat: pair.item(1).as_number(), lon: pair.item(0).as_number() }];
     }
   }
-  if len(fcoords) < 2 { return none; }
+  if len(fcoords) < 2 { return empty_way(); }
   props = root.field("properties");
   Way {
     highway:   tag(props, "highway"),

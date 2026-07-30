@@ -40,6 +40,7 @@ fn hw_of_class(tp: integer) -> text {
 }
 
 fn main() {
+  RS = "{30 as character}";
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
   if len(a) < 2 { println("usage: tiles_to_geojsonseq <roads.store> <out.geojsonseq>"); return; }
@@ -60,7 +61,10 @@ fn main() {
       if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
       // ⚠ Literal braces are DOUBLED: `{` opens interpolation in a loft string, and JSON is mostly
       // braces. `{{` / `}}` emit one.
-      line = "{{\"type\":\"Feature\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
+      // RFC 8142 record separator (0x1E), because that is what `osmium export -f geojsonseq` writes —
+      // and a round trip through a writer that omits it proves the reader against the wrong format. The
+      // first real 884 MB input binned ZERO tiles for exactly that reason.
+      line = "{RS}{{\"type\":\"Feature\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
       if cw != "" { line += ",\"cycleway\":\"{cw}\""; }
       if surf != "" { line += ",\"surface\":\"{surf}\""; }
       line += "}},\"geometry\":{{\"type\":\"LineString\",\"coordinates\":[";
