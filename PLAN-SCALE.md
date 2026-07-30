@@ -658,6 +658,40 @@ than an error.
 
 ---
 
+### Many files stitch themselves — and the one property that makes that true
+
+**`nl-west` and `nl-east` are not two maps.** A route from Amersfoort to Apeldoorn crosses the 5.40°E seam,
+draws **30 cells from west and 60 from east**, and produces byte-identical geometry to the unsplit country:
+
+```
+#N whole  ways=10935 route_pts=148 fp=555142227
+#N split  west_cells=30 east_cells=60 ways=10935 route_pts=148 fp=555142227
+```
+
+There is no stitching STEP. Splits are by cell so nothing is clipped; `store_load_keys` accumulates, so one
+working set is filled from each covering block in turn; and the index turns a command's box into that
+covering set. The mechanism does not care whether there are two files or forty — a corridor names the two
+or three blocks it actually crosses.
+
+**What it does care about is disjointness**, and that is the one thing the index cannot check: it stores
+extents, and extents legitimately overlap because a feature is keyed by its FIRST VERTEX and never clipped.
+Only the cell sets settle it. A cell held by two blocks an index can name together delivers its roads
+twice — not a slower match, a different one — and it survived once only because `build_graph` dedups nodes
+by coordinate (7,138 ways became 9,438 for an identical route).
+
+`tools/block_overlap_gate.sh` (in `make test-native`) asserts it, **per resolvable set**: a region is
+reachable from exactly one index, so blocks in different indexes may overlap — the Enschede block that
+ships with the app sits inside the Netherlands regions and shares 84 cells with `nl-east`, which is correct
+and harmless. The first version of the gate compared everything to everything and failed on exactly that;
+the ambiguity was in the model, not the data, and the rule is now stated precisely.
+
+⚠ **This is the check to run before Western Europe is generated.** Blocks cut from ONE extract on cell
+boundaries are disjoint by construction — that is how the NL halves were made. Blocks taken from
+**per-country Geofabrik extracts are not**: those deliberately include cross-border data, so `france` and
+`belgium` would both hold ways near Lille. WE must be cut, not collected.
+
+---
+
 ## 7. Phase R — the update procedure (the recurring cost)
 
 Everything above is a one-off. **This is the part that runs forever**, and today it does not exist:
