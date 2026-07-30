@@ -181,7 +181,7 @@ tracking here: it is the reason this plan's §2 was written against a read path 
 | | decision | why |
 |---|---|---|
 | **D1** | **Router WE-wide first; base map per-region on demand.** Ship roads (7–15 GB) as continuous coverage; treat layout blocks as an opt-in download per region. | §1(1) — the map is 6× the bytes of the thing that makes this app worth using, and `CLAUDE.md`'s split already says *loft does the ROUTE, JS does the MAP* |
-| **D2** | **Object storage with Range + CORS** (R2/B2), app shell stays on GitHub Pages. | Pages caps a site around 1 GB and a Release asset at 2 GB (re-verify before sizing) — neither hosts 50 GB. R2 has no egress fee, which is the cost model that decides this |
+| **D2** | **Object storage with Range + CORS** (R2/B2), app shell stays on GitHub Pages. **Now a TEST, not a plan** — `tools/cors_host_gate.sh` drives the real app with its blocks on another origin; a candidate host either passes it or is not a host for this app. | Pages caps a site around 1 GB and a Release asset at 2 GB (re-verify before sizing) — neither hosts 50 GB. R2 has no egress fee, which is the cost model that decides this |
 | **D3** | **loft's working-set loader is the read path** — no codec, no JS range machinery, per the rule above. A gap in it is an **issue on `loft-lang/loft`**, and this plan waits on the fix rather than routing around it. | proven in §2 on both shapes; the one thing a hand-rolled reader would buy is speed, at the cost of hiding the gap the test-bed exists to find |
 | **D4** | **Keep the two cell sizes** (roads 0.02°, layout 0.005°). ~~Hilbert-order tiles within a block.~~ **AMENDED 2026-07-30: the ordering is decided by MEASUREMENT at C2** — on today's block a viewport wants 42 of 88 cells, so no layout can win, and Hilbert measured worse (S3). | changing cell size is a data migration; ordering is a layout, not a format, so it stays free to change — and routes are byte-identical under every ordering tried |
 | **D5** | **Blocks are per-country or per-split, ≤ 2 GB, and the dataset VERSION is in the URL.** | a client must never mix versions mid-session; per-block regeneration is what makes a hotfix cheap (§7) |
@@ -689,6 +689,52 @@ the ambiguity was in the model, not the data, and the rule is now stated precise
 boundaries are disjoint by construction — that is how the NL halves were made. Blocks taken from
 **per-country Geofabrik extracts are not**: those deliberately include cross-border data, so `france` and
 `belgium` would both hold ways near Lille. WE must be cut, not collected.
+
+---
+
+### D2 — the CORS host, made testable (2026-07-30)
+
+**Neither GitHub surface can serve a paged block to a browser**, measured rather than assumed:
+
+| surface | `Range` | CORS | verdict |
+|---|---|---|---|
+| release asset | ✅ 206 + `Content-Range` | ❌ no ACAO even with `Origin` | downloads, native, offline — not the browser |
+| GitHub Pages | ❌ advertises `accept-ranges`, **answers 200 with the whole file** | n/a (same origin) | cannot page, at any size |
+
+So D2's bucket is not a preference, it is the only shape that works — and it is now something a candidate
+host is *tested* against instead of trusted. `tools/cors_host_gate.sh` (in `make test-map`) serves the app
+on one origin and its blocks on another and drives the real app across it:
+
+```
+data origin: HTTP 206, ACAO header present: 1
+✓ rendered from a DIFFERENT origin: # view: R=3112
+✓ matched across it: SUMMARY ways=7138 route_pts=213 len=13138.0m
+✓ read BY RANGE across origins: 58 reads, 3.5 MB = 96.2% of the block
+```
+
+**Four requirements, each of which the gate catches**, and two were only found by building it:
+
+1. a real `206` with `Content-Range` — Pages fails this;
+2. `Access-Control-Allow-Origin` for the app's origin — release assets fail this;
+3. ⚠ **an OPTIONS preflight that allows the `Range` REQUEST header.** `Range` is not CORS-safelisted, so
+   the browser asks first, and a host answering only GET is indistinguishable from one with no CORS at
+   all. My own test host failed exactly here;
+4. ⚠ `Content-Range` in `Access-Control-Expose-Headers`, or the reader cannot learn the file's size.
+
+`data/bucket-cors.json` is that policy and `tools/publish-bucket.sh` applies §7 R6's order to a bucket —
+upload, verify every object for all four properties, index last. It needs credentials this machine does
+not have; everything else is done.
+
+⚠ **An index must not mix reachable and unreachable hosts.** The gate's first version built an index
+naming both the local CORS host and the GitHub-hosted NL regions; a match whose padded box escaped the
+small block named both, the release-hosted read failed for want of CORS, and **the whole working set went
+down with it** — `ways=0`, an empty route, on a host that was working perfectly. One unreachable block in a
+covering set does not degrade a match, it ends it. That is why each index names only what it can serve.
+
+*Two of my own assertions were vacuous before this gate worked:* it first passed while the match returned
+`ways=0` (the summary was non-empty, so the check said nothing), and the range counters counted requests
+rather than deliveries, so blocked reads still reported "38 reads, 2.3 MB". Both are fixed — the counters
+count what arrived, and the gate requires a real route.
 
 ---
 

@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://jjstwerff.github.io"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["Range", "Content-Type"],
+    "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"],
+    "MaxAgeSeconds": 86400
+  }
+]

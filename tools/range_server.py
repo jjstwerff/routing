@@ -37,6 +37,17 @@ class H(http.server.SimpleHTTPRequestHandler):
             return "application/octet-stream"
         return super().guess_type(path)
 
+    def do_OPTIONS(self):
+        # The preflight. A `Range` request header is NOT CORS-safelisted, so a cross-origin paged read
+        # begins with OPTIONS — and a host that answers only GET looks exactly like a host with no CORS:
+        # the browser blocks the read and the app renders nothing. Any real bucket policy must allow the
+        # Range REQUEST header here, not just expose Content-Range on the response.
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     def do_GET(self):
         if self.path.startswith("/report"):
             q = urllib.parse.urlparse(self.path).query
