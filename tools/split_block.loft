@@ -1,0 +1,56 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Split a roads block in two along a meridian (PLAN-SCALE C2 / S7 / S8).
+//
+// WHY. Every multi-block property — the index resolving between blocks, a working set filled from more
+// than one, a route crossing a seam — needs TWO blocks, and the real second block is a country-sized
+// generation away. Splitting the one we have produces a genuine seam over data whose correct answer is
+// already known: the same corridor, matched against the whole block, is the reference the split must
+// reproduce. A seam that only appears with real NL data would be found late and debugged blind.
+//
+// The split is by CELL, never by geometry: a tile goes wholly to one side, so no way is cut and no
+// coordinate changes. The seam therefore falls exactly on a cell boundary — which is the same seam a
+// real per-region generation produces, because regions are cut on cell boundaries too.
+//
+//   loft --native --lib lib tools/split_block.loft <in.store> <west.store> <east.store> <lon_deg>
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep, cell_ix);
+
+fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
+  dst += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
+  t = dst[src.tkey];
+  n = 0;
+  if t != null {
+    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; n += 1; }
+    for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 4 { println("usage: split_block <in.store> <west.store> <east.store> <lon_deg>"); return; }
+  lon = (a[3] ?? "0") as float ?? 0.0;
+  cut = cell_ix(round(lon * 10000000.0) as integer);   // the CELL the split falls in, so tiles stay whole
+
+  src: hash<TTile[tkey]> = [];
+  store_load(src, a[0] ?? "");
+
+  west: hash<TTile[tkey]> = [];
+  east: hash<TTile[tkey]> = [];
+  wt = 0; et = 0; wr = 0; er = 0;
+  for t in src {
+    if cell_ix(t.ox) < cut { wt += 1; wr += copy_into(west, t); }
+    else { et += 1; er += copy_into(east, t); }
+  }
+  println("split at cell {cut} ({lon}): west tiles={wt} roads={wr} · east tiles={et} roads={er}");
+  if wt == 0 || et == 0 {
+    println("FAIL: the split put every tile on one side — pick a longitude inside the block");
+    return;
+  }
+  println("west persist {store_persist_bind(west, a[1] ?? \"\")}");
+  println("east persist {store_persist_bind(east, a[2] ?? \"\")}");
+}

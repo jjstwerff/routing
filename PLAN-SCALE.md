@@ -409,8 +409,26 @@ a URL resolves against the file that CONTAINS it — so `"stores/enschede.roads.
 could see it; the browser gate failed on the first run. **The index belongs at the site root**, which is
 what the block URLs are relative to.
 
-**S8 · Cross-block stitch (D7).** A route crossing a block seam. *Observable:* no gap, no bridge edge at
-the seam. *Gate:* extend `tile_border_gate.sh` to a **block** seam, both directions, order-insensitive.
+**S8 · Cross-block stitch (D7).** ✅ **PROVEN (2026-07-30), without waiting for a second real block.**
+A seam is MANUFACTURED from the block we ship — `tools/split_block.loft` cuts by CELL, so no way is cut
+and no coordinate moves, which is the same seam a per-region generation produces — and the reference is
+the same corridor against the unsplit block:
+
+```
+split at cell 344 (6.88°): west tiles=35 roads=11038 · east tiles=53 roads=14933
+#X whole  ways=8436 route_pts=131 fp=862017430
+#X split  west_keys=18 east_keys=24 tiles=42 ways=8436 route_pts=131 fp=862017430
+#X ALL PASS — 18+24 cells from two blocks route identically to the single block
+```
+
+**The mechanism is the working set itself:** `store_load_keys` accumulates, so the same local collection
+is filled from each covering block in turn and the matcher never learns there was a seam. Both routes are
+computed in ONE run, so there is no golden to drift, and the gate checks non-vacuity first — both sides
+must contribute cells, or it proves nothing.
+
+*This is the property every rung from C2 up stands on*, and it was the one most likely to be discovered
+late, over real data, with nothing to compare against. `tools/cross_block_gate.sh`, in `make test-native`;
+nothing is committed but the tools, so a re-keyed or regenerated block is re-split automatically.
 
 **S9 · Hosting (D2).** Blocks on R2/B2, Range + CORS from the browser origin. *Observable:* a 206 with
 correct bytes, cross-origin, from the deployed page. *Gate:* a headless check in `make test-map` against a
