@@ -1856,5 +1856,30 @@ one; it would have talked us out of the design that in fact works.
 
 **Filed:** [loft#678](https://github.com/loft-lang/loft/issues/678) (`bug · wa:partial · sev:medium · area:wasm · area:stdlib · area:codegen · hit-by:routing`).
 
+### ✅ RESOLVED overnight — loft `b64b4291`, 2026-07-30
+
+All three items landed in one commit, and the standing gate flipped to `browser=pass` on the binary
+installed at 07:24 the next morning without anyone re-checking by hand:
+
+- **The capability.** `PageProvider` was the seam; only `HttpRangeProvider` held the `ureq` client, and it
+  now goes through `net::fetch_range`/`fetch_size`, carrying the same native-vs-browser split
+  `fetch_bytes` already had. Availability became one named cfg (`paged_store`) replacing 25 hand-written
+  `#[cfg(feature = "remote-store")]`s — *"a gate repeated at every call site is how a caller drifts out of
+  step with its callee."* Upstream's own gate asserts a **constant page count, not a ratio**, because a
+  keyed lookup's cost must not depend on image size and a silent whole-file fallback would satisfy a ratio.
+- **The diagnostic.** `--html` now names generated code as generated, points at `LOFT_KEEP_NATIVE_RS=1`,
+  and states that a builtin `--native` accepts and `--html` cannot is a gap in loft.
+- **The doc.** `02_files.loft`'s stale "FLAT (scalar-field) struct" claim is corrected.
+
+**Still open, split out as asked → [loft#680](https://github.com/loft-lang/loft/issues/680):** a
+**declarative per-target builtin surface** — 48 builtins are cfg'd off wasm and nothing states
+availability, so today the only way to learn that a builtin is missing on the browser target is to build
+and read the error. That is *discovery by compilation*, and it happens after the design that assumed the
+builtin: here it cost a plan, a ladder and a decision table written on a read path the browser did not
+have. Needs a design.
+
+⚠ Anchor to the binary: the fix is `fixed-pending-merge` on `tuxedo-diagnostics2`, so a fresh install from
+loft `main` does not have it, and `--version` says **2026.7.2** for all three distinct binaries involved.
+
 **Reproducer:** `tools/paged_http_gate.sh` in `jjstwerff/routing` (three cases: native-local, native-http,
 browser; prints the E0599 tail). `tools/paged_gate.sh` is the shape-parity half.

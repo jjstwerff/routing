@@ -176,13 +176,15 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
   *section*, and a threaded wasm *imports* its shared memory), so it passed a genuinely threaded bundle;
   it now checks the import section + the TLS exports and **self-tests three control modules on every run**.
 
-**PERFORMANCE is not blocked upstream** (re-validated 2026-07-29: the last dependency there, browser
-`par`, has shipped — §2's step-18 row). ⛔ **COVERAGE is** — `PLAN-SCALE`'s browser read path needs
-[loft#678](https://github.com/loft-lang/loft/issues/678): the working-set loaders
-(`store_load_key/keys/range`) are absent from the wasm target, so `loft --html` fails to build with an
-`E0599` inside generated Rust. Native Range reads work today at **7.3% of a block's bytes**, so the
-server and the whole generation pipeline are unblocked; only the browser half waits.
-`tools/paged_http_gate.sh` is the standing check and turns green by itself when the fix lands.
+**Nothing is blocked upstream — re-validated 2026-07-30 on the binary installed that morning.**
+Performance's last dependency (browser `par`) shipped 2026-07-24 (§2's step-18 row), and coverage's
+(`PLAN-SCALE`'s browser read path) shipped overnight: the working-set loaders
+(`store_load_key/keys/range`) were absent from the wasm target — `loft --html` failed with an `E0599`
+inside generated Rust — and [loft#678](https://github.com/loft-lang/loft/issues/678) `b64b4291` routed
+them through the asyncify `fetch()` bridge. `tools/paged_http_gate.sh` now reports **`browser=pass`**,
+a keyed tile costing **262 KB in 5 range requests**; it turned green on its own, which is what a
+standing gate is for. ⚠ The fix is `fixed-pending-merge` on `tuxedo-diagnostics2`: it is in the
+binary installed here, **not** in a fresh install from loft `main`.
 
 ### If you are looking for the next thing to do
 
