@@ -21,7 +21,9 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
-manifest="$here/data/coverage.toml"
+# Overridable so a gate can point the same generator at a temporary manifest — e.g. one that
+# publishes a region at a cross-origin host to prove the CORS path.
+manifest="${COVERAGE_MANIFEST:-$here/data/coverage.toml}"
 # At the SITE ROOT, not inside stores/: the block URLs in the manifest are relative to the root, and a
 # URL is resolved against the file that CONTAINS it. An index one directory down turns "stores/x.store"
 # into "stores/stores/x.store" — every block 404s and the app boots into an empty map.
