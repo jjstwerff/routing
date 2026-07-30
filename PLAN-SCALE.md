@@ -280,8 +280,13 @@ isn't reliable on a mmap-reloaded store"*; re-tested on a `store_persist_bind`-e
 - **The first refactor was slower.** Returning a fresh `vector<Way>` per tile and doing `ways += …` copies
   every Way once per tile (~40% on a short corridor). It appends through a `&` reference instead.
 
-**Still open in S2:** the viewport filter's walk (JS side) and the browser kernel, which cannot be rebuilt
-until loft#681.
+✅ **The browser runs it too** (same day): [loft#681](https://github.com/loft-lang/loft/issues/681) — the
+`--html` import-validation regression that had pinned `store-kernel.wasm` to the previous kernel — was
+fixed within the afternoon, the wasm rebuilt, and the browser gate reproduced the route exactly:
+`ways=7138 route_pts=213 len=13138.0m`, identical to the pre-C1a run. `map_render_gate.sh`'s staleness
+guard is now FATAL, so a kernel change that never reaches the wasm fails the gate instead of passing it.
+
+**Still open in S2:** the viewport filter's walk on the JS side.
 
 **S3 · Page-locality: Hilbert ordering.** Order tiles within a block on a Hilbert curve at generation.
 *Observable:* `bytes_fetched` for a realistic viewport working set, before vs after. *Gate:* a probe that
@@ -334,7 +339,7 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | rung | coverage | ≈ blocks / bytes (roads + layout) | needs | what it proves for the first time | entry gate |
 |---|---|---|---|---|---|
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
-| **C1a** | ✅ **DONE (native) 2026-07-30** — no full-collection scans; ⛔ browser half waits on [loft#681](https://github.com/loft-lang/loft/issues/681) | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
+| **C1a** | ✅ **DONE 2026-07-30, native AND browser** — no full-collection scans | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
 | **C1b** | the same block, **read PAGED in the browser** | 1 / 24 MB | ✅ unblocked — [loft#678](https://github.com/loft-lang/loft/issues/678) landed 2026-07-30 | the working-set read path where the app actually runs | ✅ S1's gate reports `browser=pass` (it is the standing check, and it flipped on its own) |
 | **C2** | **Netherlands**, on small whole-file blocks (D11) | ~20–40 city blocks / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
@@ -411,8 +416,13 @@ until someone routes through it:
 4. **Layout identity** — the `.dschema` matches the client's compiled types. *A store-format change fails
    SILENTLY otherwise* (HANDOFF §3): no output, no error, exit 1.
 
-**R6 · Publish atomically.** Upload blocks under `v<date>/`, verify each object's size and a Range read
-of it, **then** flip the top index — the index is the only mutable pointer, so a half-uploaded release is
+**R6 · Publish atomically, and PIN each block's hash.** The top index carries every block's `sha256`, and
+the client loads with **`store_load_url`** (the verifying loader) rather than `store_load_url_trusted` —
+newly available on the browser target as a loft#678 follow-up, which noted the asymmetry precisely: *"the
+browser could fetch a whole store but could not PIN its hash: the weaker half of the pair, on the target
+most likely to be loading third-party bytes."* At WE scale the blocks live on third-party object storage,
+so this is the difference between trusting a CDN and verifying it. Upload blocks under `v<date>/`, verify
+each object's size and a Range read of it, **then** flip the top index — the index is the only mutable pointer, so a half-uploaded release is
 never visible. Keep the previous version for a grace period. *Gate:* a client pinned to the old index keeps
 working throughout the upload.
 
@@ -481,6 +491,7 @@ step in doing any of that required a codec of our own.
 | 1 | ~~Does the paged Range reader work in a `--html` build?~~ | ✅ **ANSWERED — and now YES.** It did not compile (E0599); [loft#678](https://github.com/loft-lang/loft/issues/678) fixed it the same night, and `tools/paged_http_gate.sh` reports `browser=pass` at 262 KB / 5 range requests. ⚠ Fix is `fixed-pending-merge` upstream, present in the installed binary only |
 | 2 | What does a realistic viewport working set actually cost in bytes? | S1 + S3 with `LOFT_LOADER_STATS=1` |
 | 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly |
+| 3b | Which builtins are missing on the browser target? | ✅ **ASK IT: `loft targets wasm`** (loft#680, shipped 2026-07-30 — derived from rustc, so it cannot drift from the cfgs). Today it answers *"every stdlib builtin is available here"* |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
 | 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9 |

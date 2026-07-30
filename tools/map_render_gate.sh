@@ -64,17 +64,16 @@ node "$here/tools/wasm_threads.mjs" || exit 1
 # native gate, and be entirely absent from what the browser runs — the gate would stay green while
 # testing the previous kernel. That is the drift this checks for.
 #
-# ⚠ WARNS rather than fails today: loft#681 (an --html import-validation regression) makes the rebuild
-# impossible on the installed binary, so a hard failure here would be unfixable noise. PROMOTE IT TO A
-# FAILURE the day #681 lands — flip `stale_is_fatal` to 1.
-stale_is_fatal=0
+# FATAL since 2026-07-30: loft#681 is fixed, so `node browser/build-store-kernel.mjs` works again and a
+# stale wasm is now a defect rather than an unfixable condition. (It warned for exactly one afternoon.)
+stale_is_fatal=1
 echo "== is the shipped kernel wasm current? =="
 newest_src="$(find "$here/lib/routing_kernel/src" "$here/lib/map_kernel/src" "$here/client" -name '*.loft' -newer "$here/browser/store-kernel.wasm" 2>/dev/null | head -3)"
 if [ -n "$newest_src" ]; then
   echo "  ⚠ STALE: browser/store-kernel.wasm predates kernel sources —"
   echo "$newest_src" | sed 's|^|      |'
   echo "      the browser is running the PREVIOUS kernel; everything below tests that, not the tree."
-  echo "      rebuild: node browser/build-store-kernel.mjs   (blocked by loft#681 as of 2026-07-30)"
+  echo "      rebuild: node browser/build-store-kernel.mjs"
   [ "$stale_is_fatal" = "1" ] && exit 1
 else
   echo "  ✓ store-kernel.wasm is newer than every kernel source"

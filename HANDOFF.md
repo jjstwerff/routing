@@ -186,12 +186,18 @@ a keyed tile costing **262 KB in 5 range requests**; it turned green on its own,
 standing gate is for. ⚠ The fix is `fixed-pending-merge` on `tuxedo-diagnostics2`: it is in the
 binary installed here, **not** in a fresh install from loft `main`.
 
-⛔ **One thing IS blocked, as of 2026-07-30: rebuilding the browser kernel wasm.**
-[loft#681](https://github.com/loft-lang/loft/issues/681) — `--html`'s new import validation rejects
-`loft_web.ws_yield` even though `lib/web`'s `[wasm.bridge] host_js` provides it, so
-`node browser/build-store-kernel.mjs` fails and `browser/store-kernel.wasm` is pinned to the kernel the
-PREVIOUS binary built. Native gates are unaffected. `map_render_gate.sh` now warns when the shipped wasm
-predates the kernel sources (promote that warning to a failure — one variable — when #681 lands).
+**Three routing-filed issues landed within a day** (all `fixed-pending-merge`, i.e. present in the
+installed binary, not yet in loft `main`): [#678](https://github.com/loft-lang/loft/issues/678) paged
+loaders in the browser (+ a follow-up making the SHA-verifying `store_load_url` browser-available too),
+[#681](https://github.com/loft-lang/loft/issues/681) an `--html` import-validation regression that briefly
+blocked rebuilding the kernel wasm, and [#680](https://github.com/loft-lang/loft/issues/680) the
+per-target builtin surface — now a command: **`loft targets wasm`** answers *which builtins are missing on
+the browser target* before you design against them (today: none). `loft --html --host-provided` also
+exists now, for a consumer that drives the emitted wasm from its own JS host, as this app does.
+
+⚠ **`browser/store-kernel.wasm` is committed and rebuilt BY HAND** (`node browser/build-store-kernel.mjs`).
+A kernel change can pass every native gate and never reach the browser; `map_render_gate.sh` now FAILS
+when the wasm predates any kernel source.
 
 ### If you are looking for the next thing to do
 
