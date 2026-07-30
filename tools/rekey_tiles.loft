@@ -1,0 +1,53 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Re-key a roads block onto the collision-free cell packing (PLAN-SCALE §7 R4).
+//
+// The old packing was `key = ty * 1000000 + tx` over TRUNCATING division. It is correct only for a block
+// east of Greenwich at the 0.02° cell: a negative tx aliases the previous row, and the two cells either
+// side of the meridian fold onto tx=0. Western Europe spans the meridian, so the format had to change
+// before any western block exists — and this is the migration for the one block that already does.
+//
+// Nothing about the tiles themselves changes: same origins, same roads, same steps, same bytes of
+// geometry. ONLY the key changes, recomputed from the tile's own origin through the kernel's own
+// `cell_ix`/`tile_cell_key`, so the generator, the corridor and this tool cannot disagree.
+//
+// This is also the shape every future format migration takes (R4): read the old image, write a new one,
+// prove the route is identical, keep the old file until it is.
+//
+//   loft --native --lib lib tools/rekey_tiles.loft <in.store> <out.store>
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep, cell_ix, tile_cell_key);
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: rekey_tiles <in.store> <out.store>"); return; }
+
+  old: hash<TTile[tkey]> = [];
+  store_load(old, a[0] ?? "");
+
+  fresh: hash<TTile[tkey]> = [];
+  moved = 0; kept = 0; tiles = 0; roads = 0; steps = 0;
+  for t in old {
+    nk = tile_cell_key(cell_ix(t.ox), cell_ix(t.oy));
+    if nk == t.tkey { kept += 1; } else { moved += 1; }
+    // A collision here would mean the NEW packing is not injective on this data — which is the whole
+    // point of the change, so it is checked rather than assumed.
+    if fresh[nk] != null {
+      println("FAIL: two tiles map to key {nk} — the new packing is not injective on this block");
+      return;
+    }
+    fresh += TTile { tkey: nk, ox: t.ox, oy: t.oy, oh: t.oh, roads: [], steps: [] };
+    nt = fresh[nk];
+    if nt != null {
+      for r in t.roads { nt.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; roads += 1; }
+      for s in t.steps { nt.steps += [TStep { x: s.x, y: s.y, h: s.h }]; steps += 1; }
+    }
+    tiles += 1;
+  }
+  println("rekeyed: tiles={tiles} (moved={moved} unchanged={kept}) roads={roads} steps={steps}");
+  ok = store_persist_bind(fresh, a[1] ?? "");
+  println("persist {ok}");
+}

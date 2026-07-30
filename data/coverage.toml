@@ -1,0 +1,20 @@
+# Coverage manifest — PLAN-SCALE §7 R0. THE source of truth for what the app covers.
+#
+# Everything downstream is a function of this file: `tools/build_index.sh` reads it, opens each block to
+# learn its ACTUAL extent (never the intent stated here), and writes the top index the app resolves
+# against. A region enters coverage by being added here and nowhere else.
+#
+# Deliberately NOT here: bounding boxes. A block's extent is a fact about the data — osmium clips, a
+# generator drops what it cannot classify — so it is derived, not declared. A declared bbox that outran
+# its data would be a hole in the map that the index insisted was covered.
+#
+# read_mode — how the client reads the block (PLAN-SCALE C1b):
+#   whole  download once, keep it (right while a block is a few pages wide)
+#   paged  store_load_keys over HTTP Range, only the cells a command touches (right at C2 scale)
+
+[[region]]
+id        = "enschede"
+name      = "Enschede / south Overijssel"
+roads     = "stores/enschede.roads.store"
+base      = "stores/enschede.layout.store"
+read_mode = "whole"

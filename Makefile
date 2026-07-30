@@ -198,6 +198,12 @@ test-native: check-rustc
 	done
 	@echo "  NATIVE KERNEL SUITE PASSES"
 	@./tools/tile_border_gate.sh
+	@./tools/paged_gate.sh
+	@./tools/gen_stream_gate.sh
+	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \
+	  echo "$$out" | grep -E '^stores|^identity|^invariance|^#C'; \
+	  echo "$$out" | grep -q '^#C ALL PASS' \
+	    || { echo "  FAIL: the corridor read scales with the STORE again (PLAN-SCALE C1a)"; exit 1; }
 
 test-wasm: check
 	@LOFT_BIN="$(LOFT)" ./tools/kernel_headless_test.sh
@@ -215,3 +221,4 @@ test-map:
 	@./tools/map_render_gate.sh
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
+	@./tools/paged_http_gate.sh

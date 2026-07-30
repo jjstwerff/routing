@@ -6,7 +6,8 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap } from './map.mjs';
+import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore } from './map.mjs';
+import { pickBlock, blocksForBox, resolveCoverage } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1092,6 +1093,101 @@ console.log('E7 · a boxed range bulk-deletes like any other, in ONE undo step')
   ok(r.points.length === 2, `the boxed range is gone (${r.points.length} left)`);
   ok(r.history.depth === depth + 1, 'the delete is ONE undo step');
   ok(r.undo() && r.points.length === 5, 'and one undo brings all three back');
+}
+
+// --- PLAN-SCALE C1a (JS half) · a view costs the VIEWPORT, not the store -------------------------
+//
+// `viewFromStore` used to read 5 scalars from EVERY tile to screen it, so a view cost the size of the
+// map. It now queries an index over the tiles' sealed extents. Two things must hold, and the second is
+// the one that would silently rot: the emitted features must be IDENTICAL to a full scan (the index is
+// an accelerator, never a filter), and the per-view reads must not grow with the store.
+//
+// Injected deps make this DOM-free and exact: the fake `flatField` COUNTS its calls, so invariance is
+// asserted on a number that cannot drift with machine speed, unlike a timing.
+console.log('\nC1a · a view reads the viewport, not the store');
+{
+  const ring = (ox, oy, pts) => pts.map(([x, y]) => ({ x: x - ox, y: y - oy }));
+  // A tile with one building, its sealed extent covering exactly that building.
+  const mkTile = (la, lo, tag) => {
+    const ox = lo, oy = la;
+    const r = ring(ox, oy, [[lo, la], [lo + 2000, la], [lo + 2000, la + 2000], [lo, la]]);
+    return { tkey: la * 1000000 + lo, ox, oy, fcount: 1,
+             fmnla: la, fmxla: la + 2000, fmnlo: lo, fmxlo: lo + 2000,
+             areas: [], buildings: [{ name: tag, ring: r }], lines: [], labels: [], pois: [] };
+  };
+  const makeDeps = (tiles) => {
+    const calls = { n: 0 };
+    return { calls, deps: {
+      flatCount: () => tiles.length,
+      flatField: (_m, _h, i, f) => { calls.n++; return tiles[i][f]; },
+    } };
+  };
+  // 9 tiles around Enschede, then FAR tiles that no viewport will ever want.
+  const near = [];
+  for (let a = 0; a < 3; a++) for (let o = 0; o < 3; o++) near.push(mkTile(522000000 + a * 50000, 68000000 + o * 50000, `near${a}${o}`));
+  const far = (count) => Array.from({ length: count }, (_, k) => mkTile(400000000 + k * 50000, 20000000, `far${k}`));
+  const box = { mnla: 522000000, mxla: 522010000, mnlo: 68000000, mxlo: 68010000 };   // covers ONE tile
+
+  // Identity: the same emitted set as a full scan over the same data.
+  const small = [...near, ...far(50)];
+  const h1 = { id: 'h1' };
+  const { calls: c1, deps: d1 } = makeDeps(small);
+  const got = viewFromStore(null, h1, box, d1, ['buildings']);
+  const expect = small.filter((t) => !(t.fmxla < box.mnla || t.fmnla > box.mxla || t.fmxlo < box.mnlo || t.fmnlo > box.mxlo))
+                      .flatMap((t) => t.buildings.map((b) => b.name));
+  ok(got.buildings.length === expect.length && got.buildings.every((b, k) => b.name === expect[k]),
+     `indexed view emits exactly the full-scan set (${got.buildings.length} building(s): ${got.buildings.map((b) => b.name).join(',')})`);
+  ok(expect.length > 0, 'the case is not vacuous — the viewport really contains a building');
+
+  // Invariance: with the index built, a second view's reads must not grow with the store.
+  const readsAfterBuild = (tiles) => {
+    const h = { id: `h${tiles.length}` };
+    const { calls, deps } = makeDeps(tiles);
+    viewFromStore(null, h, box, deps, ['buildings']);   // builds the index
+    const before = calls.n;
+    viewFromStore(null, h, box, deps, ['buildings']);   // the measured view
+    return calls.n - before;
+  };
+  const rSmall = readsAfterBuild([...near, ...far(50)]);
+  const rBig = readsAfterBuild([...near, ...far(5000)]);
+  ok(rSmall === rBig, `a view reads the same ${rSmall} field(s) with 59 tiles and with 5009 (${rSmall} vs ${rBig})`);
+  ok(rBig < 20, `and it is a handful of reads, not a scan (${rBig})`);
+}
+
+// --- PLAN-SCALE S7 · the top index resolves a point to a block ----------------------------------
+//
+// The one piece of routing logic in the coverage layer, so it is tested without a browser: which block
+// covers this point, what a viewport spanning a border needs, and — the case that decides whether a
+// visitor sees a map or a blank page — what happens when nothing covers them.
+console.log('\nS7 · coverage index → block');
+{
+  const bbox = (mnla, mnlo, mxla, mxlo) => ({ mnla, mnlo, mxla, mxlo });
+  const blk = (id, box) => ({ id, readMode: 'whole', roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
+  // NL-ish and BE-ish, plus a small city block INSIDE the NL one — the overlap case a country plus a
+  // detailed city creates, and the reason "smallest area wins" is a rule rather than an accident.
+  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000));
+  const be = blk('be', bbox(494000000, 25000000, 516000000, 64000000));
+  const ens = blk('enschede', bbox(521477887, 67600000, 523292661, 69998845));
+  const index = { version: 'v-test', unit: 'fixed-1e-7', blocks: [nl, be, ens] };
+
+  ok(pickBlock(index, 52.2215, 6.8937)?.id === 'enschede', 'a point in the city block picks the CITY, not the country around it');
+  ok(pickBlock(index, 52.37, 4.89)?.id === 'nl', 'Amsterdam picks nl');
+  ok(pickBlock(index, 50.85, 4.35)?.id === 'be', 'Brussels picks be');
+  ok(pickBlock(index, 48.85, 2.35) === null, 'Paris is outside every block → null (not a wrong answer)');
+  ok(pickBlock(null, 52.2, 6.9) === null && pickBlock({}, 52.2, 6.9) === null, 'a missing or malformed index resolves to null');
+
+  // A viewport that straddles the NL/BE border needs both, which is what C2's cross-block work stands on.
+  const both = blocksForBox(index, 51.3, 4.2, 51.6, 4.6).map((b) => b.id).sort();
+  ok(both.length === 2 && both[0] === 'be' && both[1] === 'nl', `a border viewport needs both blocks (${both.join(',')})`);
+
+  // The fallbacks, stated rather than implied.
+  const fakeFetch = (body) => async () => ({ ok: true, json: async () => body });
+  const inside = await resolveCoverage('x', 52.2215, 6.8937, fakeFetch(index));
+  ok(inside.block.id === 'enschede' && !inside.outside, 'resolveCoverage inside coverage → the covering block');
+  const outside = await resolveCoverage('x', 48.85, 2.35, fakeFetch(index));
+  ok(outside.block.id === 'nl' && outside.outside === true, 'outside coverage → the first block, FLAGGED outside (a map to pan from, not a blank page)');
+  const missing = await resolveCoverage('x', 52.2, 6.9, async () => { throw new Error('404'); });
+  ok(missing.block === null && missing.outside === true, 'no index at all → null block, so the caller can say so');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

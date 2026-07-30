@@ -9,14 +9,36 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
+import { resolveCoverage } from './coverage.mjs';
 
-const LAYOUT = new URL('./stores/enschede.layout.store', location.href).href;
-const ROADS  = new URL('./stores/enschede.roads.store', location.href).href;
+// PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
+// the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
+// it is 3.5 MB ≈ 56 pages, so a session that pans the region touches 80% of them anyway and pays 46
+// round trips to do it (+~200 ms on a localhost cold start, worse over a real RTT). The switch exists
+// because the answer flips with block SIZE, not with code — at C2 the top index carries it per block.
 const PROFILE = 'cycling_road';
 
 const canvas = document.getElementById('map');
 const hud = document.getElementById('hud');
 const map = new RouteMap(canvas, { lat: 52.2215, lon: 6.8937, zoom: 16 });
+
+// PLAN-SCALE S7 — the TOP INDEX says which block covers the camera, and how to read it. The store URLs
+// used to be hardcoded here, which is exactly as far as one block goes: a second region would have meant
+// a second build of the app. Now the app ships one index lookup and the DATA decides.
+//
+// `readMode` comes from the index too (C1b): a small block is downloaded whole, a large one is read by
+// byte range. That is a property of the block, so it belongs next to the block's URL, not in this file.
+const INDEX_URL = new URL('./coverage.json', location.href).href;
+const coverage = await resolveCoverage(INDEX_URL, map.camera.lat, map.camera.lon);
+if (!coverage.block) {
+  hud.textContent = 'no coverage index — the app has no data to show';
+  throw new Error('no coverage index at ' + INDEX_URL);
+}
+const LAYOUT = new URL(coverage.block.base.url, INDEX_URL).href;
+const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
+window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
+window.__coverage = coverage;
+if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
 hud.textContent = 'loading kernel…';
 const kernel = await createKernel(new URL('./store-kernel.wasm', location.href).href);
@@ -73,7 +95,7 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
+  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}\n\n${window.__readMode}`);
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -126,7 +148,7 @@ async function ensureViewNow() {
 async function streamedMatch(spec, isCurrent) {
   map.beginStretches();
   let growSteps = 0, lastLen = 0;
-  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`, (line) => {
+  const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
     // A line sink is drained in a microtask, so one belonging to a SUPERSEDED match could still fire once
     // a newer match has begun and blend two routes into the same stretch accumulator (PLAN-EDIT failure
     // path 10). The generation check makes that impossible rather than unlikely.
@@ -249,7 +271,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nviewtext\n${bbox}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nviewtext\n${bbox}\n\n${window.__readMode}`);
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -293,7 +315,7 @@ window.__perfHooks = {
     for (const [i, pts] of areas.entries()) {
       const t0 = performance.now();
       const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
-      const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+      const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
       const m = text.match(/ways=(\d+)/);
       rows.push({ i, ms: Math.round(performance.now() - t0), wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1), ways: m ? +m[1] : -1 });
     }
@@ -318,7 +340,7 @@ window.__perfHooks = {
   },
   run(kind) {
     if (kind === 'match') {
-      return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+      return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
     }
     const b = viewportBox(0.6);
     return kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
@@ -330,7 +352,7 @@ window.__perfHooks = {
     for (let i = 0; i < n; i++) {
       const t0 = performance.now();
       if (kind === 'match') {
-        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
       } else {
         const b = viewportBox(0.6);
         await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
@@ -343,7 +365,7 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${bbox}\n\n${window.__readMode}`);
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();
@@ -406,7 +428,7 @@ window.__perfHooks = {
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
     const total = performance.now() - t0;
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
@@ -879,7 +901,7 @@ window.__perfHooks = {
     await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     const d0 = kernel.stats().deliveries;
     let earlyStretches = 0, done = false, afterDone = 0;
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`, (line) => {
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
       if (!line.startsWith('STRETCH ')) return;
       if (done) afterDone++; else earlyStretches++;
     });
@@ -916,7 +938,7 @@ window.__perfHooks = {
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
     const total = performance.now() - t0;
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
@@ -942,7 +964,7 @@ window.__perfHooks = {
     if (kind === 'matchWarm') {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3118272,6.9090554\n${PROFILE}`);
     } else if (kind === 'match') {
-      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}`);
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
     } else {
       const b = viewportBox(0.6);
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
@@ -1026,7 +1048,7 @@ async function timeMatch(pts, stream) {
   const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
   const t0 = performance.now();
   const text = stream ? await streamedMatch(spec)
-                      : await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}`);
+                      : await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
   const t1 = performance.now();
   map.loadMatch(text);
   const t2 = performance.now();

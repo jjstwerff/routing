@@ -1,0 +1,86 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// A roads block → `geojsonseq`, one GeoJSON Feature per line (PLAN-SCALE S6).
+//
+// WHY THIS EXISTS. S6's gate is "the block regenerates byte-identically from a streamed input", and the
+// Overpass JSON the shipped block was built from is long gone (scratch is ephemeral — HANDOFF §10). The
+// store still holds everything the generator kept, so the input can be reconstructed FROM it: a way's
+// class and flags are exactly what `class_of`/`flags_of` derived, and its geometry is stored losslessly.
+// Round-tripping through this tool therefore has to reproduce the store exactly, which is a stronger
+// statement than "the streaming reader parses" — it says the two input paths agree.
+//
+// The class → highway map must cover EVERY class the store can hold, including the ones the corridor
+// itself ignores (14 platform, 15 other). `tile_hw` maps only the routable ones and returns "" for the
+// rest, so using it here would silently drop those roads and the round-trip would "pass" by losing data.
+//
+//   loft --native --lib lib tools/tiles_to_geojsonseq.loft <roads.store> <out.geojsonseq>
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+// The inverse of `class_of` — one representative highway value per class, chosen so `class_of` maps it
+// straight back. Class 12 is unreachable (nothing in `class_of` produces it).
+fn hw_of_class(tp: integer) -> text {
+  if tp == 0 { return "motorway"; }
+  if tp == 1 { return "primary"; }
+  if tp == 2 { return "secondary"; }
+  if tp == 3 { return "tertiary"; }
+  if tp == 4 { return "residential"; }
+  if tp == 5 { return "living_street"; }
+  if tp == 6 { return "service"; }
+  if tp == 7 { return "cycleway"; }
+  if tp == 8 { return "path"; }
+  if tp == 9 { return "footway"; }
+  if tp == 10 { return "pedestrian"; }
+  if tp == 11 { return "steps"; }
+  if tp == 13 { return "busway"; }
+  if tp == 14 { return "platform"; }
+  "road"                       // class 15: anything `class_of` did not recognise, and it round-trips there
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: tiles_to_geojsonseq <roads.store> <out.geojsonseq>"); return; }
+
+  tiles: hash<TTile[tkey]> = [];
+  store_load(tiles, a[0] ?? "");
+
+  out = file(a[1] ?? "");
+  body = "";
+  nways = 0; ncoords = 0;
+  for t in tiles {
+    o = 0;
+    for r in t.roads {
+      cnt = r.steps as integer;
+      // `flags_of`'s two bits, inverted: bit 0 is cycle infrastructure, bit 1 an unpaved surface.
+      cw = ""; surf = "";
+      if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
+      if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
+      // ⚠ Literal braces are DOUBLED: `{` opens interpolation in a loft string, and JSON is mostly
+      // braces. `{{` / `}}` emit one.
+      line = "{{\"type\":\"Feature\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
+      if cw != "" { line += ",\"cycleway\":\"{cw}\""; }
+      if surf != "" { line += ",\"surface\":\"{surf}\""; }
+      line += "}},\"geometry\":{{\"type\":\"LineString\",\"coordinates\":[";
+      for j in 0..cnt {
+        s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
+        // 7 decimals is the store's own resolution (fixed-point 1e-7°), so `round(x * 1e7)` on the way
+        // back lands on the same integer. Emitting fewer would move roads by centimetres and the parity
+        // check would fail for a reason that has nothing to do with streaming.
+        lon = ((t.ox + s.x) as float) / 10000000.0;
+        lat = ((t.oy + s.y) as float) / 10000000.0;
+        if j > 0 { line += ","; }
+        line += "[{lon:1.7},{lat:1.7}]";
+        ncoords += 1;
+      }
+      line += "]}}}}\n";
+      body += line;
+      o = o + cnt;
+      nways += 1;
+    }
+  }
+  out.write(body);
+  println("wrote {nways} features / {ncoords} coords");
+}

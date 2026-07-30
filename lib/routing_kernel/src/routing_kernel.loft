@@ -196,6 +196,47 @@ fn tag(obj: JsonValue, name: text) -> text {
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
+// Parse ONE GeoJSON `Feature` line — the `geojsonseq` form osmium exports — into a Way (PLAN-SCALE S6).
+// Returns a Way with EMPTY coords for anything unusable (a blank line, a non-LineString, a feature with
+// fewer than 2 points); the caller already skips those, so a malformed line costs a skip, not a crash.
+//
+// This exists so a generator can consume a country-sized extract line by line. `parse_ways` takes the
+// whole Overpass document as one `text` value, which is fine for a city and impossible for France.
+pub fn parse_way_feature(line: text) -> Way {
+  none = Way { highway: "", surface: "", tracktype: "", bicycle: "", access: "", oneway: "",
+               onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "", coords: [] };
+  if line == "" { return none; }
+  root = json_parse(line);
+  geom = root.field("geometry");
+  if tag(geom, "type") != "LineString" { return none; }
+  cs = geom.field("coordinates");
+  fcoords: vector<GeoPoint> = [];
+  for ci in 0..len(cs) {
+    pair = cs.item(ci);
+    // GeoJSON is [lon, lat] — the opposite order to Overpass's named fields, and getting it backwards
+    // puts the Netherlands in Somalia rather than failing.
+    if len(pair) >= 2 {
+      fcoords += [GeoPoint { lat: pair.item(1).as_number(), lon: pair.item(0).as_number() }];
+    }
+  }
+  if len(fcoords) < 2 { return none; }
+  props = root.field("properties");
+  Way {
+    highway:   tag(props, "highway"),
+    surface:   tag(props, "surface"),
+    tracktype: tag(props, "tracktype"),
+    bicycle:   tag(props, "bicycle"),
+    access:    tag(props, "access"),
+    oneway:    tag(props, "oneway"),
+    onewaybike:tag(props, "oneway:bicycle"),
+    svc:       tag(props, "service"),
+    cycleway:  tag(props, "cycleway"),
+    cyclestreet:tag(props, "cyclestreet"),
+    name:      tag(props, "name"),
+    coords:    fcoords,
+  }
+}
+
 // Parse an Overpass JSON response into the corridor's ways. Missing tags read as "".
 pub fn parse_ways(response: text) -> vector<Way> {
   root = json_parse(response);
@@ -301,6 +342,33 @@ pub fn tiles_corridor_ways(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, marg
 // found within the margin, and can only ever drop tiles the corridor did not need.
 TILE_HALF_DIAG_M = 1415.0;   // half-diagonal of a TILE_CELL (0.02° ≈ 2 km) cell, in metres
 
+// Cell → tile key. It MUST match `tools/gen-tiles.loft` exactly, because the corridor looks tiles up by
+// key instead of walking the store: a mismatch returns nothing rather than failing, so the border gate
+// (which routes ACROSS tiles) is what proves the two agree.
+//
+// This is basemap's parametric packing (`lib/basemap` `tkey`/`cell_ix`), duplicated rather than imported
+// — `routing_kernel` must not pull in basemap, since the server links it without the map (HANDOFF §1).
+// The scheme it REPLACES was `ty * 1000000 + tx` over truncating division, which is wrong in two ways
+// that `client/basemap/grid_test.loft` already demonstrates:
+//   * a NEGATIVE tx aliases the previous row (ty=100,tx=-5 collides with ty=99,tx=999995), and
+//     truncating division folds the two cells either side of the meridian onto tx=0;
+//   * and at a finer cell the row multiplier overflows outright (tx can exceed 1e6).
+// Invisible for a block east of Greenwich; silent data loss for FR / ES / UK / IE / PT, i.e. most of
+// Western Europe. Fixed HERE, at one block, rather than after the blocks exist (PLAN-SCALE §7 R4).
+fn floordiv(a: integer, b: integer) -> integer {
+  q = (a / b) ?? 0;
+  if (a % b ?? 0) != 0 && ((a < 0) != (b < 0)) { return q - 1; }
+  q
+}
+// Cell index of a fixed-point coordinate — FLOORED, so a coordinate just west of 0° lands in cell -1.
+pub fn cell_ix(fixed: integer) -> integer { floordiv(fixed, TILE_CELL) }
+// Bias both axes non-negative so any hemisphere keys cleanly, and use a row multiplier wider than the
+// world's tx span at this cell size, so distinct cells cannot collide.
+BIAS_X = 9001;        // ±180° / 0.02° = ±9000 cells
+BIAS_Y = 4501;        //  ±90° / 0.02° = ±4500 cells
+TKEY_ROW = 18003;     // > 2 * BIAS_X: the widest biased tx
+pub fn tile_cell_key(tx: integer, ty: integer) -> integer { (ty + BIAS_Y) * TKEY_ROW + (tx + BIAS_X) }
+
 pub fn tiles_corridor_ways_tube(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float) -> vector<Way> {
   corridor_ways_impl2(store, pts, margin, drop_tick, true)
 }
@@ -325,42 +393,117 @@ fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: 
   gy0 = round((mnlat - dlat) * TILE_UNIT) as integer; gy1 = round((mxlat + dlat) * TILE_UNIT) as integer;
   tx0 = gx0 / TILE_CELL - 1; tx1 = gx1 / TILE_CELL + 1;
   ty0 = gy0 / TILE_CELL - 1; ty1 = gy1 / TILE_CELL + 1;
-  // Iterate the tiles and keep those in the cell window. (Keyed lookup `store[key]` isn't reliable on
-  // a mmap-reloaded store, but iteration is — and a region's tile count is small.)
+  // ENUMERATE THE CELL WINDOW AND LOOK EACH CELL UP BY KEY — never walk the store (PLAN-SCALE C1a/S2).
+  //
+  // This used to be `for t in store`, filtering each tile against the window, on the reasoning that
+  // "keyed lookup `store[key]` isn't reliable on a mmap-reloaded store, but iteration is — and a
+  // region's tile count is small". Both halves aged badly. The lookup IS reliable — re-tested on a
+  // `store_persist_bind`-ed block, all 88 keys, 0 misses, 0 mismatches — and "the tile count is small"
+  // is a property of a 283 km² block, not of the data: at WE scale it is ~600k road tiles, so a walk
+  // makes every match cost the size of the map instead of the size of the sketch.
+  //
+  // The tube test now runs on the CELL's own centre, before the lookup, so a cell outside the tube
+  // costs arithmetic and no store access at all. A tile's `ox`/`oy` are `tx * TILE_CELL` by
+  // construction, so the test sees exactly what it saw before.
   seen = 0;
-  for t in store {
+  // ⚠ The vector is bound to a LOCAL first, and it has to be. Iterating the call directly —
+  // `for k in corridor_cell_keys(…)` — makes `k` untyped because the callee is declared BELOW, and the
+  // hash lookup then fails to compile with "Invalid index key" pointing at this line rather than at the
+  // cause (loft#683, both backends). A typed local fixes it and costs nothing; moving the callee above
+  // would too, but ordering a file for the type-checker is the wrong reason to order a file.
+  ckeys: vector<integer> = corridor_cell_keys(pts, margin, tube);
+  for k in ckeys {
     seen += 1;
     if seen % TICK_EVERY == 0 { on_tick(seen); }   // hand the frame back mid-read
-    ttx = t.ox / TILE_CELL; tty = t.oy / TILE_CELL;
-    hit = ttx >= tx0 && ttx <= tx1 && tty >= ty0 && tty <= ty1;
-    if hit && tube {
-      // Cell-level tube test: the tile's centre against the drawn polyline.
-      clat = ((t.oy + TILE_CELL / 2) as float) / TILE_UNIT;
-      clon = ((t.ox + TILE_CELL / 2) as float) / TILE_UNIT;
-      hit = point_polyline_m(GeoPoint { lat: clat, lon: clon }, pts) <= margin + TILE_HALF_DIAG_M;
-    }
-    if hit {
-      o = 0;
-      for r in t.roads {
-        cnt = r.steps as integer;
-        hw = tile_hw(r.tp as integer);
-        cw = ""; surf = "";
-        if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
-        if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
-        coords: vector<GeoPoint> = [];
-        for j in 0..cnt {
-          s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
-          coords += [GeoPoint { lat: (t.oy + s.y) as float / TILE_UNIT, lon: (t.ox + s.x) as float / TILE_UNIT }];
-        }
-        o = o + cnt;
-        if hw != "" && len(coords) >= 2 {
-          ways += [Way { highway: hw, surface: surf, tracktype: "", bicycle: "", access: "",
-                         oneway: "", onewaybike: "", svc: "", cycleway: cw, cyclestreet: "", name: "", coords: coords }];
-        }
-      }
-    }
+    t = store[k];
+    if t != null { append_tile_ways(t, ways); }
   }
   ways
+}
+
+// The cells a corridor read will look up — the SAME enumeration `corridor_ways_impl2` performs, exported
+// so a PAGED consumer can fetch exactly those keys before reading (PLAN-SCALE C1b). One definition on
+// purpose: a fetch list that drifts from the read list does not fail, it silently returns fewer roads,
+// and the route just gets worse.
+//
+// `tube` selects the tier: true = the cell tube near the polyline (what a cold match reads), false = the
+// fat bbox window (what the ladder escalates to). A consumer that may escalate should fetch the FALSE
+// window, which is a superset of the TRUE one.
+// The cells a fixed-point BOX covers — the viewport counterpart of `corridor_cell_keys`, for a consumer
+// that must fetch pages before reading (PLAN-SCALE C1b). Bounds are fixed-point (1e-7°), as `FBox` holds
+// them. One cell of padding on each side, matching the corridor's own `-1`/`+1`: a road is keyed by its
+// first vertex and its geometry can reach back into the box from the neighbouring cell.
+pub fn bbox_cell_keys(mnla: integer, mnlo: integer, mxla: integer, mxlo: integer) -> vector<integer> {
+  bkeys: vector<integer> = [];
+  bx0 = cell_ix(mnlo) - 1; bx1 = cell_ix(mxlo) + 1;
+  by0 = cell_ix(mnla) - 1; by1 = cell_ix(mxla) + 1;
+  byy = by0;
+  while byy <= by1 {
+    bxx = bx0;
+    while bxx <= bx1 { bkeys += [tile_cell_key(bxx, byy)]; bxx += 1; }
+    byy += 1;
+  }
+  bkeys
+}
+
+pub fn corridor_cell_keys(pts: vector<GeoPoint>, margin: float, tube: boolean) -> vector<integer> {
+  keys: vector<integer> = [];
+  if len(pts) < 1 { return keys; }
+  knlat = pts[0].lat; kxlat = pts[0].lat; knlon = pts[0].lon; kxlon = pts[0].lon;
+  for kp in pts {
+    if kp.lat < knlat { knlat = kp.lat; } if kp.lat > kxlat { kxlat = kp.lat; }
+    if kp.lon < knlon { knlon = kp.lon; } if kp.lon > kxlon { kxlon = kp.lon; }
+  }
+  kdlat = margin / 111320.0;
+  kdlon = margin / (111320.0 * cos(((knlat + kxlat) / 2.0) * PI / 180.0)) ?? 0.0;
+  kgx0 = round((knlon - kdlon) * TILE_UNIT) as integer; kgx1 = round((kxlon + kdlon) * TILE_UNIT) as integer;
+  kgy0 = round((knlat - kdlat) * TILE_UNIT) as integer; kgy1 = round((kxlat + kdlat) * TILE_UNIT) as integer;
+  ktx0 = cell_ix(kgx0) - 1; ktx1 = cell_ix(kgx1) + 1;
+  kty0 = cell_ix(kgy0) - 1; kty1 = cell_ix(kgy1) + 1;
+  cy = kty0;
+  while cy <= kty1 {
+    cx = ktx0;
+    while cx <= ktx1 {
+      want = true;
+      if tube {
+        // Cell-level tube test: the cell's centre against the drawn polyline. Done HERE, before the
+        // caller ever touches the store, so a cell outside the tube costs arithmetic and no page fetch.
+        clat = ((cy * TILE_CELL + TILE_CELL / 2) as float) / TILE_UNIT;
+        clon = ((cx * TILE_CELL + TILE_CELL / 2) as float) / TILE_UNIT;
+        want = point_polyline_m(GeoPoint { lat: clat, lon: clon }, pts) <= margin + TILE_HALF_DIAG_M;
+      }
+      if want { keys += [tile_cell_key(cx, cy)]; }
+      cx += 1;
+    }
+    cy += 1;
+  }
+  keys
+}
+
+// Append one tile's roads to `out` as matcher `Way`s. Split out of the corridor walk when that became a
+// keyed enumeration: the decode is unchanged, it just no longer sits four levels deep inside two loops.
+// ⚠ `out` is a live reference on purpose. Returning a fresh vector and doing `ways += tile_ways(t)`
+// reads better and COPIES every Way (with its coords) once per tile — measured at ~40% on a short
+// sketch's corridor, which is the whole cost this step was supposed to remove.
+fn append_tile_ways(t: TTile, out: &vector<Way>) {
+  o = 0;
+  for r in t.roads {
+    cnt = r.steps as integer;
+    hw = tile_hw(r.tp as integer);
+    cw = ""; surf = "";
+    if ((r.flags as integer) & 1) == 1 { cw = "lane"; }
+    if ((r.flags as integer) & 2) == 2 { surf = "unpaved"; }
+    coords: vector<GeoPoint> = [];
+    for j in 0..cnt {
+      s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
+      coords += [GeoPoint { lat: (t.oy + s.y) as float / TILE_UNIT, lon: (t.ox + s.x) as float / TILE_UNIT }];
+    }
+    o = o + cnt;
+    if hw != "" && len(coords) >= 2 {
+      out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: "", access: "",
+                    oneway: "", onewaybike: "", svc: "", cycleway: cw, cyclestreet: "", name: "", coords: coords }];
+    }
+  }
 }
 
 // --- v1 map-matcher (PLAN step 6) --------------------------------------------------------------

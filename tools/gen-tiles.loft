@@ -9,7 +9,7 @@
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
-use routing_kernel::(GeoPoint, Way, parse_ways, TStep, TRoad, TTile);
+use routing_kernel::(GeoPoint, Way, parse_ways, parse_way_feature, TStep, TRoad, TTile, cell_ix, tile_cell_key);
 
 fn class_of(hw: text) -> integer {
   if hw == "motorway" || hw == "motorway_link" { return 0; }
@@ -35,35 +35,91 @@ fn flags_of(w: Way) -> integer {
   if s == "ground" || s == "gravel" || s == "unpaved" || s == "compacted" { f = f + 2; }
   f
 }
-CELL = 200000;
+CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_key are keyed to it
 
-fn build(osm: text) -> hash<TTile[tkey]> {
-  ways = parse_ways(file(osm).content());
-  idx: hash<TTile[tkey]> = [];
-  for w in ways {
-    if len(w.coords) < 2 { continue; }
-    gx0 = round(w.coords[0].lon * 10000000.0) as integer;
-    gy0 = round(w.coords[0].lat * 10000000.0) as integer;
-    tx = gx0 / CELL; ty = gy0 / CELL;
-    key = ty * 1000000 + tx;
+// Bin ONE way into its tile. Shared by both input paths so a streamed input and a whole-file one cannot
+// produce different stores — which is exactly what the round-trip gate checks (tools/gen_stream_gate.sh).
+// By VALUE, not `&`: a heap collection passed by value still aliases, so the append lands in the
+// caller's index (verified). `&hash` + `+=` does not compile — the checker reads the append as a
+// reassignment of the reference itself.
+fn add_way(idx: hash<TTile[tkey]>, w: Way) {
+  if len(w.coords) < 2 { return; }
+  gx0 = round(w.coords[0].lon * 10000000.0) as integer;
+  gy0 = round(w.coords[0].lat * 10000000.0) as integer;
+  // The kernel looks tiles up by key (PLAN-SCALE C1a), so this MUST be its packing — imported, not
+  // re-derived. It used to be `ty * 1000000 + tx` over truncating division, which collides west of
+  // Greenwich and at finer cells (see routing_kernel's note and client/basemap/grid_test.loft).
+  tx = cell_ix(gx0); ty = cell_ix(gy0);
+  key = tile_cell_key(tx, ty);
+  t = idx[key];
+  if t == null {
+    idx += TTile { tkey: key, ox: tx * CELL, oy: ty * CELL, oh: 0, roads: [], steps: [] };
     t = idx[key];
-    if t == null {
-      idx += TTile { tkey: key, ox: tx * CELL, oy: ty * CELL, oh: 0, roads: [], steps: [] };
-      t = idx[key];
-    }
-    n = len(w.coords); if n > 255 { n = 255; }
-    for i in 0..n {
-      gx = round(w.coords[i].lon * 10000000.0) as integer;
-      gy = round(w.coords[i].lat * 10000000.0) as integer;
-      t.steps += [TStep { x: (gx - t.ox) as i32? ?? (0 as i32), y: (gy - t.oy) as i32? ?? (0 as i32), h: 0 as i32 }];
-    }
-    t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: (flags_of(w) & 255) as u8, steps: (n & 255) as u8 }];
   }
+  n = len(w.coords); if n > 255 { n = 255; }
+  for i in 0..n {
+    gx = round(w.coords[i].lon * 10000000.0) as integer;
+    gy = round(w.coords[i].lat * 10000000.0) as integer;
+    t.steps += [TStep { x: (gx - t.ox) as i32? ?? (0 as i32), y: (gy - t.oy) as i32? ?? (0 as i32), h: 0 as i32 }];
+  }
+  t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: (flags_of(w) & 255) as u8, steps: (n & 255) as u8 }];
+}
+
+// WHOLE-FILE input: one Overpass JSON document. Fine for a city, impossible for a country — the document
+// arrives as a single `text` value and `parse_ways` materialises every way before the first is binned.
+fn build(osm: text) -> hash<TTile[tkey]> {
+  idx: hash<TTile[tkey]> = [];
+  for w in parse_ways(file(osm).content()) { add_way(idx, w); }
+  idx
+}
+
+// STREAMED input: `geojsonseq`, one GeoJSON Feature per line (PLAN-SCALE S6, W1).
+//
+// loft's `lines()` is built on `content()`, so both hold the whole file; the binary idiom seeks instead.
+// Each pass reads a chunk, uses only the part up to its LAST newline, and seeks back to just after it —
+// so a chunk boundary can never split a line, and never leaves a partial multi-byte character to decode.
+// Memory is the chunk, whatever the file. A line longer than the chunk doubles it and retries.
+fn build_stream(path: text) -> hash<TTile[tkey]> {
+  idx: hash<TTile[tkey]> = [];
+  f = file(path);
+  total = f.size;
+  pos = 0;
+  chunk_size = 1048576;
+  nlines = 0;
+  while pos < total {
+    f#next = pos;
+    want = chunk_size;
+    if pos + want > total { want = total - pos; }
+    chunk = f#read(want) as text;
+    last_nl = 0 - 1;
+    for ch in chunk { if ch == '\n' { last_nl = ch#index; } }
+    if last_nl < 0 {
+      if pos + want >= total {
+        if chunk != "" { add_way(idx, parse_way_feature(chunk)); nlines += 1; }
+        pos = total;
+      } else {
+        chunk_size = chunk_size * 2;      // one line is longer than the chunk — grow and re-read
+      }
+    } else {
+      part = chunk[0..last_nl];
+      for ln in part.split('\n') {
+        if ln != "" { add_way(idx, parse_way_feature(ln)); nlines += 1; }
+      }
+      pos = pos + last_nl + 1;
+    }
+  }
+  println("streamed: {nlines} features from {total} bytes in {chunk_size}-byte chunks");
   idx
 }
 fn main() {
   a = arguments();
-  idx = build(a[1]);
+  src = a[1] ?? "";
+  // The FORM of the input picks the reader: `.geojsonseq` / `.jsonl` stream line by line, anything else
+  // is the whole-document Overpass path. PLAN-TILES' recipe already ends in `osmium export -f geojsonseq`
+  // and then converts; streaming reads that file directly, which removes the conversion step entirely.
+  idx: hash<TTile[tkey]> = [];
+  if src.ends_with(".geojsonseq") || src.ends_with(".jsonl") { idx = build_stream(src); }
+  else { idx = build(src); }
   nt = 0; nr = 0; for t in idx { nt = nt + 1; nr = nr + len(t.roads); }
   println("built: tiles={nt} roads={nr}");
   ok = store_persist_bind(idx, a[0]);

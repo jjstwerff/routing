@@ -57,8 +57,34 @@ fi
 echo "== step 18 tripwire: browser kernel threading =="
 node "$here/tools/wasm_threads.mjs" || exit 1
 
-# 2. Build the deployable site (inlines map.mjs + store-kernel.mjs + store-app.mjs → _site/index.html).
+# 1b. Is the shipped wasm actually built from the kernel sources in the tree?
+#
+# Everything below this line tests browser/store-kernel.wasm, which is COMMITTED and rebuilt by hand
+# (node browser/build-store-kernel.mjs). So a kernel change can land in the .loft sources, pass every
+# native gate, and be entirely absent from what the browser runs — the gate would stay green while
+# testing the previous kernel. That is the drift this checks for.
+#
+# FATAL since 2026-07-30: loft#681 is fixed, so `node browser/build-store-kernel.mjs` works again and a
+# stale wasm is now a defect rather than an unfixable condition. (It warned for exactly one afternoon.)
+stale_is_fatal=1
+echo "== is the shipped kernel wasm current? =="
+newest_src="$(find "$here/lib/routing_kernel/src" "$here/lib/map_kernel/src" "$here/client" -name '*.loft' -newer "$here/browser/store-kernel.wasm" 2>/dev/null | head -3)"
+if [ -n "$newest_src" ]; then
+  echo "  ⚠ STALE: browser/store-kernel.wasm predates kernel sources —"
+  echo "$newest_src" | sed 's|^|      |'
+  echo "      the browser is running the PREVIOUS kernel; everything below tests that, not the tree."
+  echo "      rebuild: node browser/build-store-kernel.mjs"
+  [ "$stale_is_fatal" = "1" ] && exit 1
+else
+  echo "  ✓ store-kernel.wasm is newer than every kernel source"
+fi
+
+# 2. Build the deployable site, and the TOP INDEX the app resolves its blocks through (PLAN-SCALE S7).
+# The index is generated from the manifest and the blocks themselves, never edited, so the gate rebuilds
+# it rather than trusting the copy in the tree — a stale index is the failure it exists to prevent.
 node "$here/browser/build-site.mjs" || exit 1
+"$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
+echo "  ✓ coverage index: $(grep -oP '"id":"\K[^"]+' "$here/_site/coverage.json" | tr '\n' ' ')"
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 
 # 3. Serve _site + drive it in headless Chromium.
@@ -66,7 +92,10 @@ rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
 srv=""; chr=""; rc=0
 cleanup() { kill "$chr" "$srv" 2>/dev/null; }
 trap cleanup EXIT
-python3 -m http.server "$httpport" --directory "$here/_site" >/dev/null 2>&1 &
+# PLAN-SCALE C1b: the kernel reads its roads block by BYTE RANGE now, and `python3 -m http.server` does
+# not implement Range at all — it would answer every page request with the whole 3.5 MB file. The shim
+# slices a 200 so the answer stays correct, but the gate would be measuring the wrong thing entirely.
+python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
 srv=$!
 "$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
   --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &

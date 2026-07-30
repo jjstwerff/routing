@@ -24,10 +24,30 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys);
 use basemap::(PTile);
-use routing_kernel::(TTile, GeoPoint);
+use routing_kernel::(TTile, GeoPoint, corridor_cell_keys, corridor_margin);
 use web::frame_yield;
+
+// PLAN-SCALE C1b — one mark per cell key this session has already asked the host for. A paged loader
+// signals "no such key" exactly as it signals "nothing loaded", so without this a cell that genuinely
+// holds no roads would be re-fetched on every single command. Marked BEFORE the fetch, and never
+// cleared except when the region changes.
+struct CellMark { const k: integer }
+
+// Which of `keys` this session has not asked the host for yet. READ-ONLY on purpose — the marking and
+// the fetch happen at the call site, on the loop's own locals, for two reasons that are both loft's:
+//   * `marks += …` through a `&hash` parameter does not compile — the checker reads the append as a
+//     reassignment of the reference itself. (A BY-VALUE hash param does propagate appends, so a helper
+//     is possible; it is inline here because the fetch also needs `roads`, which must stay a bare local.)
+//   * and the store CANNOT live in a struct field to be passed as one — the paged loaders refuse a
+//     field-declared collection (loft#632), which is the whole mechanism this path runs on.
+// So the caller keeps both collections as bare locals and this only decides what is missing.
+fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>) -> vector<integer> {
+  need: vector<integer> = [];
+  for k in keys { if marks[k] == null { need += [k]; } }
+  need
+}
 
 // End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
 // "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
@@ -60,7 +80,11 @@ fn main() {
   // SESSION STATE — declared above the loop, so it outlives the command that filled it. Inside the
   // loop these declarations would re-initialise to `[]` on every pass, which is the stateless app in
   // miniature. `main` never returns, so loft_start never re-enters and never rebuilds them.
+  // PLAN-SCALE C1b: `roads` is no longer the whole block — it is the WORKING SET, grown by
+  // `store_load_keys` as commands ask for cells. A paged load ACCUMULATES (verified), so a session pays
+  // for each cell once and a warm edit inside the loaded area fetches nothing at all.
   roads: hash<TTile[tkey]> = [];
+  marks: hash<CellMark[k]> = [];
   layout: hash<PTile[tkey]> = [];
   // Which URL each store currently holds ("" = empty). The URLs arrive IN the command, so the loads
   // cannot literally precede the loop — this is the equivalent: load on first use, reuse after, and
@@ -90,15 +114,30 @@ fn main() {
       cmd        = lines[2] ?? "view";
       arg3       = lines[3] ?? "";                // bbox (view) or sketch (match)
       profile    = lines[4] ?? "cycling_road";
+      // PLAN-SCALE C1b — how to READ the roads block. "paged" pulls only the cells a command touches
+      // (store_load_keys over HTTP Range); anything else loads the block whole, which is what a SMALL
+      // block wants. Measured on this 3.5 MB block: a session that pans and matches across the region
+      // fetches 44-80% of the bytes ANYWAY, in 25-46 separate requests, because the block is only ~56
+      // pages wide. On localhost those requests are nearly free; over a real RTT they are 25-46 round
+      // trips against one. So the strategy belongs to the DATA, not to the code — at C2 the top index
+      // carries it per block, and paging wins as soon as a viewport is a small fraction of a block.
+      readmode   = lines[5] ?? "whole";
 
       ok = true;
+      // A changed URL means a different region: the working set, its marks and the cached corridor are
+      // all stale. In "paged" mode nothing is fetched here — each command below asks for the cells it is
+      // about to read. In "whole" mode the block is loaded once, exactly as before C1b.
       if roads_url != roads_at {
-        if store_load_url_trusted(roads, roads_url) {
+        roads = [];
+        marks = [];
+        sess = session_new();
+        if readmode == "paged" {
           roads_at = roads_url;
-          sess = session_new();                   // different region ⇒ the cached corridor/graph is stale
+        } else if store_load_url_trusted(roads, roads_url) {
+          roads_at = roads_url;
         } else {
           println("ERR roads store_load_url failed: {roads_url}");
-          roads_at = "";                          // failed load leaves the store unusable — don't cache it
+          roads_at = "";                          // a failed load leaves the store unusable — don't cache it
           ok = false;
         }
       }
@@ -115,7 +154,25 @@ fn main() {
           // draws a line that GROWS instead of freezing for the whole match (PLAN-PERF §6b A). This is
           // the only layer that may yield — frame_yield is browser-only, and map_kernel/routing_kernel
           // must compile on every backend.
-          do_match_session_streamed(sess, roads, parse_sketch(arg3), profile, stream_stretch, tick_yield);
+          // Fetch what this match will read, before it reads it. The FAT window (tube = false) on
+          // purpose: it is a superset of the cell tube, so an escalation inside the ladder cannot find a
+          // cell missing — and a missing cell does not fail, it silently routes around roads that exist.
+          mpts = parse_sketch(arg3);
+          if len(mpts) >= 2 {
+            mkeys: vector<integer> = [];
+            if readmode == "paged" { mkeys = corridor_cell_keys(mpts, corridor_margin(mpts), false); }
+            need: vector<integer> = cells_to_fetch(marks, mkeys);
+            if len(need) > 0 {
+              // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent: a
+              // paged loader reports "no such key" exactly as it reports "loaded nothing", so an empty
+              // cell — and a rectangular window over a real region is full of them — would otherwise be
+              // re-requested by every command for the rest of the session.
+              for nk in need { marks += CellMark { k: nk }; }
+              _ = store_load_keys(roads, roads_url, need);
+            }
+
+          }
+          do_match_session_streamed(sess, roads, mpts, profile, stream_stretch, tick_yield);
         } else {
           // @PLN105 steps 9-13 — the layout store is EXPOSED to JS, which reads its PTiles straight out
           // of wasm memory. loft no longer serialises the layout at all: `view` emits roads only.
@@ -146,6 +203,18 @@ fn main() {
             }
           }
           if ok {
+            vkeys: vector<integer> = [];
+            if readmode == "paged" { vkeys = view_cell_keys(arg3); }
+            vneed: vector<integer> = cells_to_fetch(marks, vkeys);
+            if len(vneed) > 0 {
+              // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent: a
+              // paged loader reports "no such key" exactly as it reports "loaded nothing", so an empty
+              // cell — and a rectangular window over a real region is full of them — would otherwise be
+              // re-requested by every command for the rest of the session.
+              for nk in vneed { marks += CellMark { k: nk }; }
+              _ = store_load_keys(roads, roads_url, vneed);
+            }
+
             if cmd == "viewtext" {
               do_view_bbox(layout, roads, arg3);
             } else {

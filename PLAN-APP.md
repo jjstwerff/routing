@@ -211,6 +211,13 @@ Four tracks. **O** and **C** run **now** in this repo/env; **1–3** need node +
   *Check:* sketch → matched route drawn with **no server running**.
 - **1d** Deploy to GitHub Pages (unlisted URL). *Check:* open on a phone, route works, attribution shows.
 
+> ⚠ **Tracks 2–3 are SUPERSEDED by [`PLAN-SCALE.md`](PLAN-SCALE.md) (2026-07-30).** Their sizes are
+> roads-only (the base map is ~6× bigger and postdates them), and their read path — a byte codec plus a
+> JS-side directory and Range fetcher — is dead: loft#522 shipped `store_load*`, and loft's **working-set
+> loader** (`store_load_key(s)`, page reads over local files or an HTTP Range server) is **proven on our
+> own two stores**, paged == whole. Read PLAN-SCALE for the current design; the steps below are kept as
+> history.
+
 ### Track 2 — Benelux (multi-block, working-set range reads)
 - **2a** Generate Benelux blocks (NL×2, BE, LU) via the pipeline → `.rtb` each. *Check:* all decode;
   counts sane; total ~1 GB.

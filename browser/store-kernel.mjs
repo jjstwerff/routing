@@ -42,9 +42,11 @@ const EOR = '#EOR';   // must match client/web_basemap_kernel.loft's terminator
 export async function createKernel(wasmUrl) {
   const enc = new TextEncoder(), dec = new TextDecoder();
   const inQ = [];
-  const ctrl = { ac: null, httpBytes: null };
+  const ctrl = { ac: null, httpBytes: null, httpTotal: -1 };
   const exposed = new Map();   // tag -> { storeBase, rec, pos, typeId, desc } from expose() (step 9)
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
+  // PLAN-SCALE C1b: a working-set read is only a working set if you can SEE what it fetched.
+  let rangeReads = 0, rangeBytes = 0;
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
 
@@ -108,6 +110,41 @@ export async function createKernel(wasmUrl) {
         return 0;
       },
       loft_host_http_get_copy: (ptr) => { if (ctrl.httpBytes) new Uint8Array(mem.buffer, ptr, ctrl.httpBytes.length).set(ctrl.httpBytes); },
+      // loft#678 — the RANGE arm of the same bridge, behind the working-set loaders
+      // (store_load_key/keys/range): one `Range: bytes=off-(off+len-1)` GET instead of a whole file, so a
+      // match reads the few pages its corridor touches out of a hosted block (PLAN-SCALE C1b). Mirrors
+      // loft's own shim (doc/loft-gl-wasm.js) — this app drives the wasm from its OWN host, so an import
+      // loft's page provides has to exist here too or the module will not instantiate.
+      //
+      // Two-phase asyncify, exactly like http_get above: the REWIND pass returns the stashed length, the
+      // UNWIND pass starts the fetch and suspends. One response stash is safe because a suspend bridges a
+      // SYNCHRONOUS loft call — a second request cannot begin before this one has rewound.
+      // `off`/`n` arrive as f64 (exact below 2^53) — a u64 would cross as BigInt and trap in the
+      // arithmetic below.
+      loft_host_http_range: (ptr, len, off, n) => {
+        if (ctrl.ac && ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return ctrl.httpBytes ? ctrl.httpBytes.length : 0xFFFFFFFF; }
+        if (!ctrl.ac) return 0xFFFFFFFF;                      // no asyncify driver ⇒ no fetch
+        const url = dec.decode(new Uint8Array(mem.buffer, ptr, len));
+        rangeReads++; rangeBytes += n;                        // the working-set claim, counted (see __perfHooks)
+        ctrl.httpBytes = null; ctrl.httpTotal = -1;
+        const last = off + n - 1;
+        fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
+          .then(async (res) => {
+            // The total rides on Content-Range (`bytes a-b/TOTAL`), so size() needs no second round trip.
+            const cr = res.headers.get('Content-Range');
+            if (cr) { const t = cr.split('/').pop(); ctrl.httpTotal = (t && t !== '*') ? Number(t) : -1; }
+            else { const cl = res.headers.get('Content-Length'); ctrl.httpTotal = cl ? Number(cl) : -1; }
+            // 206 = the body IS the window. 200 = the server ignored Range and sent everything; slice it,
+            // so a host without Range support is merely slow rather than wrong.
+            if (!res.ok) { ctrl.httpBytes = null; }
+            else { const b = new Uint8Array(await res.arrayBuffer()); ctrl.httpBytes = (res.status === 206) ? b : b.subarray(off, off + n); }
+            wake('fetch');
+          })
+          .catch(() => { ctrl.httpBytes = null; wake('fetch'); });
+        waiting = 'fetch'; ctrl.ac.suspend();
+        return 0;
+      },
+      loft_host_http_range_total: () => (ctrl.httpTotal != null ? ctrl.httpTotal : -1),
       // @PLN105 expose(tag, value) — the LONG-LIVED handle to a loft value in wasm memory. loft has
       // pinned the store read-only, so `storeBase`/`rec`/`pos` stay valid across frames and JS can read
       // the records directly (addr(rec,pos) = storeBase + rec*8 + pos) instead of parsing text. `desc` is
@@ -197,7 +234,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
+    stats: () => ({ starts, commands, storeLoads, rangeReads, rangeBytes, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

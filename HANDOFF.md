@@ -165,19 +165,50 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
   order-insensitivity), `corpus_anchor.loft` (§7 quality per sketch — the gate for ROUTE-AFFECTING
   changes), `corpus_tube.loft`, `match_phase_probe.loft` (cold-match split, 3-point **and** 40-point),
   `union_probe.loft`, `nodekey_probe.loft`, `spatial_probe.loft`, `wasm_threads.mjs`,
-  `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`.
+  `match_session_probe.loft`, `deliver_probe.sh` + `expose_probe.sh`, `tile_overhang.loft`,
+  `coverage_probe.loft` (bytes/km² per layer — PLAN-SCALE §1's sizing instrument), `paged_gate.sh` +
+  `paged_http_gate.sh` (the working-set read path, local + HTTP Range + browser), `range_server.py`
+  (a static server that really honours `Range` — `python -m http.server` does not), and
+  **`ws_poke.mjs`** — speak the server's WebSocket protocol by hand, one frame in / every reply out.
+  Debugging a client through the server: **[`docs/debug-websocket.md`](docs/debug-websocket.md)**.
   ⚠ **`wasm_threads.mjs` is a REGRESSION gate on our own wasm, not a capability detector** — read its
   header before treating a green run as news. It was BLIND until 2026-07-29 (it checked the memory
   *section*, and a threaded wasm *imports* its shared memory), so it passed a genuinely threaded bundle;
   it now checks the import section + the TLS exports and **self-tests three control modules on every run**.
 
-**Nothing is blocked upstream.** (Re-validated 2026-07-29: the last upstream dependency in the plan,
-browser `par`, has shipped — see §2's step-18 row.)
+**Nothing is blocked upstream — re-validated 2026-07-30 on the binary installed that morning.**
+Performance's last dependency (browser `par`) shipped 2026-07-24 (§2's step-18 row), and coverage's
+(`PLAN-SCALE`'s browser read path) shipped overnight: the working-set loaders
+(`store_load_key/keys/range`) were absent from the wasm target — `loft --html` failed with an `E0599`
+inside generated Rust — and [loft#678](https://github.com/loft-lang/loft/issues/678) `b64b4291` routed
+them through the asyncify `fetch()` bridge. `tools/paged_http_gate.sh` now reports **`browser=pass`**,
+a keyed tile costing **262 KB in 5 range requests**; it turned green on its own, which is what a
+standing gate is for. ⚠ The fix is `fixed-pending-merge` on `tuxedo-diagnostics2`: it is in the
+binary installed here, **not** in a fresh install from loft `main`.
+
+**Three routing-filed issues landed within a day** (all `fixed-pending-merge`, i.e. present in the
+installed binary, not yet in loft `main`): [#678](https://github.com/loft-lang/loft/issues/678) paged
+loaders in the browser (+ a follow-up making the SHA-verifying `store_load_url` browser-available too),
+[#681](https://github.com/loft-lang/loft/issues/681) an `--html` import-validation regression that briefly
+blocked rebuilding the kernel wasm, and [#680](https://github.com/loft-lang/loft/issues/680) the
+per-target builtin surface — now a command: **`loft targets wasm`** answers *which builtins are missing on
+the browser target* before you design against them (today: none). `loft --html --host-provided` also
+exists now, for a consumer that drives the emitted wasm from its own JS host, as this app does.
+
+⚠ **`browser/store-kernel.wasm` is committed and rebuilt BY HAND** (`node browser/build-store-kernel.mjs`).
+A kernel change can pass every native gate and never reach the browser; `map_render_gate.sh` now FAILS
+when the wasm predates any kernel source.
 
 ### If you are looking for the next thing to do
 
-`PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. The candidates, in the order
-the evidence favours:
+`PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. **The next body of work is
+scoped in [`PLAN-SCALE.md`](PLAN-SCALE.md)** (2026-07-30) — coverage: one 283 km² block → Western Europe
+**that stays current**. Read its §6b **coverage ladder** (C0→C5: paged single block → NL → Benelux+1 → WE
+roads → WE base map, each rung a live deployment, rollback = flip the index) and §8's freshness target
+before picking a task. Its S0/S1 are measurements, not code, and **S1 — does loft's paged Range reader work
+in a `--html` build? — gates everything else.** ⚠ The refresh loop (§7) starts at rung C1, not at the end:
+it is nearly free on one block and is the only reason the 40-block version is ever trustworthy. Smaller
+candidates, in the order the evidence favours:
 
 1. **A service-worker COEP shim** — the one thing standing between the app and step 18. loft's browser
    `par` works (8 workers, verified on the installed binary), but GitHub Pages cannot send COOP/COEP, so
