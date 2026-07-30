@@ -111,13 +111,35 @@ if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.str
 
 // 6. PLAN-PERF §0 step 15 / §6d — the block raster cache. Currently OFF in the app; the gate drives it
 // explicitly so it cannot rot while disabled.
+// PLAN-PERF §6d — how far the BLOCK-CACHED render may differ from a direct one.
+//
+// It can never be zero: the cache snaps its origin to a whole device pixel, and Chromium's rasterisation
+// is not invariant to canvas dimensions (§6d proved that). So the gate is three equalities plus this
+// BOUNDED delta — and the bound is a property of the DATA, not of the code. Denser geometry puts more
+// pixels on the snapped-origin boundary, so the same renderer differs by more.
+//
+// Re-baselined 2026-07-30 when the app moved to the real Netherlands block. The rule is unchanged —
+// ONE POINT above the observed maximum — only the data moved:
+//
+//   Enschede block   1.47% of pixels, maxDelta 15  → bound 16
+//   Netherlands      1.51% of pixels, maxDelta 25  → bound 26   (3112 → 4197 roads in view, +35%)
+//
+// Measured three times, identical each run: this is deterministic rasterisation rounding, not noise, so
+// the margin can stay at one point. Note the AREA barely moved (1.47% → 1.51%) while the peak nearly
+// doubled — more thin lines on the snapped-origin boundary, which is exactly §6d's mechanism, and not the
+// signature a rendering defect would leave (that would move the area too).
+//
+// ⚠ Raise it only WITH a measurement and a reason, never to make a red gate green: its whole job is to
+// tell a rounding difference from a rendering defect, and a bound set above the noise it was chosen for
+// stops being able to.
+const BLOCK_DELTA_MAX = Number(process.env.BLOCK_DELTA_MAX || 26);
 const br = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.blockRaster()))()')) || 'null');
 if (!br) { console.log('  FAIL: blockRaster hook missing'); ok = false; }
 else if (br.roundTrip !== 0) { console.log(`  FAIL: an offscreen round-trip is not exact (${br.roundTrip} px) — the platform assumption broke`); ok = false; }
 else if (br.coldVsWarm !== 0) { console.log(`  FAIL: a CACHED block frame differs from a freshly baked one (${br.coldVsWarm} px) — the cache is stale`); ok = false; }
 else if (br.staleness !== 0) { console.log(`  FAIL: a data load did NOT invalidate the block cache (${br.staleness} px stale) — the map would show old tiles`); ok = false; }
 else if (br.labelDiffs.places || br.labelDiffs.streets || br.labelDiffs.buildings) { console.log('  FAIL: a label pass differs under block rendering —', JSON.stringify(br.labelDiffs)); ok = false; }
-else if (br.vsSnappedMaxDelta > 16) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > 16), not just by rasterisation rounding`); ok = false; }
+else if (br.vsSnappedMaxDelta > BLOCK_DELTA_MAX) { console.log(`  FAIL: blocked vs snapped-direct differs STRUCTURALLY (maxDelta ${br.vsSnappedMaxDelta} > ${BLOCK_DELTA_MAX}, ${br.pct}% of px), not just by rasterisation rounding`); ok = false; }
 else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, labels exact, vs snapped-direct ${br.pct}% of px at maxDelta ${br.vsSnappedMaxDelta} (canvas-size rounding) · pan ${br.warmMs}ms warm · settles in ${br.settleFrames} frames, worst ${br.worstFrameMs}ms, ${br.blocks} blocks`);
 
 // 7. THE CLICK PATH — real mouse events, not window.__match.
@@ -500,16 +522,18 @@ await sleep(1500);
 await click(320, 240); await click(560, 360);
 await sleep(3000);
 const ks = JSON.parse(await ev('(() => JSON.stringify(window.__perfHooks.kernelStats()))()') || 'null');
-// The shipped block's size. Reported, not asserted (see the note below), so a stale value skews a number
-// rather than breaking a gate — but keep it in step when the block is regenerated.
-const ROADS_BYTES = 3816152;
+// The size comes from the page's own coverage index, never a constant here. A hardcoded size silently
+// becomes a lie the moment the block changes: with the Netherlands block in place it reported a working
+// set as "266% of the block" — the reads were right, the denominator was two datasets old.
+const ROADS_BYTES = Number(await ev('(() => (window.__coverage?.block?.roads?.bytes) || 0)()')) || 0;
 if (!ks) { console.log('  FAIL: no kernel stats'); ok = false; }
 else if (!(ks.rangeReads > 0)) {
   console.log(`  FAIL: no RANGE reads — the kernel fetched its roads whole (storeLoads=${ks.storeLoads}), C1b is not in effect`); ok = false;
 } else {
-  const pct = (100 * ks.rangeBytes / ROADS_BYTES).toFixed(1);
+  const mb = (n) => (n / 1048576).toFixed(1);
+  const pct = ROADS_BYTES ? (100 * ks.rangeBytes / ROADS_BYTES).toFixed(1) : '?';
   const perRead = Math.round(ks.rangeBytes / ks.rangeReads);
-  console.log(`  ✓ the roads block is PAGED: ${ks.rangeReads} range reads, ${ks.rangeBytes} B = ${pct}% of the 3.5 MB block, ${perRead} B/read; ${ks.storeLoads} whole-file load(s) earlier in the session, before the switch)`);
+  console.log(`  ✓ the roads block is PAGED: ${ks.rangeReads} range reads, ${mb(ks.rangeBytes)} MB = ${pct}% of the ${mb(ROADS_BYTES)} MB block, ${perRead} B/read; ${ks.storeLoads} whole-file load(s) before the switch`);
   // ⚠ The FRACTION is deliberately reported, not asserted. A working-set read is bounded by PAGES, and
   // this block is only ~11-18 pages wide, so a session that pans and matches across the region touches
   // most of them however little data it needs. The fraction becomes an assertion at C2, where a block is
