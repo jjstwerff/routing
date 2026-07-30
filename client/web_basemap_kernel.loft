@@ -43,11 +43,17 @@ struct CellMark { const k: integer }
 //   * and the store CANNOT live in a struct field to be passed as one — the paged loaders refuse a
 //     field-declared collection (loft#632), which is the whole mechanism this path runs on.
 // So the caller keeps both collections as bare locals and this only decides what is missing.
-fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>) -> vector<integer> {
+fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>, blk: integer) -> vector<integer> {
   need: vector<integer> = [];
-  for k in keys { if marks[k] == null { need += [k]; } }
+  for k in keys { if marks[blk * MARK_BLOCK + k] == null { need += [k]; } }
   need
 }
+
+// One mark per (BLOCK, cell), not per cell. Blocks are disjoint by cell, so a key lives in exactly one of
+// them — and every covering block gets asked for the whole window, so a block that legitimately returns
+// nothing for a key must not mark it fetched for its neighbour. The multiplier is far above any cell key
+// (the packing tops out around 1.6e8 for the whole world at this cell size).
+MARK_BLOCK = 10000000000;
 
 // End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
 // "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
@@ -110,6 +116,10 @@ fn main() {
     } else {
       lines = blob.split('\n');
       layout_url = lines[0] ?? "";
+      // PLAN-SCALE C2 — line 1 is the COVERING SET, not a block: a comma-separated list of the roads
+      // blocks whose extent this command touches. One entry is the C0/C1 case and behaves exactly as
+      // before; a corridor near a border names two, and the working set is filled from each in turn
+      // (S8 proved the matcher cannot tell — `store_load_keys` accumulates).
       roads_url  = lines[1] ?? "";
       cmd        = lines[2] ?? "view";
       arg3       = lines[3] ?? "";                // bbox (view) or sketch (match)
@@ -122,18 +132,28 @@ fn main() {
       // trips against one. So the strategy belongs to the DATA, not to the code — at C2 the top index
       // carries it per block, and paging wins as soon as a viewport is a small fraction of a block.
       readmode   = lines[5] ?? "whole";
+      roads_urls: vector<text> = [];
+      for u in roads_url.split(',') { if u != "" { roads_urls += [u]; } }
+      // More than one block can only be PAGED. A whole-file load adopts an image — the second would
+      // replace the first rather than add to it — whereas `store_load_keys` accumulates by design. So
+      // the covering set decides the strategy when it is plural, and the per-block hint decides when it
+      // is not (a single small block is still cheaper whole; PLAN-SCALE C1b).
+      if len(roads_urls) > 1 { readmode = "paged"; }
 
       ok = true;
       // A changed URL means a different region: the working set, its marks and the cached corridor are
       // all stale. In "paged" mode nothing is fetched here — each command below asks for the cells it is
       // about to read. In "whole" mode the block is loaded once, exactly as before C1b.
+      // A changed covering SET means different data underfoot: the working set, its marks and the
+      // cached corridor are all stale. `roads_at` holds the whole set, so gaining a second block
+      // invalidates as surely as changing region does.
       if roads_url != roads_at {
         roads = [];
         marks = [];
         sess = session_new();
         if readmode == "paged" {
           roads_at = roads_url;
-        } else if store_load_url_trusted(roads, roads_url) {
+        } else if len(roads_urls) == 1 && store_load_url_trusted(roads, roads_urls[0] ?? "") {
           roads_at = roads_url;
         } else {
           println("ERR roads store_load_url failed: {roads_url}");
@@ -161,14 +181,20 @@ fn main() {
           if len(mpts) >= 2 {
             mkeys: vector<integer> = [];
             if readmode == "paged" { mkeys = corridor_cell_keys(mpts, corridor_margin(mpts), false); }
-            need: vector<integer> = cells_to_fetch(marks, mkeys);
-            if len(need) > 0 {
-              // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent: a
-              // paged loader reports "no such key" exactly as it reports "loaded nothing", so an empty
-              // cell — and a rectangular window over a real region is full of them — would otherwise be
-              // re-requested by every command for the rest of the session.
-              for nk in need { marks += CellMark { k: nk }; }
-              _ = store_load_keys(roads, roads_url, need);
+            bi = 0;
+            for burl in roads_urls {
+              // Ask EVERY covering block for the window. A block that holds none of these cells returns
+              // nothing and costs one request; a corridor near a seam gets its cells from both (S8).
+              bneed: vector<integer> = cells_to_fetch(marks, mkeys, bi);
+              if len(bneed) > 0 {
+                // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent from
+                // THIS block: a paged loader reports "no such key" exactly as it reports "loaded
+                // nothing", so an empty cell would otherwise be re-requested by every command for the
+                // rest of the session.
+                for nk in bneed { marks += CellMark { k: bi * MARK_BLOCK + nk }; }
+                _ = store_load_keys(roads, burl, bneed);
+              }
+              bi += 1;
             }
 
           }
@@ -205,14 +231,20 @@ fn main() {
           if ok {
             vkeys: vector<integer> = [];
             if readmode == "paged" { vkeys = view_cell_keys(arg3); }
-            vneed: vector<integer> = cells_to_fetch(marks, vkeys);
-            if len(vneed) > 0 {
-              // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent: a
-              // paged loader reports "no such key" exactly as it reports "loaded nothing", so an empty
-              // cell — and a rectangular window over a real region is full of them — would otherwise be
-              // re-requested by every command for the rest of the session.
-              for nk in vneed { marks += CellMark { k: nk }; }
-              _ = store_load_keys(roads, roads_url, vneed);
+            vbi = 0;
+            for vburl in roads_urls {
+              // Ask EVERY covering block for the window. A block that holds none of these cells returns
+              // nothing and costs one request; a corridor near a seam gets its cells from both (S8).
+              vbneed: vector<integer> = cells_to_fetch(marks, vkeys, vbi);
+              if len(vbneed) > 0 {
+                // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent from
+                // THIS block: a paged loader reports "no such key" exactly as it reports "loaded
+                // nothing", so an empty cell would otherwise be re-requested by every command for the
+                // rest of the session.
+                for nk in vbneed { marks += CellMark { k: vbi * MARK_BLOCK + nk }; }
+                _ = store_load_keys(roads, vburl, vbneed);
+              }
+              vbi += 1;
             }
 
             if cmd == "viewtext" {

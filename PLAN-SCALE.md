@@ -280,6 +280,34 @@ isn't reliable on a mmap-reloaded store"*; re-tested on a `store_persist_bind`-e
 - **The first refactor was slower.** Returning a fresh `vector<Way>` per tile and doing `ways += …` copies
   every Way once per tile (~40% on a short corridor). It appends through a `&` reference instead.
 
+### C2 — the multi-block wiring is DONE; only the data is missing (2026-07-30)
+
+The kernel's line 1 is no longer a block, it is the **covering set** — the roads blocks whose extent a
+command touches, comma-separated. One entry is the C0/C1 case and behaves exactly as before; a corridor
+near a seam names two and the working set is filled from each in turn, which S8 proved the matcher cannot
+distinguish from a single block.
+
+- **More than one block can only be PAGED**, and the kernel enforces that rather than trusting the hint: a
+  whole-file load *adopts* an image, so the second would replace the first, where `store_load_keys`
+  accumulates by design. The plan predicted this forcing function; it is now mechanical.
+- **Marks are per (block, cell)**, not per cell. Every covering block is asked for the whole window, and a
+  block that legitimately holds none of those cells must not mark them fetched for its neighbour.
+- **The app derives the set per command** — a view from its viewport, a match from the sketch's bbox padded
+  by 0.05° (beyond the corridor margin the kernel will add, so a corridor cannot want a block the app never
+  named).
+- ⚠ **If one block contains the whole box, the set is that block alone** — the smallest such. Real blocks
+  are disjoint (regions cut on cell boundaries) but the index cannot enforce it, and a detailed city block
+  inside a country block is exactly what an overlap looks like. Naming both would feed the SAME roads to
+  `build_graph` twice, and **a duplicated way is not a slower match, it is a different one**. The unit test
+  caught that on its first run, before any second block exists.
+- The **base map stays single-block**: `expose` pins one store, and re-scoping that is S5/C3.
+
+*What C2 still needs is data and nothing else* — generate NL blocks, add them to `data/coverage.toml`,
+rebuild the index. ⚠ One hole is stated rather than papered over: the two-block path is gated in the unit
+tests and natively (S8), but the BROWSER runs it only as a set of one until two real blocks exist. The
+cheap way to close that early is to split the shipped block into `_site` and drive the app across the
+seam — worth doing before the first real generation, not after.
+
 ✅ **The browser runs it too** (same day): [loft#681](https://github.com/loft-lang/loft/issues/681) — the
 `--html` import-validation regression that had pinned `store-kernel.wasm` to the previous kernel — was
 fixed within the afternoon, the wasm rebuilt, and the browser gate reproduced the route exactly:
