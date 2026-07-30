@@ -255,11 +255,33 @@ native, with bytes_fetched ≪ file size. *Gate:* new `tools/paged_browser_probe
 the Range path is not wired into the wasm build, everything else waits and this becomes a loft ask** — with
 this probe as the reproducer.
 
-**S2 · Kill the full-collection scans (W4).** Replace `corridor_ways_impl2`'s `for t in store` with a
-keyed cell-window fetch, and the viewport filter's walk likewise. *Observable:* corridor read time flat as
-coverage grows — measure on a synthetic 20× block. *Gate:* `tools/match_parity.sh` byte-identical +
-`tile_border_gate.sh`; a new assertion that the tile count touched per match is a function of the sketch,
-not of the store.
+**S2 · Kill the full-collection scans (W4).** ✅ **DONE for the corridor (2026-07-30).**
+`corridor_ways_impl2` enumerates the sketch's cell window and looks each cell up by key; the tube test runs
+on the cell's own centre *before* the lookup, so a cell outside the tube costs arithmetic and no store
+access — which is also what makes it safe to page later (C1b must not fetch a cell it does not need).
+
+*The premise it was blocked on was stale.* The code walked the store because *"keyed lookup `store[key]`
+isn't reliable on a mmap-reloaded store"*; re-tested on a `store_persist_bind`-ed block that is **88 keys,
+0 misses, 0 mismatches**.
+
+| gate | result |
+|---|---|
+| `tools/match_parity.sh` | ✅ byte-identical, 3 distinct routes over 5 cases |
+| `tools/tile_border_gate.sh` | ✅ 4 corridors, golden fingerprints unchanged, still order-insensitive |
+| `tools/corridor_scale_probe.loft` (**new**, in `make test-native`) | ✅ identical corridor and **flat** at 501× the tiles |
+| `tools/match_phase_probe.loft` | corridor **20–22 ms** before and after — the real interaction is unmoved |
+
+⚠ **Two things this step cost, both worth keeping:**
+- **The first version of the scale probe could not fail.** Its synthetic tiles carried real roads, so
+  decoding the corridor's own 2702 ways swamped the scan and the probe passed *against the old
+  walk-the-store code*. Rebuilt with EMPTY far-away tiles — a scan iteration and nothing else — it now
+  separates them cleanly: old **51 → 358 ms** at 501×, new **flat**. A gate is not a gate until it has
+  been shown to fail.
+- **The first refactor was slower.** Returning a fresh `vector<Way>` per tile and doing `ways += …` copies
+  every Way once per tile (~40% on a short corridor). It appends through a `&` reference instead.
+
+**Still open in S2:** the viewport filter's walk (JS side) and the browser kernel, which cannot be rebuilt
+until loft#681.
 
 **S3 · Page-locality: Hilbert ordering.** Order tiles within a block on a Hilbert curve at generation.
 *Observable:* `bytes_fetched` for a realistic viewport working set, before vs after. *Gate:* a probe that
@@ -312,7 +334,7 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | rung | coverage | ≈ blocks / bytes (roads + layout) | needs | what it proves for the first time | entry gate |
 |---|---|---|---|---|---|
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
-| **C1a** | the same block, **no full-collection scans** (in-memory keyed access; server pages for real) | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
+| **C1a** | ✅ **DONE (native) 2026-07-30** — no full-collection scans; ⛔ browser half waits on [loft#681](https://github.com/loft-lang/loft/issues/681) | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
 | **C1b** | the same block, **read PAGED in the browser** | 1 / 24 MB | ✅ unblocked — [loft#678](https://github.com/loft-lang/loft/issues/678) landed 2026-07-30 | the working-set read path where the app actually runs | ✅ S1's gate reports `browser=pass` (it is the standing check, and it flipped on its own) |
 | **C2** | **Netherlands**, on small whole-file blocks (D11) | ~20–40 city blocks / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
@@ -370,7 +392,12 @@ the point where `h: 0` finally gets populated (HANDOFF §11 — gradient routing
 it is). *Gate:* second run fetches 0 tiles; a known relief profile matches within tolerance.
 
 **R4 · Generate one block.** Native loft, streaming input (S6), Hilbert-ordered (S3), `.dschema` written,
-output named `<region>-v<YYYY-MM-DD>.store`. *Gate:* per-block counts within a band of the previous
+output named `<region>-v<YYYY-MM-DD>.store`. ⛔ **Fix the cell-key packing FIRST — it is wrong west of
+Greenwich.** `tools/gen-tiles.loft` packs `key = ty * 1000000 + tx` with truncating division, so a negative
+`tx` aliases the previous row (`ty=100,tx=-5` collides with `ty=99,tx=999995`) and the two cells either
+side of the meridian both fold onto `tx=0`. Invisible for this block (all of it is east of Greenwich) and
+**silent data loss for FR / ES / UK / IE / PT**, which is most of the coverage. It is a data-format change,
+so it must land before any block west of 0° is generated, not after. *Gate:* per-block counts within a band of the previous
 version — a block that suddenly loses 30% of its ways fails rather than ships.
 
 **R5 · Verify per block, before anything is published.** Four checks, because a bad block is invisible

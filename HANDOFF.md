@@ -186,6 +186,13 @@ a keyed tile costing **262 KB in 5 range requests**; it turned green on its own,
 standing gate is for. ⚠ The fix is `fixed-pending-merge` on `tuxedo-diagnostics2`: it is in the
 binary installed here, **not** in a fresh install from loft `main`.
 
+⛔ **One thing IS blocked, as of 2026-07-30: rebuilding the browser kernel wasm.**
+[loft#681](https://github.com/loft-lang/loft/issues/681) — `--html`'s new import validation rejects
+`loft_web.ws_yield` even though `lib/web`'s `[wasm.bridge] host_js` provides it, so
+`node browser/build-store-kernel.mjs` fails and `browser/store-kernel.wasm` is pinned to the kernel the
+PREVIOUS binary built. Native gates are unaffected. `map_render_gate.sh` now warns when the shipped wasm
+predates the kernel sources (promote that warning to a failure — one variable — when #681 lands).
+
 ### If you are looking for the next thing to do
 
 `PLAN-PERF` §0 is empty and `PLAN-EDIT` is done, so there is no queued step. **The next body of work is

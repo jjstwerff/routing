@@ -57,6 +57,29 @@ fi
 echo "== step 18 tripwire: browser kernel threading =="
 node "$here/tools/wasm_threads.mjs" || exit 1
 
+# 1b. Is the shipped wasm actually built from the kernel sources in the tree?
+#
+# Everything below this line tests browser/store-kernel.wasm, which is COMMITTED and rebuilt by hand
+# (node browser/build-store-kernel.mjs). So a kernel change can land in the .loft sources, pass every
+# native gate, and be entirely absent from what the browser runs — the gate would stay green while
+# testing the previous kernel. That is the drift this checks for.
+#
+# ⚠ WARNS rather than fails today: loft#681 (an --html import-validation regression) makes the rebuild
+# impossible on the installed binary, so a hard failure here would be unfixable noise. PROMOTE IT TO A
+# FAILURE the day #681 lands — flip `stale_is_fatal` to 1.
+stale_is_fatal=0
+echo "== is the shipped kernel wasm current? =="
+newest_src="$(find "$here/lib/routing_kernel/src" "$here/lib/map_kernel/src" "$here/client" -name '*.loft' -newer "$here/browser/store-kernel.wasm" 2>/dev/null | head -3)"
+if [ -n "$newest_src" ]; then
+  echo "  ⚠ STALE: browser/store-kernel.wasm predates kernel sources —"
+  echo "$newest_src" | sed 's|^|      |'
+  echo "      the browser is running the PREVIOUS kernel; everything below tests that, not the tree."
+  echo "      rebuild: node browser/build-store-kernel.mjs   (blocked by loft#681 as of 2026-07-30)"
+  [ "$stale_is_fatal" = "1" ] && exit 1
+else
+  echo "  ✓ store-kernel.wasm is newer than every kernel source"
+fi
+
 # 2. Build the deployable site (inlines map.mjs + store-kernel.mjs + store-app.mjs → _site/index.html).
 node "$here/browser/build-site.mjs" || exit 1
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }

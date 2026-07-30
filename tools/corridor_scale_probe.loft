@@ -1,0 +1,128 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-SCALE C1a's observable: does a corridor read cost what the SKETCH is, or what the MAP is?
+//
+// The corridor used to walk the whole tile store and filter (`for t in store`), which is invisible on a
+// 283 km² block — 88 tiles — and is the size of the continent at WE scale (~600k road tiles). It now
+// enumerates the sketch's cell window and looks each cell up by key. That claim is only worth anything
+// if it is measured against a store that is actually bigger, so this builds one: the real tiles plus N
+// copies parked far away, where no sketch will ever look.
+//
+// Two assertions, and the second is the one that matters:
+//   1. IDENTITY   — the corridor returns exactly the same ways from the 1x and the Nx store
+//   2. INVARIANCE — reading it does not get slower as the store grows (the old code scaled with N)
+//
+//   loft --native --lib lib tools/corridor_scale_probe.loft <roads.store> [copies]
+#cwd
+
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, tiles_corridor_ways_tube, corridor_margin);
+
+struct Fp { ways: integer, coords: integer, mils: integer }
+
+// A fingerprint of a corridor read: not just the count, because a wrong key window could return the
+// right NUMBER of ways from the wrong cells. The coordinate sum moves if any way differs.
+fn fingerprint(ws: vector<Way>) -> Fp {
+  f = Fp { ways: len(ws), coords: 0, mils: 0 };
+  for w in ws {
+    f.coords += len(w.coords);
+    for c in w.coords { f.mils += round(c.lat * 100000.0) as integer + round(c.lon * 100000.0) as integer; }
+  }
+  f
+}
+
+fn same(a: Fp, b: Fp) -> boolean { a.ways == b.ways && a.coords == b.coords && a.mils == b.mils }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 1 { println("usage: corridor_scale_probe <roads.store> [copies]"); return; }
+  copies = (a[1] ?? "2000") as integer ?? 2000;
+
+  base: hash<TTile[tkey]> = [];
+  store_load(base, a[0] ?? "");
+  nbase = 0;
+  for _ in base { nbase += 1; }
+
+  // The Nx store: the real tiles, plus `copies` blocks of EMPTY tiles parked far away.
+  //
+  // ⚠ They are empty deliberately. The first version copied each tile's roads and steps, and then the
+  // decode of the corridor's own ways swamped the scan so completely that the probe PASSED against the
+  // old walk-the-store code — a gate that could not fail. An empty tile costs an iteration and nothing
+  // else, which is precisely the cost this step removes; the corridor's own work is unchanged.
+  big: hash<TTile[tkey]> = [];
+  for ot in base {
+    big += TTile { tkey: ot.tkey, ox: ot.ox, oy: ot.oy, oh: ot.oh, roads: [], steps: [] };
+    nt = big[ot.tkey];
+    if nt != null {
+      for orr in ot.roads { nt.roads += [TRoad { tp: orr.tp, flags: orr.flags, steps: orr.steps }]; }
+      for os in ot.steps { nt.steps += [TStep { x: os.x, y: os.y, h: os.h }]; }
+    }
+  }
+  ci = 1;
+  while ci <= copies {
+    for ct in base {
+      shifted = ct.tkey + ci * 4000 * 1000000;
+      big += TTile { tkey: shifted, ox: ct.ox, oy: ct.oy + ci * 4000 * 200000, oh: ct.oh, roads: [], steps: [] };
+    }
+    ci += 1;
+  }
+  nbig = 0;
+  for _ in big { nbig += 1; }
+  println("stores: 1x = {nbase} tiles · {copies + 1}x = {nbig} tiles");
+
+  // A real sketch over the covered area (the same corner tile_border_probe routes through).
+  pts: vector<GeoPoint> = [GeoPoint { lat: 52.2, lon: 6.85 }, GeoPoint { lat: 52.22, lon: 6.88 },
+                           GeoPoint { lat: 52.24, lon: 6.90 }];
+  margin = corridor_margin(pts);
+
+  // The TIMING uses a deliberately TINY sketch, one cell wide. With a big sketch the decode of 8000-odd
+  // ways swamps the read and both stores look flat whatever the read does — a gate that cannot fail.
+  // On a one-cell sketch the store access IS the cost, so a per-store-tile walk has nowhere to hide.
+  tiny: vector<GeoPoint> = [GeoPoint { lat: 52.2, lon: 6.85 }, GeoPoint { lat: 52.203, lon: 6.853 }];
+  tmargin = corridor_margin(tiny);
+
+  // Warm both paths first: the first read of either store pays one-off costs that are not the subject.
+  _w0 = tiles_corridor_ways_tube(base, pts, margin);
+  _w1 = tiles_corridor_ways_tube(big, pts, margin);
+
+  reps = 5;
+  // Identity, on the real sketch.
+  fa = fingerprint(tiles_corridor_ways_tube(base, pts, margin));
+  fb = fingerprint(tiles_corridor_ways_tube(big, pts, margin));
+
+  // Invariance, on the tiny one.
+  t0 = now();
+  ra = 0;
+  while ra < reps { _ta = tiles_corridor_ways_tube(base, tiny, tmargin); ra += 1; }
+  t1 = now();
+  rb = 0;
+  while rb < reps { _tb = tiles_corridor_ways_tube(big, tiny, tmargin); rb += 1; }
+  t2 = now();
+  ftiny = fingerprint(tiles_corridor_ways_tube(base, tiny, tmargin));
+  ftinyb = fingerprint(tiles_corridor_ways_tube(big, tiny, tmargin));
+  if !same(ftiny, ftinyb) { println("#C FAIL identity (tiny sketch) — the bigger store returned a different corridor"); return; }
+
+  small_ms = t1 - t0;
+  big_ms = t2 - t1;
+  println("identity : 1x ways={fa.ways} coords={fa.coords} | {copies + 1}x ways={fb.ways} coords={fb.coords}");
+  println("invariance: tiny sketch ({ftiny.ways} ways) — 1x {small_ms} ms vs {copies + 1}x {big_ms} ms / {reps} reads");
+
+  if !same(fa, fb) {
+    println("#C FAIL identity — the bigger store returned a DIFFERENT corridor");
+    return;
+  }
+  if fa.ways < 10 {
+    println("#C FAIL vacuous — the corridor found almost nothing, so nothing was tested");
+    return;
+  }
+  // Invariance: allow generous headroom for noise and for the bigger hash's own lookup cost, but a
+  // store that is {copies+1}x bigger must not cost anywhere near {copies+1}x to read.
+  budget = small_ms * 3 + 15;   // generous: 3x for noise, +15 ms floor — a per-store-tile walk costs ~21x
+  if big_ms > budget {
+    println("#C FAIL invariance — {copies + 1}x the tiles cost {big_ms} ms vs {small_ms} ms (budget {budget})");
+    println("       the corridor is scaling with the STORE again, which is what C1a removed");
+    return;
+  }
+  println("#C ALL PASS — identical corridor, and {copies + 1}x the store costs {big_ms} ms vs {small_ms} ms");
+}
