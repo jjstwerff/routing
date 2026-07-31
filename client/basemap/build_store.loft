@@ -119,9 +119,20 @@ fn feature_pts(geom: JsonValue) -> vector<LL> {
   pts: vector<LL> = [];
   gt = atag(geom, "type");
   cs = geom.field("coordinates");
-  // osmium emits a POLYGON for a closed way with an area tag and a LineString otherwise, so both shapes
-  // arrive on the same layer. A polygon's first ring is its outer boundary — the footprint we bin.
-  ring = if gt == "Polygon" { cs.item(0) } else { cs };
+  // osmium emits a MULTIPOLYGON for anything it assembles as an area — a closed tagged way OR a
+  // multipolygon relation — a Polygon for the rarer single-ring form, and a LineString otherwise. All
+  // three arrive on the same layer, so all three are unwrapped to one outer ring here.
+  //
+  // ⚠ MultiPolygon used to be missing, and it read as harmless: osmium emits a closed WAY twice, once as
+  // a LineString and once as an area, so the LineString twin carried every way and the dropped twin was
+  // a duplicate. A RELATION has no twin. Its member ways are untagged, so a `w/` filter never selects
+  // them and the relation is the only object there is — which is how Medisch Spectrum Twente's 70615 m²
+  // `building=hospital` (a 316-point relation) had no outline on the map at all. This block carries 122
+  // building relations and 297 terrain relations; every one of them needed BOTH this and the `r/` filters
+  // in tools/build-base.sh, which is why the two land together.
+  ring = if gt == "MultiPolygon" { cs.item(0).item(0) }
+         else if gt == "Polygon" { cs.item(0) }
+         else { cs };
   if gt == "Point" {
     pts += [LL { lat: cs.item(1).as_number(), lon: cs.item(0).as_number() }];
     return pts;
@@ -156,13 +167,20 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
   if len(pts) < 1 { return; }
   at = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
   if layer == 0 {
-    cover = area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure"));
+    cover = area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure"),
+                     atag(props, "amenity"));
     bin_area(idx, cell, cover, pts);
-    // A reserve is drawn as an outline, so its NAME is the only thing that says what the outline is.
+    // A designation is drawn as an outline, so its NAME is the only thing that says what the outline is.
     // It rides the existing label collection (no schema change) at the ring's bbox centre — a place
     // label sits at one point, and a designation's first vertex is an arbitrary corner of it.
+    // ⚠ THE RANK MUST BE POSITIVE. `bin_place` opens with `if rank <= 0 || name == "" { return; }` — the
+    // guard that stops an untyped place from being labelled — so passing 0 here dropped every designation
+    // name in silence. It was invisible in the output and visible in one number: `labels=` came back
+    // IDENTICAL across a rebuild that was supposed to add them.
     aname = atag(props, "name");
-    if cover == "reserve" && aname != "" { bin_place(idx, cell, aname, "reserve", 0, ring_centre(pts)); }
+    if (cover == "reserve" || cover == "site") && aname != "" {
+      bin_place(idx, cell, aname, cover, if cover == "reserve" { 3 } else { 2 }, ring_centre(pts));
+    }
   }
   else if layer == 1 { if atag(props, "building") != "" { bin_building(idx, cell, atag(props, "name"), pts); } }
   else if layer == 2 { bin_place(idx, cell, atag(props, "name"), atag(props, "place"), place_rank(atag(props, "place")), at); }
@@ -227,7 +245,8 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
       geom = el.field("geometry"); m = len(geom);
       if m >= 3 {
         tags = el.field("tags");
-        cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"));
+        cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"),
+                         atag(tags, "amenity"));
         g0 = geom.item(0);
         tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
         ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
@@ -235,8 +254,24 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
         t = idx[key];
         if t == null { idx += PTile { tkey: key, ox: origin(tx, cell), oy: origin(ty, cell), areas: [], buildings: [], lines: [], labels: [], pois: [] }; t = idx[key]; }
         ring: vector<Coord> = [];
-        for j in 0..m { g = geom.item(j); ring += [Coord { x: (to_fixed(g.field("lon").as_number()) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(g.field("lat").as_number()) - t.oy) as i32? ?? (0 as i32) }]; }
+        a_mnla = 0.0; a_mxla = 0.0; a_mnlo = 0.0; a_mxlo = 0.0;
+        for j in 0..m {
+          g = geom.item(j);
+          g_la = g.field("lat").as_number(); g_lo = g.field("lon").as_number();
+          if j == 0 { a_mnla = g_la; a_mxla = g_la; a_mnlo = g_lo; a_mxlo = g_lo; }
+          if g_la < a_mnla { a_mnla = g_la; } if g_la > a_mxla { a_mxla = g_la; }
+          if g_lo < a_mnlo { a_mnlo = g_lo; } if g_lo > a_mxlo { a_mxlo = g_lo; }
+          ring += [Coord { x: (to_fixed(g_lo) - t.ox) as i32? ?? (0 as i32), y: (to_fixed(g_la) - t.oy) as i32? ?? (0 as i32) }];
+        }
         t.areas += [Area { cover: cover, ring: ring }];
+        // The designation label, exactly as bin_feature emits it — the two readers must bin identically
+        // or tools/base_stream_gate.sh fails, which is precisely how this omission was caught (11310 vs
+        // 11312 labels on the same input).
+        a_name = atag(tags, "name");
+        if (cover == "reserve" || cover == "site") && a_name != "" {
+          bin_place(idx, cell, a_name, cover, if cover == "reserve" { 3 } else { 2 },
+                    LL { lat: (a_mnla + a_mxla) / 2.0, lon: (a_mnlo + a_mxlo) / 2.0 });
+        }
       }
     }
   }

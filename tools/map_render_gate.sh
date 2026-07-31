@@ -64,8 +64,9 @@ echo "== every landcover the generator emits has a renderer treatment =="
 covers="$(sed -n '/^pub fn area_use/,/^}/p' "$here/lib/basemap/src/basemap.loft" \
           | grep -oE 'return "[a-z_]+"' | cut -d'"' -f2 | sort -u)"
 styled="$(node -e "import('$here/browser/map.mjs').then(m=>console.log(Object.keys(m.COVER_COLORS).join('\n')))" 2>/dev/null)"
-# "other" is the deliberate unknown (draws nothing) and "reserve" the deliberate overlay (RESERVE_STYLE).
-overlay="other reserve"
+# "other" is the deliberate unknown (draws nothing); the overlay kinds come from the module itself, so
+# adding a designation cannot drift the gate out of step with the renderer.
+overlay="other $(node -e "import('$here/browser/map.mjs').then(m=>console.log(Object.keys(m.DESIGNATION_STYLES).join(' ')))" 2>/dev/null)"
 missing=""
 for c in $covers; do
   case " $overlay " in *" $c "*) continue ;; esac
@@ -73,7 +74,7 @@ for c in $covers; do
 done
 [ -n "$covers" ] || { echo "  FAIL: parsed no covers out of area_use — the gate is blind"; exit 1; }
 echo "$styled" | grep -qx forest || { echo "  FAIL: could not read COVER_COLORS from map.mjs"; exit 1; }
-grep -q "RESERVE_STYLE" "$here/browser/map.mjs" || { echo "  FAIL: no RESERVE_STYLE — 'reserve' would draw nothing"; exit 1; }
+echo "$overlay" | grep -q reserve || { echo "  FAIL: no DESIGNATION_STYLES — designations would draw nothing"; exit 1; }
 if [ -n "$missing" ]; then
   echo "  FAIL: area_use can return$missing, which the renderer has no colour for —"
   echo "        it would paint nothing, or (worse) an opaque unknown over real terrain."

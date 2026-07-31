@@ -75,7 +75,7 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
 
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".
-pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
+pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "") -> text {
   if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
   if natural == "wood" { return "forest"; }
   if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
@@ -110,6 +110,13 @@ pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
   // translucent tint plus an outline. Being a separate pass is what makes that safe — it cannot overdraw
   // terrain no matter what order the tiles arrive in.
   if leisure == "nature_reserve" { return "reserve"; }
+
+  // A SITE is the same story as a reserve: a hospital or a campus says what the ground is FOR, not what
+  // is on it — grass, trees, car parks and buildings are all separately mapped inside one. So it is an
+  // outline and a name, never a fill. Kept deliberately narrow: `amenity` also covers benches, parking
+  // and restaurants, and painting every one of those would be the "other" slab all over again.
+  if amenity == "hospital" || amenity == "school" || amenity == "university"
+     || amenity == "college" || amenity == "kindergarten" { return "site"; }
 
   // Anything still here is NOT a landcover we recognise (`natural=tree_row` is a line; `landuse=military`
   // is another designation). It stays in the store so a later release can classify it without a

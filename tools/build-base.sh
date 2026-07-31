@@ -64,24 +64,39 @@ if [ -n "$bbox" ]; then
 fi
 
 # One osmium pass per layer: filter, then export the form the generator streams.
-layer() {  # $1 = layer name, $2… = tags-filter expressions
-  local name="$1"; shift
+#
+# ⚠ EACH LAYER NAMES ITS GEOMETRY TYPE, and the area-shaped layers ask for `polygon` ONLY. osmium emits a
+# closed tagged way TWICE — once as a LineString, once as the assembled area — so the default (everything)
+# hands the generator each footprint two ways. That was survivable only because `feature_pts` silently
+# dropped one of them; now that it parses MultiPolygon, taking both would bin every area twice.
+#
+# ⚠ AND `r/` IS AS IMPORTANT AS `w/`. `w/building` matches ways only; a multipolygon RELATION carries its
+# tags on the relation and leaves its member ways bare, so nothing selected it and nothing could. That is
+# how a 70615 m² `building=hospital` — Medisch Spectrum Twente — had no outline on the map. This block
+# holds 122 building relations and 297 terrain relations.
+layer() {  # $1 = layer name, $2 = osmium --geometry-types, $3… = tags-filter expressions
+  local name="$1" gtypes="$2"; shift 2
   local fpbf="$work/$id.$name.osm.pbf" seq="$work/$id.$name.geojsonseq"
-  local recipe="$*"
+  local recipe="$gtypes | $*"
   stale_by_recipe "$seq" "$recipe" && rm -f "$fpbf"
   if newer "$seq" "$base_pbf"; then echo "  $name: up to date ($(du -h "$seq" | cut -f1))"; return 0; fi
   osmium tags-filter --overwrite -o "$fpbf" "$base_pbf" "$@" || return 1
-  osmium export "$fpbf" -f geojsonseq --overwrite -o "$seq" || return 1
+  osmium export "$fpbf" -f geojsonseq --geometry-types="$gtypes" --overwrite -o "$seq" || return 1
   printf '%s' "$recipe" > "$seq.recipe"
   echo "  $name: $(du -h "$seq" | cut -f1), $(wc -l < "$seq") features"
 }
 
+# `amenity` is filtered to SITE values only. The key also covers benches, parking and restaurants, and
+# pulling all of those in as areas would recreate the slab problem it is here to fix.
+SITES="hospital,school,university,college,kindergarten"
+
 echo "== base layers for $id =="
-layer areas     w/landuse w/natural w/leisure || exit 1
-layer buildings w/building                    || exit 1
-layer places    n/place                       || exit 1
-layer lines     w/waterway w/railway w/barrier || exit 1
-layer pois      n/natural n/amenity n/tourism n/man_made n/historic n/leisure n/highway || exit 1
+layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$SITES" \
+                           r/landuse r/natural r/leisure "r/amenity=$SITES" || exit 1
+layer buildings polygon    w/building r/building         || exit 1
+layer places    point      n/place                       || exit 1
+layer lines     linestring w/waterway w/railway w/barrier || exit 1
+layer pois      point      n/natural n/amenity n/tourism n/man_made n/historic n/leisure n/highway || exit 1
 # Streets reuse the ROADS export: the generator selects `highway` + a name/ref itself, so a second pass
 # over the same ways would only duplicate work and disk.
 streets="$work/$id.geojsonseq"
