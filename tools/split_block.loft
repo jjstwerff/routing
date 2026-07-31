@@ -16,7 +16,9 @@
 //   loft --native --lib lib tools/split_block.loft <in.store> <west.store> <east.store> <lon_deg>
 #cwd
 
-use routing_kernel::(TTile, TRoad, TStep, cell_ix);
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, cell_ix);
+
+fn copy_barriers(src: TTile) -> integer { n = 0; for _b in src.barriers { n += 1; } n }
 
 fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
   dst += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
@@ -25,6 +27,9 @@ fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
   if t != null {
     for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; n += 1; }
     for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
+    // ⚠ EVERY collection, or the split silently loses one. Barriers were added to TTile after this tool
+    // was written, and a copier that omits a field does not fail — it produces a smaller, wronger block.
+    for b in src.barriers { t.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
   }
   n
 }
@@ -41,12 +46,20 @@ fn main() {
 
   west: hash<TTile[tkey]> = [];
   east: hash<TTile[tkey]> = [];
-  wt = 0; et = 0; wr = 0; er = 0;
+  wt = 0; et = 0; wr = 0; er = 0; sb = 0; wb = 0; eb = 0;
   for t in src {
-    if cell_ix(t.ox) < cut { wt += 1; wr += copy_into(west, t); }
-    else { et += 1; er += copy_into(east, t); }
+    sb += copy_barriers(t);
+    if cell_ix(t.ox) < cut { wt += 1; wr += copy_into(west, t); wb += copy_barriers(t); }
+    else { et += 1; er += copy_into(east, t); eb += copy_barriers(t); }
   }
-  println("split at cell {cut} ({lon}): west tiles={wt} roads={wr} · east tiles={et} roads={er}");
+  println("split at cell {cut} ({lon}): west tiles={wt} roads={wr} barriers={wb} · east tiles={et} roads={er} barriers={eb}");
+  // CONSERVATION, asserted. A copier that omits a field does not fail, it produces a smaller block —
+  // which is exactly what happened when `barriers` was added to TTile and this tool still copied only
+  // roads and steps. Counting both sides against the source is the check that would have caught it.
+  if wb + eb != sb {
+    println("FAIL: {sb} barriers in, {wb}+{eb}={wb + eb} out — the split is DROPPING a field");
+    return;
+  }
   if wt == 0 || et == 0 {
     println("FAIL: the split put every tile on one side — pick a longitude inside the block");
     return;

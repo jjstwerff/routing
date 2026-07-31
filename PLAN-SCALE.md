@@ -694,15 +694,26 @@ boundaries are disjoint by construction — that is how the NL halves were made.
 
 ### D2 — the CORS host, made testable (2026-07-30)
 
-**Neither GitHub surface can serve a paged block to a browser**, measured rather than assumed:
+⚠ **CORRECTED 2026-07-30 — the first version of this section was WRONG, and it was load-bearing.** It
+said GitHub Pages cannot serve a byte range, and that is the claim that sent the Netherlands blocks to a
+release asset. Pages serves ranges correctly. The bad measurement was taken against
+`python3 -m http.server`, standing in for Pages, which ignores `Range` and returns the whole file — and
+python's behaviour was written down as GitHub's. Re-measured against the live site:
 
 | surface | `Range` | CORS | verdict |
 |---|---|---|---|
+| **GitHub Pages** | ✅ **206, 16 bytes asked → 16 transferred, correct bytes at 3 offsets** | same-origin for our app; also sends `ACAO: *` | **usable — and it is the app's own origin, so CORS does not arise** |
+| jsDelivr `/gh` | ✅ 206 | ✅ `ACAO: *` **and** `expose: *` | usable; per-file limits apply |
+| raw.githubusercontent | ✅ 206 | ✅ `ACAO: *`, but **no** `expose-headers` | usable only with a `HEAD`→`Content-Length` fallback for size |
 | release asset | ✅ 206 + `Content-Range` | ❌ no ACAO even with `Origin` | downloads, native, offline — not the browser |
-| GitHub Pages | ❌ advertises `accept-ranges`, **answers 200 with the whole file** | n/a (same origin) | cannot page, at any size |
 
-So D2's bucket is not a preference, it is the only shape that works — and it is now something a candidate
-host is *tested* against instead of trusted. `tools/cors_host_gate.sh` (in `make test-map`) serves the app
+So **D2 is not a wall and no bucket is required**. What limits GitHub hosting is SIZE, not capability:
+Pages allows ~1 GB per site, and NL roads are 504 MB (fits) while roads+base is 3.2 GB (does not). The
+stores are also ~45–55% preallocated zeros — two different regions weighed a byte-identical
+1 437 020 160 — so a store persisted at its true size would put NL near 1.5 GB.
+
+The gate below is still exactly right and still the acceptance test for any *other* host; only the claim
+about Pages was wrong. `tools/cors_host_gate.sh` (in `make test-map`) serves the app
 on one origin and its blocks on another and drives the real app across it:
 
 ```
@@ -879,6 +890,10 @@ step in doing any of that required a codec of our own.
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
 | 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9 |
+| 7 | `oneway=` is still dropped by the store | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
+| 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
+| 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |
+| 10 | A barrier BETWEEN way vertices is dropped | `apply_barriers` lands a barrier on the node that shares its coordinate; one tagged mid-segment matches nothing. Correct today (a route cannot pass through a point that is not a node) and worth revisiting only if real data shows barriers tagged off-vertex |
 
 ---
 

@@ -42,7 +42,16 @@ SKETCHES = [
 // when 19b lands and unions per-tile graphs, any of these moving means the border splice altered a route
 // — which is the failure §268's acceptance is written against. Regenerate ONLY with a reason, and let the
 // diff show which route moved.
-GOLDEN = [13491979666115, 13491979666115, 2009382494520, 1467589415931];
+// Re-baselined 2026-07-30 with the block that carries legal-access tags. TWO reasons, both in the data
+// rather than the splice these numbers watch:
+//   * the store now keeps `access`/`bicycle`/`foot`/`service` (it kept a class and two flag bits, so
+//     every closed way routed as an open one), and the router now steers off them;
+//   * the block was regenerated from the osmium extract `tools/build-blocks.sh` documents, which holds
+//     road classes the previous fetch had dropped entirely — 10 651 `service` and 3 818 `unclassified`
+//     ways were simply absent, 25 971 ways became 49 613.
+// Sketches 0 and 1 used to share a fingerprint (the two near-identical traces collapsed onto one route);
+// on the denser network they differ by a point, which is the honest answer for two different traces.
+GOLDEN = [11545037152675, 11662778190599, 2260294265658, 2364394022486];
 PROFILE = "cycling_road";
 CELL    = 200000;          // tile edge in fixed-point units — TILE_CELL in routing_kernel
 

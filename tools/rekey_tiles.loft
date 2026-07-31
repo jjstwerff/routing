@@ -18,7 +18,7 @@
 //   loft --native --lib lib tools/rekey_tiles.loft <in.store> <out.store>
 #cwd
 
-use routing_kernel::(TTile, TRoad, TStep, cell_ix, tile_cell_key);
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, cell_ix, tile_cell_key);
 
 fn main() {
   a: vector<text> = [];
@@ -43,6 +43,7 @@ fn main() {
     nt = fresh[nk];
     if nt != null {
       for r in t.roads { nt.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; roads += 1; }
+      for b in t.barriers { nt.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
       for s in t.steps { nt.steps += [TStep { x: s.x, y: s.y, h: s.h }]; steps += 1; }
     }
     tiles += 1;

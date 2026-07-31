@@ -17,7 +17,7 @@
 #   tools/overpass_fetch.py <out.geojsonseq> <S,W,N,E> [--step 0.2] [--cache DIR]
 import json, os, sys, time, urllib.parse, urllib.request
 
-TAGS = ["highway", "surface", "tracktype", "bicycle", "access", "oneway",
+TAGS = ["highway", "surface", "tracktype", "bicycle", "access", "foot", "oneway",
         "oneway:bicycle", "service", "cycleway", "cyclestreet", "name"]
 ENDPOINTS = ["https://overpass-api.de/api/interpreter",
              "https://overpass.kumi.systems/api/interpreter"]

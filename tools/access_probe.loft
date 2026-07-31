@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Do the legal-access tags survive the STORE, and does the router obey them?
+//
+// They did not. A stored road is three bytes — class, flags, vertex count — and `append_tile_ways`
+// rebuilt every way with `access: ""`, `bicycle: ""`, `svc: ""`. So `bike_never`/`foot_never`, which
+// test exactly those, could never fire on a tile-sourced way: every `access=private` path in the map
+// routed as a public one. Reported from the map ("the path is closed with fences and we route over
+// it"), confirmed against OSM — 43 ways tagged `access=private`/`no` in one 1.8 × 3.6 km box near
+// Enschede, all stored as ordinary open ways.
+//
+// This probe answers both halves on ONE store:
+//
+//   mode `count`  — the tags are IN the store: how many ways carry each bit, and how many are class 12
+//                   (`track`, which used to share a class with `path`). Guards against a silent
+//                   regeneration that drops them again; a block whose counts are all zero is a block
+//                   built by the old pipeline.
+//   mode `route`  — the router OBEYS them: match a trace and report how many metres of the result lie
+//                   on ways the flags mark restricted. The answer that matters is 0.0.
+//
+// The `route` mode is what makes the gate discriminating rather than decorative: run it on a fixture
+// whose SHORTEST line is private and the pre-fix code takes it, so the gate is verified to fail.
+//
+//   loft --native --lib lib tools/access_probe.loft count <roads.store>
+//   loft --native --lib lib tools/access_probe.loft route <roads.store> <lat,lon;lat,lon;…> [profile]
+#cwd
+
+use routing_kernel::(TTile, GeoPoint, Way, Barrier, corridor_margin, tiles_corridor_ways_tube,
+                     tiles_corridor_barriers, build_graph_barriers, graph_barrier_nodes, match_state_new, match_incremental,
+                     match_state_result,
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO,
+                     RF_FOOT_YES, RF_SVC_LOCAL);
+
+fn seg_m(a: GeoPoint, b: GeoPoint) -> float {
+  kx = 111320.0 * cos(a.lat * PI / 180.0);
+  dx = (b.lon - a.lon) * kx;
+  dy = (b.lat - a.lat) * 111320.0;
+  sqrt(dx * dx + dy * dy)
+}
+
+fn parse_trace(s: text) -> vector<GeoPoint> {
+  pts: vector<GeoPoint> = [];
+  for part in s.split(';') {
+    if part == "" { continue; }
+    xy = part.split(',');
+    la = xy[0] ?? ""; lo = xy[1] ?? "";
+    pts += [GeoPoint { lat: la as float ?? 0.0, lon: lo as float ?? 0.0 }];
+  }
+  pts
+}
+
+// Every way whose geometry passes within `tol` metres of `p`, reduced to "is any of them restricted".
+// A matched point sits ON a way, so a small tolerance is enough; the question is which way it is.
+fn restricted_at(ways: vector<Way>, p: GeoPoint, tol: float) -> boolean {
+  hit = false;
+  for w in ways {
+    if hit { break; }
+    // `access`/`bicycle`/`foot` come back out of the flags byte as representative values — the same
+    // ones the cost model tests. Anything the router calls illegal counts here.
+    bad = w.access == "private" || w.access == "no" || w.bicycle == "no" || w.foot == "no";
+    if !bad { continue; }
+    for c in w.coords {
+      if seg_m(c, p) <= tol { hit = true; break; }
+    }
+  }
+  hit
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  mode = a[0] ?? "";
+  path = a[1] ?? "";
+  if mode == "" || path == "" {
+    println("usage: access_probe count <store> | route <store> <lat,lon;…> [profile]");
+    return;
+  }
+
+  tiles: hash<TTile[tkey]> = [];
+  store_load(tiles, path);
+
+  if mode == "count" {
+    nways = 0; ntrack = 0; nacc = 0; nbno = 0; nbyes = 0; nfno = 0; nfyes = 0; nsvc = 0; nbar = 0;
+    for t in tiles {
+      nbar += len(t.barriers);
+      for r in t.roads {
+        nways += 1;
+        if (r.tp as integer) == 12 { ntrack += 1; }
+        fl = r.flags as integer;
+        if (fl & RF_ACCESS_NO) == RF_ACCESS_NO { nacc += 1; }
+        if (fl & RF_BIKE_NO) == RF_BIKE_NO { nbno += 1; }
+        if (fl & RF_BIKE_YES) == RF_BIKE_YES { nbyes += 1; }
+        if (fl & RF_FOOT_NO) == RF_FOOT_NO { nfno += 1; }
+        if (fl & RF_FOOT_YES) == RF_FOOT_YES { nfyes += 1; }
+        if (fl & RF_SVC_LOCAL) == RF_SVC_LOCAL { nsvc += 1; }
+      }
+    }
+    println("#A ways={nways} track={ntrack} access_no={nacc} bike_no={nbno} bike_yes={nbyes} foot_no={nfno} foot_yes={nfyes} svc_local={nsvc} barriers={nbar}");
+    return;
+  }
+
+  trace = parse_trace(a[2] ?? "");
+  if len(trace) < 2 { println("#A FAIL — need at least two trace points"); return; }
+  profile = a[3] ?? "cycling_road";
+
+  margin = corridor_margin(trace);
+  ways = tiles_corridor_ways_tube(tiles, trace, margin);
+  // Same tier for both (tube), or a gate goes missing exactly where the route is.
+  bars: vector<Barrier> = tiles_corridor_barriers(tiles, trace, margin, true);
+  g = build_graph_barriers(ways, bars);
+  pts = match_state_result(g, match_incremental(match_state_new(), g, trace, profile)).pts;
+  if len(pts) < 2 { println("#A FAIL — no route"); return; }
+
+  total = 0.0; bad_m = 0.0;
+  // WHERE the restricted metres are decides whether they are a defect. ILLEGAL is a last-resort
+  // surcharge, not a hard ban (DESIGN §5 "degrade, don't fail") — so a private driveway at the very
+  // start of a trace, where the drawn point has no other way near it, is the model working. The same
+  // metres in the MIDDLE would mean a legal alternative was passed over.
+  bad_lo = 1.0; bad_hi = 0.0;
+  for i in 1..len(pts) {
+    p0 = pts[i - 1] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    p1 = pts[i] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    d = seg_m(p0, p1);
+    total += d;
+    // Both endpoints on a restricted way — one endpoint can legitimately touch one where a public way
+    // crosses or ends at it, and charging that would make the gate fail on correct routes.
+    if restricted_at(ways, p0, 3.0) && restricted_at(ways, p1, 3.0) {
+      bad_m += d;
+      f = ((i as float) / (len(pts) as float))?;   // ÷ is fallible (@PLN25); `?` discharges to 0.0
+      if f < bad_lo { bad_lo = f; }
+      if f > bad_hi { bad_hi = f; }
+    }
+  }
+  where = "";
+  if bad_m > 0.0 { where = " at {bad_lo * 100.0:1.0}%..{bad_hi * 100.0:1.0}% along the route"; }
+  println("#A ways={len(ways)} barriers={len(bars)} on_nodes={graph_barrier_nodes(g)} route_pts={len(pts)} len_m={total:1.1} restricted_m={bad_m:1.1}{where} profile={profile}");
+}

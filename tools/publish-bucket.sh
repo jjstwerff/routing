@@ -10,7 +10,7 @@
 # only then publish the index that names them.
 #
 # THE HOST REQUIREMENTS, and every one of them is something `tools/cors_host_gate.sh` will catch:
-#   1. `Range` honoured with a real 206 + Content-Range        (GitHub Pages fails this: 200, whole file)
+#   1. `Range` honoured with a real 206 + Content-Range        (a release asset passes this; Pages does too)
 #   2. `Access-Control-Allow-Origin` for the app's origin       (release assets fail this)
 #   3. an OPTIONS **preflight** that allows the `Range` REQUEST header — `Range` is not CORS-safelisted, so
 #      the browser asks first, and a host that answers only GET is indistinguishable from one with no CORS

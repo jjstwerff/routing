@@ -120,13 +120,20 @@ if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.str
 //
 // The rule is ONE POINT above the observed maximum, and the observation belongs to the DATA:
 //
-//   Enschede block (ships with the app)   1.47% of pixels, maxDelta 15  → bound 16   ← in force
+//   Enschede block, lossy fetch          1.47% of pixels, maxDelta 15  → bound 16   (superseded)
+//   Enschede block, osmium extract        1.51% of pixels, maxDelta 25  → bound 26   ← in force
 //   Netherlands block (release-hosted)    1.51% of pixels, maxDelta 25  → bound 26
 //
 // Both measured three times, identical each run: deterministic rasterisation rounding, not noise, so a
 // one-point margin is right. The app resolves to the Enschede block (release assets send no CORS header,
 // so the browser cannot read the NL ones), and the bound follows the data it actually renders — a bound
 // set for a denser dataset would sit far above this one's noise and stop being able to catch anything.
+//
+// RAISED 16 → 26 on 2026-07-30, which is the case the line below anticipated: the shipped Enschede block
+// was regenerated from the osmium/Geofabrik extract (the previous fetch had dropped `service` and
+// `unclassified` entirely — 25 971 ways became 49 613), so it now has the DENSITY the NL block had, and
+// it lands on the NL block's numbers exactly: 1.51% of pixels, maxDelta 25, identical on three runs. The
+// bound moved because the data did; the renderer is untouched.
 // Note the AREA barely moved between the two while the peak nearly doubled: that is §6d's mechanism
 // (more thin lines on the snapped-origin boundary), not the signature of a rendering defect, which would
 // have moved the area too. If the app ever renders NL data, raise this to 26 and say why.
@@ -134,7 +141,7 @@ if (ok && sp) console.log(`  ✓ streets render from a FLAT column too (${sp.str
 // ⚠ Raise it only WITH a measurement and a reason, never to make a red gate green: its whole job is to
 // tell a rounding difference from a rendering defect, and a bound set above the noise it was chosen for
 // stops being able to.
-const BLOCK_DELTA_MAX = Number(process.env.BLOCK_DELTA_MAX || 16);
+const BLOCK_DELTA_MAX = Number(process.env.BLOCK_DELTA_MAX || 26);
 const br = JSON.parse((await ev('(async () => JSON.stringify(window.__perfHooks.blockRaster()))()')) || 'null');
 if (!br) { console.log('  FAIL: blockRaster hook missing'); ok = false; }
 else if (br.roundTrip !== 0) { console.log(`  FAIL: an offscreen round-trip is not exact (${br.roundTrip} px) — the platform assumption broke`); ok = false; }
@@ -178,9 +185,25 @@ const resetSketch = async () => {
 };
 
 await resetSketch();
+// WAIT FOR THE MATCH, don't sleep a guess at it. The fixed 250 ms settle above is a statement about how
+// long a match takes, which is a statement about how DENSE the data is — and it went false the moment the
+// shipped block was regenerated from the full osmium extract (25 971 ways became 49 613, so this sketch's
+// corridor went 4 781 → 6 378 ways). The clicks still landed and the routes were still correct; the test
+// simply read `routePts` before the kernel had answered, and reported "three clicks drew no route".
+// Polling on the app's own completion counter asks the question the assertion is actually about.
+const settled = async (runsBefore, ms = 4000) => {
+  for (const t0 = Date.now(); Date.now() - t0 < ms; ) {
+    if (Number(await ev('window.__storeApp.matchRuns || 0')) > runsBefore) return true;
+    await sleep(50);
+  }
+  return false;
+};
 const seen = [];
 for (const [x, y] of [[300, 200], [520, 330], [700, 180]]) {
+  const runs = Number(await ev('window.__storeApp.matchRuns || 0'));
   await click(x, y);
+  // A single point cannot route, so only wait once there are two to route between.
+  if (Number(await ev('window.__rough.points.length')) >= 2) await settled(runs);
   const st3 = JSON.parse((await ev('(() => JSON.stringify({ pts: window.__rough.points.length, route: window.__storeApp.routePts || 0 }))()')) || '{}');
   seen.push(st3);
 }

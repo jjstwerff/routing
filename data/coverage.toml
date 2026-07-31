@@ -41,7 +41,12 @@ read_mode = "whole"
 # `url_base` publishes them from the release rather than beside the app: 1.4 GB of base map is not
 # something a site build should copy. ⚠ Release assets serve Range but send NO CORS header (measured
 # 2026-07-30), so a BROWSER on another origin cannot read these — they serve downloads, the native server
-# and offline use. The browser path needs a CORS host (PLAN-SCALE D2).
+# and offline use.
+#
+# ⚠ This does NOT mean the browser needs a third-party CORS host. GitHub Pages serves real byte ranges
+# (re-measured against the live site 2026-07-30 — the earlier "Pages answers 200 with the whole file"
+# claim was measured against `python3 -m http.server` and is wrong). What stops NL shipping on Pages is
+# SIZE: ~1 GB per site, and roads+base is 3.2 GB. Roads alone are 504 MB and would fit. PLAN-SCALE D2.
 
 [[region]]
 id        = "nl-west"
