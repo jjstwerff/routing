@@ -81,11 +81,16 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
 // is on the ground — but a green shape with no name tells you nothing about the city you are looking at.
 // Deliberately narrow: `playground`, `pitch`-in-a-park and every back-garden `garden` would bury the map
 // in labels, so only the things a person would name in directions are listed.
-pub fn area_label_kind(landuse: text, leisure: text) -> text {
+pub fn area_label_kind(landuse: text, leisure: text, amenity: text = "") -> text {
   if leisure == "sports_centre" || leisure == "golf_course" || leisure == "stadium"
      || leisure == "horse_riding" || leisure == "water_park" { return "sports"; }
   if leisure == "park" || leisure == "recreation_ground" { return "park"; }
   if landuse == "recreation_ground" { return "park"; }
+  // A cemetery is named for the same reason a park is: it is a landmark people navigate by, and an
+  // unlabelled green shape is not one. BOTH taggings count — this block holds 18 `landuse=cemetery` and
+  // one `amenity=grave_yard`, and the graveyard is a NAMED one (R.K. Begraafplaats Lonneker), so taking
+  // only the common tag would have left exactly the kind of gap that gets reported.
+  if landuse == "cemetery" || amenity == "grave_yard" { return "cemetery"; }
   ""
 }
 
@@ -104,6 +109,7 @@ pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "")
   if landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "construction" || landuse == "railway" { return "industrial"; }
   if landuse == "reservoir" || landuse == "basin" { return "water"; }
   if landuse == "cemetery" || landuse == "greenfield" { return "park"; }
+  if amenity == "grave_yard" { return "park"; }   // the churchyard spelling of the same ground
 
   if landuse == "plant_nursery" || landuse == "animal_keeping" || landuse == "corral" { return "farmland"; }
   if landuse == "brownfield" { return "bare"; }

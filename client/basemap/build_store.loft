@@ -182,9 +182,9 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
       bin_place(idx, cell, aname, cover, if cover == "reserve" { 3 } else { 2 }, ring_centre(pts));
     }
     // A park or a sports ground keeps its fill and gains a name — same label channel, same centre.
-    lkind = area_label_kind(atag(props, "landuse"), atag(props, "leisure"));
+    lkind = area_label_kind(atag(props, "landuse"), atag(props, "leisure"), atag(props, "amenity"));
     if lkind != "" && aname != "" {
-      bin_place(idx, cell, aname, lkind, if lkind == "park" { 2 } else { 1 }, ring_centre(pts));
+      bin_place(idx, cell, aname, lkind, if lkind == "sports" { 1 } else { 2 }, ring_centre(pts));
     }
   }
   else if layer == 1 { if atag(props, "building") != "" { bin_building(idx, cell, atag(props, "name"), pts); } }
@@ -277,9 +277,9 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
         if (cover == "reserve" || cover == "site") && a_name != "" {
           bin_place(idx, cell, a_name, cover, if cover == "reserve" { 3 } else { 2 }, a_centre);
         }
-        a_lkind = area_label_kind(atag(tags, "landuse"), atag(tags, "leisure"));
+        a_lkind = area_label_kind(atag(tags, "landuse"), atag(tags, "leisure"), atag(tags, "amenity"));
         if a_lkind != "" && a_name != "" {
-          bin_place(idx, cell, a_name, a_lkind, if a_lkind == "park" { 2 } else { 1 }, a_centre);
+          bin_place(idx, cell, a_name, a_lkind, if a_lkind == "sports" { 1 } else { 2 }, a_centre);
         }
       }
     }

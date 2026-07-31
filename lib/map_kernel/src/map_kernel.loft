@@ -13,7 +13,8 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Graph, MatchState, MatchQuality, bbox_cell_keys,
+use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
+                     RF_ACCESS_NO, RF_FOOT_YES, BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
                      tiles_corridor_barriers, build_graph, build_graph_streamed, build_graph_barriers,
                      build_graph_barriers_streamed, match_route, corridor_margin, path_length_m,
@@ -102,6 +103,28 @@ fn emit_labels(layout: hash<PTile[tkey]>, box: FBox) -> integer {
   }
   n
 }
+// Barrier NODES — a locked gate is a node, so nothing in the way stream can carry it, and the map drew
+// nothing at all where the router severs a crossing. They come out of the ROADS store, which the view
+// already reads: the block has held them since #30 (`TTile.barriers`), so showing them costs no base-map
+// rebuild and no schema change, only a line the reader did not have before.
+//
+// `G lat,lon,flags` — flags so the renderer can distinguish a gate that stops walking from a bollard that
+// only stops cars, which is most of them. A map that marked every bollard as a wall would be more wrong
+// than one that marked none.
+fn emit_barriers(roads: hash<TTile[tkey]>, box: FBox) -> integer {
+  n = 0;
+  for t in roads {
+    for b in t.barriers {
+      la = t.oy + (b.y as integer); lo = t.ox + (b.x as integer);
+      if la >= box.mnla && la <= box.mxla && lo >= box.mnlo && lo <= box.mxlo {
+        println("G {deg(la):2.6},{deg(lo):2.6},{b.flags as integer}");
+        n += 1;
+      }
+    }
+  }
+  n
+}
+
 fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
   n = 0;
   for t in roads {
@@ -120,7 +143,17 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
       }
       hit = !first && rmxla >= box.mnla && rmnla <= box.mxla && rmxlo >= box.mnlo && rmnlo <= box.mxlo;
       if hit {
-        line = "R {class_name(r.tp as integer)}";
+        // A CLOSED way is marked in the class field, `path|x`, rather than in a new column: the R line's
+        // grammar is `class;lat,lon;…` and the reader already interns whatever `class` says, so a suffix
+        // costs no parser change on either side and no new array — the reader splits it into one bit.
+        //
+        // "Closed" is the router's own test, not merely `access=no`: an `access=no` way carrying
+        // `foot=yes` is legally walkable, and tools/access_gate.sh routes 341 m over exactly that. Marking
+        // on the raw bit would have painted those barred while the router happily used them — a map
+        // disagreeing with its own router is worse than one that says nothing.
+        fl = r.flags as integer;
+        shut = (fl & RF_ACCESS_NO) != 0 && (fl & RF_FOOT_YES) == 0;
+        line = "R {class_name(r.tp as integer)}{if shut { "|x" } else { "" }}";
         for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
         println(line); n += 1;
       }
@@ -134,7 +167,8 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
 fn emit_view(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, box: FBox) {
   na = emit_areas(layout, box); nb = emit_buildings(layout, box); nl = emit_lines(layout, box);
   npo = emit_pois(layout, box); nlab = emit_labels(layout, box); nr = emit_roads(roads, box);
-  println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr}");
+  ng = emit_barriers(roads, box);
+  println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr} G={ng}");
 }
 
 // Whole-region view (every feature).
@@ -163,8 +197,9 @@ pub fn view_cell_keys(bbox: text) -> vector<integer> {
 }
 
 pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {
-  nr = emit_roads(roads, parse_fbox(bbox));
-  println("# view: R={nr}");
+  fbox = parse_fbox(bbox);
+  nr = emit_roads(roads, fbox); ng = emit_barriers(roads, fbox);
+  println("# view: R={nr} G={ng}");
 }
 
 // Parse a rough sketch "lat,lon;lat,lon;…" into GeoPoints (bad tokens skipped).
