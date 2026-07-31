@@ -113,6 +113,17 @@ export const COVER_COLORS = {
 // the boundary. Re-enabling the outline means either explaining that (it is a real statement about the
 // platform, and every raster-cache guarantee rests on it) or downgrading the control to a bounded delta —
 // neither of which belongs in a cosmetic change.
+// A way the ROUTER REFUSES — access=no/private without foot=yes. Drawn as a red-brown overprint ON TOP
+// of its normal class, so a closed path still reads as a path and is visibly barred: the alternative,
+// giving it a class of its own, would have hidden whether the thing you cannot use is a track or a
+// motorway. Only at z14+, where a pedestrian-scale decision is actually being made.
+export const SHUT_STYLE = { color: '#c0392b', w: 1.1, dash: [2, 3], minZoom: 14 };
+
+// A barrier NODE the router treats as impassable (a locked gate, a stile). Bollards and lift gates stop
+// cars and are deliberately NOT marked — most barriers are those, and marking them all would be noise
+// that teaches you to ignore the mark.
+export const BARRIER_STYLE = { color: '#c0392b', r: 3.2, w: 1.4, minZoom: 16 };
+
 export const DESIGNATION_STYLES = {
   reserve: { tint: 'rgba(122,176,106,0.22)', minZoom: 11 },
   site:    { tint: 'rgba(150,160,190,0.20)', minZoom: 13 },
@@ -448,22 +459,48 @@ export function parsePois(txt) {                    // `kind;name;lat,lon`
 // centerline) demux SEPARATELY — the roads store carries no names (they live in the layout store as label
 // features), so roads go to `streets` (drawn by class) and names to `streetLabels` (placed along a line).
 export function parseView(txt) {
-  const bucket = { A: [], B: [], L: [], P: [], N: [] }; const R = [], S = [];
+  const bucket = { A: [], B: [], L: [], P: [], N: [] }; const R = [], S = [], G = [];
   for (const line of (txt || '').split('\n')) {
     if (line[1] !== ' ') continue;                       // skip blanks + the "# view:" summary
     const tag = line[0], rest = line.slice(2);
-    if (bucket[tag]) bucket[tag].push(rest); else if (tag === 'R') R.push(rest); else if (tag === 'S') S.push(rest);
+    if (bucket[tag]) bucket[tag].push(rest); else if (tag === 'R') R.push(rest);
+    else if (tag === 'S') S.push(rest); else if (tag === 'G') G.push(rest);
   }
   const geom = (parts, start) => { const g = []; for (let i = start; i < parts.length; i++) { const c = parts[i].split(','); const a = +c[0], b = +c[1]; if (c.length === 2 && !Number.isNaN(a) && !Number.isNaN(b)) g.push([a, b]); } return g; };
   const streets = [];
-  for (const s of R) { const p = s.split(';'); if (p.length < 3) continue; const line = geom(p, 1); if (line.length >= 2) streets.push({ cls: p[0], line }); }
+  // Split `class|x` exactly as parseStreetsFlat does. Leaving it joined made ROAD_STYLES[cls] undefined
+  // here and nowhere else, so the boxed path silently dropped every closed way while the flat path drew
+  // it — 1381 streets against 1582 for the same view, caught by the store-vs-text pixel gate.
+  for (const s of R) {
+    const p = s.split(';'); if (p.length < 3) continue;
+    const line = geom(p, 1); if (line.length < 2) continue;
+    const bar = p[0].indexOf('|');
+    streets.push({ cls: bar < 0 ? p[0] : p[0].slice(0, bar), shut: bar >= 0, line });
+  }
   const streetLabels = [];
   for (const s of S) { const p = s.split(';'); if (p.length < 3) continue; const line = geom(p, 1); if (p[0] && line.length >= 2) streetLabels.push({ label: p[0], line }); }
   return {
     areas: parseAreas(bucket.A.join('\n')), buildings: parseBuildings(bucket.B.join('\n')),
     lines: parseLines(bucket.L.join('\n')), pois: parsePois(bucket.P.join('\n')), places: parsePlaces(bucket.N.join('\n')),
-    streets, streetLabels,
+    streets, streetLabels, barriers: parseBarriers(G),
   };
+}
+
+// `G lat,lon,flags` → the barrier NODES the router treats as impassable. Only those: the store carries
+// every barrier it found, and the overwhelming majority (bollards, lift gates) stop cars alone. Marking
+// those would be noise, and noise on a map is what teaches people to ignore the marks that matter.
+export const BF_FOOT_NO = 1, BF_BIKE_NO = 2;
+export function parseBarriers(lines) {
+  const out = [];
+  for (const raw of lines || []) {
+    const p = raw.split(',');
+    if (p.length < 3) continue;
+    const lat = +p[0], lon = +p[1], flags = +p[2];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(flags)) continue;
+    if (!(flags & (BF_FOOT_NO | BF_BIKE_NO))) continue;
+    out.push({ lat, lon, flags });
+  }
+  return out;
 }
 
 // parseStretch(line): one `STRETCH <i>;lat,lon;…` line → { i, pts }, or null for anything else.
@@ -516,7 +553,7 @@ function joinStretches(slots) {
 export function parseStreetsFlat(txt) {
   const lines = (txt || '').split('\n');
   let cap = 4096, xy = new Float64Array(cap * 2), nv = 0;
-  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map();
+  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map(), shut = [];
   const bb = [];
   for (const raw of lines) {
     if (raw[0] !== 'R' || raw[1] !== ' ') continue;
@@ -535,14 +572,19 @@ export function parseStreetsFlat(txt) {
       if (b < mnlo) mnlo = b; if (b > mxlo) mxlo = b;
     }
     if (nv - start < 2) { nv = start; continue; }          // parseView's `line.length >= 2` drop
-    const name = p[0];
+    // `class|x` marks a way the ROUTER REFUSES (map_kernel emit_roads). Splitting it here keeps the
+    // class vocabulary the styles are keyed on unchanged and costs one bit per road, rather than a
+    // parallel style table for every class crossed with open/closed.
+    const bar = p[0].indexOf('|');
+    const name = bar < 0 ? p[0] : p[0].slice(0, bar);
+    shut.push(bar < 0 ? 0 : 1);
     let ci = clsOf.get(name);
     if (ci === undefined) { ci = clsNames.length; clsNames.push(name); clsOf.set(name, ci); }
     clsIdx.push(ci); off.push(nv);
     bb.push(mnla, mxla, mnlo, mxlo);
   }
   return { n: clsIdx.length, xy, off: Int32Array.from(off), cls: Uint8Array.from(clsIdx), clsNames,
-           bb: Float64Array.from(bb), verts: nv };
+           shut: Uint8Array.from(shut), bb: Float64Array.from(bb), verts: nv };
 }
 
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
@@ -584,6 +626,7 @@ export class RouteMap {
     this.camera = { lat: opts.lat ?? 52.2215, lon: opts.lon ?? 6.8937, zoom: opts.zoom ?? 13 };
     this.points = opts.points || [];          // [{lat,lon,name?}] — M0 test dots
     this.areas = opts.areas || [];            // [{cover, ring, minZoom}] — M2 terrain
+    this.barriers = opts.barriers || [];      // [{lat, lon, flags}] — impassable nodes (map_kernel emit_barriers)
     this.buildings = opts.buildings || [];    // [{ring}]                  — M3 footprints
     this.streets = opts.streets || [];        // [{cls, line}]             — M3 roads (drawn by class)
     this.streetLabels = opts.streetLabels || []; // [{label, line}]        — street-name labels (S, from layout store)
@@ -624,7 +667,14 @@ export class RouteMap {
 
   // Load ONLY the roads, flat (PLAN-PERF §6c). `loadView` above is kept for the legacy per-file format
   // and for the parity probe, which needs the boxed form to compare against.
-  loadRoadsFlat(text) { this.streetsFlat = parseStreetsFlat(text); this.streets = []; return this.invalidateBlocks(); }
+  // Roads AND the barrier nodes ride the same `view` output, so they land through one door — a second
+  // entry point is how one of them ends up a frame behind the other.
+  loadRoadsFlat(text) {
+    this.streetsFlat = parseStreetsFlat(text);
+    this.barriers = parseBarriers((text || '').split('\n').filter((l) => l[0] === 'G' && l[1] === ' ').map((l) => l.slice(2)));
+    this.streets = [];
+    return this.invalidateBlocks();
+  }
 
   // Set the matched route to draw (read-only per DESIGN §1 — a wrong match is corrected via the sketch,
   // never the line). `pts` is [[lat,lon], …]. Call render() after.
@@ -928,7 +978,7 @@ export class RouteMap {
       try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
       // Must draw the SAME overlays as render(), or the block-cache gate compares two different pictures
       // and reports a rasterisation difference that is really a missing layer.
-      if (!this._skipOverlays) { this.drawRoute(); this.layoutLabels(); this.drawRough(); }
+      if (!this._skipOverlays) { this.drawShutWays(); this.drawBarriers(); this.drawRoute(); this.layoutLabels(); this.drawRough(); }
     } finally { this._origin = null; }
     return this;
   }
@@ -1025,6 +1075,8 @@ export class RouteMap {
     let rtN = 0, rgN = 0, lab;
     try {
       if (!this._skipOverlays) {
+        this.drawShutWays();                   // refused ways + impassable nodes: ANNOTATIONS,
+        this.drawBarriers();                   // so above the blocks, not baked into them
         rtN = this.drawRoute();                // matched route, above the base map
         mark('route');
         lab = this.layoutLabels();
@@ -1092,6 +1144,78 @@ export class RouteMap {
     ctx.fillStyle = fill;
     ctx.fill();
     return true;
+  }
+
+  // Barrier nodes — a small bar-and-ring where the router severs a crossing, drawn last so it lands on
+  // the roads it applies to. Screen-space radius: a gate is a POINT obstruction, and scaling it with zoom
+  // would make it either invisible or a blot.
+  // The ways the router REFUSES, overprinted in the overlay.
+  //
+  // ⚠ In the overlay, not baked into the blocks, for the same reason as the barriers: a saturated mark on
+  // a pale base pushes the block cache's per-pixel delta past what canvas-size rounding explains (the gate
+  // measured maxDelta 32 against 26 and called it structural, which it was). Both restriction marks are
+  // ANNOTATIONS — what the router will not use — so they belong above the cached base map with the route,
+  // and a pan then re-blits without re-baking them.
+  drawShutWays() {
+    const z = this.camera.zoom;
+    if (z < SHUT_STYLE.minZoom) return 0;
+    const ctx = this.ctx, scale = roadScale(z);
+    ctx.save();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.setLineDash(SHUT_STYLE.dash); ctx.strokeStyle = SHUT_STYLE.color;
+    ctx.lineWidth = Math.max(0.6, SHUT_STYLE.w * scale);
+    let n = 0;
+    const F = this.streetsFlat;
+    if (F && F.n && F.shut) {
+      const K = this._flatK(), win = this._screen();
+      for (let i = 0; i < F.n; i++) {
+        if (!F.shut[i]) continue;
+        const o4 = i * 4;
+        if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
+         || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
+        const a = F.off[i], len = F.off[i + 1] - a;
+        if (len < 2) continue;
+        ctx.beginPath();
+        for (let k = 0; k < len; k++) {
+          const lat = F.xy[(a + k) * 2], lon = F.xy[(a + k) * 2 + 1];
+          const sn = Math.sin(clampLat(lat) * Math.PI / 180);
+          const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
+          const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
+          if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke(); n++;
+      }
+    } else {
+      for (const st of this.streets) {
+        if (!st.shut) continue;
+        const px = this._projLine(st.line);
+        if (px.length >= 2 && this._inView(px)) { this._strokePx(px); n++; }
+      }
+    }
+    ctx.restore();
+    return n;
+  }
+
+  // ⚠ Drawn in the OVERLAY pass, not baked into the block raster. A hard-edged screen-space mark baked
+  // per block lands a fraction of a pixel differently than the same mark drawn direct — the block gate
+  // measured maxDelta 32 against its 26 tolerance and called it structural, correctly. Annotations belong
+  // above the cache with the route and the sketch, which is also where they logically sit.
+  drawBarriers() {
+    const B = this.barriers, z = this.camera.zoom;
+    if (!B || !B.length || z < BARRIER_STYLE.minZoom) return 0;
+    const ctx = this.ctx, r = BARRIER_STYLE.r;
+    ctx.save();
+    ctx.setLineDash([]); ctx.strokeStyle = BARRIER_STYLE.color; ctx.lineWidth = BARRIER_STYLE.w;
+    let n = 0;
+    for (const b of B) {
+      const p = this.project(b.lat, b.lon);
+      if (p.x < -r || p.y < -r || p.x > this.width + r || p.y > this.height + r) continue;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p.x - r, p.y + r); ctx.lineTo(p.x + r, p.y - r); ctx.stroke();
+      n++;
+    }
+    ctx.restore();
+    return n;
   }
 
   // Designations, drawn ONCE every cover is down. Taking a second pass rather than relying on draw order
