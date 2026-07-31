@@ -118,8 +118,13 @@ export const COVER_COLORS = {
 // normal class: the way keeps its identity (you can still see whether the thing you cannot use is a track
 // or a motorway, which a class of its own would have hidden) and reads as different without shouting. It
 // was a saturated red dash first and that was too loud for something a map has a lot of.
+// ⚠ THE DUTY CYCLE IS THE WHOLE POINT, so it is written as a fraction rather than tuned by eye. `[1, 23]`
+// inks 1 px in every 24 — 4.2% of the line. It was `[1, 7]` (12.5%) and before that a solid-ish red dash,
+// and at 12.5% a closed way still read as a dashed path rather than as an absence. Each step has cut the
+// ink to a third: a mark this sparse is not trying to be seen from across the map, it is trying to be
+// noticed when you look at the way you were about to take.
 // Only at z14+, where a pedestrian-scale decision is actually being made.
-export const SHUT_STYLE = { color: '#6b5b57', w: 1.0, dash: [1, 7], minZoom: 14 };
+export const SHUT_STYLE = { color: '#6b5b57', w: 1.0, dash: [1, 23], minZoom: 14 };
 
 // A barrier NODE the router treats as impassable (a locked gate, a stile). Bollards and lift gates stop
 // cars and are deliberately NOT marked — most barriers are those, and marking them all would be noise
@@ -499,7 +504,7 @@ export function parseView(txt) {
   };
 }
 
-// `G lat,lon,flags` → every barrier NODE in view, blocking or not. `shut` is the router's own test: a
+// `G lat,lon,flags` → every barrier NODE in view, blocking or not. `shut` is "impassable ON FOOT": a
 // locked gate stops you, a gate you can open does not. Both are worth drawing and they must not look
 // alike — "there is a gate here" and "you cannot get through here" are different pieces of news, and a
 // map that renders them the same is either crying wolf or hiding a wall.
@@ -511,7 +516,11 @@ export function parseBarriers(lines) {
     if (p.length < 3) continue;
     const lat = +p[0], lon = +p[1], flags = +p[2];
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(flags)) continue;
-    out.push({ lat, lon, flags, shut: !!(flags & (BF_FOOT_NO | BF_BIKE_NO)), bearing: null });
+    // `shut` means A PERSON CANNOT GET THROUGH, which is BF_FOOT_NO alone — not "blocks somebody".
+    // A `swing_gate` tagged `bicycle=no, foot=yes` is openable and walkable; you push the bike through.
+    // Marking it with the impassable ring-and-slash claimed a locked fence where there is a gate that
+    // opens, which is the worse error of the two: it tells you not to try a way that is in fact open.
+    out.push({ lat, lon, flags, shut: !!(flags & BF_FOOT_NO), bearing: null });
   }
   return out;
 }

@@ -7,7 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
-         cameraFromHash, hashForCamera } from './map.mjs';
+         cameraFromHash, hashForCamera, parseBarriers, orientBarriers } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
@@ -1236,6 +1236,29 @@ console.log('\ncamera in the URL fragment:');
      'an integer zoom writes no trailing zeros');
   ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 15.5 }) === '#15.5/52.22150/6.89370',
      'a fractional zoom keeps its fraction');
+}
+
+// --- barrier marks: "there is a gate here" vs "you cannot get through" ------------------------------
+// These are different pieces of news and must not look alike. Drawing them the same is either crying
+// wolf or hiding a wall — and the first version cried wolf, marking a swing gate tagged
+// `bicycle=no, foot=yes` as an impassable fence when it opens and you walk through.
+console.log('\nbarrier marks:');
+{
+  const B = parseBarriers(['52.19045,6.84456,2', '52.24293,6.92062,3', '52.18648,6.85145,0']);
+  ok(B.length === 3, 'every barrier is kept, not only the blocking ones');
+  ok(B[0].shut === false, 'bike-blocked but walkable (swing gate, foot=yes) is NOT shut');
+  ok(B[1].shut === true, 'blocked on foot IS shut');
+  ok(B[2].shut === false, 'an ordinary bollard is not shut');
+  ok(parseBarriers(['52.1,6.8']).length === 0, 'a short line is dropped');
+  ok(parseBarriers(['nope,6.8,1']).length === 0, 'a non-numeric latitude is dropped');
+  // the bar is drawn ACROSS the way, so the angle comes from the way it sits on
+  const F = { n: 1, off: Int32Array.from([0, 2]), bb: [52.0, 52.02, 6.0, 6.0],
+              xy: Float64Array.from([52.0, 6.0, 52.02, 6.0]) };
+  const [b] = orientBarriers(parseBarriers(['52.01,6.0,0']), F);
+  ok(b.bearing !== null && Math.abs(Math.abs(b.bearing) - Math.PI / 2) < 1e-9,
+     'a north-south way gives a north-south bearing (the bar is drawn perpendicular to it)');
+  const untouched = orientBarriers(parseBarriers(['52.01,6.0,1']), F);
+  ok(untouched[0].bearing === null, 'a shut barrier needs no bearing — it is a ring, not a bar');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');
