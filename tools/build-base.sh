@@ -89,10 +89,13 @@ layer() {  # $1 = layer name, $2 = osmium --geometry-types, $3… = tags-filter 
 # `amenity` is filtered to SITE values only. The key also covers benches, parking and restaurants, and
 # pulling all of those in as areas would recreate the slab problem it is here to fix.
 SITES="hospital,school,university,college,kindergarten"
+# Amenity values collected as AREAS: the site designations above, plus `grave_yard` — the churchyard
+# spelling of `landuse=cemetery`, which is landcover rather than a site and is classified as such.
+AMENITY_AREAS="$SITES,grave_yard"
 
 echo "== base layers for $id =="
-layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$SITES" \
-                           r/landuse r/natural r/leisure "r/amenity=$SITES" || exit 1
+layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_AREAS" \
+                           r/landuse r/natural r/leisure "r/amenity=$AMENITY_AREAS" || exit 1
 layer buildings polygon    w/building r/building         || exit 1
 layer places    point      n/place                       || exit 1
 layer lines     linestring w/waterway w/railway w/barrier || exit 1
