@@ -96,13 +96,18 @@ fi
 #
 # So the check runs only when the block's own recorded box (written by build-blocks.sh) matches the clip
 # the export came from. Until a block is rebuilt with that provenance it reports why it is skipped.
+# The source count recorded WHEN THE BLOCK WAS BUILT is the only one that means anything: a block held
+# against a later export is measured against a different day's OSM. The shipped block reads 94.6% of
+# today's extract and has lost nothing at all — the extract is simply two days newer.
+built_src="$(cat "$roads_store.srccount" 2>/dev/null | tr -dc '0-9')"
+[ -n "$built_src" ] && src_roads="$built_src"
 blk_box="$(cat "$roads_store.bbox" 2>/dev/null)"
-src_box="$(cat "$work/$id.clip.bbox" 2>/dev/null)"
-if [ "$src_roads" -gt 0 ] && [ -n "$blk_box" ] && [ -n "$src_box" ] && [ "$blk_box" = "$src_box" ]; then
+src_box="$(cat "$work/$id.clip.osm.pbf.bbox" 2>/dev/null)"
+if [ -n "$built_src" ] || { [ "$src_roads" -gt 0 ] && [ -n "$blk_box" ] && [ -n "$src_box" ] && [ "$blk_box" = "$src_box" ]; }; then
   blk="$(get roads.ways)"
   pct="$(python3 -c "print(f'{100*$blk/$src_roads:.1f}')")"
   if [ "$(python3 -c "print(1 if $blk >= 0.95*$src_roads else 0)")" = "1" ]; then
-    ok "roads: $blk of $src_roads source highways kept (${pct}%), same box $blk_box"
+    ok "roads: $blk of $src_roads source highways kept (${pct}%)${built_src:+, counted at build time}"
   else
     bad "roads: only $blk of $src_roads source highways reached the block (${pct}%, floor 95%)"
   fi

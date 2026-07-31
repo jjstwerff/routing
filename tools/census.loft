@@ -54,15 +54,17 @@ fn main() {
     roads: hash<TTile[tkey]> = [];
     store_load(roads, path);
     rc: hash<Tally[key]> = [];
-    tiles = 0; ways = 0; bars = 0; shut = 0;
+    tiles = 0; ways = 0; bars = 0; steps = 0;
     for t in roads {
       tiles += 1;
       for r in t.roads { ways += 1; bump(rc, class_of_tp(r.tp as integer)); }
       for b in t.barriers { bars += 1; }
+      for st in t.steps { steps += 1; }   // the coordinates — where a roads block's bytes actually go
     }
     println("count roads.tiles {tiles}");
     println("count roads.ways {ways}");
     println("count roads.barriers {bars}");
+    println("count roads.steps {steps}");
     emit(rc, ["motorway","trunk_primary","secondary","tertiary_unclassified","residential","living_street",
               "service","cycleway","path","footway","pedestrian","steps","track","busway","platform","other"],
          "class");
