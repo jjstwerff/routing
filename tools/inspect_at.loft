@@ -18,7 +18,8 @@
 // can be a link.
 #cwd
 
-use routing_kernel::(TTile, GeoPoint, Way, tiles_corridor_ways_tube);
+use routing_kernel::(TTile, GeoPoint, Way, Barrier, tiles_corridor_ways_tube, tiles_corridor_barriers,
+                     BF_FOOT_NO, BF_BIKE_NO);
 use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
 
 struct Tally { key: text, n: integer }
@@ -90,6 +91,20 @@ fn main() {
             "living_street","service","cycleway","path","track","footway","bridleway","steps",
             "pedestrian","busway","platform"], "       ");
   println("       restricted: access-closed {closed} · foot-no {gated_foot} · bike-no {gated_bike}");
+
+  // Barriers are a CATEGORY, and leaving one out is how a probe misleads: "nothing blocks this" and "I
+  // did not look" print the same when a tool only reports what it was asked about. A locked gate is a
+  // NODE, not a way, so it appears nowhere in the counts above.
+  bars: vector<Barrier> = tiles_corridor_barriers(roads, pts, rad, true);
+  nbar = 0; bfoot = 0; bbike = 0;
+  for bar in bars {
+    by = (bar.lat * 10000000.0) as integer; bx = (bar.lon * 10000000.0) as integer;
+    if by < mnla || by > mxla || bx < mnlo || bx > mxlo { continue; }
+    nbar += 1;
+    if (bar.flags & BF_FOOT_NO) != 0 { bfoot += 1; }
+    if (bar.flags & BF_BIKE_NO) != 0 { bbike += 1; }
+  }
+  println("       barriers {nbar} here · blocking on foot {bfoot} · blocking by bike {bbike}");
 
   // --- base map: what the VIEWER draws --------------------------------------------------------------
   base: hash<PTile[tkey]> = [];
