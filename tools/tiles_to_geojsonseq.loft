@@ -14,11 +14,20 @@
 // itself ignores (14 platform, 15 other). `tile_hw` maps only the routable ones and returns "" for the
 // rest, so using it here would silently drop those roads and the round-trip would "pass" by losing data.
 //
+// NETWORK MEMBERSHIP cannot ride in the properties, because it is not a tag — OSM keeps it in route
+// relations, and the generator joins it in from a sidecar keyed by way id. So the round trip has to
+// reconstruct BOTH sides: each feature gets a synthetic `"id":"wN"` (N is its position in this emission,
+// the store having no room for the real OSM id), and the ways that carry bits are written to
+// `<out.geojsonseq>.networks` in the sidecar's own format. Feed that back to `gen-tiles` and the trip is
+// closed; omit it and the regenerated block silently loses every RF_NET_* bit — which is a route change,
+// so the parity check would fail somewhere far from the cause.
+//
 //   loft --native --lib lib tools/tiles_to_geojsonseq.loft <roads.store> <out.geojsonseq>
 #cwd
 
 use routing_kernel::(TTile, TRoad, TStep,
-                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL,
+                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
 
 // The inverse of `class_of` — one representative highway value per class, chosen so `class_of` maps it
 // straight back. Class 12 is `track`, which used to share class 8 with `path` (see gen-tiles).
@@ -52,6 +61,8 @@ fn main() {
 
   out = file(a[1] ?? "");
   body = "";
+  netbody = "";
+  nnet = 0;
   nways = 0; ncoords = 0;
   for t in tiles {
     o = 0;
@@ -75,7 +86,16 @@ fn main() {
       // RFC 8142 record separator (0x1E), because that is what `osmium export -f geojsonseq` writes —
       // and a round trip through a writer that omits it proves the reader against the wrong format. The
       // first real 884 MB input binned ZERO tiles for exactly that reason.
-      line = "{RS}{{\"type\":\"Feature\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
+      // The sidecar's mask uses ITS numbering (1 walk / 2 cycle / 4 mtb), not the store's RF_NET_*.
+      // `route_networks.py` writes that form and `gen-tiles` maps it, so emitting the store's bits here
+      // would round-trip through the wrong end of the mapping.
+      mask = 0;
+      if (fl & RF_NET_WALK) == RF_NET_WALK { mask += 1; }
+      if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { mask += 2; }
+      if (fl & RF_NET_MTB) == RF_NET_MTB { mask += 4; }
+      wid = nways + 1;
+      if mask > 0 { netbody += "{wid} {mask}\n"; nnet += 1; }
+      line = "{RS}{{\"type\":\"Feature\",\"id\":\"w{wid}\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
       if cw != "" { line += ",\"cycleway\":\"{cw}\""; }
       if surf != "" { line += ",\"surface\":\"{surf}\""; }
       if acc  != "" { line += ",\"access\":\"{acc}\""; }
@@ -101,5 +121,7 @@ fn main() {
     }
   }
   out.write(body);
-  println("wrote {nways} features / {ncoords} coords");
+  netfile = file("{a[1] ?? \"\"}.networks");
+  netfile.write(netbody);
+  println("wrote {nways} features / {ncoords} coords / {nnet} network ways");
 }

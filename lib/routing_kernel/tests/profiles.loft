@@ -1,6 +1,7 @@
 // Tests for activity × sub-mode profiles (PLAN step 8, DESIGN §6). Synthetic, deterministic.
 //   loft --tests lib/routing_kernel/tests/profiles.loft --lib lib
-use routing_kernel::(GeoPoint, Way, build_graph, match_route, way_penalty);
+use routing_kernel::(GeoPoint, Way, build_graph, match_route, way_penalty,
+                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
 
 fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
   found = false;
@@ -164,6 +165,38 @@ fn test_no_backtrack_to_offline_point() {
   route = match_route(g, trace, "cycling_road");
   assert(!has_lat(route, 52.0008), "does not detour up the dead-end spur to the drawn point and back");
   assert(has_lat(route, 52.0), "stays on the through-road");
+}
+
+// PLAN-RESTORE R3 — a signposted route network is preferred, and only by the activity it belongs to.
+//
+// Same shape as the cycle-lane test above: two parallel streets between the same endpoints, one of them
+// slightly FURTHER from the drawn line, so a route that takes it did so on preference and not because it
+// was closer. `net` is the only difference between them.
+fn test_walking_prefers_signposted_network() {
+  plain = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  marked = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    net: RF_NET_WALK,
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0003, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([plain, marked]);
+  hike = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "walking_paved");
+  assert(has_lat(hike, 52.0003), "takes the signposted hiking route even though it is further from the line");
+  assert(!has_lat(hike, 52.0002), "not the closer unmarked path");
+}
+
+// …and the half that a single preference test cannot show: the bit is matched to the ACTIVITY. A walker
+// must ignore a cycling network, or the three bits would collapse into one "is on some route" flag and
+// the MTB/walking/cycling choice would be decoration.
+fn test_network_preference_is_per_activity() {
+  plain = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  cycled = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
+    net: RF_NET_CYCLE,
+    coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0003, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
+  g = build_graph([plain, cycled]);
+  hike = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "walking_paved");
+  assert(!has_lat(hike, 52.0003), "a walker is not pulled onto a CYCLING network");
+  assert(has_lat(hike, 52.0002), "stays on the path nearest the line");
 }
 
 // Sanity on the penalty ordering (prefers < 0 < penalizes), and the clamp.

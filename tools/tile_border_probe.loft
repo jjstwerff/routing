@@ -51,7 +51,21 @@ SKETCHES = [
 //     ways were simply absent, 25 971 ways became 49 613.
 // Sketches 0 and 1 used to share a fingerprint (the two near-identical traces collapsed onto one route);
 // on the denser network they differ by a point, which is the honest answer for two different traces.
-GOLDEN = [11545037152675, 11662778190599, 2260294265658, 2364394022486];
+//
+// Re-baselined again 2026-07-31 for PLAN-RESTORE R3 — signposted route networks. Two of the four moved,
+// 2 and 3 did not. The cause is in the DATA and the cost model, not in the splice these numbers watch:
+// `TRoad.flags` widened u8→u16 to carry RF_NET_*, every block was regenerated (loft#700 — an old block
+// read at the new stride yields zeroes, which is what `ways=0 tiles=0 fp=0` means if you see it), and
+// `precompute_edges` now discounts a way carrying a signposted route of the active activity.
+//
+// ⚠ Sketches 0 and 1 have COLLAPSED ONTO ONE ROUTE AGAIN, and that is the interesting part rather than a
+// bug: they are the same trace with one midpoint moved ~130 m, and a strong enough preference pulls both
+// onto the same signposted cycle route. Measured, that route gained 2.4 km of network (5171→7524 m on
+// this corridor) at unchanged dev_max. It does cost this gate a quarter of its discriminating power —
+// four sketches now cover three distinct routes. Left as-is deliberately: perturbing sketch 1 to force
+// them apart would change what the corpus MEANS mid-baseline, and the border splice is equally exercised
+// by a route two sketches agree on. Worth revisiting if a third collapses.
+GOLDEN = [13745388917202, 13745388917202, 2260294265658, 2364394022486];
 PROFILE = "cycling_road";
 CELL    = 200000;          // tile edge in fixed-point units — TILE_CELL in routing_kernel
 

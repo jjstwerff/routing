@@ -131,7 +131,7 @@ avoids a 12% ramp cannot be written against `h = 0`.
 and a fixture climb reports a known ascent.
 *Note:* terrarium tiles are fetched **at generation, on the build machine**, never by the app.
 
-### R3 · Ingest the curated networks — the big one
+### R3 · Ingest the curated networks — the big one ✅ DONE 2026-07-31
 
 OSM models them as **relations over ways**: in one Enschede-sized block, **1583 route relations with
 ~93 213 way memberships** — `route=hiking` 1134 (rwn 925, lwn 188, nwn 18), `route=bicycle` 227
@@ -160,6 +160,56 @@ where a signposted route parallels an unsignposted one — and the curated one c
 *Gate:* `conservation_gate` gains `count network.rwn|rcn|lcn|mtb` (non-zero in this region), plus a
 corpus run proving **0 worse** on the 26-sketch corpus, which is the standing bar for any
 route-affecting change (`tools/corpus_anchor.loft`).
+
+#### What was built
+
+| piece | where |
+|---|---|
+| relation → way join | `tools/route_networks.py` → `<region>.networks`, lines of `<wayid> <mask>` (1 walk / 2 cycle / 4 mtb) |
+| way ids in the export | `osmium export … -u type_id` in `build-blocks.sh`, giving `"id":"w4415388"` per feature |
+| the bits | `RF_NET_WALK|CYCLE|MTB` = 256/512/1024; `TRoad.flags` widened **u8 → u16** |
+| carried to the router | `Way.net` → `WayTags.net` → `precompute_edges`, all defaulted so no existing construction site changed |
+| the preference | `NETWORK_BONUS = 0.35` per metre, matched to the activity by `network_bit()` |
+| gates | `tools/network_gate.sh` + `tools/network_probe.loft`; two unit tests in `tests/profiles.loft` |
+
+#### What the measurements said, including where they contradicted this plan
+
+The A/B runs on ONE block with the bits stripped in memory for the control — a separately generated
+control block would differ by whatever else drifted between two generator runs. Enschede, 26 sketches:
+
+| profile | routes moved | gaps closed | metres on the network |
+|---|---|---|---|
+| `walking_paved` | 17 | 1 | 77 981 → 90 656 (+16%) |
+| `walking_trail` | 16 | 0 | 79 611 → 89 457 |
+| `running_trail` | 13 | 1 | 76 342 → 87 436 |
+| `cycling_road` | 4 | 0 | 75 647 → 79 026 |
+| `cycling_gravel` | 8 | 0 | 72 429 → 78 427 |
+| `cycling_mtb` | 2 | 0 | 25 064 → 25 632 |
+| `driving_fastest` | **0** | 0 | — (the control: no network, so nothing may move) |
+
+Three corrections the numbers forced, all worth keeping:
+
+- **"Never detours" was too strong, and the constant's comment said it.** A flat per-metre discount lands
+  in the same sum as the deviation term, so it *can* buy ≈ `BONUS/dev_weight` metres of deviation. What
+  actually bounds it is the **corridor**, which this does not widen. Measured: walking's dev_max was
+  identical on 14 of 15 moved routes; cycling had one case at 418 → 461 m.
+- **That one case is the feature, not a defect.** It gained **274 m of signposted route for 272 m of extra
+  length** — it swapped ordinary road for curated route metre for metre. A sweep put the flip between
+  0.10 and 0.15 and it is the *same* flip at 0.35, so shrinking the constant would only have hidden it.
+- **"0 worse" needed a definition that survives contact.** Judging `bridged_m` and `dev_max` with a plain
+  OR called a **strict improvement** a regression: sketch 13 went `bridged 1536 → 0, dev_max 399 → 1122`
+  — the bonus found a real path across a 1.5 km hole the control had to *jump*, and dev_max rose only
+  because there is finally a route there to measure. The bar is now: a gap may never open; deviation may
+  grow only when the route **gained network metres**, and never by more than one corridor width.
+
+And one measurement that had to be thrown away: `MatchQuality.pen_m` improves on every moved route **by
+construction**, because `pen_m` is Σ length × `ec.pen` and `ec.pen` is where the bonus is subtracted. The
+probe measures **metres on the network** instead, which is independent of the cost model.
+
+⚠ **`tile_border_probe`'s goldens were re-baselined** (2 of 4 moved). Sketches 0 and 1 have collapsed onto
+one route again: they are the same trace with a midpoint moved ~130 m, and the preference pulls both onto
+the same signposted cycle route. That costs the gate a quarter of its discriminating power and is
+recorded in the file rather than papered over.
 
 ### R4 · A local geocoder — search our own labels
 

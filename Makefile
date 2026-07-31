@@ -205,6 +205,7 @@ test-native: check-rustc
 	@./tools/base_stream_gate.sh
 	@./tools/base_recipe_gate.sh
 	@./tools/conservation_gate.sh
+	@./tools/network_gate.sh
 	@./tools/cross_block_gate.sh
 	@./tools/block_overlap_gate.sh
 	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \

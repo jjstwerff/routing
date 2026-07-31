@@ -15,7 +15,8 @@
 //   loft --native --lib lib tools/census.loft base  <base.store>
 #cwd
 
-use routing_kernel::(TTile, TRoad, GeoPoint, Way, tiles_corridor_ways_tube);
+use routing_kernel::(TTile, TRoad, GeoPoint, Way, tiles_corridor_ways_tube,
+                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
 use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
 
 struct Tally { key: text, n: integer }
@@ -54,10 +55,21 @@ fn main() {
     roads: hash<TTile[tkey]> = [];
     store_load(roads, path);
     rc: hash<Tally[key]> = [];
+    nt: hash<Tally[key]> = [];
     tiles = 0; ways = 0; bars = 0; steps = 0;
     for t in roads {
       tiles += 1;
-      for r in t.roads { ways += 1; bump(rc, class_of_tp(r.tp as integer)); }
+      for r in t.roads {
+        ways += 1;
+        bump(rc, class_of_tp(r.tp as integer));
+        // Signposted-route membership (PLAN-RESTORE R3). Counted HERE, beside the classes, because the
+        // failure it guards is the same one this whole tool exists for: a pipeline step that quietly
+        // stops contributing produces a block that opens, routes and looks entirely normal.
+        fl = r.flags as integer;
+        if (fl & RF_NET_WALK) == RF_NET_WALK { bump(nt, "walk"); }
+        if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { bump(nt, "cycle"); }
+        if (fl & RF_NET_MTB) == RF_NET_MTB { bump(nt, "mtb"); }
+      }
       for b in t.barriers { bars += 1; }
       for st in t.steps { steps += 1; }   // the coordinates — where a roads block's bytes actually go
     }
@@ -68,6 +80,7 @@ fn main() {
     emit(rc, ["motorway","trunk_primary","secondary","tertiary_unclassified","residential","living_street",
               "service","cycleway","path","footway","pedestrian","steps","track","busway","platform","other"],
          "class");
+    emit(nt, ["walk","cycle","mtb"], "network");
     return;
   }
 
