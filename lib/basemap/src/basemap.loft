@@ -75,6 +75,20 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
 
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".
+// The label KIND for a named landcover area, or "" for one that should carry no name.
+//
+// A park and a sports ground keep their FILL — unlike a reserve or a hospital site they really are what
+// is on the ground — but a green shape with no name tells you nothing about the city you are looking at.
+// Deliberately narrow: `playground`, `pitch`-in-a-park and every back-garden `garden` would bury the map
+// in labels, so only the things a person would name in directions are listed.
+pub fn area_label_kind(landuse: text, leisure: text) -> text {
+  if leisure == "sports_centre" || leisure == "golf_course" || leisure == "stadium"
+     || leisure == "horse_riding" || leisure == "water_park" { return "sports"; }
+  if leisure == "park" || leisure == "recreation_ground" { return "park"; }
+  if landuse == "recreation_ground" { return "park"; }
+  ""
+}
+
 pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "") -> text {
   if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
   if natural == "wood" { return "forest"; }

@@ -11,7 +11,7 @@
 
 #cwd
 
-use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, area_use, place_rank, line_kind, poi_kind, dp_mask,
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, area_use, area_label_kind, place_rank, line_kind, poi_kind, dp_mask,
               to_fixed, cell_ix, origin, tkey);
 
 // Local atag — a JsonValue does not survive being passed into a LIB (cross-package) function, so the
@@ -181,6 +181,11 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
     if (cover == "reserve" || cover == "site") && aname != "" {
       bin_place(idx, cell, aname, cover, if cover == "reserve" { 3 } else { 2 }, ring_centre(pts));
     }
+    // A park or a sports ground keeps its fill and gains a name — same label channel, same centre.
+    lkind = area_label_kind(atag(props, "landuse"), atag(props, "leisure"));
+    if lkind != "" && aname != "" {
+      bin_place(idx, cell, aname, lkind, if lkind == "park" { 2 } else { 1 }, ring_centre(pts));
+    }
   }
   else if layer == 1 { if atag(props, "building") != "" { bin_building(idx, cell, atag(props, "name"), pts); } }
   else if layer == 2 { bin_place(idx, cell, atag(props, "name"), atag(props, "place"), place_rank(atag(props, "place")), at); }
@@ -268,9 +273,13 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
         // or tools/base_stream_gate.sh fails, which is precisely how this omission was caught (11310 vs
         // 11312 labels on the same input).
         a_name = atag(tags, "name");
+        a_centre = LL { lat: (a_mnla + a_mxla) / 2.0, lon: (a_mnlo + a_mxlo) / 2.0 };
         if (cover == "reserve" || cover == "site") && a_name != "" {
-          bin_place(idx, cell, a_name, cover, if cover == "reserve" { 3 } else { 2 },
-                    LL { lat: (a_mnla + a_mxla) / 2.0, lon: (a_mnlo + a_mxlo) / 2.0 });
+          bin_place(idx, cell, a_name, cover, if cover == "reserve" { 3 } else { 2 }, a_centre);
+        }
+        a_lkind = area_label_kind(atag(tags, "landuse"), atag(tags, "leisure"));
+        if a_lkind != "" && a_name != "" {
+          bin_place(idx, cell, a_name, a_lkind, if a_lkind == "park" { 2 } else { 1 }, a_centre);
         }
       }
     }

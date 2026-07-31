@@ -4,7 +4,8 @@
 // PLAN-BUILD B5–B7 — the standalone base-map + routing app. Fetches the two loft stores, runs the
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
-import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists } from './map.mjs';
+import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
+         cameraFromHash, hashForCamera } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -20,7 +21,27 @@ const PROFILE = 'cycling_road';
 
 const canvas = document.getElementById('map');
 const hud = document.getElementById('hud');
-const map = new RouteMap(canvas, { lat: 52.2215, lon: 6.8937, zoom: 16 });
+
+// WHERE THE CAMERA STARTS — the URL fragment, OSM-style `#zoom/lat/lon`, else Enschede centre.
+//
+// It lives in the URL rather than in localStorage on purpose. The fragment survives a reload (which is
+// the thing being asked for), it makes a view SHAREABLE and the back button work, and — the deciding
+// reason — it keeps every headless gate deterministic BY CONSTRUCTION: seven CDP drivers navigate to a
+// bare app URL with no fragment, so they all get the default. Saved state in localStorage would have
+// leaked a panned camera from one gate run into the next through the persistent `--user-data-dir`, and
+// staying deterministic would have meant clearing storage in all seven, with the eighth forgetting to.
+//
+// Everything is validated: a hand-edited or stale fragment must degrade to the default, never boot the
+// app to a blank map at NaN.
+const DEFAULT_CAM = { lat: 52.2215, lon: 6.8937, zoom: 16 };
+const map = new RouteMap(canvas, cameraFromHash(location.hash) || DEFAULT_CAM);
+
+// `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
+// button into a rewind of every camera nudge.
+function rememberCamera() {
+  const next = hashForCamera(map.camera);
+  if (next !== location.hash) history.replaceState(null, '', next);
+}
 
 // PLAN-SCALE S7 — the TOP INDEX says which block covers the camera, and how to read it. The store URLs
 // used to be hardcoded here, which is exactly as far as one block goes: a second region would have meant
@@ -228,7 +249,8 @@ function requestMatch(pts) {
   });
 }
 
-map.onMove(ensureView);   // re-view when the camera settles outside the loaded area
+map.onMove(ensureView);        // re-view when the camera settles outside the loaded area
+map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
 await ensureView();       // initial load
 window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 

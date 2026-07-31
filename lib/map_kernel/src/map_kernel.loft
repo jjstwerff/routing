@@ -27,6 +27,12 @@ fn class_name(tp: integer) -> text {
   else if tp == 3 { "tertiary" } else if tp == 4 { "residential" } else if tp == 5 { "residential" }
   else if tp == 6 { "service" } else if tp == 7 { "cycle" } else if tp == 8 { "path" }
   else if tp == 9 { "foot" } else if tp == 10 { "pedestrian" } else if tp == 11 { "foot" }
+  // ⚠ EVERY CLASS `class_of` CAN EMIT NEEDS A CASE HERE, and the `else` is why that is easy to miss.
+  // 12/13/14 had none, so they fell through to "residential": a farm TRACK was drawn as a white street
+  // and the `track` style the store change was made for (166ddc8, minZoom 14) was unreachable dead code.
+  // The fallback made it invisible — an unnamed class does not vanish, it silently becomes a suburb road.
+  // tools/map_render_gate.sh now requires an explicit case per class, not merely a name that resolves.
+  else if tp == 12 { "track" } else if tp == 13 { "busway" } else if tp == 14 { "platform" }
   else { "residential" }
 }
 

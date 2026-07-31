@@ -6,7 +6,8 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore } from './map.mjs';
+import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
+         cameraFromHash, hashForCamera } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
@@ -1205,6 +1206,36 @@ console.log('\nS7 · coverage index → block');
   ok(roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6) === two, 'the same box always yields the same string, in index order');
   const none = roadsUrlsFor(index, IDX, 40.0, 10.0, 40.1, 10.1, nl);
   ok(none === 'https://example.test/nl.roads', 'a box covering nothing falls back to the resolved block, never to an empty command');
+}
+
+// --- the camera in the URL fragment ------------------------------------------------------------------
+// A reload must come back where you left, a shared link must open where you were, and — the one that
+// keeps the seven headless CDP drivers honest — a BARE url must always give the default, or every gate
+// asserting a render becomes a lottery.
+console.log('\ncamera in the URL fragment:');
+{
+  const c = cameraFromHash('#16/52.2215/6.8937');
+  ok(c && c.zoom === 16 && c.lat === 52.2215 && c.lon === 6.8937, 'a well-formed fragment parses');
+  ok(cameraFromHash('') === null, 'no fragment → null, so the caller uses its default');
+  ok(cameraFromHash('#') === null, 'a bare # → null');
+  ok(cameraFromHash('#nonsense') === null, 'junk → null, not NaN');
+  ok(cameraFromHash('#16/52.2215') === null, 'a truncated fragment → null');
+  ok(cameraFromHash('#16/52.2215/6.8937/extra') === null, 'a trailing field → null (no silent prefix match)');
+  ok(cameraFromHash('#16/999/6.8937') === null, 'an out-of-range latitude → null');
+  ok(cameraFromHash('#16/52.2/999') === null, 'an out-of-range longitude → null');
+  ok(cameraFromHash('#99/52.2/6.9') === null, 'an absurd zoom → null');
+  ok(cameraFromHash('#-1/52.2/6.9') === null, 'a negative zoom → null');
+  const neg = cameraFromHash('#12/-33.86/-151.21');
+  ok(neg && neg.lat === -33.86 && neg.lon === -151.21, 'southern/western hemispheres parse');
+  const frac = cameraFromHash('#15.5/52.2215/6.8937');
+  ok(frac && frac.zoom === 15.5, 'a fractional zoom parses');
+  const rt = cameraFromHash(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }));
+  ok(rt && Math.abs(rt.lat - 52.2215) < 1e-5 && Math.abs(rt.lon - 6.8937) < 1e-5 && rt.zoom === 16,
+     'camera → fragment → camera round-trips to ~1 m');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }) === '#16/52.22150/6.89370',
+     'an integer zoom writes no trailing zeros');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 15.5 }) === '#15.5/52.22150/6.89370',
+     'a fractional zoom keeps its fraction');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

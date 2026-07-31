@@ -71,6 +71,24 @@ export function makeView(camera, width, height) {
 }
 
 // --- Catalog v1 (§4b): landcover fill colours, following OpenStreetMap standard (Carto). ------
+// The camera encoded in a URL fragment, OSM-style `#zoom/lat/lon`, or null when there is nothing usable
+// there. Pure and exported so browser/map.test.mjs can hold it to account without a browser: a
+// hand-edited or stale fragment must degrade to the caller's default, never boot the app to NaN.
+export function cameraFromHash(hash) {
+  const m = /^#(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/.exec(hash || '');
+  if (!m) return null;
+  const zoom = +m[1], lat = +m[2], lon = +m[3];
+  if (![zoom, lat, lon].every(Number.isFinite)) return null;
+  if (lat < -85 || lat > 85 || lon < -180 || lon > 180 || zoom < 1 || zoom > 22) return null;
+  return { lat, lon, zoom };
+}
+
+// The fragment for a camera — the inverse of `cameraFromHash`, so a round trip is exact to 5 decimals
+// (~1 m) and the trailing zeros a fractional zoom would drag along are trimmed.
+export function hashForCamera(c) {
+  return `#${c.zoom.toFixed(2).replace(/\.?0+$/, '')}/${c.lat.toFixed(5)}/${c.lon.toFixed(5)}`;
+}
+
 export const COVER_COLORS = {
   water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
   residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
@@ -107,7 +125,7 @@ const BUILDING_LABEL_MINZOOM = 16;                  // named buildings get a lab
 
 // Road classes (Carto-ish): core colour, casing colour, a base width scaled by zoom, dash for paths, and
 // the min zoom the class appears at (motorways always; footpaths only up close). One row per class.
-const ROAD_STYLES = {
+export const ROAD_STYLES = {
   motorway:    { core: '#e892a2', casing: '#c37b8f', w: 3.2, minZoom: 8 },
   trunk:       { core: '#f9b29c', casing: '#d18f78', w: 3.0, minZoom: 9 },
   primary:     { core: '#fcd6a4', casing: '#d1a86a', w: 2.6, minZoom: 10 },
@@ -119,6 +137,14 @@ const ROAD_STYLES = {
   path:        { core: '#a06b4c', casing: null, w: 0.9, dash: [3, 3], minZoom: 15 },
   foot:        { core: '#a06b4c', casing: null, w: 0.9, dash: [2, 3], minZoom: 15 },
   track:       { core: '#a58b5a', casing: null, w: 1.0, dash: [5, 3], minZoom: 14 },
+  // `service` is the one the store gained in #30's regeneration (25971 -> 49613 ways, "no service, no
+  // unclassified" before) and the renderer never grew a row for — so every service road was dropped by
+  // `if (!style) continue`, including Lonnekeresweg, the dirt road into Lonneker from the west. Thinner
+  // and later than `residential`: the class also holds driveways and parking aisles, and drawing those
+  // as streets at z13 buries the network they hang off.
+  service:     { core: '#ffffff', casing: '#cfcac3', w: 1.0, minZoom: 15 },
+  busway:      { core: '#f2dede', casing: '#c9b4b4', w: 1.4, minZoom: 14 },
+  platform:    { core: '#e4e2df', casing: '#c2bdb6', w: 1.0, minZoom: 16 },
 };
 // Draw order (back → front): minor/paths first, motorways on top.
 const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
