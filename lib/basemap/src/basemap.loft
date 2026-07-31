@@ -75,7 +75,7 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
 
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".
-pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
+pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "") -> text {
   if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
   if natural == "wood" { return "forest"; }
   if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
@@ -91,9 +91,36 @@ pub fn area_use(landuse: text, natural: text, leisure: text) -> text {
   if landuse == "reservoir" || landuse == "basin" { return "water"; }
   if landuse == "cemetery" || landuse == "greenfield" { return "park"; }
 
-  if leisure == "park" || leisure == "garden" || leisure == "playground" || leisure == "pitch"
-     || leisure == "sports_centre" || leisure == "golf_course" || leisure == "recreation_ground" { return "park"; }
+  if landuse == "plant_nursery" || landuse == "animal_keeping" || landuse == "corral" { return "farmland"; }
+  if landuse == "brownfield" { return "bare"; }
+  if landuse == "education" { return "residential"; }
 
+  if leisure == "park" || leisure == "garden" || leisure == "playground" || leisure == "pitch"
+     || leisure == "sports_centre" || leisure == "golf_course" || leisure == "recreation_ground"
+     || leisure == "dog_park" || leisure == "swimming_pool" || leisure == "fitness_station"
+     || leisure == "bandstand" || leisure == "outdoor_seating" { return "park"; }
+
+  // A DESIGNATION IS NOT A LANDCOVER. `leisure=nature_reserve` says who protects the ground, not what is
+  // on it — a reserve contains forest, grass, heath and water, all of which are separately mapped and
+  // stored. Painting it as a cover buries them: areas overdraw in tile-then-element order with no size
+  // sort, so Landgoed Hof Espelo (270 ha) and Lonnekerberg (552 ha) were two flat slabs of the unknown-
+  // cover fallback laid over the real terrain around them. They were the two LARGEST members of "other".
+  //
+  // So it gets its own value, and the renderer draws it as an OVERLAY after every cover is down: a
+  // translucent tint plus an outline. Being a separate pass is what makes that safe — it cannot overdraw
+  // terrain no matter what order the tiles arrive in.
+  if leisure == "nature_reserve" { return "reserve"; }
+
+  // A SITE is the same story as a reserve: a hospital or a campus says what the ground is FOR, not what
+  // is on it — grass, trees, car parks and buildings are all separately mapped inside one. So it is an
+  // outline and a name, never a fill. Kept deliberately narrow: `amenity` also covers benches, parking
+  // and restaurants, and painting every one of those would be the "other" slab all over again.
+  if amenity == "hospital" || amenity == "school" || amenity == "university"
+     || amenity == "college" || amenity == "kindergarten" { return "site"; }
+
+  // Anything still here is NOT a landcover we recognise (`natural=tree_row` is a line; `landuse=military`
+  // is another designation). It stays in the store so a later release can classify it without a
+  // regeneration, and the renderer draws nothing for it — an unknown must not paint over a known.
   "other"
 }
 

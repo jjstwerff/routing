@@ -5,19 +5,20 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-07-31) — there IS work parked on a branch
-
-⚠ Unlike every earlier revision of this file, **not everything is merged.**
+## 0. START HERE (2026-07-31) — everything is merged and deployed
 
 | | |
 |---|---|
-| `main` | `c20c4cf` — protected (PR + green `build-test`, never a direct push) |
-| **branch `fix-access-tags`** | **`9dd5a33`, 2 commits ahead, pushed, NOT PR'd** |
+| `main` | `4e693a3` — protected (PR + green `build-test`, never a direct push) |
+| in flight | **nothing.** PR #30 merged 2026-07-31 06:03Z; `fix-access-tags` deleted |
 
-Both commits fix defects **reported from the live map**, and both are gate-backed. Open the PR when
-you want them on `main`; nothing else is in flight.
+PR #30 carried five fixes and their gates. `main`'s tree is byte-identical to the commit the full local
+matrix ran on, and the **Pages deploy is live**: the site serves `features: 49613` roads (was 25 971) at
+`sha256 3012840c…`. Two of the five were found by *running* the gates rather than by the reports that
+started the work — see "The gates found two defects in themselves" below, which is the part of this
+section most worth reading if you are about to trust a green run.
 
-### What those two commits did
+### What landed
 
 Three separate map defects were reported: *"there are paths that are blocked (fences) and not allowed
 for public walking, but they show up as normal paths and are probably used for routing too"*, plus a
@@ -36,6 +37,11 @@ missing dirt road. They had three different causes and only two were ours.
 **Viekerweg, the third report, is not ours**: OSM has it as `highway=track, motor_vehicle=no` with no
 `access`/`foot`/`bicycle` restriction, so the router is faithful to the data. It needs an OSM edit.
 
+Three more commits came out of running the gates over the above: **`ada89ba`** deletes the corridor's
+dead bbox prologue (superseded by `corridor_cell_keys` since `8ce7659`, and still being compiled in —
+the wasm drops 6.6 KB; route-identical), and **`9d7de44`** + **`8c47628`** fix the gate defects below.
+**`97262c4`** rebuilds `browser/store-kernel.wasm` for `ada89ba` — see the trap list.
+
 ### The one thing most likely to mislead you
 
 **GitHub Pages DOES serve byte ranges.** This repo said the opposite until 2026-07-30, in
@@ -43,7 +49,7 @@ missing dirt road. They had three different causes and only two were ours.
 Netherlands blocks live in a GitHub *release*. It was measured against `python3 -m http.server`, which
 ignores `Range` and returns the whole file, and python's answer was recorded as GitHub's. Re-measured
 against the live site: **206, 16 bytes asked → 16 transferred, correct bytes at three offsets.** All
-three docs are corrected on this branch. Consequence: **D2 is not a wall and no bucket is needed** —
+three docs are corrected on `main`. Consequence: **D2 is not a wall and no bucket is needed** —
 what limits GitHub hosting is SIZE (Pages ~1 GB/site; NL roads 504 MB fits, roads+base 3.2 GB does not).
 
 ### Regenerating a block is now MANDATORY, not optional
@@ -55,6 +61,54 @@ and maps old records at the new stride. Every block in the tree is already regen
 `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks
 `barriers@`, so a stale one cannot reach the app.
 
+### The gates found two defects IN THEMSELVES — read this before trusting a green run
+
+Nobody reported these. They surfaced because the suite was run twice in one session, hours apart, and
+the second run disagreed with the first over data that had not changed.
+
+1. **`9d7de44` — `index_fresh_gate.sh` failed on the CALENDAR, not on staleness.** It regenerated
+   `coverage.json` and demanded byte-identity, but did not pin `DATASET_VERSION` — which
+   `build_index.sh` defaults to **today's UTC date**. So it compared *today* against the day the index
+   was committed: green on that day, **red every day after**, reporting "STALE" about an index that
+   described its blocks perfectly. Caught because `make test-native` passed at 22:25 UTC and failed at
+   05:23 UTC with nothing changed between. The version is pinned now, and separately checked against the
+   release tag in `data/coverage.toml` so pinning costs no real signal.
+2. **`8c47628` — the root cause: a gate REWROTE A COMMITTED FILE on every run.** `build_index.sh`
+   defaults its output to the committed `browser/coverage.json`, and three gates (`map_render`,
+   `cross_block_browser`, `cors_host`) call it with **no argument**. So every `make test-map` restamped
+   it. *Nobody ever chose `v2026-07-30` — a gate run on the 30th wrote it.* Pinning in (1) stopped the
+   false failure but left the mutation: the tree came back dirty and a `git add -A` would have committed
+   a silently renamed dataset. Found only because `gh pr create` warned "1 uncommitted change" about a
+   file already restored once by hand.
+
+**The rule they cost:** *a generator over unchanged inputs must be idempotent, and a gate must not write
+to the tree it is checking.* `version` is a RELEASE NAME, not a measurement — everything else in that
+index is measured out of the blocks and changes only when they do. It now resolves as: explicit
+`DATASET_VERSION` → the name the existing index already carries → today's date for a first generation.
+`publish-release.sh` passes the version from the tag it publishes under, so the index always names its
+own release (the pairing `index_fresh_gate` asserts; it used to hold only by coincidence of the date).
+
+⚠ **A gate that cries wolf on a clock is worse than no gate** — it trains you to skip the run that
+finally means it. If a gate here fails, check whether anything it depends on is a *wall clock*, a
+*mtime*, or a file the suite itself writes, before you go looking at the data.
+
+**A third one of the same family turned up an hour later, and it is the worst of the three.**
+`map_render_gate.sh`'s "is the shipped kernel wasm current?" check was
+`find <kernel srcs> -newer browser/store-kernel.wasm` — and **git does not preserve mtimes.** Right
+after PR #30's merge checkout the wasm was written at `08:03:23.568` and `routing_kernel.loft` at
+`08:03:23.588`: 20 ms later, same checkout, nothing edited, and a correct wasm was reported STALE. The
+spurious failure is the harmless direction. **The other direction is silent** — a genuinely stale wasm
+that a checkout happens to write last PASSES, and catching that is the entire purpose of the check, on
+the one artifact in this repo that is committed and built by hand. It now compares a **sha256 of the
+kernel sources**, written to `browser/store-kernel.wasm.sources` by `build-store-kernel.mjs`
+(`--print-source-hash` gives the gate the same function, so there is one implementation). Verified to
+fail three ways: an edited source, a NEW source file the wasm never saw, and a missing sidecar.
+
+⚠ **The sidecar catches SOURCE drift, not TOOLCHAIN drift.** Rebuilding unchanged sources on the
+2026-07-31 08:10 loft produced a **different wasm** (1 320 670 → 1 327 196 bytes) with identical
+behaviour. Hashing the compiler in too would fire on every reinstall — which happens several times a
+day here — so it is deliberately not done; just rebuild the wasm when you change loft under it.
+
 ### New in `tools/`
 
 - **`access_gate.sh`** (in `make test-native`) — the legality gate. Fixtures where the SHORT way is
@@ -64,14 +118,23 @@ and maps old records at the new stride. Every block in the tree is already regen
 - **`access_probe.loft`** — `count` (what a block carries) and `route` (metres of a route on restricted
   ways, and where along it).
 - `index_fresh_gate.sh` — `browser/coverage.json` is a COMMITTED generated file (the Pages deploy job
-  has no loft to measure extents with); this regenerates it and requires byte-identity.
+  has no loft to measure extents with); this regenerates it **at the committed version** and requires
+  byte-identity, then checks that version against the release tag in `data/coverage.toml`. Both of its
+  controls are verified to fail (a rotted extent; a version out of step with the tag).
 
-### Two loft issues filed from this work
+### Two loft issues filed from this work — BOTH FIXED within a day
 
 - [**#699**](https://github.com/loft-lang/loft/issues/699) `sev:medium` — a `vector` parameter with a
   `= []` default panics the parser. Why the API is `build_graph_barriers(ways, barriers)` and not a
-  defaulted argument.
-- [**#700**](https://github.com/loft-lang/loft/issues/700) `sev:high` — the silent store corruption above.
+  defaulted argument. **Fixed** (`../loft` `d8dde3e9`); repro re-run on the 08:10 binary, it now prints
+  `both=6 defaulted=3`. The API can be simplified whenever someone wants to — it is no longer forced.
+- [**#700**](https://github.com/loft-lang/loft/issues/700) `sev:high` — the silent store corruption
+  above. **Fixed** (`../loft` `2ba50550`, *"check the store's recorded layout before reading it whole"*).
+  ⚠ This does **not** retire the regeneration rule: the fix makes a stale store *audible* rather than
+  garbage, and every block here is already regenerated. Keep the `.dschema` checks — they are what stops
+  a stale block reaching the app on a loft that predates the fix.
+
+⚠ Both are `fixed-pending-merge` — present in the **installed** binary, not necessarily in loft `main`.
 
 ### Still open on this work (also PLAN-SCALE §9)
 
@@ -95,7 +158,15 @@ and maps old records at the new stride. Every block in the tree is already regen
 - **A drawn point is an ANCHOR.** A test trace whose point sits on the barrier pins the route through
   it, and the assertion tests nothing.
 - **Piping a script to `tail` replaces its exit status.** `overpass_fetch.py` correctly exits 1 on a
-  failed chunk; `| tail -6` turned that into 0 and I built a block from a half-fetched region.
+  failed chunk; `| tail -6` turned that into 0 and I built a block from a half-fetched region. Paid
+  again on 2026-07-31 (`make test-native | tail -70` — the run really was green, but the pipeline said
+  so for the wrong reason). Use `set -o pipefail`, or read `${PIPESTATUS[0]}`.
+- **A kernel edit does NOT reach the browser on its own.** `browser/store-kernel.wasm` is committed and
+  rebuilt BY HAND (`node browser/build-store-kernel.mjs`). Editing `routing_kernel.loft` and re-running
+  `test-native` proves nothing about the app; `map_render_gate.sh` catches it ("STALE: predates kernel
+  sources") **only if you run `make test-map` after the edit** — which is exactly the run you skip when
+  the change looks inert. A dead-code deletion still shrank the wasm 6.6 KB, so "it cannot matter" was
+  wrong about the bytes too.
 - Overpass's public mirrors were timing out and erroring on 2026-07-30. **The osmium path is the
   documented one and takes seconds** — `tools/build-blocks.sh` over the cached
   `~/.cache/routing-blocks/*.osm.pbf`. It also revealed the old Enschede block was missing whole road
@@ -115,10 +186,9 @@ kernel** (`client/web_basemap_kernel.loft` → `loft --html`) for the matched ro
 not skipped**, and **18 is ⏸ deferred on a DEPLOY constraint, no longer on a missing loft capability**
 (see §2 below). **`PLAN-EDIT.md` E0–E7 are done** — the app can reshape a sketch, not just append (§2a).
 
-⚠ **Superseded by §0**: as of 2026-07-31 `main` is `c20c4cf` and **two commits are parked on
-`fix-access-tags`** (pushed, not PR'd). `main` is protected — PR + green `build-test`, never a direct
-push. The sentence this replaces said "everything is on main, nothing is in flight", which was true on
-2026-07-29 and is not true now.
+**Everything is on `main` (`4e693a3`) and nothing is in flight** — PR #30 merged 2026-07-31, see §0.
+`main` is protected: PR + green `build-test`, never a direct push. (An earlier revision of this line
+said work was parked on `fix-access-tags`; that branch is merged and deleted.)
 
 ### The numbers, `CPU_THROTTLE=4` (≈ a phone — always profile with it; desktop flatters ~4×)
 
@@ -237,8 +307,9 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
 
 - **Read first:** `PLAN-PERF.md` — its header table is the current state, §0 the step list, and §7i–§7o
   the matcher work. Then `CLAUDE.md` § "Read the reference before you write".
-- **Repo:** `main` @ `e608918`, clean, one remote head, **no open PRs**. Nothing is parked on a branch —
-  if something here looks unfinished, it is unstarted, not stashed elsewhere.
+- **Repo:** ⚠ stale — `main` was `e608918` on 2026-07-29 and is **`4e693a3`** now (§0). The durable half
+  still holds: no open PRs, nothing parked on a branch, so if something here looks unfinished it is
+  unstarted, not stashed elsewhere.
 - **Toolchain:** installed loft reports **2026.7.2** — and ⚠ **that string does not identify the binary.**
   `/usr/local/bin/loft` was reinstalled **2026-07-29 22:54** (md5-identical to `../loft`'s build on branch
   `tuxedo-diagnostics2`) and gained capabilities the previous install lacked while printing the same
@@ -249,8 +320,29 @@ byte-identical to a re-match of the settled sketch. `DESIGN.md` §1's two-tier f
   which `loft --html` selects when the program has a reachable `par` (`--threads` / `--no-threads`
   override; neither is listed in `--help`). The atomics std is prebuilt in
   `/usr/local/share/loft/html-mt/`, so a threaded build costs **~0.7 s**, not a cold `build-std`.
-  ⚠ That sysroot was **not** refreshed by the 2026-07-29 install (dated jul 24) — it works, but check it
-  before trusting a threaded build after the next reinstall.
+  ✅ **That sysroot IS refreshed now** — the 2026-07-31 08:10 install rewrote
+  `html-mt/wasm32-unknown-unknown/` (the parent dir still reads jul 24; look one level down). The
+  standing ⚠ about it being stale is discharged.
+
+  **⚠ 2026-07-31 — the binary changed AGAIN, mid-session, and the version string did not.** This is the
+  documented hazard caught live, so treat it as the worked example rather than a warning in the
+  abstract:
+
+  | | earlier that day | after 08:10 |
+  |---|---|---|
+  | mtime | `2026-07-30 22:42` | `2026-07-31 08:10:02` |
+  | md5 | `7bafaf60…` | `36df4721…` |
+  | size | 14 460 440 | 14 500 776 |
+  | `--version` | 2026.7.2 | **2026.7.2** |
+
+  A different binary, 40 KB larger, same string. **PR #30 was gated on `7bafaf60`** (its body says so —
+  anchor the claim to the binary, always); `main` was then re-verified green on `36df4721` across
+  `make test`, `test-native`, `test-wasm` and `test-map`. Two routing-filed issues are FIXED in it:
+  **loft#699** (a `vector` param with a `= []` default panicked the parser) — original repro re-run, it
+  now prints `both=6 defaulted=3` — and **loft#700** (the silent store corruption), per `../loft`
+  `2ba50550` *"check the store's recorded layout before reading it whole"*. `loft targets wasm` reports
+  no missing browser builtins. ⚠ The same rebuild also changed the **wasm** for unchanged sources
+  (1 320 670 → 1 327 196 bytes, behaviour identical) — see §0's sidecar note.
 - **Gates** — `make test`, `test-native` (now includes **`tools/tile_border_gate.sh`**), `test-wasm`,
   `test-map` (browser render + the @PLN105 bridge probes + the step-18 threading tripwire + **the whole
   rough-editor gesture suite**, driven with real `Input.dispatchMouseEvent` / keystrokes / SHIFT), and
@@ -408,9 +500,10 @@ match 88**. In the browser a cold match is 1450 ms and a warm one 343 ms.
 
 ## 5. Open PRs
 
-**None (2026-07-29).** PR #8 was closed unmerged; #17–#22 are merged and their branches deleted. The
-working agreement: push every branch as a safety net, but open a PR only when asked or for genuinely
-PR-worthy work — and `main` only ever moves through a PR with a green `build-test`.
+**None (2026-07-31).** #30 is the most recent, merged 2026-07-31 (§0); PR #8 was closed unmerged, and
+#17–#22 are merged with their branches deleted. The working agreement: push every branch as a safety
+net, but open a PR only when asked or for genuinely PR-worthy work — and `main` only ever moves through
+a PR with a green `build-test`.
 
 ---
 

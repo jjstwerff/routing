@@ -14,6 +14,19 @@
 
 # The block that ships WITH the app — small, committed, same-origin, and therefore the only one a browser
 # can read today (see the CORS note below). It is what every local gate runs against.
+# ⚠ THE CLIP BBOX IS PART OF THE BLOCK, so it is written down here. It was not, and rebuilding the base
+# map on 2026-07-31 then had no way to reproduce the block it was replacing: the first box tried produced
+# 1734 tiles against 1089, a 2.3x bigger download for every visitor. Recovering it took four builds,
+# steering on `store_extent`'s four bounds until all of them matched the shipped store exactly.
+#
+#   tools/build-blocks.sh enschede europe/netherlands 6.82558,52.1707,6.9958,52.3230
+#   tools/build-base.sh   enschede europe/netherlands 6.82558,52.1707,6.9958,52.3230
+#
+# The box looks arbitrary because it IS: `osmium extract` keeps whole ways, so features overhang it by up
+# to ~0.09°, and the box is whatever makes the OVERHANG land on the intended extent. Do not "tidy" it to
+# round numbers — that changes the block. Expect tile/feature counts to drift with the OSM snapshot (the
+# 2026-07-31 rebuild came out at 1093 tiles / 208536 features against 1089 / 204982 two days earlier);
+# the four EXTENT bounds are the thing that must match.
 [[region]]
 id        = "enschede"
 name      = "Enschede / south Overijssel"

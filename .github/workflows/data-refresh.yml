@@ -8,9 +8,30 @@ name: data-refresh
 # absent, so the monthly cron does not fail before the pipeline lands. Enable by
 # committing tools/build-blocks.sh (and, if desired, a REGIONS list).
 
+# ⚠ THE MONTHLY CRON IS OFF, DELIBERATELY — do not restore it without fixing the publish step below.
+#
+# This workflow described itself as dormant "until tools/build-blocks.sh exists", and its gate is
+# literally `[ -x tools/build-blocks.sh ]`. That script landed on 2026-07-30, so the dormancy quietly
+# ended and the next fire would have been 2026-08-01 04:17 UTC — nobody decided that; a precondition
+# came true underneath a comment that still said DORMANT.
+#
+# It was not ready to run:
+#   * it uploads `dist/blocks/*`, and build-blocks.sh writes to `blocks/` — the glob never matches, so
+#     both the create and its `||` fallback fail;
+#   * the tag is `data-$(date -u +%Y%m)` → `data-202608`, while data/coverage.toml and
+#     publish-release.sh use `data-v2026-07-30`. tools/index_fresh_gate.sh's tag check matches `data-v…`
+#     and would silently skip a tag in the other shape;
+#   * it never rebuilds the coverage index and never runs publish-release.sh, so it would publish blocks
+#     no index points at, without that script's 206/CORS asset verification;
+#   * it builds loft from loft-lang/loft MAIN, and the fixes this repo depends on are routinely
+#     fixed-pending-merge — present in the installed binary, not yet in main.
+#
+# To re-enable: point the publish step at tools/publish-release.sh (which tags, verifies assets and
+# rebuilds the index with DATASET_VERSION from the tag), then restore the `schedule:` block below.
+# `workflow_dispatch` is kept so the pipeline can still be exercised on purpose.
 on:
-  schedule:
-    - cron: "17 4 1 * *"   # 04:17 UTC on the 1st of each month
+  # schedule:
+  #   - cron: "17 4 1 * *"   # 04:17 UTC on the 1st of each month — see the note above before restoring
   workflow_dispatch:
     inputs:
       regions:

@@ -53,6 +53,35 @@ else
 fi
 [ $e0rc -eq 0 ] || exit 1
 
+# 1a-cover. EVERY COVER `area_use` CAN RETURN MUST HAVE A TREATMENT.
+#
+# `leisure=nature_reserve` fell through area_use to "other", the renderer had no colour for "other", and
+# the opaque fallback painted 270 ha of Landgoed Hof Espelo and 552 ha of Lonnekerberg flat over the
+# forest and grass correctly stored beneath them. One unmapped OSM value, two buried landscapes, and
+# nothing anywhere said so. The generator and the renderer each looked complete on their own; only the
+# PAIR was wrong, which is exactly the kind of gap a gate has to hold.
+echo "== every landcover the generator emits has a renderer treatment =="
+covers="$(sed -n '/^pub fn area_use/,/^}/p' "$here/lib/basemap/src/basemap.loft" \
+          | grep -oE 'return "[a-z_]+"' | cut -d'"' -f2 | sort -u)"
+styled="$(node -e "import('$here/browser/map.mjs').then(m=>console.log(Object.keys(m.COVER_COLORS).join('\n')))" 2>/dev/null)"
+# "other" is the deliberate unknown (draws nothing); the overlay kinds come from the module itself, so
+# adding a designation cannot drift the gate out of step with the renderer.
+overlay="other $(node -e "import('$here/browser/map.mjs').then(m=>console.log(Object.keys(m.DESIGNATION_STYLES).join(' ')))" 2>/dev/null)"
+missing=""
+for c in $covers; do
+  case " $overlay " in *" $c "*) continue ;; esac
+  echo "$styled" | grep -qx "$c" || missing="$missing $c"
+done
+[ -n "$covers" ] || { echo "  FAIL: parsed no covers out of area_use — the gate is blind"; exit 1; }
+echo "$styled" | grep -qx forest || { echo "  FAIL: could not read COVER_COLORS from map.mjs"; exit 1; }
+echo "$overlay" | grep -q reserve || { echo "  FAIL: no DESIGNATION_STYLES — designations would draw nothing"; exit 1; }
+if [ -n "$missing" ]; then
+  echo "  FAIL: area_use can return$missing, which the renderer has no colour for —"
+  echo "        it would paint nothing, or (worse) an opaque unknown over real terrain."
+  exit 1
+fi
+echo "  ✓ $(echo "$covers" | wc -w) covers, each either coloured or explicitly an overlay/unknown"
+
 # 1a. PLAN-PERF §6e — is the browser kernel threaded? `par` (step 18) is a no-op while it is not.
 echo "== step 18 tripwire: browser kernel threading =="
 node "$here/tools/wasm_threads.mjs" || exit 1
@@ -66,17 +95,33 @@ node "$here/tools/wasm_threads.mjs" || exit 1
 #
 # FATAL since 2026-07-30: loft#681 is fixed, so `node browser/build-store-kernel.mjs` works again and a
 # stale wasm is now a defect rather than an unfixable condition. (It warned for exactly one afternoon.)
+# This compares a HASH OF THE SOURCES, not mtimes. It used to be `find <kernel srcs> -newer <wasm>`,
+# which reads whatever order the last checkout wrote files in — GIT DOES NOT PRESERVE MTIMES. Measured
+# right after a merge on 2026-07-31: wasm at 08:03:23.568, routing_kernel.loft at 08:03:23.588, same
+# checkout, nothing edited, and a correct wasm was called STALE. The direction that actually costs you
+# is the reverse — a genuinely stale wasm written last would have PASSED, and catching that is the
+# whole point of this check.
 stale_is_fatal=1
 echo "== is the shipped kernel wasm current? =="
-newest_src="$(find "$here/lib/routing_kernel/src" "$here/lib/map_kernel/src" "$here/client" -name '*.loft' -newer "$here/browser/store-kernel.wasm" 2>/dev/null | head -3)"
-if [ -n "$newest_src" ]; then
-  echo "  ⚠ STALE: browser/store-kernel.wasm predates kernel sources —"
-  echo "$newest_src" | sed 's|^|      |'
+sidecar="$here/browser/store-kernel.wasm.sources"
+want="$([ -f "$sidecar" ] && tr -d '[:space:]' < "$sidecar")"   # test first: a bare `< missing` errors in the SHELL, before tr can be silenced
+have="$(node "$here/browser/build-store-kernel.mjs" --print-source-hash 2>/dev/null | tr -d '[:space:]')"
+if [ -z "$have" ]; then
+  echo "  ⚠ could not hash the kernel sources (is node on PATH?)"
+  [ "$stale_is_fatal" = "1" ] && exit 1
+elif [ -z "$want" ]; then
+  echo "  ⚠ STALE: no browser/store-kernel.wasm.sources — the shipped wasm names no sources,"
+  echo "      so nothing can say which kernel the browser is running."
+  echo "      rebuild: node browser/build-store-kernel.mjs"
+  [ "$stale_is_fatal" = "1" ] && exit 1
+elif [ "$want" != "$have" ]; then
+  echo "  ⚠ STALE: browser/store-kernel.wasm was built from DIFFERENT kernel sources —"
+  echo "      shipped from ${want:0:12}…, tree is ${have:0:12}…"
   echo "      the browser is running the PREVIOUS kernel; everything below tests that, not the tree."
   echo "      rebuild: node browser/build-store-kernel.mjs"
   [ "$stale_is_fatal" = "1" ] && exit 1
 else
-  echo "  ✓ store-kernel.wasm is newer than every kernel source"
+  echo "  ✓ store-kernel.wasm is built from the kernel sources in the tree (${have:0:12}…)"
 fi
 
 # 2. Build the deployable site, and the TOP INDEX the app resolves its blocks through (PLAN-SCALE S7).
