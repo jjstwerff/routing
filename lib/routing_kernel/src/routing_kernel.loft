@@ -527,17 +527,6 @@ fn corridor_ways_impl(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: f
 fn corridor_ways_impl2(store: hash<TTile[tkey]>, pts: vector<GeoPoint>, margin: float, on_tick: fn(integer), tube: boolean) -> vector<Way> {
   ways: vector<Way> = [];
   if len(pts) < 1 { return ways; }
-  mnlat = pts[0].lat; mxlat = pts[0].lat; mnlon = pts[0].lon; mxlon = pts[0].lon;
-  for p in pts {
-    if p.lat < mnlat { mnlat = p.lat; } if p.lat > mxlat { mxlat = p.lat; }
-    if p.lon < mnlon { mnlon = p.lon; } if p.lon > mxlon { mxlon = p.lon; }
-  }
-  dlat = margin / 111320.0;
-  dlon = margin / (111320.0 * cos(((mnlat + mxlat) / 2.0) * PI / 180.0)) ?? 0.0;   // cos(lat)≠0 at real lats
-  gx0 = round((mnlon - dlon) * TILE_UNIT) as integer; gx1 = round((mxlon + dlon) * TILE_UNIT) as integer;
-  gy0 = round((mnlat - dlat) * TILE_UNIT) as integer; gy1 = round((mxlat + dlat) * TILE_UNIT) as integer;
-  tx0 = gx0 / TILE_CELL - 1; tx1 = gx1 / TILE_CELL + 1;
-  ty0 = gy0 / TILE_CELL - 1; ty1 = gy1 / TILE_CELL + 1;
   // ENUMERATE THE CELL WINDOW AND LOOK EACH CELL UP BY KEY — never walk the store (PLAN-SCALE C1a/S2).
   //
   // This used to be `for t in store`, filtering each tile against the window, on the reasoning that
