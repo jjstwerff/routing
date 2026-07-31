@@ -91,6 +91,7 @@ fn main() {
   println("count base.pois {npoi}");
   emit(ac, ["water","forest","grass","heath","scrub","park","farmland","residential","industrial",
             "sand","wetland","bare","other","reserve","site"], "cover");
-  emit(lc, ["river","stream","ditch","canal","railway","tram","hedge","wall","fence","runway","taxiway"], "line");
+  emit(lc, ["river","stream","ditch","canal","railway","tram","hedge","wall","fence","runway","taxiway","border","powerline"], "line");
   emit(kc, ["street","park","sports","cemetery","reserve","site"], "label");
+  emit(pc, ["tree","bench","picnic","viewpoint","tower","pylon","information","camp"], "poi");
 }

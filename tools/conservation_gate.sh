@@ -88,6 +88,7 @@ if [ "$base_ok" = 1 ]; then
          cover.water cover.forest cover.grass cover.heath cover.scrub cover.park cover.farmland
          cover.residential cover.industrial cover.reserve cover.site
          line.stream line.ditch line.railway line.hedge line.fence line.runway line.taxiway
+         line.border line.powerline poi.tree poi.pylon
          label.street label.park label.sports label.cemetery label.site)
 else
   echo "  · no base map at $base_store — roads only (a country's roads land a rung before its base map)"

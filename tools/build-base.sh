@@ -55,10 +55,22 @@ stale_by_recipe() {  # $1 = cache file, $2 = recipe → discards $1 when its rec
 
 if [ -n "$bbox" ]; then
   clip="$work/$id.clip.osm.pbf"
-  stale_by_recipe "$clip" "$bbox"      # a different bbox is a different clip, whatever the mtimes say
+  # ⚠ THE CLIP IS SHARED WITH tools/build-blocks.sh, and its provenance must be too. Each script used to
+  # record the box in its OWN sidecar — build-blocks in `<clip>.bbox`, build-base in `<clip>.recipe` — so
+  # each saw its own record match, trusted a clip the other had rewritten, and silently built a different
+  # REGION. Measured: a base block asked for 6.82558,52.1707,6.9958,52.3230 came out with the roads box's
+  # extent (mnlo 6.5837 against 6.7762), 1748 tiles against 1098, 51% more buildings — and every count
+  # looked plausible, because a bigger region really does have more of everything.
+  #
+  # One file, one sidecar, both scripts.
+  cbox="$clip.bbox"
+  if [ ! -f "$cbox" ] || [ "$(cat "$cbox" 2>/dev/null)" != "$bbox" ]; then
+    [ -s "$clip" ] && echo "  bbox changed — discarding the cached clip"
+    rm -f "$clip" "$cbox"
+  fi
   if ! newer "$clip" "$pbf"; then
     osmium extract --bbox "$bbox" --overwrite -o "$clip" "$pbf" || exit 1
-    printf '%s' "$bbox" > "$clip.recipe"
+    printf '%s' "$bbox" > "$cbox"
   fi
   base_pbf="$clip"
 fi
@@ -77,7 +89,11 @@ fi
 layer() {  # $1 = layer name, $2 = osmium --geometry-types, $3… = tags-filter expressions
   local name="$1" gtypes="$2"; shift 2
   local fpbf="$work/$id.$name.osm.pbf" seq="$work/$id.$name.geojsonseq"
-  local recipe="$gtypes | $*"
+  # ⚠ THE BBOX IS PART OF EVERY LAYER'S RECIPE. Keyed on the tags-filter alone, a layer export survives a
+  # change of REGION: the clip was correctly re-made for a new box and the five layer exports were reused
+  # from the old one, so the block came out with the previous region's extent while every count looked
+  # plausible. A cached artifact must name every input that can change it, and the region is one.
+  local recipe="$bbox | $gtypes | $*"
   stale_by_recipe "$seq" "$recipe" && rm -f "$fpbf"
   if newer "$seq" "$base_pbf"; then echo "  $name: up to date ($(du -h "$seq" | cut -f1))"; return 0; fi
   osmium tags-filter --overwrite -o "$fpbf" "$base_pbf" "$@" || return 1
@@ -99,12 +115,33 @@ layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_ARE
 layer buildings polygon    w/building r/building         || exit 1
 layer places    point      n/place                       || exit 1
 layer lines     linestring w/waterway w/railway w/barrier w/aeroway=runway,taxiway \
-                           r/waterway r/railway || exit 1
-layer pois      point      n/natural n/amenity n/tourism n/man_made n/historic n/leisure n/highway || exit 1
+                           w/boundary=administrative w/power=line \
+                           r/waterway r/railway r/boundary=administrative || exit 1
+layer pois      point      n/natural n/amenity n/tourism n/man_made n/historic n/leisure n/highway \
+                           n/power=tower || exit 1
 # Streets reuse the ROADS export: the generator selects `highway` + a name/ref itself, so a second pass
 # over the same ways would only duplicate work and disk.
 streets="$work/$id.geojsonseq"
 [ -s "$streets" ] || { echo "FAIL: no roads export at $streets — run tools/build-blocks.sh $id $src first"; exit 1; }
+# ⚠ THE STREETS LAYER COMES FROM build-blocks.sh, SO IT CARRIES ITS BBOX, NOT OURS. Reused across a change
+# of region it silently widens the block: a base build asked for one box produced a store whose extent was
+# partly the ROADS box's, because the street labels came from there. Every count looked plausible.
+#
+# The two boxes are allowed to differ (they were cut separately and are recorded separately in
+# data/coverage.toml) — but then the roads export must be REGENERATED for this box first, and only its
+# .geojsonseq is wanted; the roads block that run produces is a by-product.
+# `clip` exists only when a bbox was given — a whole-extract build has no clip to compare against.
+if [ -n "${clip:-}" ] && [ -f "$clip.bbox" ] && [ "$(cat "$clip.bbox" 2>/dev/null)" != "$bbox" ]; then
+  echo "FAIL: the cached roads export was built for box $(cat "$clip.bbox")"
+  echo "      and this base build asked for $bbox — its street labels would come from a different region."
+  echo "      Run: tools/build-blocks.sh $id $src $bbox      (then re-run this)"
+  exit 1
+fi
+if [ -n "${clip:-}" ] && [ "$clip" -nt "$streets" ]; then
+  echo "FAIL: $streets predates the clip it should have come from — it is another region's export."
+  echo "      Run: tools/build-blocks.sh $id $src $bbox      (then re-run this)"
+  exit 1
+fi
 echo "  streets: reusing the roads export ($(du -h "$streets" | cut -f1))"
 
 store="$out/$id.base.store"

@@ -188,7 +188,15 @@ pub fn road_class(highway: text) -> text {
 }
 
 // waterway / railway / barrier way → a compact Line kind (stroke style per kind). "" = not a line we draw.
-pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "") -> text {
+pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "",
+                 boundary: text = "", admin_level: text = "", power: text = "") -> text {
+  // A national border is the one boundary worth drawing: it tells you which country's rules you are
+  // under, which on a bike near Glanerbrug changes every few hundred metres. The municipal levels (8, 10)
+  // are far denser and mean nothing to a walker, so only level 2 is taken.
+  if boundary == "administrative" && admin_level == "2" { return "border"; }
+  // Transmission lines are a navigation landmark in open country — visible for kilometres, and the one
+  // feature that makes an otherwise featureless polder legible.
+  if power == "line" { return "powerline"; }
   // A runway is a landmark you navigate by even when you cannot walk on it — visible from every road
   // around the field, and the one thing that says "this is an airport" at a glance.
   if aeroway == "runway" { return "runway"; }
@@ -208,7 +216,11 @@ pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "
 }
 
 // A POI node's tags → a compact Poi kind (one glyph per kind). "" = not a POI we draw. First match wins.
-pub fn poi_kind(natural: text, amenity: text, tourism: text, man_made: text, historic: text, leisure: text, highway: text) -> text {
+pub fn poi_kind(natural: text, amenity: text, tourism: text, man_made: text, historic: text, leisure: text,
+                highway: text, power: text = "") -> text {
+  // A PYLON, not a "tower". `man_made=tower` already claims that kind and draws as a landmark triangle at
+  // z12 — right for a watertower you navigate by, wrong for 248 pylons that would then out-shout the map.
+  if power == "tower" { return "pylon"; }
   if natural == "tree" { return "tree"; }
   if natural == "peak" { return "peak"; }
   if natural == "spring" { return "spring"; }

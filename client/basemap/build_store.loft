@@ -194,10 +194,11 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
     if atag(props, "highway") != "" { bin_street(idx, cell, if nm != "" { nm } else { rf }, pts); }
   }
   else if layer == 4 { bin_line(idx, cell, line_kind(atag(props, "waterway"), atag(props, "railway"), atag(props, "barrier"),
-                                 atag(props, "aeroway")), atag(props, "name"), pts); }
+                                 atag(props, "aeroway"), atag(props, "boundary"),
+                                 atag(props, "admin_level"), atag(props, "power")), atag(props, "name"), pts); }
   else { bin_poi(idx, cell, poi_kind(atag(props, "natural"), atag(props, "amenity"), atag(props, "tourism"),
                                      atag(props, "man_made"), atag(props, "historic"), atag(props, "leisure"),
-                                     atag(props, "highway")), atag(props, "name"), at); }
+                                     atag(props, "highway"), atag(props, "power")), atag(props, "name"), at); }
 }
 
 // Build the whole store from six streamed layers. It CREATES the hash and returns it, mirroring
@@ -367,7 +368,8 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
     if atag(el, "type") == "way" {
       tags = el.field("tags");
       kind = line_kind(atag(tags, "waterway"), atag(tags, "railway"), atag(tags, "barrier"),
-                       atag(tags, "aeroway"));
+                       atag(tags, "aeroway"), atag(tags, "boundary"), atag(tags, "admin_level"),
+                       atag(tags, "power"));
       geom = el.field("geometry"); m = len(geom);
       if kind != "" && m >= 2 {
         lname = atag(tags, "name");
@@ -391,7 +393,8 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
     if atag(el, "type") == "node" {
       tags = el.field("tags");
       pk = poi_kind(atag(tags, "natural"), atag(tags, "amenity"), atag(tags, "tourism"),
-                    atag(tags, "man_made"), atag(tags, "historic"), atag(tags, "leisure"), atag(tags, "highway"));
+                    atag(tags, "man_made"), atag(tags, "historic"), atag(tags, "leisure"), atag(tags, "highway"),
+                    atag(tags, "power"));
       if pk != "" {
         pname = atag(tags, "name");
         fx = to_fixed(el.field("lon").as_number()); fy = to_fixed(el.field("lat").as_number());

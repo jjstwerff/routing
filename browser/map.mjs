@@ -646,8 +646,15 @@ const LINE_STYLES = {                               // waterway = blue; railway 
   // An airfield reads from a long way off, and its runway is the shape that says what it is — wide and
   // early, with taxiways thin enough not to compete with it.
   runway: { color: '#b6b6bd', width: 7, minZoom: 12 }, taxiway: { color: '#cfcfc4', width: 2, minZoom: 14 },
+  // A national border: which country's rules you are under, which near Glanerbrug changes every few
+  // hundred metres. Only admin_level 2 — the municipal levels are denser and mean nothing to a walker.
+  border: { color: '#a06ba0', width: 2.2, dash: [7, 3, 2, 3], minZoom: 8 },
+  // Transmission lines are a landmark in open country, and the one thing that makes a polder legible.
+  powerline: { color: '#9a9a9a', width: 0.9, minZoom: 14 },
 };
 const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
+  // Small, grey and late: a pylon marks where the line it carries actually stands, and there are hundreds.
+  pylon: { color: '#9a9a9a', z: 15, shape: 'square', r: 1.6 },
   tree: { color: '#6b9b37', z: 15, shape: 'circle', r: 2.5 }, bench: { color: '#8a6d3b', z: 16, shape: 'square', r: 2 },
   picnic: { color: '#8a6d3b', z: 15, shape: 'square', r: 2.5 }, shelter: { color: '#8a6d3b', z: 15, shape: 'square', r: 2.5 },
   drinking_water: { color: '#4a90d9', z: 16, shape: 'circle', r: 2 }, fountain: { color: '#4a90d9', z: 15, shape: 'circle', r: 2.5 }, spring: { color: '#4a90d9', z: 14, shape: 'circle', r: 2.5 },
