@@ -92,7 +92,7 @@ export function hashForCamera(c) {
 export const COVER_COLORS = {
   water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
   residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
-  heath: '#d6d7a3',
+  heath: '#d6d7a3', scrub: '#c5d6a0',
 };
 // ⚠ THERE IS NO OPAQUE FALLBACK, DELIBERATELY. An unrecognised cover used to fill `#ebe7e0`, which meant
 // one unmapped OSM value could paint over correctly-classified terrain: `leisure=nature_reserve` fell

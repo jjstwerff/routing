@@ -103,7 +103,12 @@ pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "",
   // of Enschede drew as mown green — 50 polygons in this block, and the ground they cover reads nothing
   // like the parks it shared a colour with.
   if natural == "heath" { return "heath"; }
-  if natural == "scrub" || natural == "shrubbery" || natural == "grassland" { return "grass"; }
+  // Scrub is not lawn either, and it is not a rounding error: 3110 `scrub` and 3946 `shrubbery` polygons
+  // in this block alone were drawing as mown green — 7056 of them, far more ground than the heath that
+  // prompted the question. Both are bushy vegetation and share one cover; `grassland` genuinely is grass
+  // and stays.
+  if natural == "scrub" || natural == "shrubbery" { return "scrub"; }
+  if natural == "grassland" { return "grass"; }
   if natural == "bare_rock" || natural == "scree" || natural == "rock" { return "bare"; }
 
   if landuse == "forest" { return "forest"; }
