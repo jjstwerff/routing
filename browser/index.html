@@ -8,6 +8,12 @@
   #map { display: block; width: 100vw; height: 100vh; cursor: crosshair; background: #f2efe9; }
   #hud { position: fixed; left: 8px; top: 8px; max-width: 90vw; background: rgba(255,255,255,.88);
          padding: 4px 8px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,.2); color: #333; }
+  /* Activity x sub-mode (DESIGN §6). Top-RIGHT: the HUD owns the top-left and the sketch owns the
+     bottom, and a selector that covers the map you are drawing on is a selector in the way. */
+  #activity-bar { position: fixed; right: 8px; top: 8px; display: flex; gap: 6px; z-index: 2; }
+  #activity-bar select { background: rgba(255,255,255,.92); color: #333; border: 1px solid #cfcac3;
+                         border-radius: 4px; padding: 4px 6px; font: 13px system-ui, sans-serif;
+                         box-shadow: 0 1px 3px rgba(0,0,0,.2); cursor: pointer; }
   /* Touch has no double-click, so a selected point gets an explicit Delete (DESIGN.md §1). */
   #rough-delete { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
                   background: #f04438; color: #fff; border: 0; border-radius: 6px; padding: 10px 18px;
@@ -28,6 +34,10 @@
   #select-box.hidden { display: none; }
 </style>
 <canvas id="map"></canvas>
+<div id="activity-bar">
+  <select id="activity" aria-label="Activity"></select>
+  <select id="submode" aria-label="Sub-mode"></select>
+</div>
 <div id="hud">loading…</div>
 <button id="rough-delete" class="hidden">Delete point</button>
 <div id="undo-snackbar" class="hidden"><span id="undo-snack-label"></span><button id="undo-snack-btn" type="button">Undo</button></div>

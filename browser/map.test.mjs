@@ -7,7 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
-         cameraFromHash, hashForCamera, parseBarriers, orientBarriers } from './map.mjs';
+         cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
@@ -1220,7 +1220,21 @@ console.log('\ncamera in the URL fragment:');
   ok(cameraFromHash('#') === null, 'a bare # → null');
   ok(cameraFromHash('#nonsense') === null, 'junk → null, not NaN');
   ok(cameraFromHash('#16/52.2215') === null, 'a truncated fragment → null');
-  ok(cameraFromHash('#16/52.2215/6.8937/extra') === null, 'a trailing field → null (no silent prefix match)');
+  ok(cameraFromHash('#16/52.2215/6.8937/extra') === null, 'an unknown trailing field → null (no silent prefix match)');
+  // The profile rides the fragment rather than localStorage, so a bare URL is deterministic for the
+  // headless gates and a shared link carries what you were planning as well as where you were.
+  const wp = cameraFromHash('#16/52.2215/6.8937/walking_trail');
+  ok(wp && wp.profile === 'walking_trail', 'a known profile in the 4th field parses');
+  ok(cameraFromHash('#16/52.2215/6.8937').profile === undefined, 'no 4th field → no profile, caller defaults');
+  ok(cameraFromHash('#16/52.2215/6.8937/cycling_moon') === null, 'a profile the kernel cannot weigh → null');
+  ok(PROFILES.length === 9 && PROFILES.includes('cycling_mtb') && PROFILES.includes('driving_avoid'),
+     'PROFILES lists the nine way_penalty implements');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, PROFILES[0]) === '#16/52.22150/6.89370',
+     'the default profile is not written into the fragment');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, 'cycling_mtb') === '#16/52.22150/6.89370/cycling_mtb',
+     'a non-default profile is');
+  const rtp = cameraFromHash(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, 'running_trail'));
+  ok(rtp && rtp.profile === 'running_trail', 'camera+profile round-trips through the fragment');
   ok(cameraFromHash('#16/999/6.8937') === null, 'an out-of-range latitude → null');
   ok(cameraFromHash('#16/52.2/999') === null, 'an out-of-range longitude → null');
   ok(cameraFromHash('#99/52.2/6.9') === null, 'an absurd zoom → null');

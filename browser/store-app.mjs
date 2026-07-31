@@ -5,7 +5,7 @@
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
-         cameraFromHash, hashForCamera } from './map.mjs';
+         cameraFromHash, hashForCamera, PROFILES } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -17,7 +17,20 @@ import { resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 // it is 3.5 MB ≈ 56 pages, so a session that pans the region touches 80% of them anyway and pays 46
 // round trips to do it (+~200 ms on a localhost cold start, worse over a real RTT). The switch exists
 // because the answer flips with block SIZE, not with code — at C2 the top index carries it per block.
-const PROFILE = 'cycling_road';
+// ACTIVITY x SUB-MODE (DESIGN §6, PLAN.md step 8, restored per PLAN-RESTORE R1).
+//
+// The nine profiles have been in the kernel and under test the whole time — `way_penalty` weighs
+// highway/surface/tracktype per profile and `tests/profiles.loft` asserts a footpath beside a road flips
+// with the sub-mode. Only the SELECTOR was lost in the serverless rewrite, so this is plumbing: one
+// mutable profile, two dropdowns, and a re-match through the existing chokepoint.
+const ACT = {
+  Walking: [['Paved', 'paved'], ['Trail', 'trail']],
+  Running: [['Fast', 'fast'], ['Trail', 'trail']],
+  Cycling: [['Road', 'road'], ['Gravel', 'gravel'], ['MTB', 'mtb']],
+  Driving: [['Fastest', 'fastest'], ['Avoid motorways', 'avoid']],
+};
+const ACT_KEY = { Walking: 'walking', Running: 'running', Cycling: 'cycling', Driving: 'driving' };
+let PROFILE = PROFILES[0];                       // walking_paved; the fragment may override at boot
 
 const canvas = document.getElementById('map');
 const hud = document.getElementById('hud');
@@ -34,12 +47,14 @@ const hud = document.getElementById('hud');
 // Everything is validated: a hand-edited or stale fragment must degrade to the default, never boot the
 // app to a blank map at NaN.
 const DEFAULT_CAM = { lat: 52.2215, lon: 6.8937, zoom: 16 };
-const map = new RouteMap(canvas, cameraFromHash(location.hash) || DEFAULT_CAM);
+const bootCam = cameraFromHash(location.hash);
+if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
+const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
 
 // `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
 // button into a rewind of every camera nudge.
 function rememberCamera() {
-  const next = hashForCamera(map.camera);
+  const next = hashForCamera(map.camera, PROFILE);
   if (next !== location.hash) history.replaceState(null, '', next);
 }
 
@@ -109,6 +124,49 @@ let loadedBox = null, loadedBbox = null, lastViewText = null;
 // boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
 // flight made a click return without matching and the route silently went stale (PLAN-EDIT §2 P4).
 const jobs = new KernelQueue();
+
+// The two dropdowns. Options are built from ACT so the markup carries no profile knowledge, and the
+// value is validated against PROFILES — the kernel's own list — so a profile it cannot weigh never
+// reaches a match request.
+function initActivityControls() {
+  const aSel = document.getElementById('activity'), sSel = document.getElementById('submode');
+  if (!aSel || !sSel) return;
+  const [act0, sub0] = (() => {
+    const us = PROFILE.indexOf('_');
+    const key = PROFILE.slice(0, us), sub = PROFILE.slice(us + 1);
+    const name = Object.keys(ACT_KEY).find((k) => ACT_KEY[k] === key) || 'Walking';
+    return [name, sub];
+  })();
+  aSel.innerHTML = Object.keys(ACT).map((a) => `<option${a === act0 ? ' selected' : ''}>${a}</option>`).join('');
+  const fillSubs = (act, want) => {
+    const subs = ACT[act];
+    const pick = subs.some(([, id]) => id === want) ? want : subs[0][1];
+    sSel.innerHTML = subs.map(([label, id]) => `<option value="${id}"${id === pick ? ' selected' : ''}>${label}</option>`).join('');
+    return pick;
+  };
+  fillSubs(act0, sub0);
+
+  // Changing either re-matches IMMEDIATELY — DESIGN §6's "lock in fast" win: a good first match from the
+  // activity choice, with no point edits. It goes through `requestMatch`, the same chokepoint a gesture
+  // uses, so there is still exactly one road to the kernel (PLAN-EDIT E0) and the queue still coalesces.
+  const apply = () => {
+    const act = aSel.value;
+    const sub = sSel.value;
+    const next = `${ACT_KEY[act]}_${sub}`;
+    if (!PROFILES.includes(next) || next === PROFILE) return;
+    PROFILE = next;
+    rememberCamera();                       // the fragment carries the profile, so a reload keeps it
+    // `rough.coords()`, not `map.points` — the layer's array holds point OBJECTS while `requestMatch`
+    // destructures [lat, lon] pairs, which is the shape `onCommit` passes. Getting that wrong re-matched
+    // with a malformed sketch and left the old route on screen, so the gate saw two identical summaries.
+    if (rough.coords().length >= 2) requestMatch(rough.coords());
+    window.__storeApp = { ...(window.__storeApp || {}), profile: PROFILE };
+  };
+  aSel.addEventListener('change', () => { fillSubs(aSel.value, sSel.value); apply(); });
+  sSel.addEventListener('change', apply);
+  window.__storeApp = { ...(window.__storeApp || {}), profile: PROFILE };
+}
+initActivityControls();
 
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.

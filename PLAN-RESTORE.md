@@ -84,7 +84,7 @@ House rules: one commit, one observable, gates green at each, and nothing ships 
 re-check. Where a step regenerates a block, `tools/conservation_gate.sh` runs on the result — a category
 that goes to zero is how every silent loss in this pipeline has looked.
 
-### R1 · The activity × sub-mode selector — UI only
+### R1 · The activity × sub-mode selector — UI only ✅ DONE 2026-07-31
 
 Two selectors building `"<activity>_<submode>"`, sent with each match. Copy the shape from
 `controls.js` (`Running: Fast|Trail`, `Walking: Paved|Trail`, `Cycling: Road|Gravel|MTB`,
@@ -99,6 +99,22 @@ by the selector alone. That is `tests/profiles.loft`'s existing assertion, drive
 *Gate:* `map_render_gate.sh` — the selector re-matches, and the route differs between two profiles on
 one fixture sketch.
 *Cost:* hours. **Do this first** — it is the only one that needs no data.
+
+**DONE.** Two selectors top-right, built from `ACT` so the markup carries no profile knowledge, validated
+against `PROFILES` — the kernel's own list — so a profile `way_penalty` cannot weigh never reaches a
+match. The re-match goes through `requestMatch`, the same chokepoint a gesture uses, so there is still
+exactly one road to the kernel and the queue still coalesces.
+
+⚠ **The profile rides the URL fragment, not localStorage** (`#zoom/lat/lon/profile`), for the reason the
+camera does: saved state would leak a profile from one headless gate run into the next through the
+persistent `--user-data-dir`, and a different profile is a DIFFERENT ROUTE — every render assertion would
+become a lottery. A bare fragment keeps meaning "the default", and a shared link now carries what you were
+planning as well as where you were.
+
+*Measured:* one sketch, `cycling_road` 892.4 m / 27 pts against `walking_trail` 809.2 m / 25 pts — the
+footpath-vs-road choice, from the UI. The gate asserts the routes DIFFER, not merely that the dropdown has
+options: a selector that sets a variable and nothing else passes every weaker test, and did, until it was
+caught passing `map.points` (point objects) where `requestMatch` destructures [lat, lon] pairs.
 
 ### R2 · Bake ELEVATION into the blocks
 

@@ -74,19 +74,36 @@ export function makeView(camera, width, height) {
 // The camera encoded in a URL fragment, OSM-style `#zoom/lat/lon`, or null when there is nothing usable
 // there. Pure and exported so browser/map.test.mjs can hold it to account without a browser: a
 // hand-edited or stale fragment must degrade to the caller's default, never boot the app to NaN.
+// The nine profiles `way_penalty` implements (routing_kernel). Exported because the selector builds its
+// options from this list and the fragment validates against it — one source, so a profile the kernel does
+// not know can never reach a match request.
+export const PROFILES = ['walking_paved', 'walking_trail', 'running_fast', 'running_trail',
+                         'cycling_road', 'cycling_gravel', 'cycling_mtb',
+                         'driving_fastest', 'driving_avoid'];
+
 export function cameraFromHash(hash) {
-  const m = /^#(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/.exec(hash || '');
+  const m = /^#(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)(?:\/([a-z_]+))?$/.exec(hash || '');
   if (!m) return null;
   const zoom = +m[1], lat = +m[2], lon = +m[3];
   if (![zoom, lat, lon].every(Number.isFinite)) return null;
   if (lat < -85 || lat > 85 || lon < -180 || lon > 180 || zoom < 1 || zoom > 22) return null;
-  return { lat, lon, zoom };
+  // ⚠ THE PROFILE RIDES THE FRAGMENT, NOT localStorage — the same reason the camera does. Saved state
+  // would leak a profile from one headless gate run into the next through the persistent
+  // `--user-data-dir`, and a different profile is a DIFFERENT ROUTE, so every render assertion would
+  // become a lottery. In the fragment it is deterministic for a bare URL and shareable besides: a link
+  // now carries where you were AND what you were planning.
+  const profile = m[4];
+  if (profile !== undefined && !PROFILES.includes(profile)) return null;
+  return profile === undefined ? { lat, lon, zoom } : { lat, lon, zoom, profile };
 }
 
 // The fragment for a camera — the inverse of `cameraFromHash`, so a round trip is exact to 5 decimals
 // (~1 m) and the trailing zeros a fractional zoom would drag along are trimmed.
-export function hashForCamera(c) {
-  return `#${c.zoom.toFixed(2).replace(/\.?0+$/, '')}/${c.lat.toFixed(5)}/${c.lon.toFixed(5)}`;
+export function hashForCamera(c, profile) {
+  const base = `#${c.zoom.toFixed(2).replace(/\.?0+$/, '')}/${c.lat.toFixed(5)}/${c.lon.toFixed(5)}`;
+  // Only when it differs from the default, so an ordinary link stays the shape it has always been and a
+  // bare `#z/lat/lon` keeps meaning "the default profile".
+  return profile && profile !== PROFILES[0] ? `${base}/${profile}` : base;
 }
 
 export const COVER_COLORS = {

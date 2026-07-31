@@ -213,6 +213,35 @@ if (!ptsOk) { console.log('  FAIL: clicks did not add rough points —', JSON.st
 else if (!(seen[2].route > 2)) { console.log('  FAIL: three clicks drew no route —', JSON.stringify(seen)); ok = false; }
 else console.log(`  ✓ the click path works: 3 clicks → 3 rough points, route ${seen[2].route} pts`);
 
+// --- R1: the activity x sub-mode selector actually CHANGES THE ROUTE --------------------------------
+// The nine profiles have always been in the kernel; only the selector was lost. So the assertion that
+// matters is not "the dropdown has options" — it is that picking one re-matches and produces a
+// DIFFERENT route over the same sketch, which is `tests/profiles.loft`'s footpath-vs-road check driven
+// from the UI. A selector that changes a variable and nothing else would pass every weaker test.
+{
+  const pick = async (act, sub) => {
+    const runs = Number(await ev('window.__storeApp.matchRuns || 0'));
+    await ev(`(() => { const a = document.getElementById('activity'), s = document.getElementById('submode');
+      a.value = ${JSON.stringify(act)}; a.dispatchEvent(new Event('change'));
+      s.value = ${JSON.stringify(sub)}; s.dispatchEvent(new Event('change')); return 1; })()`);
+    await settled(runs);
+    return JSON.parse(await ev('(() => JSON.stringify({ p: window.__storeApp.profile, s: window.__storeApp.summary, h: location.hash }))()') || '{}');
+  };
+  const a = await pick('Cycling', 'road');
+  const b = await pick('Walking', 'trail');
+  if (a.p !== 'cycling_road' || b.p !== 'walking_trail') {
+    console.log('  FAIL: the selector did not set the profile —', JSON.stringify([a.p, b.p])); ok = false;
+  } else if (!/walking_trail/.test(b.h)) {
+    console.log('  FAIL: the profile is not in the URL fragment, so a reload loses it —', b.h); ok = false;
+  } else if (!a.s || !b.s || a.s === b.s) {
+    console.log('  FAIL: the two profiles matched the SAME route, so the choice does nothing —', a.s); ok = false;
+  } else {
+    console.log(`  ✓ the profile selector re-matches and changes the route (R1)`);
+    console.log(`      cycling_road : ${a.s}`);
+    console.log(`      walking_trail: ${b.s}`);
+  }
+}
+
 // 7a. PLAN-EDIT E1 — the sketch is VISIBLE: a dashed line between the points, not just isolated dots.
 //
 // Asserted by isolating the sketch's own pixels: capture a box on the segment BETWEEN two rough points,
