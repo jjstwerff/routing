@@ -33,7 +33,7 @@ d = json.load(open(idx))
 # the site nothing. Deduplicated by filename: two regions may legitimately name the same store.
 blocks, remote = {}, 0
 for b in d.get("blocks", []):
-    for st in (b.get("roads"), b.get("base")):
+    for st in (b.get("roads"), b.get("base"), b.get("names")):
         if not st or not st.get("url"):
             continue
         if "://" in st["url"]:

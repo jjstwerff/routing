@@ -107,6 +107,29 @@ else {
 const fresh = (after.rangeReads ?? 0) - (before.rangeReads ?? 0);
 console.log(`  (the match itself asked for ${fresh} new page(s) — the view had already paged its cells in)`);
 
-console.log(ok ? 'PASS — a visitor outside Enschede routes on the country block, paged, with no base map'
+// PLAN-RESTORE R4 — and it can FIND something there. A country you can route across but cannot search
+// is half a product, and the name store is the only thing in the app that works without a base map AND
+// without roads, so nothing else would notice if it stopped shipping.
+const found = JSON.parse(await ev(`(async () => {
+  await window.__searchHooks.run('lonneker');
+  return JSON.stringify(window.__searchHooks.results());
+})()`));
+if (!found.length) fail('search returned nothing for "lonneker" — the name store did not load');
+else {
+  const top = found[0];
+  console.log(`  \u2713 search "lonneker" \u2192 ${found.length} hits, best "${top.name}" (${top.kind === 1 ? 'place' : 'street'}) at ${top.lat.toFixed(4)},${top.lon.toFixed(4)}`);
+  if (top.kind !== 1) fail(`the best hit for "lonneker" is a street, not the village`);
+  if (Math.abs(top.lat - 52.2506) > 0.02 || Math.abs(top.lon - 6.9117) > 0.02) {
+    fail(`"lonneker" resolved to ${top.lat},${top.lon}, not the village`);
+  }
+}
+const none = JSON.parse(await ev(`(async () => {
+  await window.__searchHooks.run('zzzznotathing');
+  return JSON.stringify(window.__searchHooks.results());
+})()`));
+if (none.length) fail(`an unknown name returned ${none.length} hit(s) — it must return nothing`);
+else console.log('  \u2713 an unknown name returns nothing, not a nearest guess');
+
+console.log(ok ? 'PASS — a visitor outside Enschede routes AND searches on the country block, no base map'
                : 'FAIL — NL live gate');
 process.exit(ok ? 0 : 1);

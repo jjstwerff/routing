@@ -78,6 +78,10 @@ if (!coverage.block) {
 // empty, so an empty URL loads nothing and the exposed layout store stays empty. No kernel branch needed
 // — but do NOT "simplify" this to a missing line, because line 1 is positional.
 const LAYOUT = coverage.block.base ? new URL(coverage.block.base.url, INDEX_URL).href : '';
+// PLAN-RESTORE R4 — the searchable names, a store of its own. Separate from the base map on purpose:
+// after N3 most of the country HAS no base map, and "where is Lonneker" must still answer. Empty when a
+// region ships none, which the kernel reads as "find nothing" rather than as an error.
+const NAMES = coverage.block.names ? new URL(coverage.block.names.url, INDEX_URL).href : '';
 // The single-block default. Every command below re-derives the covering SET for the box it is about to
 // read (PLAN-SCALE C2) — this is what it collapses to when one block covers everything, and the fallback
 // when a box covers none.
@@ -174,6 +178,75 @@ function initActivityControls() {
   window.__storeApp = { ...(window.__storeApp || {}), profile: PROFILE };
 }
 initActivityControls();
+
+// --- search (PLAN-RESTORE R4) ------------------------------------------------------------------------
+// Types a name, gets our own answers. The old client asked Nominatim; this asks a 36 MB store that ships
+// with the map, so it works with the network off — which is the point, since the same is true of routing.
+//
+// It goes through `jobs.post` like every other kernel call (PLAN-EDIT E0): `runKernel` keeps ONE resolve
+// slot, so a second road to it does not merely race, it orphans a promise. A search typed during a match
+// therefore waits its turn instead of eating the match's reply.
+function initSearch() {
+  const box = document.getElementById('search-input');
+  const list = document.getElementById('search-results');
+  if (!box || !list) return;
+  let hits = [], timer = 0, seq = 0;
+
+  const hide = () => { list.classList.add('hidden'); list.innerHTML = ''; hits = []; };
+  const show = () => {
+    if (!hits.length) { hide(); return; }
+    list.innerHTML = hits.map((h, i) =>
+      `<li role="option" data-i="${i}">${h.name.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}` +
+      `<span class="kind">${h.kind === 1 ? 'place' : 'street'}</span></li>`).join('');
+    list.classList.remove('hidden');
+  };
+
+  // A place gets a closer camera than a street only because a street is a line and you want its
+  // surroundings; both keep the current zoom when it is already tighter, so searching does not throw
+  // away a view you deliberately zoomed in.
+  const goTo = (h) => {
+    map.camera.lat = h.lat; map.camera.lon = h.lon;
+    const want = h.kind === 1 ? 13 : 16;
+    if (map.camera.zoom < want) map.camera.zoom = want;
+    hide(); box.blur();
+    rememberCamera(); ensureView();
+  };
+
+  const run = async (q) => {
+    const mine = ++seq;
+    const text = await jobs.post('find', () =>
+      kernel.runKernel(`${LAYOUT}\n${ROADS}\nfind\n${map.camera.lat.toFixed(6)},${map.camera.lon.toFixed(6)},${q}\n\n${window.__readMode}\n${NAMES}`));
+    // A slower earlier query must not overwrite a newer one's results.
+    if (mine !== seq) return;
+    hits = [];
+    for (const line of String(text || '').split('\n')) {
+      if (!line.startsWith('FOUND ')) continue;
+      // FOUND <lat>,<lon> <kind> <rank> <name>  — the name may contain spaces, so split only 3 times.
+      const m = /^FOUND (-?[\d.]+),(-?[\d.]+) (\d+) (\d+) (.*)$/.exec(line);
+      if (m) hits.push({ lat: +m[1], lon: +m[2], kind: +m[3], rank: +m[4], name: m[5] });
+    }
+    show();
+  };
+
+  box.addEventListener('input', () => {
+    const q = box.value.trim();
+    clearTimeout(timer);
+    // Two characters is where the answers start being about what you typed; below it every street in the
+    // country matches and the list is noise.
+    if (q.length < 2) { hide(); return; }
+    timer = setTimeout(() => run(q), 160);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hide(); box.blur(); }
+    else if (e.key === 'Enter' && hits.length) goTo(hits[0]);
+  });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (li && hits[+li.dataset.i]) goTo(hits[+li.dataset.i]);
+  });
+  window.__searchHooks = { run, results: () => hits, goTo };
+}
+initSearch();
 
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.

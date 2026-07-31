@@ -81,7 +81,7 @@ if (existsSync(blocks)) {
     try {
       wanted = new Set();
       for (const b of JSON.parse(readFileSync(idx, 'utf8')).blocks ?? []) {
-        for (const st of [b.roads, b.base]) {
+        for (const st of [b.roads, b.base, b.names]) {
           if (st && st.url && !/^[a-z]+:\/\//i.test(st.url)) wanted.add(st.url.split('/').pop());
         }
       }
