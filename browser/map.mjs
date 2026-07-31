@@ -124,7 +124,7 @@ export const COVER_COLORS = {
 // ink to a third: a mark this sparse is not trying to be seen from across the map, it is trying to be
 // noticed when you look at the way you were about to take.
 // Only at z14+, where a pedestrian-scale decision is actually being made.
-export const SHUT_STYLE = { dash: [3, 7], minZoom: 14 };
+export const SHUT_STYLE = { dash: [1, 9], minZoom: 14 };
 
 // A barrier NODE the router treats as impassable (a locked gate, a stile). Bollards and lift gates stop
 // cars and are deliberately NOT marked — most barriers are those, and marking them all would be noise
