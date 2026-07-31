@@ -92,6 +92,7 @@ export function hashForCamera(c) {
 export const COVER_COLORS = {
   water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
   residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
+  heath: '#d6d7a3', scrub: '#c5d6a0',
 };
 // ⚠ THERE IS NO OPAQUE FALLBACK, DELIBERATELY. An unrecognised cover used to fill `#ebe7e0`, which meant
 // one unmapped OSM value could paint over correctly-classified terrain: `leisure=nature_reserve` fell
@@ -113,16 +114,21 @@ export const COVER_COLORS = {
 // the boundary. Re-enabling the outline means either explaining that (it is a real statement about the
 // platform, and every raster-cache guarantee rests on it) or downgrading the control to a bounded delta —
 // neither of which belongs in a cosmetic change.
-// A way the ROUTER REFUSES — access=no/private without foot=yes. Drawn as a red-brown overprint ON TOP
-// of its normal class, so a closed path still reads as a path and is visibly barred: the alternative,
-// giving it a class of its own, would have hidden whether the thing you cannot use is a track or a
-// motorway. Only at z14+, where a pedestrian-scale decision is actually being made.
-export const SHUT_STYLE = { color: '#c0392b', w: 1.1, dash: [2, 3], minZoom: 14 };
+// A way the ROUTER REFUSES — access=no/private without foot=yes. A SPARSE DOTTED overprint on top of its
+// normal class: the way keeps its identity (you can still see whether the thing you cannot use is a track
+// or a motorway, which a class of its own would have hidden) and reads as different without shouting. It
+// was a saturated red dash first and that was too loud for something a map has a lot of.
+// Only at z14+, where a pedestrian-scale decision is actually being made.
+export const SHUT_STYLE = { color: '#6b5b57', w: 1.0, dash: [1, 7], minZoom: 14 };
 
 // A barrier NODE the router treats as impassable (a locked gate, a stile). Bollards and lift gates stop
 // cars and are deliberately NOT marked — most barriers are those, and marking them all would be noise
 // that teaches you to ignore the mark.
 export const BARRIER_STYLE = { color: '#c0392b', r: 3.2, w: 1.4, minZoom: 16 };
+// A barrier you can OPEN — a gate, a bollard, anything the router walks through. One short black bar
+// across the way, so the map says "there is something here" without claiming you cannot pass. Drawn
+// perpendicular to the way it sits on (orientation resolved once when the view loads, not per frame).
+export const PASSABLE_STYLE = { color: '#3a3a3a', len: 4.5, w: 1.3, minZoom: 17 };
 
 export const DESIGNATION_STYLES = {
   reserve: { tint: 'rgba(122,176,106,0.22)', outline: '#6f9f5c', dash: [6, 4], w: 1.2, minZoom: 11 },
@@ -158,7 +164,14 @@ export const ROAD_STYLES = {
   platform:    { core: '#e4e2df', casing: '#c2bdb6', w: 1.0, minZoom: 16 },
 };
 // Draw order (back → front): minor/paths first, motorways on top.
-const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
+// ⚠ THIS LIST IS WHAT DRAWS. `_drawStreetsFlat` buckets by class and then strokes `for (const cls of
+// ROAD_ORDER)`, so a class with a perfect ROAD_STYLES row and no entry here is collected and silently
+// discarded. `service` was exactly that: the style was added when the class arrived in the block, the
+// draw list was not, and Amelinklaan — 11 service ways — stayed invisible while the gate passed, because
+// the gate checked ROAD_STYLES alone. It checks both now.
+// Order is bottom-to-top: minor ways first, so a main road is drawn over the driveway that meets it.
+export const ROAD_ORDER = ['track', 'path', 'foot', 'platform', 'cycle', 'pedestrian', 'service',
+                           'residential', 'busway', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
 // The rough sketch (PLAN-EDIT E1), ported from the Leaflet client's styles.css so the two look the same:
 // a dashed blue hint line, and colour-coded dots with a white ring — start and finish are a DISTINCT point
 // type from the intermediates (DESIGN.md §1), which is why they are both bigger and differently coloured.
@@ -486,9 +499,10 @@ export function parseView(txt) {
   };
 }
 
-// `G lat,lon,flags` → the barrier NODES the router treats as impassable. Only those: the store carries
-// every barrier it found, and the overwhelming majority (bollards, lift gates) stop cars alone. Marking
-// those would be noise, and noise on a map is what teaches people to ignore the marks that matter.
+// `G lat,lon,flags` → every barrier NODE in view, blocking or not. `shut` is the router's own test: a
+// locked gate stops you, a gate you can open does not. Both are worth drawing and they must not look
+// alike — "there is a gate here" and "you cannot get through here" are different pieces of news, and a
+// map that renders them the same is either crying wolf or hiding a wall.
 export const BF_FOOT_NO = 1, BF_BIKE_NO = 2;
 export function parseBarriers(lines) {
   const out = [];
@@ -497,10 +511,37 @@ export function parseBarriers(lines) {
     if (p.length < 3) continue;
     const lat = +p[0], lon = +p[1], flags = +p[2];
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(flags)) continue;
-    if (!(flags & (BF_FOOT_NO | BF_BIKE_NO))) continue;
-    out.push({ lat, lon, flags });
+    out.push({ lat, lon, flags, shut: !!(flags & (BF_FOOT_NO | BF_BIKE_NO)), bearing: null });
   }
   return out;
+}
+
+// The direction of the way each barrier sits on, so a passable one can be drawn ACROSS it rather than at
+// some arbitrary angle. Resolved ONCE per view load against the flat road column — per frame it would be
+// ~100 barriers x 24k vertices — and only for the passable ones, which are the only ones drawn as a bar.
+// Roads whose bbox cannot contain the point are rejected before any distance work.
+export function orientBarriers(barriers, F) {
+  if (!barriers || !barriers.length || !F || !F.n) return barriers;
+  const PAD = 3e-4;                                    // ~30 m: a barrier sits ON its way, not near it
+  for (const b of barriers) {
+    if (b.shut) continue;
+    let best = Infinity, bx = 0, by = 0;
+    for (let i = 0; i < F.n; i++) {
+      const o4 = i * 4;
+      if (b.lat < F.bb[o4] - PAD || b.lat > F.bb[o4 + 1] + PAD
+       || b.lon < F.bb[o4 + 2] - PAD || b.lon > F.bb[o4 + 3] + PAD) continue;
+      const a = F.off[i], len = F.off[i + 1] - a;
+      for (let k = 0; k + 1 < len; k++) {
+        const la1 = F.xy[(a + k) * 2], lo1 = F.xy[(a + k) * 2 + 1];
+        const la2 = F.xy[(a + k + 1) * 2], lo2 = F.xy[(a + k + 1) * 2 + 1];
+        const mla = (la1 + la2) / 2, mlo = (lo1 + lo2) / 2;
+        const d = (mla - b.lat) * (mla - b.lat) + (mlo - b.lon) * (mlo - b.lon);
+        if (d < best) { best = d; by = la2 - la1; bx = lo2 - lo1; }
+      }
+    }
+    if (best < Infinity && (bx || by)) b.bearing = Math.atan2(by, bx);
+  }
+  return barriers;
 }
 
 // parseStretch(line): one `STRETCH <i>;lat,lon;…` line → { i, pts }, or null for anything else.
@@ -593,6 +634,9 @@ const LINE_STYLES = {                               // waterway = blue; railway 
   ditch: { color: '#b6d0e6', width: 1, minZoom: 14 }, canal: { color: '#a5c8e8', width: 2.5, minZoom: 12 },
   railway: { color: '#8a8a8a', width: 1.6, dash: [6, 4], minZoom: 12 }, tram: { color: '#9a9a9a', width: 1.2, dash: [4, 4], minZoom: 13 },
   hedge: { color: '#8fb37a', width: 1.4, minZoom: 15 }, wall: { color: '#b0a89a', width: 1, minZoom: 15 }, fence: { color: '#c2bbaa', width: 0.8, minZoom: 16 },
+  // An airfield reads from a long way off, and its runway is the shape that says what it is — wide and
+  // early, with taxiways thin enough not to compete with it.
+  runway: { color: '#b6b6bd', width: 7, minZoom: 12 }, taxiway: { color: '#cfcfc4', width: 2, minZoom: 14 },
 };
 const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
   tree: { color: '#6b9b37', z: 15, shape: 'circle', r: 2.5 }, bench: { color: '#8a6d3b', z: 16, shape: 'square', r: 2 },
@@ -671,7 +715,9 @@ export class RouteMap {
   // entry point is how one of them ends up a frame behind the other.
   loadRoadsFlat(text) {
     this.streetsFlat = parseStreetsFlat(text);
-    this.barriers = parseBarriers((text || '').split('\n').filter((l) => l[0] === 'G' && l[1] === ' ').map((l) => l.slice(2)));
+    this.barriers = orientBarriers(
+      parseBarriers((text || '').split('\n').filter((l) => l[0] === 'G' && l[1] === ' ').map((l) => l.slice(2))),
+      this.streetsFlat);
     this.streets = [];
     return this.invalidateBlocks();
   }
@@ -1245,16 +1291,27 @@ export class RouteMap {
   drawBarriers() {
     const B = this.barriers, z = this.camera.zoom;
     if (!B || !B.length || z < BARRIER_STYLE.minZoom) return 0;
-    const ctx = this.ctx, r = BARRIER_STYLE.r;
+    const ctx = this.ctx, r = BARRIER_STYLE.r, PS = PASSABLE_STYLE;
     ctx.save();
-    ctx.setLineDash([]); ctx.strokeStyle = BARRIER_STYLE.color; ctx.lineWidth = BARRIER_STYLE.w;
+    ctx.setLineDash([]);
     let n = 0;
     for (const b of B) {
       const p = this.project(b.lat, b.lon);
       if (p.x < -r || p.y < -r || p.x > this.width + r || p.y > this.height + r) continue;
-      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(p.x - r, p.y + r); ctx.lineTo(p.x + r, p.y - r); ctx.stroke();
-      n++;
+      if (b.shut) {
+        ctx.strokeStyle = BARRIER_STYLE.color; ctx.lineWidth = BARRIER_STYLE.w;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(p.x - r, p.y + r); ctx.lineTo(p.x + r, p.y - r); ctx.stroke();
+        n++;
+      } else if (z >= PS.minZoom) {
+        // ACROSS the way: the stored bearing is the way's direction in lat/lon, so the bar is drawn at a
+        // right angle to it. Screen y grows downward while latitude grows upward, hence the negated dy.
+        const a = (b.bearing === null ? 0 : b.bearing) + Math.PI / 2;
+        const dx = Math.cos(a) * PS.len, dy = -Math.sin(a) * PS.len;
+        ctx.strokeStyle = PS.color; ctx.lineWidth = PS.w;
+        ctx.beginPath(); ctx.moveTo(p.x - dx, p.y - dy); ctx.lineTo(p.x + dx, p.y + dy); ctx.stroke();
+        n++;
+      }
     }
     ctx.restore();
     return n;

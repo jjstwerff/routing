@@ -72,10 +72,22 @@ fn main() {
     // near the point — a 150 m question came back with 6520 ways, which is a statement about the tile
     // grid, not about the place being asked about. An instrument that answers a wider question than the
     // one asked is how a report gets mis-triaged.
+    // ⚠ SEGMENTS, NOT VERTICES. A vertex-in-box test answers "does this way have a POINT here", which is
+    // not the question: a straight road crossing the spot with its nearest vertex 200 m away reported as
+    // ABSENT. Asked whether Lonnekeresweg was in the block, the probe said "0 ways" about a road that is
+    // there — twice, on two different reports. Each SEGMENT's own box is tested against the query box.
     hit = false;
+    prev_la = 0; prev_lo = 0; have_prev = false;
     for wc in w.coords {
       cy = (wc.lat * 10000000.0) as integer; cx = (wc.lon * 10000000.0) as integer;
-      if cy >= mnla && cy <= mxla && cx >= mnlo && cx <= mxlo { hit = true; break; }
+      if have_prev {
+        s_mnla = if prev_la < cy { prev_la } else { cy };
+        s_mxla = if prev_la > cy { prev_la } else { cy };
+        s_mnlo = if prev_lo < cx { prev_lo } else { cx };
+        s_mxlo = if prev_lo > cx { prev_lo } else { cx };
+        if s_mxla >= mnla && s_mnla <= mxla && s_mxlo >= mnlo && s_mnlo <= mxlo { hit = true; break; }
+      }
+      prev_la = cy; prev_lo = cx; have_prev = true;
     }
     if !hit { continue; }
     near += 1;

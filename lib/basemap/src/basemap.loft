@@ -94,12 +94,21 @@ pub fn area_label_kind(landuse: text, leisure: text, amenity: text = "") -> text
   ""
 }
 
-pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "") -> text {
+pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "", aeroway: text = "") -> text {
   if natural == "water" || natural == "bay" || natural == "spring" { return "water"; }
   if natural == "wood" { return "forest"; }
   if natural == "wetland" || natural == "marsh" || natural == "mud" { return "wetland"; }
   if natural == "sand" || natural == "beach" || natural == "dune" { return "sand"; }
-  if natural == "scrub" || natural == "shrubbery" || natural == "heath" || natural == "grassland" { return "grass"; }
+  // Heath is not lawn. It was folded into "grass" with scrub and grassland, so the heath fields south-east
+  // of Enschede drew as mown green — 50 polygons in this block, and the ground they cover reads nothing
+  // like the parks it shared a colour with.
+  if natural == "heath" { return "heath"; }
+  // Scrub is not lawn either, and it is not a rounding error: 3110 `scrub` and 3946 `shrubbery` polygons
+  // in this block alone were drawing as mown green — 7056 of them, far more ground than the heath that
+  // prompted the question. Both are bushy vegetation and share one cover; `grassland` genuinely is grass
+  // and stays.
+  if natural == "scrub" || natural == "shrubbery" { return "scrub"; }
+  if natural == "grassland" { return "grass"; }
   if natural == "bare_rock" || natural == "scree" || natural == "rock" { return "bare"; }
 
   if landuse == "forest" { return "forest"; }
@@ -137,6 +146,9 @@ pub fn area_use(landuse: text, natural: text, leisure: text, amenity: text = "")
   // and restaurants, and painting every one of those would be the "other" slab all over again.
   if amenity == "hospital" || amenity == "school" || amenity == "university"
      || amenity == "college" || amenity == "kindergarten" { return "site"; }
+  // An aerodrome is a site in exactly the same sense: grass, apron and hangars are separately mapped
+  // inside it, so it is an outline and a name, never a fill over what it contains.
+  if aeroway == "aerodrome" { return "site"; }
 
   // Anything still here is NOT a landcover we recognise (`natural=tree_row` is a line; `landuse=military`
   // is another designation). It stays in the store so a later release can classify it without a
@@ -176,7 +188,11 @@ pub fn road_class(highway: text) -> text {
 }
 
 // waterway / railway / barrier way → a compact Line kind (stroke style per kind). "" = not a line we draw.
-pub fn line_kind(waterway: text, railway: text, barrier: text) -> text {
+pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "") -> text {
+  // A runway is a landmark you navigate by even when you cannot walk on it — visible from every road
+  // around the field, and the one thing that says "this is an airport" at a glance.
+  if aeroway == "runway" { return "runway"; }
+  if aeroway == "taxiway" { return "taxiway"; }
   if waterway == "river" { return "river"; }
   if waterway == "stream" || waterway == "tidal_channel" { return "stream"; }
   if waterway == "ditch" || waterway == "drain" { return "ditch"; }
