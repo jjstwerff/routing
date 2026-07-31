@@ -1,0 +1,94 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// WHAT IS IN THIS BLOCK, BY CATEGORY — the store half of PLAN-SCALE N0's conservation gate.
+//
+// Prints one `count <category> <n>` line per category, over the WHOLE block rather than a viewport, so
+// `tools/conservation_gate.sh` can hold it against what the OSM extract offered. Machine-readable on
+// purpose: a human reads `inspect_at` at a place, a gate reads this over a region.
+//
+// The categories are the ones that have actually gone silently to zero here: road classes (a class
+// collapsed into another, or never styled), barriers (nodes, invisible to any way-only pipeline), areas
+// by cover, buildings (relations have no tagged way to be found by), lines by kind, labels by kind.
+//
+//   loft --native --lib lib tools/census.loft roads <roads.store>
+//   loft --native --lib lib tools/census.loft base  <base.store>
+#cwd
+
+use routing_kernel::(TTile, TRoad, GeoPoint, Way, tiles_corridor_ways_tube);
+use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
+
+struct Tally { key: text, n: integer }
+
+fn bump(counts: hash<Tally[key]>, k: text) {
+  t = counts[k];
+  if t == null { counts += [Tally { key: k, n: 0 }]; t = counts[k]; }
+  if t != null { t.n += 1; }
+}
+
+fn emit(counts: hash<Tally[key]>, names: vector<text>, prefix: text) {
+  for nm in names {
+    t = counts[nm];
+    println("count {prefix}.{nm} {if t != null { t.n } else { 0 }}");
+  }
+}
+
+// The road class as the STORE holds it — `tp`, not a reconstructed tag. A census that read the tag back
+// would be testing the reconstruction, and the reconstruction is one of the things that has been wrong.
+fn class_of_tp(tp: integer) -> text {
+  if tp == 0 { "motorway" } else if tp == 1 { "trunk_primary" } else if tp == 2 { "secondary" }
+  else if tp == 3 { "tertiary_unclassified" } else if tp == 4 { "residential" }
+  else if tp == 5 { "living_street" } else if tp == 6 { "service" } else if tp == 7 { "cycleway" }
+  else if tp == 8 { "path" } else if tp == 9 { "footway" } else if tp == 10 { "pedestrian" }
+  else if tp == 11 { "steps" } else if tp == 12 { "track" } else if tp == 13 { "busway" }
+  else if tp == 14 { "platform" } else { "other" }
+}
+
+fn main() {
+  a: vector<text> = [];
+  for arg in arguments() { a += [arg]; }
+  mode = a[0] ?? ""; path = a[1] ?? "";
+  if mode == "" || path == "" { println("usage: census roads|base <store>"); return; }
+
+  if mode == "roads" {
+    roads: hash<TTile[tkey]> = [];
+    store_load(roads, path);
+    rc: hash<Tally[key]> = [];
+    tiles = 0; ways = 0; bars = 0; shut = 0;
+    for t in roads {
+      tiles += 1;
+      for r in t.roads { ways += 1; bump(rc, class_of_tp(r.tp as integer)); }
+      for b in t.barriers { bars += 1; }
+    }
+    println("count roads.tiles {tiles}");
+    println("count roads.ways {ways}");
+    println("count roads.barriers {bars}");
+    emit(rc, ["motorway","trunk_primary","secondary","tertiary_unclassified","residential","living_street",
+              "service","cycleway","path","footway","pedestrian","steps","track","busway","platform","other"],
+         "class");
+    return;
+  }
+
+  base: hash<PTile[tkey]> = [];
+  store_load(base, path);
+  ac: hash<Tally[key]> = []; lc: hash<Tally[key]> = []; kc: hash<Tally[key]> = []; pc: hash<Tally[key]> = [];
+  tiles = 0; nb = 0; na = 0; nl = 0; nlab = 0; npoi = 0;
+  for bt in base {
+    tiles += 1;
+    for ar in bt.areas { na += 1; bump(ac, ar.cover); }
+    for bld in bt.buildings { nb += 1; }
+    for ln in bt.lines { nl += 1; bump(lc, ln.kind); }
+    for lb in bt.labels { nlab += 1; bump(kc, lb.kind); }
+    for p in bt.pois { npoi += 1; bump(pc, p.kind); }
+  }
+  println("count base.tiles {tiles}");
+  println("count base.areas {na}");
+  println("count base.buildings {nb}");
+  println("count base.lines {nl}");
+  println("count base.labels {nlab}");
+  println("count base.pois {npoi}");
+  emit(ac, ["water","forest","grass","heath","scrub","park","farmland","residential","industrial",
+            "sand","wetland","bare","other","reserve","site"], "cover");
+  emit(lc, ["river","stream","ditch","canal","railway","tram","hedge","wall","fence","runway","taxiway"], "line");
+  emit(kc, ["street","park","sports","cemetery","reserve","site"], "label");
+}
