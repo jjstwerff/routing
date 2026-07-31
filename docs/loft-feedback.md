@@ -1929,4 +1929,6 @@ The osmium clip and export are byte-identical across runs, so the input is not i
    that doubled by allocation — the ambiguity `tools/conservation_gate.sh` exists to remove, and it can
    only do that on counts, never on bytes.
 
-Filed upstream: see the issue linked from the commit.
+Filed as [loft#710](https://github.com/loft-lang/loft/issues/710) (`sev:medium`, `area:store-lifetime`),
+with the framing that interleaved growth is what every streaming generator does, not a contrived shape —
+plausibly the arena's worst case, but one a consumer cannot see or ask to avoid.
