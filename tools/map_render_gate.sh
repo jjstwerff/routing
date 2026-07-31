@@ -82,6 +82,42 @@ if [ -n "$missing" ]; then
 fi
 echo "  ✓ $(echo "$covers" | wc -w) covers, each either coloured or explicitly an overlay/unknown"
 
+# 1a-road. EVERY ROAD CLASS THE STORE CAN EMIT MUST BE NAMED, AND EVERY NAME MUST HAVE A STYLE.
+#
+# Two functions and a renderer have to agree: `class_of` (tools/gen-tiles.loft) picks the class stored in
+# the block, `class_name` (lib/map_kernel/src/map_kernel.loft) turns it back into a name for the view, and
+# ROAD_STYLES draws it. Classes 12/13/14 had no case in class_name and fell through its `else` to
+# "residential", so a farm TRACK drew as a white street; `service` had a name but no ROAD_STYLES row, so
+# every service road was silently dropped by `if (!style) continue` — that is Lonnekeresweg, a real dirt
+# road missing from a real map.
+#
+# ⚠ THE CHECK IS FOR AN EXPLICIT CASE, not for a name that merely resolves. class_name's `else` gives
+# every integer an answer, so "does it produce a style?" is always yes and would have passed throughout.
+echo "== every road class is named, and every name is drawable =="
+node - "$here" <<'NODE' || exit 1
+const fs = require('fs'), path = require('path'), here = process.argv[2];
+const read = (p) => fs.readFileSync(path.join(here, p), 'utf8');
+const emitted = new Set([...read('tools/gen-tiles.loft').matchAll(/return\s+(\d+)\s*;/g)].map(m => +m[1]));
+const nameFn = read('lib/map_kernel/src/map_kernel.loft').split('fn class_name')[1].split('\n}')[0];
+const named = new Map([...nameFn.matchAll(/tp\s*==\s*(\d+)\s*\{\s*"([a-z_]+)"/g)].map(m => [+m[1], m[2]]));
+import('file://' + path.join(here, 'browser/map.mjs')).then((M) => {
+  const styles = new Set(Object.keys(M.ROAD_STYLES));
+  const unnamed = [...emitted].filter((c) => !named.has(c)).sort((a, b) => a - b);
+  const unstyled = [...new Set([...named.values()])].filter((n) => !styles.has(n)).sort();
+  if (unnamed.length) {
+    console.log(`  FAIL: class_of emits ${unnamed.join(', ')} with no case in class_name —`);
+    console.log('        they fall through its `else` and draw as something else entirely.');
+  }
+  if (unstyled.length) {
+    console.log(`  FAIL: class_name returns ${unstyled.join(', ')}, which ROAD_STYLES cannot draw —`);
+    console.log('        an unknown class is skipped, so those roads vanish from the map.');
+  }
+  if (!emitted.size || !named.size || !styles.size) { console.log('  FAIL: parsed nothing — the gate is blind'); process.exit(1); }
+  if (unnamed.length || unstyled.length) process.exit(1);
+  console.log(`  \u2713 ${emitted.size} classes, each explicitly named and drawable`);
+}).catch((e) => { console.log('  FAIL: ' + e.message); process.exit(1); });
+NODE
+
 # 1a. PLAN-PERF §6e — is the browser kernel threaded? `par` (step 18) is a no-op while it is not.
 echo "== step 18 tripwire: browser kernel threading =="
 node "$here/tools/wasm_threads.mjs" || exit 1

@@ -107,7 +107,7 @@ const BUILDING_LABEL_MINZOOM = 16;                  // named buildings get a lab
 
 // Road classes (Carto-ish): core colour, casing colour, a base width scaled by zoom, dash for paths, and
 // the min zoom the class appears at (motorways always; footpaths only up close). One row per class.
-const ROAD_STYLES = {
+export const ROAD_STYLES = {
   motorway:    { core: '#e892a2', casing: '#c37b8f', w: 3.2, minZoom: 8 },
   trunk:       { core: '#f9b29c', casing: '#d18f78', w: 3.0, minZoom: 9 },
   primary:     { core: '#fcd6a4', casing: '#d1a86a', w: 2.6, minZoom: 10 },
@@ -119,6 +119,14 @@ const ROAD_STYLES = {
   path:        { core: '#a06b4c', casing: null, w: 0.9, dash: [3, 3], minZoom: 15 },
   foot:        { core: '#a06b4c', casing: null, w: 0.9, dash: [2, 3], minZoom: 15 },
   track:       { core: '#a58b5a', casing: null, w: 1.0, dash: [5, 3], minZoom: 14 },
+  // `service` is the one the store gained in #30's regeneration (25971 -> 49613 ways, "no service, no
+  // unclassified" before) and the renderer never grew a row for — so every service road was dropped by
+  // `if (!style) continue`, including Lonnekeresweg, the dirt road into Lonneker from the west. Thinner
+  // and later than `residential`: the class also holds driveways and parking aisles, and drawing those
+  // as streets at z13 buries the network they hang off.
+  service:     { core: '#ffffff', casing: '#cfcac3', w: 1.0, minZoom: 15 },
+  busway:      { core: '#f2dede', casing: '#c9b4b4', w: 1.4, minZoom: 14 },
+  platform:    { core: '#e4e2df', casing: '#c2bdb6', w: 1.0, minZoom: 16 },
 };
 // Draw order (back → front): minor/paths first, motorways on top.
 const ROAD_ORDER = ['track', 'path', 'foot', 'cycle', 'pedestrian', 'residential', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
