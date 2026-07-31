@@ -47,13 +47,16 @@ fn main() {
       }
       idx += [Rec { id: i, a: (i % 251) as i32? ?? (0 as i32), b: (i % 509) as i32? ?? (0 as i32), pts: pts }];
     }
-  } else {
+  } else {   // modes 1 and 2 both grow interleaved; 2 reserves first
     empty: vector<Pt> = [];
     for i in 0..n {
       idx += [Rec { id: i, a: (i % 251) as i32? ?? (0 as i32), b: (i % 509) as i32? ?? (0 as i32), pts: empty }];
     }
     // Round-robin: element j of every record, then j+1 of every record. Deterministic, and every vector
     // is reallocated `per` times with n-1 other growths interleaved.
+    // mode 2 = mode 1 with the counts reserved up front, which is what STDLIB § "When reserve is worth
+    // it" says takes the file from ~1.65x its payload to ~1.13x.
+    if mode == 2 { for i in 0..n { pre = idx[i]; if pre != null { reserve(pre.pts, per); } } }
     for j in 0..per {
       for i in 0..n {
         t = idx[i];
