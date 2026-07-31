@@ -211,7 +211,7 @@ one route again: they are the same trace with a midpoint moved ~130 m, and the p
 the same signposted cycle route. That costs the gate a quarter of its discriminating power and is
 recorded in the file rather than papered over.
 
-### R4 · A local geocoder — search our own labels
+### R4 · A local geocoder — search our own labels ✅ DONE 2026-08-01
 
 `locate` used Nominatim. The base store already holds what is needed: **place labels** (`N` lines,
 rank-tiered) and **street labels** (`S` lines, one per named way). A prefix/substring search over those,
@@ -222,6 +222,38 @@ built at load, answers "where is Lonneker" and "find Vliegveldweg" without a req
 returns nothing rather than a wrong answer.
 *Limit, stated honestly:* this finds what is IN our blocks. It will not find a shop by name, and it
 should not pretend to — outside coverage it returns nothing.
+
+#### What was built, and where this plan was wrong
+
+⚠ **The premise above did not survive N3.** "The base store already holds what is needed" was true while
+the only region was a 20 MB city; the NL base map is **2.87 GB** and stays on the release, so outside
+Enschede there are no labels to search at all. Names got a **store of their own** — and the reason that is
+cheap is the measurement:
+
+| | count | size |
+|---|---|---|
+| named road features (NL) | 1 223 091 → **296 457** distinct (name, ~5.5 km cell) | **36.1 MB** total |
+| place nodes | 12 909 → 12 700 named | (same store) |
+
+Deduped by name **and cell**, never by name alone: "Kerkstraat" exists in hundreds of Dutch towns and they
+are different answers. Ranked match-quality → place significance → proximity, so "amster" from Enschede
+gives Amsterdam (city, 150 km) before Amsterdamscheveld (hamlet, 30 km), while "kerkstr" gives the near one.
+
+| piece | where |
+|---|---|
+| generator | `tools/gen-names.loft` — reads the roads + places `geojsonseq` the pipeline already makes |
+| schema | `basemap::NameRec` + `fold_name` (case/diacritic folding for the NL/DE/FR band the data covers) |
+| search | `map_kernel::do_find` / `name_score`; kernel command `find`, line 7 of the protocol |
+| UI | a search box in `store-app.mjs`, through `jobs.post` like every other kernel call |
+| gates | `tools/name_gate.sh` (+ `name_probe.loft`) on both stores; `nl_live_gate` searches from Amsterdam |
+
+**The performance finding is the reusable part.** A comment here claimed 309 157 records were "small enough
+that scanning is honest and predictable". Measured: **5.4 s**. The cause is this repo's own documented rule
+— `for r in names` on a hash yields **COPIES** (loft C86), and a `NameRec` copy copies its two `text`
+fields, so the loop duplicated 618 000 strings per keystroke. Walking by key (`names[i]`, a live view; ids
+are dense by construction) gives identical answers with no copies: **load 22 ms, find 90–138 ms** across the
+whole country. The 2.4 s that remained after the fix was the *test harness* counting records with a copying
+loop — the same mistake one level up.
 
 ### R5 · Route save / name / list, locally
 
