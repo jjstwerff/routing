@@ -1,0 +1,138 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// WHAT DO THE SHIPPED BLOCKS ACTUALLY HOLD AT THIS SPOT?
+//
+// A map defect is always reported as a place — "the hospital is blank", "this dirt road is missing", "a
+// closed path shows as open" — and answering it means asking the DATA at that place, in four different
+// ways, before touching any code. Every one of those questions was answered this way; the probes were
+// written from scratch each time, which is how one of them came to be blind (it counted covers from a
+// hard-coded list that had no "site" in it and reported none while 37 existed).
+//
+// So the probe is a TOOL, not a scratch file, and it prints every category rather than the ones the
+// person asking already suspected.
+//
+//   loft --native --lib lib tools/inspect_at.loft <roads.store> <base.store> <lat> <lon> [radius_m]
+//
+// Pair it with tools/inspect_at.sh, which takes the app's own URL fragment (#zoom/lat/lon) so a report
+// can be a link.
+#cwd
+
+use routing_kernel::(TTile, GeoPoint, Way, tiles_corridor_ways_tube);
+use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
+
+struct Tally { key: text, n: integer }
+
+fn bump(counts: hash<Tally[key]>, k: text) {
+  t = counts[k];
+  if t == null { counts += [Tally { key: k, n: 0 }]; t = counts[k]; }
+  if t != null { t.n += 1; }
+}
+
+fn show(counts: hash<Tally[key]>, names: vector<text>, prefix: text) {
+  line = ""; total = 0;
+  for nm in names {
+    t = counts[nm];
+    if t != null { line += "{nm} {t.n} · "; total += t.n; }
+  }
+  if total == 0 { println("{prefix}(none)"); } else { println("{prefix}{line}({total} total)"); }
+}
+
+fn main() {
+  a: vector<text> = [];
+  for arg in arguments() { a += [arg]; }
+  roads_path = a[0] ?? ""; base_path = a[1] ?? "";
+  la = (a[2] ?? "") as float ?? 0.0;
+  lo = (a[3] ?? "") as float ?? 0.0;
+  rad = (a[4] ?? "") as float ?? 150.0;
+  if roads_path == "" || base_path == "" {
+    println("usage: inspect_at <roads.store> <base.store> <lat> <lon> [radius_m]");
+    return;
+  }
+  // A degree box around the point. Latitude is uniform; longitude is not, so it is scaled by cos(lat) —
+  // at 52°N a degree of longitude is 61% of a degree of latitude, and an unscaled box would reach half
+  // as far east as it does north and quietly under-report.
+  dla = rad / 111320.0;
+  dlo = rad / (111320.0 * cos(la * PI / 180.0)) ?? dla;
+  mnla = ((la - dla) * 10000000.0) as integer; mxla = ((la + dla) * 10000000.0) as integer;
+  mnlo = ((lo - dlo) * 10000000.0) as integer; mxlo = ((lo + dlo) * 10000000.0) as integer;
+  println("== {la:2.5},{lo:2.5}  radius {rad:.0} m ==");
+
+  // --- roads: what the ROUTER sees, including whether it is allowed to use it -----------------------
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, roads_path);
+  pts: vector<GeoPoint> = [GeoPoint { lat: la - dla, lon: lo - dlo }, GeoPoint { lat: la + dla, lon: lo + dlo }];
+  ways = tiles_corridor_ways_tube(roads, pts, rad);
+  rc: hash<Tally[key]> = [];
+  closed = 0; gated_foot = 0; gated_bike = 0;
+  near = 0;
+  for w in ways {
+    // ⚠ FILTER TO THE BOX. The corridor read returns every way in the TILES it touches, not the ways
+    // near the point — a 150 m question came back with 6520 ways, which is a statement about the tile
+    // grid, not about the place being asked about. An instrument that answers a wider question than the
+    // one asked is how a report gets mis-triaged.
+    hit = false;
+    for wc in w.coords {
+      cy = (wc.lat * 10000000.0) as integer; cx = (wc.lon * 10000000.0) as integer;
+      if cy >= mnla && cy <= mxla && cx >= mnlo && cx <= mxlo { hit = true; break; }
+    }
+    if !hit { continue; }
+    near += 1;
+    bump(rc, w.highway);
+    // The same tests the cost model applies — a way the router refuses is the interesting one when the
+    // report is "this is closed but the map shows it open".
+    if w.access == "no" || w.access == "private" { closed += 1; }
+    if w.foot == "no" || w.foot == "private" { gated_foot += 1; }
+    if w.bicycle == "no" || w.bicycle == "private" { gated_bike += 1; }
+  }
+  println("roads  {near} way(s) within the box  (of {len(ways)} in the tiles read)");
+  show(rc, ["motorway","trunk","primary","secondary","tertiary","unclassified","residential",
+            "living_street","service","cycleway","path","track","footway","bridleway","steps",
+            "pedestrian","busway","platform"], "       ");
+  println("       restricted: access-closed {closed} · foot-no {gated_foot} · bike-no {gated_bike}");
+
+  // --- base map: what the VIEWER draws --------------------------------------------------------------
+  base: hash<PTile[tkey]> = [];
+  store_load(base, base_path);
+  ac: hash<Tally[key]> = [];
+  nb = 0; np = 0;
+  for t in base {
+    for ar in t.areas {
+      for c in ar.ring {
+        y = t.oy + (c.y as integer); x = t.ox + (c.x as integer);
+        if y >= mnla && y <= mxla && x >= mnlo && x <= mxlo { bump(ac, ar.cover); break; }
+      }
+    }
+    for b in t.buildings {
+      for c in b.ring {
+        y = t.oy + (c.y as integer); x = t.ox + (c.x as integer);
+        if y >= mnla && y <= mxla && x >= mnlo && x <= mxlo {
+          nb += 1;
+          if b.name != "" { println("       building \"{b.name}\" ({len(b.ring)} vertices)"); }
+          break;
+        }
+      }
+    }
+    for p in t.pois {
+      y = t.oy + (p.at.y as integer); x = t.ox + (p.at.x as integer);
+      if y >= mnla && y <= mxla && x >= mnlo && x <= mxlo { np += 1; }
+    }
+  }
+  println("areas");
+  show(ac, ["water","forest","grass","park","farmland","residential","industrial","sand","wetland",
+            "bare","other","reserve","site"], "       ");
+  println("buildings {nb} · pois {np}");
+  println("labels");
+  nl = 0;
+  for t in base {
+    for lb in t.labels {
+      c = lb.line[0] ?? Coord { x: 0 as i32, y: 0 as i32 };
+      y = t.oy + (c.y as integer); x = t.ox + (c.x as integer);
+      if y >= mnla && y <= mxla && x >= mnlo && x <= mxlo {
+        nl += 1;
+        if lb.kind != "street" { println("       {lb.kind}: \"{lb.name}\""); }
+      }
+    }
+  }
+  println("       {nl} label(s) here (street labels not listed individually)");
+}

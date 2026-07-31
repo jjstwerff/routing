@@ -71,6 +71,24 @@ export function makeView(camera, width, height) {
 }
 
 // --- Catalog v1 (§4b): landcover fill colours, following OpenStreetMap standard (Carto). ------
+// The camera encoded in a URL fragment, OSM-style `#zoom/lat/lon`, or null when there is nothing usable
+// there. Pure and exported so browser/map.test.mjs can hold it to account without a browser: a
+// hand-edited or stale fragment must degrade to the caller's default, never boot the app to NaN.
+export function cameraFromHash(hash) {
+  const m = /^#(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/.exec(hash || '');
+  if (!m) return null;
+  const zoom = +m[1], lat = +m[2], lon = +m[3];
+  if (![zoom, lat, lon].every(Number.isFinite)) return null;
+  if (lat < -85 || lat > 85 || lon < -180 || lon > 180 || zoom < 1 || zoom > 22) return null;
+  return { lat, lon, zoom };
+}
+
+// The fragment for a camera — the inverse of `cameraFromHash`, so a round trip is exact to 5 decimals
+// (~1 m) and the trailing zeros a fractional zoom would drag along are trimmed.
+export function hashForCamera(c) {
+  return `#${c.zoom.toFixed(2).replace(/\.?0+$/, '')}/${c.lat.toFixed(5)}/${c.lon.toFixed(5)}`;
+}
+
 export const COVER_COLORS = {
   water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
   residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
