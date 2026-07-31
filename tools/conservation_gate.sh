@@ -88,22 +88,27 @@ else
 fi
 
 # --- 2. roads: the block must hold nearly every highway the source offered ----------------------------
-if [ "$src_roads" -gt 0 ]; then
+# ⚠ ONLY WHEN BOTH SIDES ARE KNOWN TO DESCRIBE THE SAME GROUND. A count against a different bbox is not a
+# measurement in EITHER direction: too high says the block is wider than the export (49613 vs 34670, a
+# cheerful 143%), too low says the export is wider than the block (49613 vs 52790, an alarming 94%) — and
+# neither says anything about whether roads were lost. The first version guarded only the high side, which
+# is worse than guarding neither: it failed loudly on the ambiguous case having passed quietly on it.
+#
+# So the check runs only when the block's own recorded box (written by build-blocks.sh) matches the clip
+# the export came from. Until a block is rebuilt with that provenance it reports why it is skipped.
+blk_box="$(cat "$roads_store.bbox" 2>/dev/null)"
+src_box="$(cat "$work/$id.clip.bbox" 2>/dev/null)"
+if [ "$src_roads" -gt 0 ] && [ -n "$blk_box" ] && [ -n "$src_box" ] && [ "$blk_box" = "$src_box" ]; then
   blk="$(get roads.ways)"
   pct="$(python3 -c "print(f'{100*$blk/$src_roads:.1f}')")"
-  # ⚠ A RATIO ABOVE 100% MEANS THE TWO ARE NOT THE SAME REGION, not that the block did well. The export
-  # left in the work dir is from whatever bbox was built last, and the shipped roads block was cut with an
-  # earlier, wider one — 49613 ways against 34670, a cheerful 143% that says only that the comparison is
-  # invalid. Reporting that as a pass is precisely the failure this gate exists to prevent, so it refuses
-  # to draw a conclusion instead.
-  if [ "$(python3 -c "print(1 if $blk > 1.05*$src_roads else 0)")" = "1" ]; then
-    echo "  · roads: block $blk vs export $src_roads (${pct}%) — the export is from a DIFFERENT bbox,"
-    echo "           so no ratio is meaningful. Rebuild both from one box (PLAN-SCALE N2) to enable this check."
-  elif [ "$(python3 -c "print(1 if $blk >= 0.95*$src_roads else 0)")" = "1" ]; then
-    ok "roads: $blk of $src_roads source highways kept (${pct}%)"
+  if [ "$(python3 -c "print(1 if $blk >= 0.95*$src_roads else 0)")" = "1" ]; then
+    ok "roads: $blk of $src_roads source highways kept (${pct}%), same box $blk_box"
   else
     bad "roads: only $blk of $src_roads source highways reached the block (${pct}%, floor 95%)"
   fi
+elif [ "$src_roads" -gt 0 ]; then
+  echo "  · roads ratio SKIPPED — block box '${blk_box:-unrecorded}' vs export box '${src_box:-unrecorded}'."
+  echo "           Rebuild the block so both are recorded and equal (PLAN-SCALE N1) to turn this on."
 else
   echo "  · no $id.geojsonseq to compare roads against — run tools/build-blocks.sh for a source count"
 fi

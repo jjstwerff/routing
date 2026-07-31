@@ -168,6 +168,11 @@ echo "  extent lat $(python3 -c "print(f'{$1/1e7:.4f}..{$3/1e7:.4f}')") lon $(py
 LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" 2>&1 \
   | grep -E '^store_load_keys|^asked' | sed 's/^/  /'
 
+# The box the block was cut from, recorded BESIDE it. Without this, nothing downstream can tell whether a
+# source export and a block describe the same ground — and a count comparison between two different boxes
+# is not a measurement in either direction.
+printf '%s' "${bbox:-<whole-extract>}" > "$store.bbox"
+
 cat <<EOF
 
 Block ready: $store
