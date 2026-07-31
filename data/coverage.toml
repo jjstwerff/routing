@@ -19,8 +19,12 @@
 # 1734 tiles against 1089, a 2.3x bigger download for every visitor. Recovering it took four builds,
 # steering on `store_extent`'s four bounds until all of them matched the shipped store exactly.
 #
-#   tools/build-blocks.sh enschede europe/netherlands 6.82558,52.1707,6.9958,52.3230
-#   tools/build-base.sh   enschede europe/netherlands 6.82558,52.1707,6.9958,52.3230
+#   tools/build-blocks.sh enschede europe/netherlands 6.75374,52.16,6.9958,52.33      # ROADS
+#   tools/build-base.sh   enschede europe/netherlands 6.82558,52.1707,6.9958,52.3230  # BASE
+#
+# ⚠ The two boxes DIFFER, and that is not an oversight — they were cut separately when the block was first
+# made, and each was recovered by steering on its own `store_extent` until all four bounds matched the
+# shipped block exactly. Using one box for both would silently re-cut the other layer.
 #
 # The box looks arbitrary because it IS: `osmium extract` keeps whole ways, so features overhang it by up
 # to ~0.09°, and the box is whatever makes the OVERHANG land on the intended extent. Do not "tidy" it to

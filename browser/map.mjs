@@ -124,7 +124,7 @@ export const COVER_COLORS = {
 // ink to a third: a mark this sparse is not trying to be seen from across the map, it is trying to be
 // noticed when you look at the way you were about to take.
 // Only at z14+, where a pedestrian-scale decision is actually being made.
-export const SHUT_STYLE = { color: '#6b5b57', w: 1.0, dash: [1, 23], minZoom: 14 };
+export const SHUT_STYLE = { dash: [3, 7], minZoom: 14 };
 
 // A barrier NODE the router treats as impassable (a locked gate, a stile). Bollards and lift gates stop
 // cars and are deliberately NOT marked — most barriers are those, and marking them all would be noise
@@ -1033,7 +1033,7 @@ export class RouteMap {
       try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
       // Must draw the SAME overlays as render(), or the block-cache gate compares two different pictures
       // and reports a rasterisation difference that is really a missing layer.
-      if (!this._skipOverlays) { this.drawDesignations(); this.drawShutWays(); this.drawBarriers(); this.drawRoute(); this.layoutLabels(); this.drawRough(); }
+      if (!this._skipOverlays) { this.drawDesignations(); this.drawBarriers(); this.drawRoute(); this.layoutLabels(); this.drawRough(); }
     } finally { this._origin = null; }
     return this;
   }
@@ -1124,8 +1124,7 @@ export class RouteMap {
     let rtN = 0, rgN = 0, lab;
     try {
       if (!this._skipOverlays) {
-        this.drawDesignations();               // designations, refused ways and impassable nodes are
-        this.drawShutWays();                   // all ANNOTATIONS,
+        this.drawDesignations();               // designations and impassable nodes are ANNOTATIONS,
         this.drawBarriers();                   // so above the blocks, not baked into them
         rtN = this.drawRoute();                // matched route, above the base map
         mark('route');
@@ -1240,53 +1239,6 @@ export class RouteMap {
       for (const a of this.areas) {
         if (!DESIGNATION_STYLES[a.cover] || a.ring.length < 3) continue;
         n += draw(a.cover, () => this._pathRing(a.ring));
-      }
-    }
-    ctx.restore();
-    return n;
-  }
-
-  // The ways the router REFUSES, overprinted in the overlay.
-  //
-  // ⚠ In the overlay, not baked into the blocks, for the same reason as the barriers: a saturated mark on
-  // a pale base pushes the block cache's per-pixel delta past what canvas-size rounding explains (the gate
-  // measured maxDelta 32 against 26 and called it structural, which it was). Both restriction marks are
-  // ANNOTATIONS — what the router will not use — so they belong above the cached base map with the route,
-  // and a pan then re-blits without re-baking them.
-  drawShutWays() {
-    const z = this.camera.zoom;
-    if (z < SHUT_STYLE.minZoom) return 0;
-    const ctx = this.ctx, scale = roadScale(z);
-    ctx.save();
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    ctx.setLineDash(SHUT_STYLE.dash); ctx.strokeStyle = SHUT_STYLE.color;
-    ctx.lineWidth = Math.max(0.6, SHUT_STYLE.w * scale);
-    let n = 0;
-    const F = this.streetsFlat;
-    if (F && F.n && F.shut) {
-      const K = this._flatK(), win = this._screen();
-      for (let i = 0; i < F.n; i++) {
-        if (!F.shut[i]) continue;
-        const o4 = i * 4;
-        if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
-         || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
-        const a = F.off[i], len = F.off[i + 1] - a;
-        if (len < 2) continue;
-        ctx.beginPath();
-        for (let k = 0; k < len; k++) {
-          const lat = F.xy[(a + k) * 2], lon = F.xy[(a + k) * 2 + 1];
-          const sn = Math.sin(clampLat(lat) * Math.PI / 180);
-          const x = (lon + 180) / 360 * K.scale - K.cx + K.hw;
-          const y = (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * K.scale - K.cy + K.hh;
-          if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke(); n++;
-      }
-    } else {
-      for (const st of this.streets) {
-        if (!st.shut) continue;
-        const px = this._projLine(st.line);
-        if (px.length >= 2 && this._inView(px)) { this._strokePx(px); n++; }
       }
     }
     ctx.restore();
@@ -1654,7 +1606,7 @@ export class RouteMap {
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     let s = this._streetScratch;
     if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
-    const byClass = {};
+    const byClass = {}, byShut = {};
     let w = 0, vis = 0;
     for (let i = 0; i < F.n; i++) {
       const o4 = i * 4;
@@ -1675,7 +1627,8 @@ export class RouteMap {
         if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
       }
       if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
-      (byClass[cls] || (byClass[cls] = [])).push(at, len);
+      const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
+      (bucket[cls] || (bucket[cls] = [])).push(at, len);
       vis++;
     }
     const strokeRun = (at, len) => {
@@ -1685,11 +1638,22 @@ export class RouteMap {
       ctx.stroke();
     };
     for (const cls of ROAD_ORDER) {
-      const b = byClass[cls]; if (!b) continue;
       const style = ROAD_STYLES[cls], lw = Math.max(0.5, style.w * scale);
-      if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]); }
-      ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
-      for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]);
+      const b = byClass[cls];
+      if (b) {
+        if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]); }
+        ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
+        for (let j = 0; j < b.length; j += 2) strokeRun(b[j], b[j + 1]);
+      }
+      const sb = byShut[cls];
+      if (sb && z >= SHUT_STYLE.minZoom) {                 // broken, no casing — see SHUT_STYLE
+        ctx.setLineDash(SHUT_STYLE.dash); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
+        for (let j = 0; j < sb.length; j += 2) strokeRun(sb[j], sb[j + 1]);
+      } else if (sb) {                                     // below the zoom it is just a road
+        if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < sb.length; j += 2) strokeRun(sb[j], sb[j + 1]); }
+        ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
+        for (let j = 0; j < sb.length; j += 2) strokeRun(sb[j], sb[j + 1]);
+      }
     }
     ctx.setLineDash([]);
     this._visStreets = [];                                 // legacy label fallback: unused when streetLabels exist
@@ -1702,20 +1666,32 @@ export class RouteMap {
     const ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     // Project + cull once, bucket by class, dropping any class not shown at this zoom.
-    const byClass = {}, vis = [];
+    const byClass = {}, byShut = {}, vis = [];
     const win = this._screen(), sbb = this._geoBounds(this.streets, (s) => s.line);
     for (let i = 0; i < this.streets.length; i++) {
       if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
       const st = this.streets[i];
       const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
-      const entry = { st, px }; (byClass[st.cls] || (byClass[st.cls] = [])).push(entry); vis.push(entry);
+      const entry = { st, px };
+      const bucket = st.shut ? byShut : byClass;
+      (bucket[st.cls] || (bucket[st.cls] = [])).push(entry); vis.push(entry);
     }
     for (const cls of ROAD_ORDER) {
-      const bucket = byClass[cls]; if (!bucket) continue;
       const style = ROAD_STYLES[cls], w = Math.max(0.5, style.w * scale);
-      if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = w + 2; for (const v of bucket) this._strokePx(v.px); }   // casing
-      ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = w; for (const v of bucket) this._strokePx(v.px);                // core
+      const open = byClass[cls];
+      if (open) {
+        if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = w + 2; for (const v of open) this._strokePx(v.px); }  // casing
+        ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = w; for (const v of open) this._strokePx(v.px);                // core
+      }
+      const shut = byShut[cls];
+      if (shut && z >= SHUT_STYLE.minZoom) {
+        ctx.setLineDash(SHUT_STYLE.dash); ctx.strokeStyle = style.core; ctx.lineWidth = w;
+        for (const v of shut) this._strokePx(v.px);
+      } else if (shut) {
+        if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = w + 2; for (const v of shut) this._strokePx(v.px); }
+        ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = w; for (const v of shut) this._strokePx(v.px);
+      }
     }
     ctx.setLineDash([]);
     this._visStreets = vis;                                                                             // reused by labels

@@ -1,0 +1,72 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// MINIMAL REPRODUCER — a persisted store's file SIZE is not a function of its content.
+//
+// Builds a store of exactly `n` records from a fixed, deterministic recipe (no clock, no randomness, no
+// input file) and persists it. Run it repeatedly into fresh paths: the records read back identical every
+// time and the file sizes differ.
+//
+// Found the long way round, in a 50k-way map block where the same region rebuilt at 2.08x the shipped
+// size; the counts said the data was the same (+0.2% coordinates) so the container had to be the
+// variable. This strips that to the smallest shape that still shows it.
+//
+//   loft --native --lib lib tools/store_size_repro.loft <out.store> [n] [coords-per-record] [mode]
+//     mode 0 = fill each vector whole, then insert   ·   mode 1 = insert empty, then grow INTERLEAVED
+//
+// `flat` (coords-per-record = 0) uses scalar-only records; any positive value gives each record a nested
+// `vector<Pt>`, which is the shape a real block has (a tile owning its geometry).
+#cwd
+
+struct Pt  { const x: i32, const y: i32 }
+struct Rec { const id: integer, const a: i32, const b: i32, const pts: vector<Pt> }
+
+fn main() {
+  args: vector<text> = [];
+  for arg in arguments() { args += [arg]; }
+  path = args[0] ?? "";
+  n = (args[1] ?? "") as integer ?? 20000;
+  per = (args[2] ?? "") as integer ?? 8;
+  if path == "" { println("usage: store_size_repro <out.store> [n] [coords-per-record]"); return; }
+
+  // `mode`: 0 builds each vector whole and then inserts the record; 1 inserts every record empty and
+  // then grows the vectors INTERLEAVED, one element at a time, hopping between records.
+  //
+  // ⚠ The second is what a real generator does, and it is the difference that matters. gen-tiles streams
+  // features and appends each to whichever tile owns it, so a tile's geometry vector is grown in hundreds
+  // of separate bursts with every other tile's growth in between. Filling one vector at a time — the
+  // obvious way to write a reproducer — is a shape the generator never has.
+  mode = (args[3] ?? "") as integer ?? 0;
+  idx: hash<Rec[id]> = [];
+  if mode == 0 {
+    for i in 0..n {
+      pts: vector<Pt> = [];
+      for j in 0..per {
+        pts += [Pt { x: ((i * 37 + j * 11) % 100000) as i32? ?? (0 as i32),
+                     y: ((i * 53 + j * 17) % 100000) as i32? ?? (0 as i32) }];
+      }
+      idx += [Rec { id: i, a: (i % 251) as i32? ?? (0 as i32), b: (i % 509) as i32? ?? (0 as i32), pts: pts }];
+    }
+  } else {
+    empty: vector<Pt> = [];
+    for i in 0..n {
+      idx += [Rec { id: i, a: (i % 251) as i32? ?? (0 as i32), b: (i % 509) as i32? ?? (0 as i32), pts: empty }];
+    }
+    // Round-robin: element j of every record, then j+1 of every record. Deterministic, and every vector
+    // is reallocated `per` times with n-1 other growths interleaved.
+    for j in 0..per {
+      for i in 0..n {
+        t = idx[i];
+        if t != null {
+          t.pts += [Pt { x: ((i * 37 + j * 11) % 100000) as i32? ?? (0 as i32),
+                         y: ((i * 53 + j * 17) % 100000) as i32? ?? (0 as i32) }];
+        }
+      }
+    }
+  }
+
+  recs = 0; coords = 0;
+  for r in idx { recs += 1; coords += len(r.pts); }
+  ok = store_persist_bind(idx, path);
+  println("records {recs} coords {coords} persist {ok}");
+}
