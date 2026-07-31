@@ -102,8 +102,13 @@ const nameFn = read('lib/map_kernel/src/map_kernel.loft').split('fn class_name')
 const named = new Map([...nameFn.matchAll(/tp\s*==\s*(\d+)\s*\{\s*"([a-z_]+)"/g)].map(m => [+m[1], m[2]]));
 import('file://' + path.join(here, 'browser/map.mjs')).then((M) => {
   const styles = new Set(Object.keys(M.ROAD_STYLES));
+  const order = new Set(M.ROAD_ORDER || []);
   const unnamed = [...emitted].filter((c) => !named.has(c)).sort((a, b) => a - b);
   const unstyled = [...new Set([...named.values()])].filter((n) => !styles.has(n)).sort();
+  // A style with no place in ROAD_ORDER is collected by the draw loop and never stroked — invisible in
+  // exactly the way a missing style is, and NOT caught by checking ROAD_STYLES alone. That gap kept
+  // Amelinklaan's 11 service ways off the map after the style for them had already landed.
+  const undrawn = [...new Set([...named.values()])].filter((n) => styles.has(n) && !order.has(n)).sort();
   if (unnamed.length) {
     console.log(`  FAIL: class_of emits ${unnamed.join(', ')} with no case in class_name —`);
     console.log('        they fall through its `else` and draw as something else entirely.');
@@ -112,9 +117,13 @@ import('file://' + path.join(here, 'browser/map.mjs')).then((M) => {
     console.log(`  FAIL: class_name returns ${unstyled.join(', ')}, which ROAD_STYLES cannot draw —`);
     console.log('        an unknown class is skipped, so those roads vanish from the map.');
   }
-  if (!emitted.size || !named.size || !styles.size) { console.log('  FAIL: parsed nothing — the gate is blind'); process.exit(1); }
-  if (unnamed.length || unstyled.length) process.exit(1);
-  console.log(`  \u2713 ${emitted.size} classes, each explicitly named and drawable`);
+  if (undrawn.length) {
+    console.log(`  FAIL: ${undrawn.join(', ')} have a ROAD_STYLES row but no place in ROAD_ORDER —`);
+    console.log('        the draw loop buckets them and strokes nothing, so they never appear.');
+  }
+  if (!emitted.size || !named.size || !styles.size || !order.size) { console.log('  FAIL: parsed nothing — the gate is blind'); process.exit(1); }
+  if (unnamed.length || unstyled.length || undrawn.length) process.exit(1);
+  console.log(`  \u2713 ${emitted.size} classes, each explicitly named, styled AND in the draw order`);
 }).catch((e) => { console.log('  FAIL: ' + e.message); process.exit(1); });
 NODE
 

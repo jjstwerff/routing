@@ -94,11 +94,12 @@ SITES="hospital,school,university,college,kindergarten"
 AMENITY_AREAS="$SITES,grave_yard"
 
 echo "== base layers for $id =="
-layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_AREAS" \
-                           r/landuse r/natural r/leisure "r/amenity=$AMENITY_AREAS" || exit 1
+layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_AREAS" w/aeroway=aerodrome \
+                           r/landuse r/natural r/leisure "r/amenity=$AMENITY_AREAS" r/aeroway=aerodrome || exit 1
 layer buildings polygon    w/building r/building         || exit 1
 layer places    point      n/place                       || exit 1
-layer lines     linestring w/waterway w/railway w/barrier || exit 1
+layer lines     linestring w/waterway w/railway w/barrier w/aeroway=runway,taxiway \
+                           r/waterway r/railway || exit 1
 layer pois      point      n/natural n/amenity n/tourism n/man_made n/historic n/leisure n/highway || exit 1
 # Streets reuse the ROADS export: the generator selects `highway` + a name/ref itself, so a second pass
 # over the same ways would only duplicate work and disk.

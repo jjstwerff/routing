@@ -168,7 +168,7 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
   at = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
   if layer == 0 {
     cover = area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure"),
-                     atag(props, "amenity"));
+                     atag(props, "amenity"), atag(props, "aeroway"));
     bin_area(idx, cell, cover, pts);
     // A designation is drawn as an outline, so its NAME is the only thing that says what the outline is.
     // It rides the existing label collection (no schema change) at the ring's bbox centre — a place
@@ -193,7 +193,8 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
     nm = atag(props, "name"); rf = atag(props, "ref");
     if atag(props, "highway") != "" { bin_street(idx, cell, if nm != "" { nm } else { rf }, pts); }
   }
-  else if layer == 4 { bin_line(idx, cell, line_kind(atag(props, "waterway"), atag(props, "railway"), atag(props, "barrier")), atag(props, "name"), pts); }
+  else if layer == 4 { bin_line(idx, cell, line_kind(atag(props, "waterway"), atag(props, "railway"), atag(props, "barrier"),
+                                 atag(props, "aeroway")), atag(props, "name"), pts); }
   else { bin_poi(idx, cell, poi_kind(atag(props, "natural"), atag(props, "amenity"), atag(props, "tourism"),
                                      atag(props, "man_made"), atag(props, "historic"), atag(props, "leisure"),
                                      atag(props, "highway")), atag(props, "name"), at); }
@@ -251,7 +252,7 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
       if m >= 3 {
         tags = el.field("tags");
         cover = area_use(atag(tags, "landuse"), atag(tags, "natural"), atag(tags, "leisure"),
-                         atag(tags, "amenity"));
+                         atag(tags, "amenity"), atag(tags, "aeroway"));
         g0 = geom.item(0);
         tx = cell_ix(to_fixed(g0.field("lon").as_number()), cell);
         ty = cell_ix(to_fixed(g0.field("lat").as_number()), cell);
@@ -365,7 +366,8 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
     el = eln.item(i);
     if atag(el, "type") == "way" {
       tags = el.field("tags");
-      kind = line_kind(atag(tags, "waterway"), atag(tags, "railway"), atag(tags, "barrier"));
+      kind = line_kind(atag(tags, "waterway"), atag(tags, "railway"), atag(tags, "barrier"),
+                       atag(tags, "aeroway"));
       geom = el.field("geometry"); m = len(geom);
       if kind != "" && m >= 2 {
         lname = atag(tags, "name");
