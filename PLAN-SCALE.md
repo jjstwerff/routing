@@ -558,7 +558,7 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
 | **C1a** | ✅ **DONE 2026-07-30, native AND browser** — no full-collection scans | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
 | **C1b** | ✅ **DONE 2026-07-30** — the app can read its roads block by BYTE RANGE (`readMode: 'paged'`), route-identical; shipped OFF for this block, see below | 1 / 24 MB | ✅ [loft#678](https://github.com/loft-lang/loft/issues/678) | the working-set read path where the app actually runs | ✅ route + pixel hash unchanged; the gate asserts range reads happen and reports the fraction |
-| **C2** | **Netherlands**, on small whole-file blocks (D11) | ~20–40 city blocks / 0.5 + 3 GB | S3, S6, S7, S9 | multi-block, hosting, Hilbert page locality, a generator that streams | C1's gates on 3 sample regions; cross-block route through a seam (S8) |
+| **C2** | **Netherlands** — ⚠ see **§6c** for the current step list. Blocks EXIST (2 halves, roads 264 MB each, base 1.44 GB each) but the base ones predate the 2026-07-31 classification work, and release hosting has Range but **no CORS** | 2 halves / 0.5 + 2.9 GB | S6, S7, S9 | multi-block, hosting, a generator that streams | N0 conservation gate green per half; cross-block route through a seam (S8) |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
 | **C4** | **WE roads, base map per region** (D1) | ~10–16 roads blocks / 7–15 GB; layout on demand | S10 | the product: a cold visitor routes anywhere in WE | C3 stable; 26-sketch corpus 0-worse; warm match inside its `CPU_THROTTLE=4` budget |
 | **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
@@ -582,6 +582,153 @@ is a good one), reduce its detail (drop buildings outside urban cells, coarser c
 source the map externally and keep loft on the route. Do not pre-commit storage to C5 before S0 reports.
 
 ---
+
+### 6c. The NL rung, step by step (2026-07-31) — and what it costs to keep going
+
+The ladder above is still the shape. This is the executable list for **C2**, written after re-measuring
+what is actually on disk and on the wire, because three of C2's assumptions have moved.
+
+**What is already true, measured today:**
+
+| | |
+|---|---|
+| NL road blocks | **exist and are published** — `nl-west`/`nl-east`, 264 MB each, in release `data-v2026-07-30`, listed in `coverage.toml` as `read_mode = "paged"`, and carrying the post-#30 `barriers@` schema |
+| NL base blocks | exist, **1.44 GB each** |
+| release hosting | **Range yes, CORS no** — re-measured: `206` with a correct `Content-Range`, and no `access-control-allow-origin`. The note in `build_index.sh` is right, which is why the site index excludes them |
+| Pages hosting | Range yes, ~1 GB per site. **NL roads (528 MB) fit. Roads + base (3.4 GB) do not.** |
+| the blocks vs the pipeline | the base blocks were built `2026-07-30 17:01`; the classification work landed `2026-07-31 18:23`, so **they predate relations, sites, aeroway, heath/scrub and cemetery labels** |
+
+**The one structural unknown**, and it is the whole difference between the two halves of this rung: the
+roads store has a paged read path and the **base store does not**. `store-app.mjs` fetches `LAYOUT` as one
+URL and `expose`s it into wasm memory. At 20 MB that is fine; at 1.44 GB it is not a tuning problem, it is
+wasm32. **Routing over NL is a hosting-and-regeneration job. A base MAP over NL is a design job.**
+
+---
+
+#### The steps
+
+Same rules as everywhere else here: one commit, one observable, gates green at each, and a rung stays
+revertible by flipping the index rather than regenerating anything.
+
+**N0 · The conservation gate — FIRST, before any country build.**
+For a region, count OSM features per category out of the extract and compare against what the block holds:
+ways per class, areas per cover, buildings, barriers, labels, lines. Not equality — filters legitimately
+drop things — but a **floor per category and a hard fail on zero**.
+*Why first:* every defect found by eye this week was **a whole category silently at or near zero** —
+`service` roads absent from the draw order, multipolygon relations dropped by the parser, `amenity` never
+collected, heath drawn as lawn. All of them reached the live map, and all of them are mechanically
+detectable. At Enschede scale a human caught them because a human knows Enschede. **Nobody knows the
+Netherlands well enough to catch them by looking**, which is the real reason this step is not optional.
+*Observable:* deleting `w/building` from the recipe turns it red; a clean block is green.
+*Cost:* one osmium pass per layer, seconds.
+
+**N1 · Re-run it against Enschede.** No coverage change, no new data — the gate is proven on the one block
+we can still check by eye and against a known-good result.
+*Observable:* green on the shipped block; the counts are printed so the floors are visible, not implicit.
+
+**N2 · Regenerate NL ROADS on today's pipeline.** Both halves, roads only. Still off the site index.
+*Observable:* N0 green per half; `cross_block_gate` and `tile_border_gate` still route seam-identically;
+`match_parity` byte-identical on the Enschede corpus (the kernel is shared, so this catches a regression in
+the matcher, not in the data).
+*Rollback:* nothing shipped yet.
+
+**N3 · Put NL roads on Pages and make routing live.** 528 MB is under the ~1 GB cap and it is the **same
+origin**, so the CORS wall does not apply — the site index can name them with relative URLs and
+`read_mode = "paged"`. Enschede keeps supplying the base map; outside it you get roads and a route on a
+plain background, which is a real product for a cyclist.
+*Observable:* a cold visitor routes in Amsterdam; the deployed site stays under the cap (**measure it in
+the deploy job, do not assume**); the paged gate reports range reads, not whole-file fetches.
+*Rollback:* flip the index back to Enschede-only.
+⚠ This is the step that makes the tool useful to someone outside Enschede. Everything before it is
+preparation and everything after it is the map getting prettier.
+
+**N4 · Decide the base-map read path — a MEASUREMENT, not a build.** Two candidates, and the answer
+decides C4/C5 as much as it decides NL:
+  * **page the base like the roads** — `store_load_keys` over `PTile[tkey]`, which needs `expose` to work
+    on a partially-filled store. That is the open question, and it is a loft question: if it cannot, the
+    deliverable is an issue on `loft-lang/loft` with the probe as its reproducer, not a decoder here.
+  * **cut the base into small per-city blocks** and load only the covering one — C2's original D11 shape,
+    no new loft capability, more blocks to manage and a seam every time you pan across a city edge.
+*Observable:* a browser probe that renders one viewport of base map out of a country-sized store, with the
+bytes fetched reported. Until that number exists, N5 is not plannable.
+
+**N5 · NL base map, built to whatever N4 answered.** Regenerate with today's classification (relations,
+sites, aeroway, heath/scrub, cemeteries — none of which the current 1.44 GB blocks have). Host per N4: if
+it fits Pages, same origin and done; if not, the CORS bucket, for which `publish-bucket.sh` and
+`cors_host_gate.sh` already exist and pass.
+*Observable:* the reported map at a dozen sampled coordinates matches OSM by category — the same
+conservation check, sampled rather than eyeballed.
+
+**N6 · Turn the refresh loop on, for NL.** `data-refresh.yml` is deliberately disabled and its publish step
+is broken in three ways (uploads `dist/blocks/*` while the script writes `blocks/`; tags `data-202608`
+where everything else uses `data-v2026-07-30`; never rebuilds the index nor runs `publish-release.sh`'s
+verification). Fix those, run **N0 before publishing**, and re-enable the monthly cron.
+*Why here and not later:* §8 already says it — the loop must run while it costs one country, not when it
+manages forty blocks. A month-old NL map that is *known* to be a month old beats a fresh one nobody trusts.
+
+---
+
+#### And by extension, Western Europe
+
+The rungs are unchanged (C3 → C4 → C5); what N0–N6 buy is that each becomes mechanical rather than a leap.
+
+| rung | what it adds | the thing it proves for the first time | the wall to watch |
+|---|---|---|---|
+| **C3 · Benelux + one neighbour** | 2–3 more countries | working-set **eviction** under a 500 km pan, and a cross-BORDER route | peak memory; a border is a seam between datasets, not just blocks |
+| **C4 · WE roads** | ~10–16 road blocks, 7–15 GB | a cold visitor routes anywhere in WE | **hosting cost and the index size** — 7–15 GB is past Pages, so C4 is where the bucket decision is forced whether or not N4 forced it |
+| **C5 · WE base map** | +25–45 blocks, 44–88 GB | that the map layer is affordable at all | it may simply not be — see below |
+
+**C5 remains a genuine decision point and N4 is what informs it.** If the base map cannot be paged, the
+honest end state is C4: routes everywhere, detailed map per region on demand. That is a good product and
+this plan should not pretend otherwise. The alternatives named in §6b — coarser cells at low zoom, no
+buildings outside urban cells, or sourcing the base map externally and keeping loft on the route — are all
+cheaper than 88 GB, and the choice between them is a **measurement** (N4, then S0 on real WE numbers), not
+a preference.
+
+**What would make me stop and re-plan rather than continue:** N4 says the base cannot be paged AND
+per-city blocks put more than ~100 blocks in one index (the index itself becomes a download); or N3's
+deployed site lands within 20% of the Pages cap, because the next country will not fit and the bucket
+decision arrives a rung early.
+
+### 6d. The offline Android app — a later track, and it is smaller than it sounds
+
+**Placed after the EU rungs by choice, not by dependency.** Recorded here now because its SIZE is already
+measurable, and the number changes how the rest of the plan should be read.
+
+**What it is:** an Android build that preloads a route plus everything within **≥3 km of it**, so a ride
+through a valley with no signal still has its map and can still re-route.
+
+**Three of the four pieces already exist**, which is why this is a small track rather than a project:
+
+| piece | state |
+|---|---|
+| naming the cells within N km of a route | ✅ `corridor_cell_keys(pts, margin, tube)` — margin is **in metres**, so a 3 km pack is `margin = 3000.0`. This is the same call the matcher already makes |
+| fetching exactly those cells | ✅ `store_load_keys` over HTTP Range, proven in the browser (C1b/S1) |
+| an Android target | ✅ `loft --native-android [out.apk]` — a signed APK; present in the installed binary (needs `ANDROID_NDK_HOME` + `ANDROID_HOME`). **Unverified here** — nothing in this repo has built it |
+| writing the pack to local storage and reading it back offline | ❌ the only new part: persist the fetched working set, then `store_load` it from a file instead of a URL |
+
+**And the pack is small.** From §1's measured bytes/km² (roads 12.4 kB, base 73.5 kB) over a corridor of
+`2·m·L + π·m²`, at m = 3 km:
+
+| route | corridor | roads | + base | total |
+|---|---|---|---|---|
+| 25 km | 178 km² | 2.2 MB | 12.8 MB | **15 MB** |
+| 50 km | 328 km² | 4.0 MB | 23.6 MB | **28 MB** |
+| 100 km | 628 km² | 7.6 MB | 45.1 MB | **53 MB** |
+| 200 km | 1228 km² | 14.9 MB | 88.2 MB | **103 MB** |
+
+A day's ride is tens of megabytes. **The offline app is not a scale problem** — it is the working-set
+machinery pointed at a file instead of a socket, and the 3 km margin is one argument.
+
+⚠ **The honest consequence of that table:** this track does **not** technically depend on WE coverage, or
+on C5, or on the base-map paging question in §6c N4 — a pack is built from whatever blocks exist, and it
+only ever touches a corridor. It is scheduled late because that is the wanted order, not because it is
+blocked. If the phone-in-a-valley case ever becomes the urgent one, it can be pulled forward to just after
+**N3** (NL roads live) and give offline routing over the Netherlands with a base map wherever one exists.
+
+**What it still needs designing, when it comes:** which zoom levels the base pack carries (73.5 kB/km² is
+*all* of it — dropping buildings outside urban cells is the obvious lever if 103 MB is too much), pack
+expiry against §8's freshness target, and whether a pack is per-route or a pinned region.
 
 ### C1b — done, and shipped OFF on purpose (2026-07-30)
 
