@@ -97,9 +97,19 @@ fi
 # --- R2 · per-region osmium passes ----------------------------------------------------------------
 echo "== R2 extract + filter =="
 if [ -n "$bbox" ]; then
+  # ⚠ THE BBOX IS PART OF THE CLIP'S IDENTITY. Keyed on mtime alone, a re-run with a DIFFERENT box
+  # reported "clip up to date" and reused the previous region — so a bbox change silently did nothing,
+  # and any measurement taken across two boxes compared one box with itself. Same failure as the
+  # recipe-keying fix in build-base.sh; the box is this step's recipe.
+  cfp="$clip.bbox"
+  if [ ! -f "$cfp" ] || [ "$(cat "$cfp" 2>/dev/null)" != "$bbox" ]; then
+    [ -s "$clip" ] && echo "  bbox changed — discarding the cached clip"
+    rm -f "$clip" "$cfp"
+  fi
   if newer "$clip" "$pbf"; then echo "  clip up to date"; else
     echo "  osmium extract --bbox $bbox"
     osmium extract --bbox "$bbox" --overwrite -o "$clip" "$pbf" || { echo "FAIL: osmium extract"; exit 1; }
+    printf '%s' "$bbox" > "$cfp"
   fi
   base_pbf="$clip"
 else

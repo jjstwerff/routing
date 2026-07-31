@@ -929,7 +929,7 @@ export class RouteMap {
             if (z >= RESERVE_STYLE.minZoom && a.ring.length >= 3) reserves.push(() => this._pathRing(a.ring));
             continue;
           }
-          this.drawArea(a); areasN++;
+          if (this.drawArea(a)) areasN++;
         }
         areasN += this._drawReserveOverlay(reserves);
       }
@@ -1038,15 +1038,19 @@ export class RouteMap {
     ctx.closePath();
   }
 
+  // Returns whether it actually PAINTED. The caller counts draws, and a skipped area must not be counted,
+  // or the two draw paths report different totals for identical pixels — exactly what the store-vs-text
+  // parity gate caught the moment an unknown cover stopped being filled (873 vs 872, same picture).
   drawArea(area) {
     const r = area.ring;
-    if (r.length < 3) return;
+    if (r.length < 3) return false;
+    const fill = COVER_COLORS[area.cover];
+    if (!fill) return false;                             // unknown cover / designation — see RESERVE_STYLE
     const ctx = this.ctx;
     this._pathRing(r);
-    const fill = COVER_COLORS[area.cover];
-    if (!fill) return;                                   // unknown cover / designation — see RESERVE_STYLE
     ctx.fillStyle = fill;
     ctx.fill();
+    return true;
   }
 
   // Designations, drawn ONCE every cover is down. Taking a second pass rather than relying on draw order
