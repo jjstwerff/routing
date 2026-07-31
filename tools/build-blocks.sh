@@ -175,7 +175,7 @@ printf '%s' "${bbox:-<whole-extract>}" > "$store.bbox"
 # …and the source count from the very export this block was built from. Comparing a block against a
 # LATER export measures OSM drift, not loss: the shipped block reads 94.6% of today's extract purely
 # because the extract is two days newer. Recorded at build time, the comparison has one run on both sides.
-grep -c '"highway"' "$seq" 2>/dev/null > "$store.srccount" || true
+grep '"LineString"' "$seq" 2>/dev/null | grep -c '"highway"' > "$store.srccount" || true
 
 cat <<EOF
 

@@ -94,7 +94,13 @@ fn add_way(idx: hash<TTile[tkey]>, w: Way) {
 // happens — a tile with an empty roads vector.)
 fn add_barrier(idx: hash<TTile[tkey]>, b: Barrier) {
   if b.lat == 0.0 && b.lon == 0.0 { return; }    // not a barrier point
-  if b.flags == 0 { return; }                    // stops nobody we route — do not store it
+  // ⚠ EVERY barrier is stored, including the ones that stop nobody we route. It used to drop `flags == 0`
+  // — correct while the block existed only to route on, and wrong the moment the MAP started drawing
+  // barriers: 1565 of 2554 nodes in this region are bollards, cattle grids, cycle barriers and unlocked
+  // gates, and dropping them meant the renderer's "a gate you can open" mark had no data to draw. A
+  // cattle grid 59 m from a reported spot was simply not in the block.
+  //
+  // Safe for routing by construction: `apply_barriers` skips `flags == 0`, so the graph is unchanged.
   gx = round(b.lon * 10000000.0) as integer;
   gy = round(b.lat * 10000000.0) as integer;
   btx = cell_ix(gx); bty = cell_ix(gy);
