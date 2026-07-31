@@ -101,7 +101,7 @@ export const COVER_COLORS = {
 // outrank knowing what is beneath it.
 //
 // A DESIGNATION is not a cover either — it is an overlay: a translucent tint plus an outline, drawn after
-// every cover is down (`_drawDesignations`), so the real landcover shows through it. A nature reserve and
+// every cover is down (`drawDesignations`, in the overlay), so the landcover shows through. A reserve and
 // a hospital campus are the same shape of thing: both say what the ground is FOR, while the grass, trees,
 // water and buildings inside them are separately mapped and must keep rendering.
 //
@@ -125,8 +125,8 @@ export const SHUT_STYLE = { color: '#c0392b', w: 1.1, dash: [2, 3], minZoom: 14 
 export const BARRIER_STYLE = { color: '#c0392b', r: 3.2, w: 1.4, minZoom: 16 };
 
 export const DESIGNATION_STYLES = {
-  reserve: { tint: 'rgba(122,176,106,0.22)', minZoom: 11 },
-  site:    { tint: 'rgba(150,160,190,0.20)', minZoom: 13 },
+  reserve: { tint: 'rgba(122,176,106,0.22)', outline: '#6f9f5c', dash: [6, 4], w: 1.2, minZoom: 11 },
+  site:    { tint: 'rgba(150,160,190,0.20)', outline: '#8b93ad', dash: [5, 4], w: 1.1, minZoom: 13 },
 };
 
 // Buildings (Carto).
@@ -978,7 +978,7 @@ export class RouteMap {
       try { this._drawBase(this.camera.zoom); } finally { this._noVertexCull = false; }
       // Must draw the SAME overlays as render(), or the block-cache gate compares two different pictures
       // and reports a rasterisation difference that is really a missing layer.
-      if (!this._skipOverlays) { this.drawShutWays(); this.drawBarriers(); this.drawRoute(); this.layoutLabels(); this.drawRough(); }
+      if (!this._skipOverlays) { this.drawDesignations(); this.drawShutWays(); this.drawBarriers(); this.drawRoute(); this.layoutLabels(); this.drawRough(); }
     } finally { this._origin = null; }
     return this;
   }
@@ -1011,18 +1011,12 @@ export class RouteMap {
       if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
       else {
         const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
-        const designations = [];
         for (let i = 0; i < this.areas.length; i++) {
           const a = this.areas[i];
           if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
-          const D = DESIGNATION_STYLES[a.cover];
-          if (D) {
-            if (z >= D.minZoom && a.ring.length >= 3) designations.push({ cover: a.cover, path: () => this._pathRing(a.ring) });
-            continue;
-          }
+          if (DESIGNATION_STYLES[a.cover]) continue;        // drawn in the overlay — drawDesignations()
           if (this.drawArea(a)) areasN++;
         }
-        areasN += this._drawDesignations(designations);
       }
     }
     const lnN = want('lines') ? this.drawLines() : 0;
@@ -1075,7 +1069,8 @@ export class RouteMap {
     let rtN = 0, rgN = 0, lab;
     try {
       if (!this._skipOverlays) {
-        this.drawShutWays();                   // refused ways + impassable nodes: ANNOTATIONS,
+        this.drawDesignations();               // designations, refused ways and impassable nodes are
+        this.drawShutWays();                   // all ANNOTATIONS,
         this.drawBarriers();                   // so above the blocks, not baked into them
         rtN = this.drawRoute();                // matched route, above the base map
         mark('route');
@@ -1149,6 +1144,53 @@ export class RouteMap {
   // Barrier nodes — a small bar-and-ring where the router severs a crossing, drawn last so it lands on
   // the roads it applies to. Screen-space radius: a gate is a POINT obstruction, and scaling it with zoom
   // would make it either invisible or a blot.
+  // Designations — a nature reserve, a hospital or school campus: a translucent tint plus an outline,
+  // drawn in the OVERLAY.
+  //
+  // ⚠ THE OVERLAY IS WHY THE OUTLINE EXISTS AT ALL. Drawn inside the cover pass it was baked into the
+  // block raster, and a stroked ring is a hard mark on a pale base: `offscreenRoundTrip` went from 0 px
+  // to 969, scaling with line width. I read that as a platform limit and shipped tint-only. It was not —
+  // the same symptom appeared later for the shut-way overprint and turned out to be about WHERE the mark
+  // is drawn, not that it is stroked. Above the cache, with the route and the restriction marks, the
+  // outline costs the round trip nothing. The lesson is the older one: a coherent explanation is a
+  // hypothesis, and "the platform cannot" deserves one more probe than I gave it.
+  drawDesignations() {
+    const z = this.camera.zoom, ctx = this.ctx;
+    const draw = (cover, path) => {
+      const S = DESIGNATION_STYLES[cover];
+      if (!S || z < S.minZoom) return 0;
+      ctx.fillStyle = S.tint; ctx.strokeStyle = S.outline;
+      ctx.lineWidth = S.w; ctx.setLineDash(S.dash);
+      path(); ctx.fill(); ctx.stroke();
+      return 1;
+    };
+    let n = 0;
+    ctx.save();
+    if (this._sidx && this._sidx.areas) {
+      const col = this._sidx.areas, mem = this._smem(), i32 = new Int32Array(mem.buffer);
+      const K = this._flatK(), win = this._screenFixed(), sb = this._sb;
+      const cache = this._textCache || (this._textCache = new Map());
+      for (let i = 0; i < col.n; i++) {
+        const o4 = i * 4;
+        if (col.bb[o4 + 1] < win.mnla || col.bb[o4] > win.mxla
+         || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
+        const len = col.len[i];
+        if (len < 3) continue;
+        const cover = decodeText(mem, sb, col.sRec[i], cache);
+        if (!DESIGNATION_STYLES[cover]) continue;
+        const si = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+        n += draw(cover, () => { this._pathFlat(si, len); ctx.closePath(); });
+      }
+    } else {
+      for (const a of this.areas) {
+        if (!DESIGNATION_STYLES[a.cover] || a.ring.length < 3) continue;
+        n += draw(a.cover, () => this._pathRing(a.ring));
+      }
+    }
+    ctx.restore();
+    return n;
+  }
+
   // The ways the router REFUSES, overprinted in the overlay.
   //
   // ⚠ In the overlay, not baked into the blocks, for the same reason as the barriers: a saturated mark on
@@ -1221,19 +1263,6 @@ export class RouteMap {
   // Designations, drawn ONCE every cover is down. Taking a second pass rather than relying on draw order
   // is the whole point: order is tile-then-element, so a designation sharing the cover pass would bury
   // whatever happened to be binned after it. `items` is [{cover, path}].
-  _drawDesignations(items) {
-    if (!items.length) return 0;
-    const ctx = this.ctx;
-    ctx.save();
-    for (const { cover, path } of items) {
-      const S = DESIGNATION_STYLES[cover];
-      if (!S) continue;
-      ctx.fillStyle = S.tint;
-      path(); ctx.fill();          // no stroke — see the note on DESIGNATION_STYLES
-    }
-    ctx.restore();
-    return items.length;
-  }
 
   // Fill (and optionally stroke) an already-projected ring — used by building footprints (≥ z14).
   _fillPx(px, fill, stroke) {
@@ -1466,7 +1495,6 @@ export class RouteMap {
     const i32 = new Int32Array(mem.buffer);
     const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
     const cache = this._textCache || (this._textCache = new Map());
-    const designations = [];
     let n = 0;
     for (let i = 0; i < col.n; i++) {
       const o4 = i * 4;
@@ -1478,15 +1506,7 @@ export class RouteMap {
       const mz = diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
       if (z < mz) continue;
       const cover = decodeText(mem, sb, col.sRec[i], cache);
-      const D = DESIGNATION_STYLES[cover];
-      if (D) {                                            // designation — deferred to the overlay pass
-        if (z >= D.minZoom) {
-          const si = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
-          const pts = si.slice(0, len * 2);               // copy: _projectFlat reuses one scratch buffer
-          designations.push({ cover, path: () => { this._pathFlat(pts, len); ctx.closePath(); } });
-        }
-        continue;
-      }
+      if (DESIGNATION_STYLES[cover]) continue;             // drawn in the overlay — drawDesignations()
       const fill = COVER_COLORS[cover];
       if (!fill) continue;                                // unknown cover draws nothing (DESIGNATION_STYLES)
       const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
@@ -1496,7 +1516,7 @@ export class RouteMap {
       ctx.fill();
       n++;
     }
-    return n + this._drawDesignations(designations);
+    return n;
   }
 
   // Streams / rails / barriers from the store — same zoom gate, same style table, same `_inView` drop.

@@ -619,7 +619,7 @@ window.__perfHooks = {
       try {
         M._noVertexCull = true;
         try { M._drawBase(M.camera.zoom); } finally { M._noVertexCull = false; }
-        M.drawShutWays(); M.drawBarriers(); M.drawRoute(); M.layoutLabels();   // the same overlay set renderSnappedDirect draws
+        M.drawDesignations(); M.drawShutWays(); M.drawBarriers(); M.drawRoute(); M.layoutLabels();   // the same overlay set renderSnappedDirect draws
       } finally { M._origin = null; M.ctx = saved; M.width = sw; M.height = sh; }
       const ctx = c.getContext('2d');
       ctx.clearRect(0, 0, M.width, M.height);
