@@ -1884,38 +1884,49 @@ loft `main` does not have it, and `--version` says **2026.7.2** for all three di
 **Reproducer:** `tools/paged_http_gate.sh` in `jjstwerff/routing` (three cases: native-local, native-http,
 browser; prints the E0599 tail). `tools/paged_gate.sh` is the shape-parity half.
 
-## A persisted store's SIZE is not a function of its content (2026-07-31)
+## A persisted store's SIZE is an allocation artifact, not a measure of content (2026-07-31)
 
-Building the identical block three times, from byte-identical input, produced three different files:
+`tools/store_size_repro.loft` — same records, same counts, two construction orders:
 
-| run | bytes | steps (the content) | md5 |
-|---|---|---|---|
-| 1 | 7,123,720 | 289,117 | `3204732cf877…` |
-| 2 | 6,537,808 | 289,117 | `1aa01c571bac…` |
-| 3 | 8,018,432 | 289,117 | `959c4aaa1ce2…` |
+| shape (records x coords) | total coords | mode 0 bytes | mode 1 bytes | ratio |
+|---|---|---|---|---|
+| 125 x 2312 | 289,000 | 7,024,112 | 3,816,152 | **1.84x** |
+| 500 x 578 | 289,000 | 7,024,112 | 3,816,152 | 1.84x |
+| 2000 x 145 | 290,000 | 7,024,112 | 3,816,152 | 1.84x |
+| 20000 x 8 | **160,000** | 7,024,112 | 3,816,152 | 1.84x |
 
-Same generator, same `.geojsonseq`, same bbox, same loft (`36df4721`, 2026-07-31 08:10). The blocks read
-back identically — 289,117 steps, 49,890 ways, 1,007 barriers every time — so **the data is the same and
-the container is not**. Spread is 1.23× across three runs, and all three are ~1.8× the 3,743,600-byte
-block shipped in this repo, which was written by an earlier loft from near-identical content.
+Two things fall out of that table and neither is about the data:
 
-Reproduce: `tools/build-blocks.sh enschede europe/netherlands 6.75374,52.16,6.9958,52.33` into a fresh
-`BLOCKS_OUT`, three times; compare `stat -c%s` against
-`loft --native --lib lib tools/census.loft roads <store>`.
+* **the size does not depend on the content at all** — 160,000 coordinates and 290,000 coordinates
+  produce byte-identical files;
+* **it depends entirely on how the store was BUILT.** Mode 0 fills each record's `vector<Pt>` and then
+  inserts the record; mode 1 inserts every record empty and grows the vectors INTERLEAVED, one element
+  at a time, round-robin. Mode 1 is what a streaming generator does, and it is 1.84x smaller.
 
-**Why it matters here**, beyond tidiness:
+The md5 also differs on every run in both modes, with the size fixed.
+
+Found from a 50k-way map block that rebuilt at 2.08x the shipped size. The counts said the data was the
+same (+0.2% coordinates, +0.6% ways), so the container had to be the variable — and the first three
+reproducer shapes all missed it, because filling one vector at a time is the obvious way to write a
+reproducer and is a shape the generator never has.
+
+⚠ **Not the whole story.** Repeated builds of the REAL block, same input, same code, gave 6,537,808 /
+7,123,720 / 8,018,432 bytes — a 1.23x spread that the synthetic reproducer does not show (there, size is
+fixed per mode). So there is a second source of variance in the full pipeline that is not yet isolated.
+The osmium clip and export are byte-identical across runs, so the input is not it.
+
+**Why it matters here:**
 
 1. **A block is not reproducible.** `browser/coverage.json` carries a sha256 per block so the browser can
-   verify what it fetched (`store_load_url`). Regenerating identical data changes that hash, so "did the
-   data change?" and "was it rebuilt?" are indistinguishable, and `tools/index_fresh_gate.sh` cannot tell
-   a real drift from a no-op rebuild.
+   verify what it fetched (`store_load_url`). Regenerating identical data changes it, so "the data
+   changed" and "it was rebuilt" are indistinguishable, and `tools/index_fresh_gate.sh` cannot separate
+   them either.
 2. **Every size estimate in `PLAN-SCALE` is built on file bytes** — §1 measures 12.4 kB/km² for roads and
-   73.5 kB/km² for the base map, and extrapolates 7–15 GB and 44–88 GB for Western Europe. If the file is
-   1.2–2× its content depending on the run, those bands are soft in a way the plan does not say, and the
-   ~1 GB GitHub Pages cap is being planned against a number that moves.
-3. **It hides real growth.** A block that doubles because a category was added is indistinguishable from
-   one that doubled by allocation — which is exactly the ambiguity `tools/conservation_gate.sh` exists to
-   remove, and it can only do that on counts, never on bytes.
+   73.5 kB/km² for the base map and extrapolates 7-15 GB / 44-88 GB for Western Europe. A number that is
+   1.84x different for the same data, and flat across a 1.8x change in content, cannot carry that.
+   The ~1 GB GitHub Pages cap is being planned against it.
+3. **It hides real growth.** A block that doubled because a category was added looks exactly like one
+   that doubled by allocation — the ambiguity `tools/conservation_gate.sh` exists to remove, and it can
+   only do that on counts, never on bytes.
 
-Not filed as an issue yet — it wants a smaller reproducer than a 50k-way block first (a synthetic store
-with N records, persisted repeatedly), and that is a job of its own.
+Filed upstream: see the issue linked from the commit.
