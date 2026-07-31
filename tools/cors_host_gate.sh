@@ -91,5 +91,11 @@ rc=$?
 [ $rc -eq 0 ] || { echo "  --- data-origin requests that did not return 2xx ---"; grep -vE " (200|204|206) " "$work/data.log" | tail -5 | sed "s/^/  /"; }
 
 # Leave the site index as the tree describes it, not as this gate rewrote it.
-"$here/tools/build_index.sh" >/dev/null 2>&1 || true
+#
+# ⚠ INTO `$site`, which is where the damage was. This restored `browser/coverage.json` — a file the gate
+# never touched — while `_site/coverage.json` kept the single-region, absolute-URL index built above. Any
+# gate running afterwards read that instead of the real one: `nl_live_gate` opened in Amsterdam, found an
+# index naming only Enschede, and reported the camera as outside coverage. The gate that leaves state
+# behind is not the one that fails.
+"$here/tools/build_index.sh" "$site/coverage.json" >/dev/null 2>&1 || true
 exit $rc

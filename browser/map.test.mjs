@@ -1204,6 +1204,24 @@ console.log('\nS7 · coverage index → block');
   ok(two.split(',').length === 2 && two.includes('nl.roads') && two.includes('be.roads'),
      `a box no single block contains names BOTH (${two})`);
   ok(roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6) === two, 'the same box always yields the same string, in index order');
+
+  // ⚠ THE CASE THAT DROPPED ROADS. `nl` and `be` PARTIALLY overlap — neither contains the other — so a
+  // box inside the shared band is "covered" by both and the smaller AREA used to win outright, silently
+  // discarding every road the other block held there.
+  //
+  // This is not hypothetical: the real NL halves are cut on a CELL boundary at 5.40°E, yet their bboxes
+  // run 3.3400..5.4680 and 5.3001..7.2430, because a way is kept whole and overhangs the cut. Measured
+  // 2026-08-01, a box at lon 5.35..5.45 named nl-west alone — losing the far side of the seam, which is
+  // the Amersfoort→Apeldoorn route PLAN-SCALE §810 calls out by name.
+  //
+  // NESTING is what separates the safe case from this one, and the two tests below are a pair: a city
+  // fully inside a country really does hold every cell of the box (so the country adds only duplicates),
+  // while two partially-overlapping blocks may each hold cells the other lacks.
+  const band = roadsUrlsFor(index, IDX, 51.0, 4.0, 51.2, 4.5);
+  ok(band.split(',').length === 2 && band.includes('nl.roads') && band.includes('be.roads'),
+     `a box in the band two PARTIALLY overlapping blocks share names BOTH (${band})`);
+  ok(one === 'https://example.test/enschede.roads',
+     'while a box in a block NESTED inside another still names only the finer one — nesting is not a seam');
   const none = roadsUrlsFor(index, IDX, 40.0, 10.0, 40.1, 10.1, nl);
   ok(none === 'https://example.test/nl.roads', 'a box covering nothing falls back to the resolved block, never to an empty command');
 }

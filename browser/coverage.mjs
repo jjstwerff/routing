@@ -68,7 +68,30 @@ export function roadsUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) 
         && x.mnlo <= Math.round(mnlo * FIXED) && x.mxlo >= Math.round(mxlo * FIXED); };
   const area = (b) => (b.roads.bbox.mxla - b.roads.bbox.mnla) * (b.roads.bbox.mxlo - b.roads.bbox.mnlo);
   const whole = hits.filter(covers).sort((a, b) => area(a) - area(b));
-  const chosen = whole.length ? [whole[0]] : (hits.length ? hits : (fallback ? [fallback] : []));
+  // ⚠ "One block covers the box" is NOT enough on its own, and believing it drops roads.
+  //
+  // Two blocks cut on a CELL boundary still have OVERLAPPING BBOXES, because a way is kept whole and
+  // overhangs the cut. Measured: nl-west spans lon 3.3400..5.4680 and nl-east 5.3001..7.2430 for a seam
+  // at 5.40 — a 0.17-degree band each claims. A box inside that band is "covered" by both, the smaller
+  // AREA wins, and every road on the other side of the seam is silently absent. That is exactly the
+  // Amersfoort->Apeldoorn route PLAN-SCALE calls out, and a bbox cannot tell the case apart from the
+  // nesting one: `enschede` inside `nl-east` looks the same to a containment test.
+  //
+  // What separates them is NESTING. A city block inside a country block is fully contained, so the finer
+  // one really does hold every cell of the box and the coarse one adds nothing but duplicates. Two
+  // half-country blocks PARTIALLY overlap — neither contains the other — so each may hold cells the other
+  // lacks and both are needed. So: take the smallest containing block, then add back any hit that is not
+  // nested with it.
+  const nested = (a, b) => { const x = a.roads.bbox, y = b.roads.bbox;
+    const inside = (p, q) => p.mnla >= q.mnla && p.mxla <= q.mxla && p.mnlo >= q.mnlo && p.mxlo <= q.mxlo;
+    return inside(x, y) || inside(y, x); };
+  let chosen;
+  if (whole.length) {
+    const best = whole[0];
+    chosen = [best, ...hits.filter((b) => b !== best && !nested(b, best))];
+  } else {
+    chosen = hits.length ? hits : (fallback ? [fallback] : []);
+  }
   return chosen.map((b) => new URL(b.roads.url, indexUrl).href).join(',');
 }
 

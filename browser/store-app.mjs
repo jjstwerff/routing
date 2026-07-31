@@ -70,7 +70,14 @@ if (!coverage.block) {
   hud.textContent = 'no coverage index — the app has no data to show';
   throw new Error('no coverage index at ' + INDEX_URL);
 }
-const LAYOUT = new URL(coverage.block.base.url, INDEX_URL).href;
+// A region may have NO base map, and that is a supported product rather than a broken one: the NL road
+// blocks are 497 MB and fit GitHub Pages' ~1 GB cap, while the NL base map is 2.87 GB and does not. So
+// outside Enschede you get roads and a route on a plain background (PLAN-SCALE N3).
+//
+// The empty string is the kernel's own "no layout": line 1 is compared against `layout_at`, which starts
+// empty, so an empty URL loads nothing and the exposed layout store stays empty. No kernel branch needed
+// — but do NOT "simplify" this to a missing line, because line 1 is positional.
+const LAYOUT = coverage.block.base ? new URL(coverage.block.base.url, INDEX_URL).href : '';
 // The single-block default. Every command below re-derives the covering SET for the box it is about to
 // read (PLAN-SCALE C2) — this is what it collapses to when one block covers everything, and the fallback
 // when a box covers none.

@@ -52,6 +52,11 @@ while IFS= read -r line; do
   case "$line" in
     '[[region]]'*) flush ;;
     *roads*=*)     roads="$(echo "$line" | cut -d'"' -f2)" ;;
+    # ⚠ `base_url_base` says where the BASE MAP lives and must be IGNORED here — this gate is about road
+    # blocks, and hosting is per store since NL split (its roads ship on Pages, its base map does not).
+    # Left to the glob below it would have matched `*url_base*`, filed both NL halves under the release,
+    # and reported "the site index: 1 block" — a pass by not looking.
+    *base_url_base*=*) ;;
     *url_base*=*)  ubase="$(echo "$line" | cut -d'"' -f2)" ;;
   esac
 done < <(grep -v '^\s*#' "$manifest")
@@ -75,6 +80,27 @@ for key in "${!group_paths[@]}"; do
   echo "$out" | grep -E '^  block |^#O' | sed 's/^/    /'
   echo "$out" | grep -q '^#O ALL PASS' || rc=1
 done
+
+# …and prove the check can still FAIL, on every run. Since nesting became an allowed outcome (a city block
+# inside a country block shares all its cells by design), "no partial overlap" is a verdict this gate can
+# reach by not looking hard enough — so it manufactures a pair it MUST reject. Two splits of the same
+# block at DIFFERENT longitudes: each half holds cells the other lacks, plus a shared band between the
+# cuts. That is the real defect's exact shape, built from data already in the repo.
+src="$here/browser/stores/enschede.roads.store"
+if [ -f "$src" ]; then
+  t="$(mktemp -d)"
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t/a_w" "$t/a_e" 6.85 >/dev/null 2>&1
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t/b_w" "$t/b_e" 6.92 >/dev/null 2>&1
+  self="$("$loft" --native --lib "$here/lib" "$here/tools/block_overlap.loft" "$t/a_e" "$t/b_w" 2>&1)"
+  rm -rf "$t"
+  if echo "$self" | grep -q '^#O FAIL — blocks 0 and 1 PARTIALLY overlap'; then
+    echo "  self-check: a manufactured partial overlap IS rejected ($(echo "$self" | grep -oP 'PARTIALLY overlap: \K[0-9]+') shared cells)"
+  else
+    echo "FAIL — the gate no longer detects a partial overlap it was handed on purpose:"
+    echo "$self" | grep -E '^#O' | sed 's/^/       /'
+    exit 1
+  fi
+fi
 
 if [ "$checked" -eq 0 ]; then
   echo "SKIP — no index has two blocks present locally"
