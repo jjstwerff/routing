@@ -17,7 +17,8 @@
 #     which VERIFIES, instead of the trusted twin — and at WE scale the blocks sit on third-party storage.
 #   * IT IS REGENERATED, NOT EDITED. A hand-corrected index is one that no longer describes the files.
 #
-#   tools/build_index.sh [out.json]        # default: _site/coverage.json
+#   tools/build_index.sh [out.json]        # default: browser/coverage.json (the COMMITTED index)
+#   DATASET_VERSION=v2026-07-30 tools/build_index.sh …    # name the dataset explicitly
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
@@ -32,7 +33,18 @@ manifest="${COVERAGE_MANIFEST:-$here/data/coverage.toml}"
 # with. `browser/build-site.mjs` copies it into _site; `tools/index_fresh_gate.sh` proves it still matches.
 out="${1:-$here/browser/coverage.json}"
 root="$here/_site"                      # where the block paths in the manifest are rooted
-version="${DATASET_VERSION:-$(date -u +v%Y-%m-%d)}"
+# THE VERSION IS A RELEASE NAME, NOT A MEASUREMENT — so regenerating an index must not rename the
+# dataset. Everything else in this file is measured out of the blocks and changes only when they do;
+# the version is chosen by whoever publishes them. Precedence: an explicit DATASET_VERSION, else the
+# name the existing index already carries, else today's date for a first generation.
+#
+# Earned: three gates (map_render, cross_block_browser, cors_host) call this with NO argument, and the
+# default output is the COMMITTED browser/coverage.json — so `make test-map` rewrote a committed file on
+# every run, and the version it carried was simply whichever day a gate last happened to execute. That
+# also made index_fresh_gate.sh compare the calendar: green on the day of the commit, red every day
+# after. A publish now passes the tag it publishes under, so the index names its own release.
+version="${DATASET_VERSION:-$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$out" 2>/dev/null)}"
+version="${version:-$(date -u +v%Y-%m-%d)}"
 [ -f "$manifest" ] || { echo "FAIL: no manifest at $manifest"; exit 1; }
 
 extent() {  # $1 = store path, $2 = roads|base  → "mnla mnlo mxla mxlo tiles feats"

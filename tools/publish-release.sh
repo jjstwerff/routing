@@ -79,7 +79,11 @@ done
 
 # The index LAST, and built against the release URLs so a consumer needs nothing but the tag.
 echo "== index =="
+# DATASET_VERSION comes from the tag, so the index always names the release it is published under —
+# the pairing tools/index_fresh_gate.sh asserts. It used to be today's date, which agreed with the tag
+# only when the index happened to be generated on release day.
 RELEASE_INDEX=1 RELEASE_BASE="https://github.com/$repo/releases/download/$tag" \
+  DATASET_VERSION="${tag#data-}" \
   "$here/tools/build_index.sh" "$here/blocks/coverage.json" || exit 1
 gh release upload "$tag" -R "$repo" --clobber "$here/blocks/coverage.json" || exit 1
 echo "PASS — $tag published, assets verified, index uploaded last"
