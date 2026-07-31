@@ -45,34 +45,53 @@ newer() { [ -s "$1" ] && [ "$1" -nt "$2" ]; }   # $1 exists and is newer than $2
 
 # --- R1 · acquire, resumably ----------------------------------------------------------------------
 url="https://download.geofabrik.de/$src-latest.osm.pbf"
+part="$pbf.part"
 echo "== R1 acquire =="
+
+# ⚠ NEVER DOWNLOAD ONTO THE CACHED EXTRACT. It used to `curl -o "$pbf" -C -` straight over it, and the
+# two halves of that are individually reasonable and together destroy the cache: `-C -` RESUMES from the
+# local size, which is only valid when the remote bytes are the same file — and the branch that runs it
+# fires precisely when upstream has CHANGED. Measured 2026-07-31: local 1394919798 bytes, upstream
+# 1395001098, so curl appended ~81 KB of the new extract onto the old one and produced a file of exactly
+# the right length that md5 rejected and osmium could not open ("invalid BlobHeader size"). The good
+# 1.3 GB cache was gone, and the failure surfaced as a mystery in a step that had not run yet.
+#
+# So: fetch to a sidecar, verify the SIDECAR, and only then let it become the cache. A failed download
+# now costs a retry instead of the copy that was working.
+verify() {  # $1 = file to check against the published md5 → 0 ok, 1 mismatch, 2 no md5 published
+  curl -sfL "$url.md5" -o "$part.md5" || return 2
+  # Compare the HASH, not the filename: geofabrik's .md5 names the DATED file (netherlands-260729…), so
+  # `md5sum -c` would look for a name that does not exist here and fail for the wrong reason.
+  local want have
+  want="$(cut -d' ' -f1 "$part.md5")"; have="$(md5sum "$1" | cut -d' ' -f1)"
+  [ "$want" = "$have" ] && return 0
+  echo "FAIL: md5 mismatch ($(stat -c%s "$1") bytes)"; echo "      want $want"; echo "      have $have"
+  return 1
+}
+
+need=1
 if [ -s "$pbf" ]; then
   echo "  have $(basename "$pbf") ($(du -h "$pbf" | cut -f1)) — checking it is still current"
   remote="$(curl -sIL "$url" | grep -i '^content-length' | tail -1 | tr -dc '0-9')"
   local_sz="$(stat -c%s "$pbf")"
-  if [ -n "$remote" ] && [ "$remote" != "$local_sz" ]; then
-    echo "  upstream changed ($local_sz → $remote) — re-fetching"
-    curl -# -L -o "$pbf" -C - "$url" || { echo "FAIL: download"; exit 1; }
-  fi
-else
-  echo "  downloading $url"
-  curl -# -L -o "$pbf" -C - "$url" || { echo "FAIL: download"; exit 1; }
+  if [ -z "$remote" ] || [ "$remote" = "$local_sz" ]; then need=0
+  else echo "  upstream changed ($local_sz → $remote) — re-fetching to $(basename "$part")"; fi
 fi
-# Geofabrik publishes an md5 beside every extract; a truncated download is otherwise a mystery three
-# steps later, where it looks like a data problem rather than a transfer one.
-if curl -sfL "$url.md5" -o "$work/$(basename "$pbf").md5"; then
-  want="$(cut -d' ' -f1 "$work/$(basename "$pbf").md5")"
-  have="$(md5sum "$pbf" | cut -d' ' -f1)"
-  # Compare the HASH, not the filename: geofabrik's .md5 names the DATED file (netherlands-260729…), so
-  # `md5sum -c` would look for a name that does not exist here and fail for the wrong reason.
-  if [ "$want" != "$have" ]; then
-    echo "FAIL: md5 mismatch ($(stat -c%s "$pbf") bytes)"
-    echo "      want $want"
-    echo "      have $have"
-    echo "      delete $pbf and re-run"
+
+if [ "$need" = 1 ]; then
+  # `-C -` is safe HERE: it resumes the sidecar, which is our own partial of this same fetch.
+  curl -# -L -o "$part" -C - "$url" || { echo "FAIL: download"; rm -f "$part"; exit 1; }
+  verify "$part"; rc=$?
+  if [ "$rc" = 1 ]; then
+    rm -f "$part"                     # a bad partial must not survive to be "resumed" into the next run
+    echo "      discarded the partial; the previous extract is untouched. Re-run to try again."
     exit 1
   fi
-  echo "  md5 ok ($(du -h "$pbf" | cut -f1))"
+  [ "$rc" = 2 ] && echo "  (no published md5 — proceeding unverified)"
+  mv -f "$part" "$pbf"
+  echo "  fetched + verified ($(du -h "$pbf" | cut -f1))"
+else
+  echo "  up to date ($(du -h "$pbf" | cut -f1))"
 fi
 
 # --- R2 · per-region osmium passes ----------------------------------------------------------------

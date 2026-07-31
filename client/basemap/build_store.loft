@@ -133,6 +133,19 @@ fn feature_pts(geom: JsonValue) -> vector<LL> {
   pts
 }
 
+// The centre of a ring's bounding box — where a designation's name belongs. Not a true centroid: a
+// centroid needs the polygon's area integral, and for a label the box centre is both cheaper and more
+// stable under the DP simplification the ring has already been through.
+fn ring_centre(pts: vector<LL>) -> LL {
+  p0 = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
+  mnla = p0.lat; mxla = p0.lat; mnlo = p0.lon; mxlo = p0.lon;
+  for p in pts {
+    if p.lat < mnla { mnla = p.lat; } if p.lat > mxla { mxla = p.lat; }
+    if p.lon < mnlo { mnlo = p.lon; } if p.lon > mxlo { mxlo = p.lon; }
+  }
+  LL { lat: (mnla + mxla) / 2.0, lon: (mnlo + mxlo) / 2.0 }
+}
+
 fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text) {
   cut = 0 - 1;
   for ch in line { if ch == '{' { cut = ch#index; break; } }   // RFC 8142 record separator, if present
@@ -142,7 +155,15 @@ fn bin_feature(idx: hash<PTile[tkey]>, cell: integer, layer: integer, line: text
   pts = feature_pts(root.field("geometry"));
   if len(pts) < 1 { return; }
   at = pts[0] ?? LL { lat: 0.0, lon: 0.0 };
-  if layer == 0 { bin_area(idx, cell, area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure")), pts); }
+  if layer == 0 {
+    cover = area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure"));
+    bin_area(idx, cell, cover, pts);
+    // A reserve is drawn as an outline, so its NAME is the only thing that says what the outline is.
+    // It rides the existing label collection (no schema change) at the ring's bbox centre — a place
+    // label sits at one point, and a designation's first vertex is an arbitrary corner of it.
+    aname = atag(props, "name");
+    if cover == "reserve" && aname != "" { bin_place(idx, cell, aname, "reserve", 0, ring_centre(pts)); }
+  }
   else if layer == 1 { if atag(props, "building") != "" { bin_building(idx, cell, atag(props, "name"), pts); } }
   else if layer == 2 { bin_place(idx, cell, atag(props, "name"), atag(props, "place"), place_rank(atag(props, "place")), at); }
   else if layer == 3 {

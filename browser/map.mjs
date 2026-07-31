@@ -75,7 +75,16 @@ export const COVER_COLORS = {
   water: '#a5c8e8', forest: '#a6d99a', grass: '#cfeca8', park: '#c6e2a6', farmland: '#eff0d6',
   residential: '#e6e1de', industrial: '#e6d5e2', sand: '#f5e7c0', wetland: '#bfd8d8', bare: '#e0dccb',
 };
-const COVER_FALLBACK = '#ebe7e0';
+// ⚠ THERE IS NO OPAQUE FALLBACK, DELIBERATELY. An unrecognised cover used to fill `#ebe7e0`, which meant
+// one unmapped OSM value could paint over correctly-classified terrain: `leisure=nature_reserve` fell
+// through to "other" and laid 270 ha (Landgoed Hof Espelo) and 552 ha (Lonnekerberg) of flat beige over
+// the forest and grass stored underneath. Areas overdraw in tile-then-element order with no size sort, so
+// the biggest unknown wins. An unknown cover now draws NOTHING: not knowing what something is must never
+// outrank knowing what is beneath it.
+//
+// A DESIGNATION is not a cover either — it is an overlay: a translucent tint plus an outline, drawn after
+// every cover is down (`_drawReserveOverlay`), so the real landcover shows through it.
+export const RESERVE_STYLE = { tint: 'rgba(122,176,106,0.16)', outline: '#6f9f5c', dash: [6, 4], w: 1.2, minZoom: 11 };
 
 // Buildings (Carto).
 const BUILDING_FILL = '#d9c7b0', BUILDING_STROKE = '#b6a488';
@@ -288,7 +297,11 @@ export function viewFromStore(mem, handle, fbox, deps, want) {
           // `lb.line[0] ?? Coord{0,0}` in emit_labels — a place with no geometry tests the origin, which
           // is outside any real viewport. Mirror it rather than skipping, so the counts agree exactly.
           const c = (lb.line && lb.line[0]) || { x: 0, y: 0 };
-          if (ptHits(ox, oy, c, fbox)) out.places.push({ rank: Number(lb.rank), name: lb.name, at: degPt(ox, oy, c) });
+          // `kind` rides along so a DESIGNATION's name can be styled as one. The text path (`N` lines)
+          // carries only rank/name/point, so it cannot distinguish them — which is fine, because the app
+          // reads layout from the STORE and the text path exists for the parity gate, which compares
+          // counts and geometry, not styling. Both paths still emit the same SET of places.
+          if (ptHits(ox, oy, c, fbox)) out.places.push({ rank: Number(lb.rank), name: lb.name, kind: lb.kind, at: degPt(ox, oy, c) });
         }
       }
     }
@@ -908,11 +921,17 @@ export class RouteMap {
       if (this._sidx && this._sidx.areas) areasN = this._drawAreasFromStore(z);
       else {
         const win = this._screen(), abb = this._geoBounds(this.areas, (a) => a.ring);
+        const reserves = [];
         for (let i = 0; i < this.areas.length; i++) {
           const a = this.areas[i];
           if (z < a.minZoom || !this._onScreen(abb, i, win)) continue;
+          if (a.cover === 'reserve') {
+            if (z >= RESERVE_STYLE.minZoom && a.ring.length >= 3) reserves.push(() => this._pathRing(a.ring));
+            continue;
+          }
           this.drawArea(a); areasN++;
         }
+        areasN += this._drawReserveOverlay(reserves);
       }
     }
     const lnN = want('lines') ? this.drawLines() : 0;
@@ -1010,15 +1029,37 @@ export class RouteMap {
   }
 
   // M2: one filled path per area, coloured by Carto cover class.
-  drawArea(area) {
-    const r = area.ring;
-    if (r.length < 3) return;
+  // Trace a degree-space ring as a closed path, without filling it — shared by the cover pass and the
+  // designation overlay, so the two cannot disagree about the outline they draw.
+  _pathRing(r) {
     const ctx = this.ctx;
     ctx.beginPath();
     for (let i = 0; i < r.length; i++) { const s = this.project(r[i][0], r[i][1]); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
     ctx.closePath();
-    ctx.fillStyle = COVER_COLORS[area.cover] || COVER_FALLBACK;
+  }
+
+  drawArea(area) {
+    const r = area.ring;
+    if (r.length < 3) return;
+    const ctx = this.ctx;
+    this._pathRing(r);
+    const fill = COVER_COLORS[area.cover];
+    if (!fill) return;                                   // unknown cover / designation — see RESERVE_STYLE
+    ctx.fillStyle = fill;
     ctx.fill();
+  }
+
+  // Designations, drawn ONCE every cover is down. Taking a second pass rather than relying on draw order
+  // is the whole point: order is tile-then-element, so a reserve sharing the cover pass would bury
+  // whatever happened to be binned after it.
+  _drawReserveOverlay(rings) {
+    if (!rings.length) return 0;
+    const ctx = this.ctx, S = RESERVE_STYLE;
+    ctx.save();
+    ctx.fillStyle = S.tint; ctx.strokeStyle = S.outline; ctx.lineWidth = S.w; ctx.setLineDash(S.dash);
+    for (const path of rings) { path(); ctx.fill(); ctx.stroke(); }
+    ctx.restore();
+    return rings.length;
   }
 
   // Fill (and optionally stroke) an already-projected ring — used by building footprints (≥ z14).
@@ -1252,6 +1293,7 @@ export class RouteMap {
     const i32 = new Int32Array(mem.buffer);
     const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
     const cache = this._textCache || (this._textCache = new Map());
+    const reserves = [];
     let n = 0;
     for (let i = 0; i < col.n; i++) {
       const o4 = i * 4;
@@ -1262,14 +1304,25 @@ export class RouteMap {
       const diag = Math.hypot(col.bb[o4 + 1] / 1e7 - col.bb[o4] / 1e7, col.bb[o4 + 3] / 1e7 - col.bb[o4 + 2] / 1e7);
       const mz = diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
       if (z < mz) continue;
+      const cover = decodeText(mem, sb, col.sRec[i], cache);
+      if (cover === 'reserve') {                          // designation — deferred to the overlay pass
+        if (z >= RESERVE_STYLE.minZoom) {
+          const si = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
+          const pts = si.slice(0, len * 2);               // copy: _projectFlat reuses one scratch buffer
+          reserves.push(() => { this._pathFlat(pts, len); ctx.closePath(); });
+        }
+        continue;
+      }
+      const fill = COVER_COLORS[cover];
+      if (!fill) continue;                                // unknown cover draws nothing (see RESERVE_STYLE)
       const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
       this._pathFlat(s, len);
       ctx.closePath();
-      ctx.fillStyle = COVER_COLORS[decodeText(mem, sb, col.sRec[i], cache)] || COVER_FALLBACK;
+      ctx.fillStyle = fill;
       ctx.fill();
       n++;
     }
-    return n;
+    return n + this._drawReserveOverlay(reserves);
   }
 
   // Streams / rails / barriers from the store — same zoom gate, same style table, same `_inView` drop.
