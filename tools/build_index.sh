@@ -32,7 +32,25 @@ manifest="${COVERAGE_MANIFEST:-$here/data/coverage.toml}"
 # committed too, so it changes only when they do — and the Pages deploy job has no loft to measure extents
 # with. `browser/build-site.mjs` copies it into _site; `tools/index_fresh_gate.sh` proves it still matches.
 out="${1:-$here/browser/coverage.json}"
-root="$here/_site"                      # where the block paths in the manifest are rooted
+
+# WHERE THE BYTES ARE MEASURED — the SOURCE, not the built site.
+#
+# A manifest path like `stores/enschede.roads.store` is a URL relative to the site root, and it used to
+# double as the place to read the file: `_site/stores/…`. But `_site` is a BUILD OUTPUT, a copy made by
+# browser/build-site.mjs, so the index described whatever was last copied there rather than what is
+# committed. Measured 2026-07-31: a freshly rebuilt block was installed in browser/stores and the
+# regenerated index still carried the OLD sha, tiles and feature count, because _site held the previous
+# copy.
+#
+# ⚠ AND tools/index_fresh_gate.sh COULD NOT SEE IT. The gate regenerates and diffs, so both sides read
+# the same stale copy, agree, and the gate passes while claiming "the committed index matches the
+# committed blocks" — the one thing it exists to prove. A check that reads a derived copy is not
+# checking the source.
+#
+# Resolution order is therefore source first, `_site` last: browser/ holds the committed site blocks,
+# blocks/ the release ones, and _site is kept only for blocks that exist NOWHERE ELSE — the split
+# fixtures tools/cross_block_browser_gate.sh stages there.
+roots="$here/browser|$here/blocks|$here/_site"
 # THE VERSION IS A RELEASE NAME, NOT A MEASUREMENT — so regenerating an index must not rename the
 # dataset. Everything else in this file is measured out of the blocks and changes only when they do;
 # the version is chosen by whoever publishes them. Precedence: an explicit DATASET_VERSION, else the
@@ -55,14 +73,19 @@ extent() {  # $1 = store path, $2 = roads|base  → "mnla mnlo mxla mxlo tiles f
 # absolute release-asset URLs instead of paths relative to the site. Same extents, same hashes — only where
 # the bytes live changes, which is exactly what the index is for.
 block_json() {  # $1 = path relative to root, $2 = roads|base, $3 = per-region url base ("" = site-relative)
-  local rel="$1" kind="$2" ubase="${3:-}" abs="$root/$1"
+  local rel="$1" kind="$2" ubase="${3:-}" abs=""
+  local r; local IFS='|'
+  for r in $roots; do
+    if [ -f "$r/$rel" ]; then abs="$r/$rel"; break; fi
+    if [ -f "$r/$(basename "$rel")" ]; then abs="$r/$(basename "$rel")"; break; fi
+  done
+  unset IFS
   # A region can live beside the app (site-relative) or at an absolute base — a release, a bucket. Per
   # REGION, not per run: a small block ships with the site while a country block is published elsewhere,
   # and the index is the only thing that has to know.
   local url="$rel"
   [ -n "${RELEASE_BASE:-}" ] && url="$RELEASE_BASE/$(basename "$rel")"
   [ -n "$ubase" ] && url="$ubase/$(basename "$rel")"
-  [ -f "$abs" ] || abs="$here/blocks/$(basename "$rel")"
   [ -f "$abs" ] || { echo "FAIL: manifest names a missing block: $rel" >&2; return 1; }
   local e; e="$(extent "$abs" "$kind")"
   [ -n "$e" ] || { echo "FAIL: could not read the extent of $rel" >&2; return 1; }
