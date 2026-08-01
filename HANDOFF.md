@@ -5,34 +5,64 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-08-01) — the Netherlands is live; one branch is waiting for a PR
+## 0. START HERE (2026-08-01) — THE NETHERLANDS IS LIVE. Nothing is in flight.
+
+**https://jjstwerff.github.io/routing/** — routing over the whole country, offline search, and the
+signposted walk/cycle/MTB networks the router actually uses.
 
 | | |
 |---|---|
-| `main` | protected (PR + green `build-test`, never a direct push) |
-| in flight | **`r3-networks`** — pushed, gates green, NOT yet PR'd. Carries R3, N3a/b/c, R4, the data refresh and the refresh automation |
-| data | release **`data-v2026-08-01`** published and verified (2.6 GB); site index `v2026-08-01` committed |
+| `main` | PR #39 merged 2026-08-01 09:27Z; `deploy` success. Protected — PR + green `build-test`, never a direct push |
+| in flight | **nothing** |
+| data | release **`data-v2026-08-01`** (2.6 GB, every asset verified before the index went up); site index `v2026-08-01` |
+| verified live | `browser/cdp_nl_live.mjs` driven against the DEPLOYED site: Amsterdam → `nl-west`, no base map, 29-point route, **17.7 MB of 222 MB by Range (8.0%)**, search finds "lonneker" |
 
-**What that branch does, in one line each:**
+### What ships
 
 | | |
 |---|---|
-| **R3** | signposted walk/cycle/MTB networks ingested from OSM route RELATIONS and *preferred by the router* — `TRoad.flags` widened u8→u16, so **every block had to be regenerated** (loft#700) |
-| **N3** | NL roads live on Pages, same-origin and paged; hosting became per-STORE so the 2 GB base map could stay on the release while the 497 MB roads ship |
-| **R4** | offline search over 296 474 street names + 12 700 places (36 MB), replacing the old client's Nominatim call |
-| **refresh** | the whole country rebuilt from fresh OSM, and `tools/refresh-region.sh` + a fixed `data-refresh.yml` so it is one command next time |
+| **roads** | `nl-west` 233.4 MB + `nl-east` 263.9 MB, same-origin on Pages, `read_mode = "paged"` |
+| **names** | `nl.names.store` 36.1 MB — 296 474 streets + 12 700 places, searched offline |
+| **base map** | Enschede only (20.8 MB). The NL base is **2 GB and does not fit** the ~1 GB Pages cap, so it is on the release for the native server and offline use. Outside Enschede you route on a plain background |
+| **site total** | 560.5 MB of a 950 MB budget (59%), measured every build by `tools/site_size_gate.sh` |
 
-⚠ **The one thing to know before touching data:** `tools/fetch-site-blocks.sh` verifies every download
-against the sha256 in the committed index. That is deliberate — a truncated block otherwise shows up as
-"routing is broken" rather than as a missing file — but it means **a republish without regenerating and
-committing the index turns every Pages deploy red.** Regenerate the index in the same change.
+### Three rules that are load-bearing, and cost a session each to learn
 
-**Where to look next:** `PLAN-SCALE.md` §6e is the Western Europe design, written from NL's measurements.
-Its short version: the client already streams (a viewport is 75–190 kB whatever the store's size), the
-GENERATOR does not (~350 bytes RSS per feature ⇒ 130–270 GB for WE), and the answer is to never build a
-store that big — one region per run, fed by a single `osmium extract --config` pass. The three things it
-says to do first are the chunked base build, raising the 62-block cap in `block_overlap.loft`, and pricing
-D2.
+1. **The index is the contract.** `tools/fetch-site-blocks.sh` verifies every download against the
+   sha256 in the committed index, and the Pages deploy runs it. So **a republish without regenerating
+   and committing the index turns every deploy red** — do both in one change. (The strictness is
+   deliberate: a truncated block otherwise presents as "routing is broken", not as a missing file.)
+2. **Hosting is per STORE, not per region.** NL's roads ship beside the app and its base map does not.
+   `data/coverage.toml` uses `base_url_base` for that; `build_index.sh` emits `base: null` in the SITE
+   index and the app treats it as a supported state (`LAYOUT = ''`), not an error.
+3. **A schema change makes older blocks read GARBAGE, not empty** (loft#700). `TRoad.flags` went u8→u16
+   for the network bits, which is why every block was regenerated. `build_index.sh` and `access_gate.sh`
+   refuse a block whose `.dschema` is stale.
+
+### Where to go next
+
+`PLAN-SCALE.md` **§6e** is the Western Europe design, written from NL's measurements. Short version: the
+**client already streams and already scales** (a viewport is 75–190 kB whatever the store's size); the
+**GENERATOR does not** (~350 bytes RSS per feature ⇒ 130–270 GB for WE); so never build a store that big —
+one region per run, fed by a single `osmium extract --config` pass, which is the block structure C4/C5
+already specify.
+
+Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_base.loft`, proven lossless
+(Enschede n=2 exact; NL n=4 within a per-seam bound), and wired as a CI matrix in `data-refresh.yml`.
+
+Open, in the order §6e recommends:
+
+| | what | why it matters |
+|---|---|---|
+| a | **the workflow has never actually run** | `data-refresh.yml` is `workflow_dispatch`-only and its first firing will publish. Trigger it once with eyes on it |
+| b | the 4-features-per-seam chunk loss | NL n=4 loses 5 tiles / 12 features. Hypothesis: a multipolygon straddling a seam. Untried fixes: `osmium extract --strategy=smart`, or a larger `MARGIN` |
+| c | **raise the 62-block cap** | `block_overlap.loft` masks cell owners one bit per block. §6e's chunking puts WE at 34–68 blocks, so it may bind. Fix: count per PAIR |
+| d | **price D2** | 44–88 GB is past Pages and past a release asset. `cors_host_gate.sh` already passes against a CORS origin, so the path is tested — this is a cost question, and it is what would put the base map on the map |
+| e | R2 (elevation) | now costs its own full regeneration (~35 min for NL) — see PLAN-RESTORE §4. Bits 11–15 of `flags` are free, so no further widening |
+
+⚠ **The cron in `data-refresh.yml` is off deliberately.** Publishing replaces data a deploy verifies
+against, and loft is built there from `loft-lang/loft` **main**, where the fixes this repo needs are
+routinely fixed-pending-merge. Both reasons are in the workflow header.
 
 ---
 
