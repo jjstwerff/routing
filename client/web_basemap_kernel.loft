@@ -195,7 +195,15 @@ fn main() {
         roads = [];
         marks = [];
         sess = session_new();
-        if readmode == "paged" {
+        if roads_url == "" {
+          // A VIEW WITH NO ROADS STORE — supported, not an error, and the same shape line 1 already has
+          // for a region with no base map. Below the handover zoom the map is the overview block alone
+          // (PLAN-SCALE §6i O1): its road spine is stored as LINES inside it, already merged and
+          // decimated, so reading the detailed roads there would be asking ~70 000 cell keys to draw the
+          // motorways a single 19.6 MB file already holds. Measured before this branch existed: 75 256
+          // range requests and 4.7 GB into one block, and the view never returned.
+          roads_at = "";
+        } else if readmode == "paged" {
           roads_at = roads_url;
         } else if len(roads_urls) == 1 && store_load_url_trusted(roads, roads_urls[0] ?? "") {
           roads_at = roads_url;

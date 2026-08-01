@@ -5,7 +5,11 @@
 // the region on load, then drives a `match` and proves the route draws.
 //   node browser/cdp_verify_store.mjs <dt-host:port> <http-url>
 const [dt, app] = process.argv.slice(2);
-setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 90000);
+// 90 s was enough while this gate's index held one 4 MB city block. Since the four-region index landed
+// it also names country road blocks, which the app now correctly PAGES — many more round trips, all of
+// them real work. The budget is a deadlock guard, not a performance assertion; tools/map_profile.sh is
+// where timing is measured.
+setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 240000);
 
 const list = await (await fetch(`http://${dt}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');
@@ -21,7 +25,11 @@ await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
 const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true })).result?.result?.value;
 
-await call('Page.navigate', { url: app });
+// ⚠ THE CAMERA IS PINNED, not inherited. `DEFAULT_CAM` opens on the whole country (PLAN-SCALE §6i O1),
+// which resolves to the OVERVIEW block — so a gate that navigated bare would measure a generalised
+// national map while claiming to check a city's invariants. Every driver states the camera it means.
+const GATE_CAM = '#16/52.2215/6.8937';
+await call('Page.navigate', { url: app + GATE_CAM });
 let ok = true;
 
 // 1. view <bbox> renders the visible region on load.

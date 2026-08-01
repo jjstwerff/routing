@@ -6,9 +6,10 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
+import { densifySketch, isSketchEcho } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
-import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
+import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1163,10 +1164,10 @@ console.log('\nC1a · a view reads the viewport, not the store');
 console.log('\nS7 · coverage index → block');
 {
   const bbox = (mnla, mnlo, mxla, mxlo) => ({ mnla, mnlo, mxla, mxlo });
-  const blk = (id, box) => ({ id, readMode: 'whole', roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
+  const blk = (id, box, readMode = 'whole') => ({ id, readMode, roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
   // NL-ish and BE-ish, plus a small city block INSIDE the NL one — the overlap case a country plus a
   // detailed city creates, and the reason "smallest area wins" is a rule rather than an accident.
-  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000));
+  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000), 'paged');   // a country block is paged
   const be = blk('be', bbox(494000000, 25000000, 516000000, 64000000));
   const ens = blk('enschede', bbox(521477887, 67600000, 523292661, 69998845));
   const index = { version: 'v-test', unit: 'fixed-1e-7', blocks: [nl, be, ens] };
@@ -1218,6 +1219,20 @@ console.log('\nS7 · coverage index → block');
   const noBase = { version: 'v-test', unit: 'fixed-1e-7',
                    blocks: [{ id: 'x', readMode: 'paged', roads: { url: 'x.roads', bbox: nl.roads.bbox }, base: null }] };
   ok(baseUrlsFor(noBase, IDX, 52.2, 5.0, 52.3, 5.1) === '', 'a region with base: null contributes no base URL');
+
+  // ⚠ THE ONE THAT BROKE THE LIVE MAP (2026-08-02). Read mode is a property of the STORE, and the block a
+  // VIEWPORT needs is not always the block the CAMERA sits in: a camera over the small `enschede` block
+  // at z13.68 has a viewport that escapes it, so selection picks the big country block — and a mode taken
+  // from the camera's block said `whole`, so the app asked for a 774 MB store as a single download.
+  // It never finished, which looks exactly like "the base map is missing".
+  const cam = blocksChosenFor(index, 52.20, 6.85, 52.23, 6.90, 'roads');
+  ok(cam.length === 1 && cam[0].id === 'enschede', `a box inside the city block chooses it (${cam.map((b)=>b.id)})`);
+  const wide = blocksChosenFor(index, 52.17, 6.79, 52.28, 7.02, 'roads');
+  ok(wide.some((b) => b.id === 'nl'), `a box ESCAPING the city block chooses the country one (${wide.map((b)=>b.id)})`);
+  // …so a mode derived from the chosen blocks is `paged`, where one derived from the camera would not be.
+  const mode = (bs, k) => bs.some((b) => (b[k] && b[k].readMode) === 'paged' || b.readMode === 'paged') ? 'paged' : 'whole';
+  ok(mode(cam, 'roads') === 'whole', 'the city block alone reads whole');
+  ok(mode(wide, 'roads') === 'paged', 'a set containing the paged country block reads PAGED, not whole');
 
   // ⚠ THE CASE THAT DROPPED ROADS. `nl` and `be` PARTIALLY overlap — neither contains the other — so a
   // box inside the shared band is "covered" by both and the smaller AREA used to win outright, silently
@@ -1305,6 +1320,41 @@ console.log('\nbarrier marks:');
      'a north-south way gives a north-south bearing (the bar is drawn perpendicular to it)');
   const untouched = orientBarriers(parseBarriers(['52.01,6.0,1']), F);
   ok(untouched[0].bearing === null, 'a shut barrier needs no bearing — it is a ring, not a bar');
+}
+
+{
+  // --- §6i O2: splitting a sketch's long segments before matching ---------------------------------
+  const legM = (a, b) => Math.hypot((b[0] - a[0]) * 111320,
+                                    (b[1] - a[1]) * 111320 * Math.cos((a[0] + b[0]) / 2 * Math.PI / 180));
+  const longest = (v) => Math.max(...v.slice(1).map((p, i) => legM(v[i], p)));
+
+  // A drawn sketch is already fine-grained: it must come back UNTOUCHED, because that is what keeps every
+  // working match byte-identical (the fallback would otherwise be a route-affecting change).
+  const fine = [[52.3626, 4.8735], [52.3600, 4.8750], [52.3580, 4.8770]];
+  ok(densifySketch(fine, 1000) === fine, 'a sketch with no long leg is returned as-is, same array');
+
+  // A country-zoom drag: ~40 km in one leg, which is the gesture the default camera now produces.
+  const far = [[52.3626, 4.8735], [52.0907, 5.1214]];
+  const dense = densifySketch(far, 1000);
+  ok(dense.length === 36, `a 34.7 km leg becomes 36 points — 35 legs under the step (got ${dense.length})`);
+  ok(longest(dense) <= 1000.0001, `no leg exceeds the step (worst ${longest(dense).toFixed(0)} m)`);
+  ok(dense[0] === far[0] && dense[dense.length - 1] === far[1], 'the endpoints are the ORIGINAL objects');
+  // Collinearity is what makes this add no intent: every inserted point lies on the segment drawn.
+  const cross = dense.slice(1, -1).map((p) => Math.abs((p[0] - far[0][0]) * (far[1][1] - far[0][1])
+                                                     - (p[1] - far[0][1]) * (far[1][0] - far[0][0])));
+  ok(Math.max(...cross) < 1e-12, 'every inserted point is collinear with the leg it splits');
+
+  // Degenerate inputs must not throw or invent points.
+  ok(densifySketch([[52, 5]], 1000).length === 1, 'a single point is untouched');
+  ok(densifySketch(far, 0) === far, 'a zero step is refused rather than looping forever');
+
+  // The echo test — how "no route" presents, and what triggers the retry.
+  ok(isSketchEcho([[52.3626, 4.8735], [52.0907, 5.1214]], far), 'the trace handed back IS the echo');
+  ok(!isSketchEcho([[52.3626, 4.8735], [52.2, 5.0], [52.0907, 5.1214]], far), 'a real route is not an echo');
+  ok(!isSketchEcho([[52.3626, 4.8735], [52.0907, 5.1215]], far), 'a route that merely ENDS nearby is not an echo');
+  ok(isSketchEcho([[52.36260004, 4.8735], [52.0907, 5.1214]], far),
+     'equality is at loft\'s 6 printed decimals, not exact');
+  ok(!isSketchEcho([], []), 'an empty route is not an echo (nothing was asked)');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

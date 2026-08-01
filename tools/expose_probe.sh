@@ -15,7 +15,7 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 
-node "$here/browser/build-site.mjs" || exit 1
+SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 
 rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"

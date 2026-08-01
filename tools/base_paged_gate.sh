@@ -65,14 +65,18 @@ rc=$?
 # honest shape: this is the strongest evidence available on a machine that has the data, and no evidence
 # at all on one that does not — never a pass by absence.
 #
-# The FOUR regions PLAN-SCALE §6f F3 cuts the country into, if they have been built here. The interesting
+# The FOUR regions PLAN-SCALE §6f F3 cuts the country into, if they have been built here. The staged
+# index below also carries the small committed ENSCHEDE block, because the live index does — and the
+# combination is what broke the deployed map on 2026-08-02: a camera inside the city block with a
+# viewport WIDER than it, so selection picks the country block while a session-wide read mode still says
+# `whole`, and the app asks for a 774 MB store in one download. The interesting
 # case only exists once there is a cut: a viewport ON a seam. Each base region carries a 0.10° margin of
 # its neighbours so ONE region answers it whole — that margin is what this phase checks, by looking at a
 # viewport centred on a cut and requiring a full map rather than a half one.
 REGIONS="west midwest mideast east"
 r4=1
 for f in $REGIONS; do
-  [ -f "$here/blocks/nl-$f.r4.base.store" ] && [ -f "$here/blocks/nl-$f.r4.roads.store" ] || r4=0
+  [ -f "$here/blocks/nl-$f.base.store" ] && [ -f "$here/blocks/nl-$f.roads.store" ] || r4=0
 done
 if [ "$r4" = "0" ]; then
   echo "  phase 2 SKIP — no local country blocks in $here/blocks (gitignored; build with tools/build-base-chunked.sh)"
@@ -84,11 +88,13 @@ root="$here/scratch/nlbase-$httpport"
 rm -rf "$root"; mkdir -p "$root"
 ln -s "$here/_site/index.html" "$root/index.html"
 ln -s "$here/_site/store-kernel.wasm" "$root/store-kernel.wasm"
+ln -s "$here/_site/stores/enschede.layout.store" "$root/enschede.layout.store"
+ln -s "$here/_site/stores/enschede.roads.store" "$root/enschede.roads.store"
 for f in $REGIONS; do
-  ln -s "$here/blocks/nl-$f.r4.base.store" "$root/nl-$f.base.store"
-  ln -s "$here/blocks/nl-$f.r4.roads.store" "$root/nl-$f.roads.store"
-  [ -f "$here/blocks/nl-$f.r4.base.store.dschema" ] && ln -s "$here/blocks/nl-$f.r4.base.store.dschema" "$root/nl-$f.base.store.dschema"
-  [ -f "$here/blocks/nl-$f.r4.roads.store.dschema" ] && ln -s "$here/blocks/nl-$f.r4.roads.store.dschema" "$root/nl-$f.roads.store.dschema"
+  ln -s "$here/blocks/nl-$f.base.store" "$root/nl-$f.base.store"
+  ln -s "$here/blocks/nl-$f.roads.store" "$root/nl-$f.roads.store"
+  [ -f "$here/blocks/nl-$f.base.store.dschema" ] && ln -s "$here/blocks/nl-$f.base.store.dschema" "$root/nl-$f.base.store.dschema"
+  [ -f "$here/blocks/nl-$f.roads.store.dschema" ] && ln -s "$here/blocks/nl-$f.roads.store.dschema" "$root/nl-$f.roads.store.dschema"
 done
 # An index of our own rather than the committed one: this names a base map the SITE index deliberately
 # does not (it cannot be hosted there — that is the whole problem), and a gate must not write to the tree
@@ -100,13 +106,24 @@ for f in $REGIONS; do
   "$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/nl-$f.roads.store" roads >"$root/.x-$f" 2>/dev/null
   "$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/nl-$f.base.store"  base  >"$root/.b-$f" 2>/dev/null
 done
+"$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/enschede.roads.store" roads >"$root/.x-ens" 2>/dev/null
+"$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/enschede.layout.store" base >"$root/.b-ens" 2>/dev/null
 python3 - "$root" <<'PY'
 import json, os, re, sys
 root = sys.argv[1]
 def extent(p):
     m = re.search(r'^EXTENT (\S+) (\S+) (\S+) (\S+) (\d+) (\d+)', open(p).read(), re.M)
     return {'mnla': int(m.group(1)), 'mnlo': int(m.group(2)), 'mxla': int(m.group(3)), 'mxlo': int(m.group(4))}
-blocks = []
+# The city block FIRST and read WHOLE, exactly as the live index has it — it is the block a camera over
+# Enschede resolves to, and the one whose read mode used to be applied to everything.
+eb, ebb = extent(f'{root}/.x-ens'), extent(f'{root}/.b-ens')
+blocks = [{'id': 'enschede', 'name': 'Enschede (local)', 'readMode': 'whole',
+           'roads': {'url': 'enschede.roads.store', 'bytes': os.path.getsize(f'{root}/enschede.roads.store'),
+                     'sha256': '', 'tiles': 0, 'features': 0, 'bbox': eb},
+           'base': {'url': 'enschede.layout.store', 'readMode': 'whole',
+                    'bytes': os.path.getsize(f'{root}/enschede.layout.store'),
+                    'sha256': '', 'tiles': 0, 'features': 0, 'bbox': ebb},
+           'names': None}]
 for f in ('west', 'midwest', 'mideast', 'east'):
     rb, bb = extent(f'{root}/.x-{f}'), extent(f'{root}/.b-{f}')
     blocks.append({'id': f'nl-{f}', 'name': f'NL {f} (local)', 'readMode': 'paged',
@@ -122,7 +139,7 @@ kill "$srv" 2>/dev/null
 python3 "$here/tools/range_server.py" "$httpport" "$root" "$root/.report" >/dev/null 2>&1 &
 srv=$!
 for _ in $(seq 20); do curl -s -o /dev/null "http://127.0.0.1:$httpport/index.html" 2>/dev/null && break; sleep 0.3; done
-echo "  blocks: $(du -ch "$here"/blocks/nl-*.r4.base.store | tail -1 | cut -f1) of base across four regions, paged"
+echo "  blocks: $(du -ch "$here"/blocks/nl-*.base.store | tail -1 | cut -f1) of base across four regions, paged"
 # Two viewports ON a region seam (4.90°E and 5.80°E) and three away from one, because those fail
 # differently. A seam viewport is the case three regions CREATE: it has to name both sides, and before
 # F3 the app could only name one base store — measured, one region answers such a viewport with 13 946
@@ -139,7 +156,7 @@ echo "  blocks: $(du -ch "$here"/blocks/nl-*.r4.base.store | tail -1 | cut -f1) 
 # set being re-exposed. Phase 1 is the clean measurement of the re-expose question: uniform pans, uniform
 # fetch, one variable.
 node "$here/browser/cdp_base_paged.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" \
-  '{"mode":"paged","start":{"lat":52.3676,"lon":4.9041,"zoom":16},
+  '{"mode":"paged","start":{"lat":52.22355,"lon":6.90427,"zoom":13.68},
     "waypoints":[{"lat":52.1000,"lon":5.4000},{"lat":52.0907,"lon":4.3007},
                  {"lat":51.9244,"lon":4.4777},{"lat":52.2200,"lon":5.9000},
                  {"lat":52.2215,"lon":6.8937}]}'

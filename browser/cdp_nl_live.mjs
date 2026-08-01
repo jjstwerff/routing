@@ -5,12 +5,12 @@
 // block, with NO BASE MAP.
 //
 // Every other browser gate opens the app on Enschede, where a small committed block supplies both roads
-// and a base map — the one place in the country where nothing about N3 is exercised. Here the camera
-// opens in Amsterdam, which resolves to `nl-west`: a paged 222 MB block whose index entry has
-// `base: null`, because the NL base map is 2.87 GB and does not fit the ~1 GB Pages cap.
+// and a base map — the one place in the country where nothing about coverage is exercised. Here the
+// camera opens in Amsterdam, which resolves to one of the four country regions: a paged roads block plus
+// a base map served from its own Pages host (§6f F4).
 //
 // Four things, each a distinct way N3 could be broken while looking fine:
-//   1. the app BOOTS with no base map (LAYOUT === '' rather than a crash reading `.base.url`);
+//   1. the app BOOTS on a region whose base map is on ANOTHER ORIGIN, and DRAWS it;
 //   2. it resolves to the COUNTRY block, not the small one it happens to ship with;
 //   3. it MATCHES there — the product claim, and what a 404 on the block would silently deny;
 //   4. it reads that block BY RANGE — 222 MB down the wire is not a page load.
@@ -73,8 +73,13 @@ const cov = await ev(`JSON.stringify({
   readMode: window.__readMode ?? null })`);
 const c = JSON.parse(cov);
 console.log(`  camera Amsterdam → block=${c.id} base=${c.hasBase ? 'yes' : 'NONE'} read=${c.readMode}`);
-if (c.id !== 'nl-west') fail(`resolved to ${c.id}, not the country block nl-west`);
-if (c.hasBase) fail('nl-west reports a base map — the site index must not name the 2.87 GB one');
+// PLAN-SCALE §6f F5 — THIS ASSERTION IS THE INVERSE OF WHAT IT WAS, and the inversion is the point.
+// It used to require `base: null`, because the country's base map was 2.87 GB on a release the browser
+// cannot read. F4 put it on four Pages hosts it CAN read, so a region that reports no base map is now
+// the failure — and this gate proving routing and search while never asking whether anything was DRAWN
+// is exactly how a blank map shipped and stayed shipped.
+if (!/^nl-/.test(c.id)) fail(`resolved to ${c.id}, not one of the country regions`);
+if (!c.hasBase) fail(`${c.id} reports NO base map — the site index must name its Pages host (F4)`);
 if (c.outside) fail('Amsterdam reported as OUTSIDE coverage');
 
 const before = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())'));
@@ -85,7 +90,7 @@ console.log(`  ${m.summary || '(no SUMMARY emitted)'}`);
 if (m.blocks !== 1) fail(`the sketch named ${m.blocks} blocks; one country half covers it`);
 const pts = /route_pts=(\d+)/.exec(m.summary || '');
 if (!pts || +pts[1] < 5) fail(`no route in Amsterdam (summary="${m.summary}")`);
-else console.log(`  ✓ routed on the country block with NO base map: ${pts[1]} route points`);
+else console.log(`  ✓ routed on the country block: ${pts[1]} route points`);
 
 // …and paged. Measured over the WHOLE SESSION, not around the match.
 //
@@ -130,6 +135,13 @@ const none = JSON.parse(await ev(`(async () => {
 if (none.length) fail(`an unknown name returned ${none.length} hit(s) — it must return nothing`);
 else console.log('  \u2713 an unknown name returns nothing, not a nearest guess');
 
-console.log(ok ? 'PASS — a visitor outside Enschede routes AND searches on the country block, no base map'
+// F5's own question, asked last because it is the one nobody asked: IS THERE A MAP?
+const drawn = await ev(`JSON.stringify(window.__storeApp?.layerCounts || {})`);
+const lc = JSON.parse(drawn || '{}');
+const total = ['areas','buildings','lines','pois','places','streetLabels'].reduce((n,k)=>n+(lc[k]||0),0);
+if (total > 0) console.log(`  ✓ the map is DRAWN: ${total} features (${JSON.stringify(lc)})`);
+else fail('the base map drew NOTHING — a route on a blank background is what this rung exists to end');
+
+console.log(ok ? 'PASS — a visitor outside Enschede routes, searches AND sees a map'
                : 'FAIL — NL live gate');
 process.exit(ok ? 0 : 1);

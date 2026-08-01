@@ -1,0 +1,473 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-SCALE §6i O1 — BUILD THE OVERVIEW BLOCK: the map the app opens the country on.
+//
+// The overview is not a new kind of store. It is an ORDINARY base store holding less, so every reader
+// already understands it: the same `PTile`, the same tier keying (`layout_tier` / `tier_key`), the same
+// sealed extents. What makes it an overview is two rules applied at generation, and §6i measured which of
+// them does the work:
+//
+//   SELECT    keep only features the renderer draws at or below `zmax` — its own `minZoom` rules
+//             (areaMinZoom, LINE_STYLES, RANK_MINZOOM, POI_STYLES), ported here verbatim. This keeps
+//             0.68% of the country's features at z<=10 and 6.7% of its COORDINATES: it is not the shrink.
+//   DECIMATE  drop every vertex nearer than one pixel at `zmax` to the chord it sits on. THIS is the
+//             shrink — 10.7M selected coordinates become 735k.
+//
+// And the ROAD SPINE, which is the part that cannot come from the base store at all: `basemap`'s Line
+// kinds are waterway/railway/barrier/aeroway/boundary/power, so a country map's motorways have to be
+// lifted out of the ROADS store and written in as Lines.
+//
+// ⚠ MERGING IS THE SPINE'S ENTIRE BUDGET, not an optimisation. Douglas-Peucker can never drop a way's two
+// endpoints, and OSM fragments a motorway into ~130 m pieces, so decimating per way keeps EXACTLY two
+// vertices per way (measured: 56 071 for 27 595 motorway ways) however coarse the zoom. Chaining
+// consecutive same-class ways through their shared endpoints first is what makes the spine small.
+//
+//   loft --native --lib lib tools/build_overview.loft <base.store> <roads.store> <out.store> <zmax> [mintier]
+//
+// Refuses an existing output: `store_persist_bind` ADOPTS an existing image, keeps the old contents and
+// still returns true (PLAN-SCALE §6f). Delete before regenerating.
+#cwd
+
+use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
+              cell_ix, origin, layout_tier, tier_cell, tier_key, dp_mask);
+use routing_kernel::(TTile, TRoad, TStep);
+
+// Metres per pixel at zoom 0 (256-px tiles) and the latitude factor for the Netherlands. A single cos(lat)
+// for one country is right for a generalisation tolerance and wrong by a few percent at its ends.
+MPP0 = 156543.03;
+COSLAT = 0.6157;
+MPD = 111320.0;        // metres per degree of latitude
+NEVER = 19;
+
+// --- the renderer's debut rules (browser/map.mjs), ported verbatim ------------------------------------
+
+fn area_debut(ring: vector<Coord>) -> integer {
+  if len(ring) == 0 { return NEVER; }
+  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
+  for ac in ring {
+    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
+    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
+  }
+  adx = ((amxx - amnx) as float) / 10000000.0;
+  ady = ((amxy - amny) as float) / 10000000.0;
+  adiag = sqrt(adx * adx + ady * ady);
+  if adiag > 0.008 { 0 } else if adiag > 0.003 { 11 } else if adiag > 0.0015 { 12 }
+  else if adiag > 0.0007 { 13 } else { 14 }
+}
+
+fn line_debut(kind: text) -> integer {
+  if kind == "border" { 8 }
+  else if kind == "river" { 11 }
+  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
+  else if kind == "stream" || kind == "tram" { 13 }
+  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
+  else if kind == "hedge" || kind == "wall" { 15 }
+  else if kind == "fence" { 16 }
+  else { NEVER }
+}
+
+fn label_debut(kind: text, rank: integer) -> integer {
+  if kind == "street" { return 13; }
+  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
+  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
+  else { NEVER }
+}
+
+fn poi_debut(kind: text) -> integer {
+  if kind == "tower" || kind == "peak" || kind == "camp" { 12 }
+  else if kind == "viewpoint" || kind == "ruins" || kind == "monument" { 13 }
+  else if kind == "spring" || kind == "playground" { 14 }
+  else if kind == "bench" || kind == "drinking_water" || kind == "crossing" { 16 }
+  else { 15 }
+}
+
+// --- decimation ---------------------------------------------------------------------------------------
+
+// `dp_mask` works in planar METRES, which is also what makes the tolerance honest: a pixel is a fixed
+// number of metres on the ground at a given zoom, where a fixed number of DEGREES would be 1.62x too
+// generous in latitude at 52°N (Mercator's screen-y slope is 1/cos(lat)).
+fn decimate(ring: vector<Coord>, ox: integer, oy: integer, eps: float) -> vector<Coord> {
+  out: vector<Coord> = [];
+  if len(ring) <= 2 {
+    for c0 in ring { out += [Coord { x: c0.x, y: c0.y }]; }
+    return out;
+  }
+  xs: vector<float> = []; ys: vector<float> = [];
+  for c in ring {
+    xs += [(((ox + (c.x as integer)) as float) / 10000000.0) * MPD * COSLAT];
+    ys += [(((oy + (c.y as integer)) as float) / 10000000.0) * MPD];
+  }
+  mask = dp_mask(xs, ys, eps);
+  for c2 in ring { if mask[c2#index] ?? false { out += [Coord { x: c2.x, y: c2.y }]; } }
+  out
+}
+
+// --- the base half: select, decimate, copy -------------------------------------------------------------
+
+fn note_extent(t: PTile, la: integer, lo: integer) {
+  if t.fcount == 0 { t.fmnla = la; t.fmxla = la; t.fmnlo = lo; t.fmxlo = lo; }
+  else {
+    if la < t.fmnla { t.fmnla = la; }
+    if la > t.fmxla { t.fmxla = la; }
+    if lo < t.fmnlo { t.fmnlo = lo; }
+    if lo > t.fmxlo { t.fmxlo = lo; }
+  }
+  t.fcount += 1;
+}
+
+fn seal_extents(idx: hash<PTile[tkey]>) {
+  for t in idx {
+    for sa in t.areas { for ca in sa.ring { note_extent(t, t.oy + (ca.y as integer), t.ox + (ca.x as integer)); } }
+    for sb in t.buildings { for cb in sb.ring { note_extent(t, t.oy + (cb.y as integer), t.ox + (cb.x as integer)); } }
+    for sl in t.lines { for cl in sl.geom { note_extent(t, t.oy + (cl.y as integer), t.ox + (cl.x as integer)); } }
+    for sk in t.labels { for ck in sk.line { note_extent(t, t.oy + (ck.y as integer), t.ox + (ck.x as integer)); } }
+    for sp in t.pois { note_extent(t, t.oy + (sp.at.y as integer), t.ox + (sp.at.x as integer)); }
+  }
+}
+
+// The output tile for a source tile, created on demand. ⚠ Returns a KEY, not a PTile: a whole-value bind
+// COPIES a heap value (loft C86), so a `-> PTile` version creates every tile and every append lands in
+// the copy — `build_store.loft` paid an hour for that and left the warning.
+fn want_tile(dst: hash<PTile[tkey]>, tkey: integer, ox: integer, oy: integer) -> integer {
+  if dst[tkey] == null {
+    dst += PTile { tkey: tkey, ox: ox, oy: oy, areas: [], buildings: [], lines: [], labels: [], pois: [] };
+  }
+  tkey
+}
+
+// ⚠ AN OVERVIEW MUST BE RE-KEYED, or it inherits a grid built for a hundred times its density.
+//
+// Keeping each feature in its source tile is the obvious thing and it cost 14 MB of 25.5: a tile carries
+// ~548 bytes of fixed cost (five vector headers, origin, sealed extent, store bookkeeping), which the
+// full store amortises over 93 features per tile and an overview does not — it kept 26 848 tiles holding
+// 4.9 features each. Re-keying at a floor tier collapses that without touching a coordinate's meaning:
+// coarser is always SAFE for the reader's one-cell window (a feature still spans at most 2 cells of its
+// own tier), so the floor only ever moves a feature up the ladder.
+struct Place { key: integer, ox: integer, oy: integer }
+
+fn place_of(mnx: integer, mny: integer, mxx: integer, mxy: integer, mintier: integer) -> Place {
+  tier = layout_tier(mnx, mny, mxx, mxy);
+  if tier < mintier { tier = mintier; }
+  tc = tier_cell(tier);
+  tx = cell_ix(mnx, tc); ty = cell_ix(mny, tc);
+  Place { key: tier_key(tier, tx, ty), ox: origin(tx, tc), oy: origin(ty, tc) }
+}
+
+// A ring's absolute bounds, given the origin its coordinates are relative to.
+fn ring_place(ring: vector<Coord>, ox: integer, oy: integer, mintier: integer) -> Place {
+  mnx = ox + ((ring[0].x ?? (0 as i32)) as integer); mxx = mnx;
+  mny = oy + ((ring[0].y ?? (0 as i32)) as integer); mxy = mny;
+  for rc in ring {
+    ax = ox + (rc.x as integer); ay = oy + (rc.y as integer);
+    if ax < mnx { mnx = ax; } if ax > mxx { mxx = ax; }
+    if ay < mny { mny = ay; } if ay > mxy { mxy = ay; }
+  }
+  place_of(mnx, mny, mxx, mxy, mintier)
+}
+
+// The same geometry against a different origin. Coordinates are stored relative to their tile, so moving
+// a feature between tiles is a subtraction — never a change to the ground it covers.
+fn rebase(ring: vector<Coord>, ox: integer, oy: integer, nox: integer, noy: integer) -> vector<Coord> {
+  r: vector<Coord> = [];
+  for bc in ring {
+    r += [Coord { x: (ox + (bc.x as integer) - nox) as i32? ?? (0 as i32),
+                  y: (oy + (bc.y as integer) - noy) as i32? ?? (0 as i32) }];
+  }
+  r
+}
+
+struct Counts { areas: integer, lines: integer, labels: integer, pois: integer,
+                coords_in: integer, coords_out: integer, spine: integer, spine_coords: integer }
+
+fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, mintier: integer, c: Counts) {
+  for a in src.areas {
+    if area_debut(a.ring) <= zmax {
+      g = decimate(a.ring, src.ox, src.oy, eps);
+      if len(g) >= 3 {
+        pl = ring_place(g, src.ox, src.oy, mintier);
+        k = want_tile(dst, pl.key, pl.ox, pl.oy);
+        t = dst[k];
+        if t != null { t.areas += [Area { cover: a.cover, ring: rebase(g, src.ox, src.oy, pl.ox, pl.oy) }]; }
+        c.areas += 1; c.coords_in += len(a.ring); c.coords_out += len(g);
+      }
+    }
+  }
+}
+
+fn take_lines(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, mintier: integer, c: Counts) {
+  for l in src.lines {
+    if line_debut(l.kind) <= zmax {
+      g = decimate(l.geom, src.ox, src.oy, eps);
+      if len(g) >= 2 {
+        pl = ring_place(g, src.ox, src.oy, mintier);
+        k = want_tile(dst, pl.key, pl.ox, pl.oy);
+        t = dst[k];
+        if t != null { t.lines += [Line { kind: l.kind, name: l.name, geom: rebase(g, src.ox, src.oy, pl.ox, pl.oy) }]; }
+        c.lines += 1; c.coords_in += len(l.geom); c.coords_out += len(g);
+      }
+    }
+  }
+}
+
+// A place is a POINT and a street label a centreline; at overview zooms only places survive the debut
+// test, and one anchor coordinate is all a label needs.
+fn take_labels(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, mintier: integer, c: Counts) {
+  for lb in src.labels {
+    if label_debut(lb.kind, lb.rank) <= zmax && len(lb.line) >= 1 {
+      g: vector<Coord> = [Coord { x: lb.line[0].x, y: lb.line[0].y }];
+      pl = ring_place(g, src.ox, src.oy, mintier);
+      k = want_tile(dst, pl.key, pl.ox, pl.oy);
+      t = dst[k];
+      if t != null { t.labels += [Label { name: lb.name, kind: lb.kind, rank: lb.rank, line: rebase(g, src.ox, src.oy, pl.ox, pl.oy) }]; }
+      c.labels += 1; c.coords_in += len(lb.line); c.coords_out += 1;
+    }
+  }
+}
+
+fn take_pois(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, mintier: integer, c: Counts) {
+  for p in src.pois {
+    if poi_debut(p.kind) <= zmax {
+      pg: vector<Coord> = [Coord { x: p.at.x, y: p.at.y }];
+      pl = ring_place(pg, src.ox, src.oy, mintier);
+      k = want_tile(dst, pl.key, pl.ox, pl.oy);
+      t = dst[k];
+      pr = rebase(pg, src.ox, src.oy, pl.ox, pl.oy);
+      if t != null { t.pois += [Poi { kind: p.kind, name: p.name, at: pr[0] ?? Coord { x: 0 as i32, y: 0 as i32 } }]; }
+      c.pois += 1; c.coords_in += 1; c.coords_out += 1;
+    }
+  }
+}
+
+// --- the spine: lift ways out of the roads store, CHAIN them, then decimate ---------------------------
+
+// One OSM way as absolute fixed-point vertices, with its class and the endpoint keys it can be chained on.
+struct Run { cls: integer, xs: vector<integer>, ys: vector<integer>, used: boolean }
+// endpoint text key -> the runs that end there. Text rather than a packed integer because two i32
+// coordinates do not pack into an i64 without a bias that is easy to get subtly wrong, and this is a
+// generator: 183k lookups cost nothing.
+struct EndPt { k: text, a: integer, b: integer }
+
+fn end_key(x: integer, y: integer) -> text { "{x},{y}" }
+
+fn note_end(ends: hash<EndPt[k]>, x: integer, y: integer, ri: integer) {
+  ek = end_key(x, y);
+  e = ends[ek];
+  if e == null { ends += [EndPt { k: ek, a: ri, b: 0 - 1 }]; }
+  else if e.b < 0 { e.b = ri; }
+}
+
+// The class a road tile entry belongs to for the overview, or -1 to skip it. tp 0 is motorway (drawn from
+// z8) and tp 1 is trunk+primary (z9/z10) — the store conflates trunk with primary, so they share a kind.
+fn spine_class(tp: integer, zmax: integer) -> integer {
+  if tp == 0 && zmax >= 8 { 0 }
+  else if tp == 1 && zmax >= 9 { 1 }
+  else if tp == 2 && zmax >= 11 { 2 }
+  else { 0 - 1 }
+}
+
+fn spine_kind(cls: integer) -> text {
+  if cls == 0 { "motorway" } else if cls == 1 { "primary" } else { "secondary" }
+}
+
+fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends: hash<EndPt[k]>) {
+  for t in roads {
+    cur = 0;
+    for r in t.roads {
+      ns = r.steps;
+      cls = spine_class(r.tp, zmax);
+      if cls >= 0 && ns >= 2 && cur + ns - 1 < len(t.steps) {
+        xs: vector<integer> = []; ys: vector<integer> = [];
+        si = 0;
+        while si < ns {
+          xs += [t.ox + ((t.steps[cur + si].x ?? (0 as i32)) as integer)];
+          ys += [t.oy + ((t.steps[cur + si].y ?? (0 as i32)) as integer)];
+          si += 1;
+        }
+        runs += [Run { cls: cls, xs: xs, ys: ys, used: false }];
+        ri = len(runs) - 1;
+        note_end(ends, xs[0] ?? 0, ys[0] ?? 0, ri);
+        note_end(ends, xs[ns - 1] ?? 0, ys[ns - 1] ?? 0, ri);
+      }
+      cur += ns;
+    }
+  }
+}
+
+// An UNUSED run of the same class ending at (x,y), or -1. Only two runs per endpoint are tracked: a
+// junction of three or more is where a chain SHOULD stop anyway — carrying on through it would invent a
+// road that does not exist as a single way anywhere.
+//
+// ⚠ Both slots must be TESTED, not just preferred in order. The first draft overwrote a good candidate in
+// `a` with whatever sat in `b`, and since the run we arrive on is already `used` and lands in either slot
+// with equal probability, that silently refused HALF of all continuations: 1508 city ways chained into
+// 814 pieces (1.85 ways each) instead of the 200 they should make. Used-ness alone excludes the run we
+// came from, so no self-index is needed.
+fn other_at(ends: hash<EndPt[k]>, runs: vector<Run>, x: integer, y: integer, cls: integer) -> integer {
+  e = ends[end_key(x, y)];
+  if e == null { return 0 - 1; }
+  if e.a >= 0 {
+    oa = runs[e.a];
+    if oa != null && !oa.used && oa.cls == cls { return e.a; }
+  }
+  if e.b >= 0 {
+    ob = runs[e.b];
+    if ob != null && !ob.used && ob.cls == cls { return e.b; }
+  }
+  0 - 1
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for av in arguments() { argv += [av]; }
+  if len(argv) < 4 { println("usage: build_overview <base.store> <roads.store> <out.store> <zmax> [mintier]"); return; }
+  base_path = argv[0] ?? ""; roads_path = argv[1] ?? ""; out_path = argv[2] ?? "";
+  zmax = argv[3] as integer ?? 10;
+  // The FLOOR tier for the output grid — see `place_of`. 2 is a 0.32-degree cell, which puts a country in
+  // a few hundred tiles instead of tens of thousands.
+  mintier = argv[4] as integer ?? 2;
+
+  if file(out_path).exists() {
+    println("#PERSIST FAIL {out_path} already exists — store_persist_bind would keep the OLD image and report success. Remove it first.");
+    return;
+  }
+
+  // One pixel at `zmax`, in metres on the ground: the tolerance at which decimation is INVISIBLE, which
+  // is the property that makes the handover to the detailed blocks unseeable rather than blended.
+  sc = 1.0;
+  zk = 0;
+  while zk < zmax { sc = sc * 2.0; zk += 1; }
+  eps = ((MPP0 * COSLAT) / sc) ?? 1.0;
+
+  src: hash<PTile[tkey]> = [];
+  if !store_load(src, base_path) { println("#O FAIL cannot load {base_path}"); return; }
+  out: hash<PTile[tkey]> = [];
+  c = Counts { areas: 0, lines: 0, labels: 0, pois: 0, coords_in: 0, coords_out: 0, spine: 0, spine_coords: 0 };
+  srct = 0; srcf = 0;
+  for t in src {
+    srct += 1;
+    for _a in t.areas { srcf += 1; }
+    for _b in t.buildings { srcf += 1; }
+    for _l in t.lines { srcf += 1; }
+    for _k in t.labels { srcf += 1; }
+    for _p in t.pois { srcf += 1; }
+    take_areas(t, out, zmax, eps, mintier, c);
+    take_lines(t, out, zmax, eps, mintier, c);
+    take_labels(t, out, zmax, mintier, c);
+    take_pois(t, out, zmax, mintier, c);
+  }
+  println("#O base: {srct} tiles / {srcf} features in · kept {c.areas} areas, {c.lines} lines, {c.labels} labels, {c.pois} pois · coords {c.coords_in} -> {c.coords_out}");
+
+  // --- the spine ---------------------------------------------------------------------------------------
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, roads_path) { println("#O FAIL cannot load {roads_path}"); return; }
+  runs: vector<Run> = [];
+  ends: hash<EndPt[k]> = [];
+  collect_runs(roads, zmax, runs, ends);
+  nways = len(runs);
+
+  chains = 0;
+  ri2 = 0;
+  while ri2 < nways {
+    r0 = runs[ri2];
+    if r0 != null && !r0.used {
+      r0.used = true;
+      cls = r0.cls;
+      cx: vector<integer> = []; cy: vector<integer> = [];
+      for xv in r0.xs { cx += [xv]; }
+      for yv in r0.ys { cy += [yv]; }
+      // Grow the chain at BOTH ends. A run is picked up in tile order, so it is usually somewhere in the
+      // middle of a road: extending only the tail would capture half of it and leave the other half to
+      // start a second chain, which is the fragmentation this whole step exists to remove.
+      more = true;
+      while more {
+        more = false;
+        nx = other_at(ends, runs, cx[len(cx) - 1] ?? 0, cy[len(cy) - 1] ?? 0, cls);
+        if nx >= 0 {
+          o = runs[nx];
+          if o != null {
+            o.used = true;
+            if (o.xs[0] ?? 0) == (cx[len(cx) - 1] ?? 0) && (o.ys[0] ?? 0) == (cy[len(cy) - 1] ?? 0) {
+              oi = 1;
+              while oi < len(o.xs) { cx += [o.xs[oi] ?? 0]; cy += [o.ys[oi] ?? 0]; oi += 1; }
+            } else {
+              oi2 = len(o.xs) - 2;
+              while oi2 >= 0 { cx += [o.xs[oi2] ?? 0]; cy += [o.ys[oi2] ?? 0]; oi2 -= 1; }
+            }
+            more = true;
+          }
+        }
+      }
+      // Backward: collect what precedes the head into hx/hy, nearest-first, then reverse it in front.
+      // Prepending per run would be quadratic on a national motorway.
+      hx: vector<integer> = []; hy: vector<integer> = [];
+      hx0 = cx[0] ?? 0; hy0 = cy[0] ?? 0;
+      back = true;
+      while back {
+        back = false;
+        px2 = other_at(ends, runs, hx0, hy0, cls);
+        if px2 >= 0 {
+          p = runs[px2];
+          if p != null {
+            p.used = true;
+            if (p.xs[len(p.xs) - 1] ?? 0) == hx0 && (p.ys[len(p.ys) - 1] ?? 0) == hy0 {
+              pi = len(p.xs) - 2;
+              while pi >= 0 { hx += [p.xs[pi] ?? 0]; hy += [p.ys[pi] ?? 0]; pi -= 1; }
+            } else {
+              pi2 = 1;
+              while pi2 < len(p.xs) { hx += [p.xs[pi2] ?? 0]; hy += [p.ys[pi2] ?? 0]; pi2 += 1; }
+            }
+            hx0 = hx[len(hx) - 1] ?? hx0; hy0 = hy[len(hy) - 1] ?? hy0;
+            back = true;
+          }
+        }
+      }
+      if len(hx) > 0 {
+        fx: vector<integer> = []; fy: vector<integer> = [];
+        hb = len(hx) - 1;
+        while hb >= 0 { fx += [hx[hb] ?? 0]; fy += [hy[hb] ?? 0]; hb -= 1; }
+        for xf in cx { fx += [xf]; }
+        for yf in cy { fy += [yf]; }
+        cx = fx; cy = fy;
+      }
+      // The chain as a ring in the store's own relative form: pick its tile from the whole bbox, exactly
+      // as a base feature is keyed (`layout_tier` at the cell holding the minimum corner).
+      mnx = cx[0] ?? 0; mxx = mnx; mny = cy[0] ?? 0; mxy = mny;
+      for xv2 in cx { if xv2 < mnx { mnx = xv2; } if xv2 > mxx { mxx = xv2; } }
+      for yv2 in cy { if yv2 < mny { mny = yv2; } if yv2 > mxy { mxy = yv2; } }
+      spl = place_of(mnx, mny, mxx, mxy, mintier);
+      ox = spl.ox; oy = spl.oy; key = spl.key;
+      ring: vector<Coord> = [];
+      for xi in 0..len(cx) {
+        ring += [Coord { x: ((cx[xi] ?? 0) - ox) as i32? ?? (0 as i32),
+                         y: ((cy[xi] ?? 0) - oy) as i32? ?? (0 as i32) }];
+      }
+      g = decimate(ring, ox, oy, eps);
+      if len(g) >= 2 {
+        k2 = want_tile(out, key, ox, oy);
+        t2 = out[k2];
+        if t2 != null { t2.lines += [Line { kind: spine_kind(cls), name: "", geom: g }]; }
+        c.spine += 1; c.spine_coords += len(g);
+      }
+      chains += 1;
+    }
+    ri2 += 1;
+  }
+  println("#O spine: {nways} ways -> {chains} chains -> {c.spine} lines, {c.spine_coords} coords");
+
+  seal_extents(out);
+  ok = store_persist_bind(out, out_path);
+  dst: hash<PTile[tkey]> = [];
+  lok = store_load(dst, out_path);
+  vok = store_verify(dst);
+  nt = 0; nf = 0; nc = 0;
+  for t3 in dst {
+    nt += 1;
+    for a3 in t3.areas { nf += 1; nc += len(a3.ring); }
+    for b3 in t3.buildings { nf += 1; nc += len(b3.ring); }
+    for l3 in t3.lines { nf += 1; nc += len(l3.geom); }
+    for k3 in t3.labels { nf += 1; nc += len(k3.line); }
+    for _p3 in t3.pois { nf += 1; nc += 1; }
+  }
+  println("#O out zmax={zmax} mintier={mintier} eps={eps:1.1}m · persist {ok} load {lok} verify {vok} · {nt} tiles {nf} features {nc} coords · {file(out_path).size} bytes");
+}

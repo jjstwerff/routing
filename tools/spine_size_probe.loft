@@ -1,0 +1,172 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// HOW BIG IS THE OVERVIEW'S ROAD SPINE — and how much of it has to come from MERGING? (PLAN-SCALE §6i O0)
+//
+// A country map is roads first, and the road spine is the one part of an overview that cannot be taken
+// from the base store: `basemap`'s Line kinds are waterway/railway/barrier/aeroway/boundary/power, so the
+// motorways have to be lifted out of the ROADS store. This sizes that lift, and it separates the two
+// numbers §6i says must be separated:
+//
+//   DECIMATED   Douglas-Peucker per WAY at one pixel of the zoom — what you get keeping way identity
+//   MERGED IDEAL  total length / metres-per-pixel — what a spine costs once consecutive ways of a class
+//                 are stitched into runs FIRST
+//
+// The gap between them is the whole argument for merging: the country holds 27 595 motorway *ways* for a
+// few thousand km of motorway (~130 m per way, OSM fragmentation), and DP cannot drop a way's two
+// endpoints, so decimation alone has a floor of 2 vertices per way that merging removes.
+//
+//   loft --native --lib lib tools/spine_size_probe.loft <roads.store> <z,z,…>
+//
+// Walks the whole store: this is a GENERATION-time sizing question, not something the app does.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+// Metres per pixel at the equator, zoom 0 (256-px tiles): 2 * pi * 6378137 / 256.
+MPP0 = 156543.03;
+// The Netherlands sits near 52°N and a Mercator pixel shrinks with cos(lat); one factor for the whole
+// country is right for a size estimate and wrong by a few percent at its ends.
+COSLAT = 0.6157;
+
+struct Cls { ways: vector<integer>, verts: vector<integer>, metres: vector<float>, kept: vector<integer> }
+
+fn new_cls(nz: integer) -> Cls {
+  Cls { ways: [for _ in 0..16 { 0 }], verts: [for _ in 0..16 { 0 }],
+        metres: [for _ in 0..16 { 0.0 }], kept: [for _ in 0..(16 * nz) { 0 }] }
+}
+
+fn class_name(tp: integer) -> text {
+  if tp == 0 { "motorway" } else if tp == 1 { "trunk_primary" } else if tp == 2 { "secondary" }
+  else if tp == 3 { "tertiary_uncl" } else { "other" }
+}
+
+// Douglas-Peucker over an INDEX RANGE of a tile's flat step vector — no per-way sub-vector is
+// materialised, because a country holds 2.8 million ways and the allocation would dominate the walk.
+// ⚠ A PIXEL IS NOT A DEGREE IN BOTH AXES. In Mercator, screen-x is proportional to longitude but
+// screen-y to ln(tan(...)), whose slope is 1/cos(lat) — so at 52°N one degree of LATITUDE is 1.62 screen
+// pixels for every one a degree of longitude buys. Decimating on raw degrees is therefore 1.62x too
+// generous vertically and quietly drops vertices that are up to 1.6 px off the line. The y-deltas are
+// scaled by this before any distance is taken.
+const MERC_Y = 1.624;
+
+struct Seg { lo: integer, hi: integer }
+
+fn dp_keep_range(steps: vector<TStep>, lo: integer, hi: integer, tol: integer) -> integer {
+  if hi <= lo + 1 { return hi - lo + 1; }
+  n = hi - lo + 1;
+  keep: vector<boolean> = [for _ in 0..n { false }];
+  keep[0] = true; keep[n - 1] = true;
+  stack: vector<Seg> = [Seg { lo: 0, hi: n - 1 }];
+  while len(stack) > 0 {
+    sg = stack[len(stack) - 1];
+    stack = stack[0..(len(stack) - 1)];
+    slo = sg.lo; shi = sg.hi;
+    if shi <= slo + 1 { continue; }
+    ax = (steps[lo + slo].x ?? 0) as integer; ay = (steps[lo + slo].y ?? 0) as integer;
+    bx = (steps[lo + shi].x ?? 0) as integer; by = (steps[lo + shi].y ?? 0) as integer;
+    dxf = (bx - ax) as float; dyf = ((by - ay) as float) * MERC_Y;
+    dnorm = sqrt(dxf * dxf + dyf * dyf);
+    best = -1; bestd = 0.0;
+    si = slo + 1;
+    while si < shi {
+      px = (steps[lo + si].x ?? 0) as integer; py = (steps[lo + si].y ?? 0) as integer;
+      dist = 0.0;
+      if dnorm > 0.0 {
+        cross = dxf * (((py - ay) as float) * MERC_Y) - dyf * ((px - ax) as float);
+        dist = ((if cross < 0.0 { 0.0 - cross } else { cross }) / dnorm) ?? 0.0;
+      } else {
+        ddx = (px - ax) as float; ddy = ((py - ay) as float) * MERC_Y;
+        dist = sqrt(ddx * ddx + ddy * ddy);
+      }
+      if dist > bestd { bestd = dist; best = si; }
+      si += 1;
+    }
+    if best >= 0 && bestd > (tol as float) {
+      keep[best] = true;
+      stack += [Seg { lo: slo, hi: best }];
+      stack += [Seg { lo: best, hi: shi }];
+    }
+  }
+  kept = 0;
+  for kb in keep { if kb { kept += 1; } }
+  kept
+}
+
+fn run_length(steps: vector<TStep>, lo: integer, hi: integer) -> float {
+  m = 0.0;
+  li = lo;
+  while li < hi {
+    ddx = ((steps[li + 1].x ?? 0) - (steps[li].x ?? 0)) as float;
+    ddy = ((steps[li + 1].y ?? 0) - (steps[li].y ?? 0)) as float;
+    // fixed-point 1e-7 degrees -> metres; longitude is compressed by cos(lat)
+    mx = (ddx / 10000000.0) * 111320.0 * COSLAT;
+    my = (ddy / 10000000.0) * 111320.0;
+    m += sqrt(mx * mx + my * my);
+    li += 1;
+  }
+  m
+}
+
+fn take_tile(t: TTile, zs: vector<integer>, tols: vector<integer>, cl: Cls) {
+  cur = 0;
+  for r in t.roads {
+    ns = r.steps;
+    if ns >= 2 && r.tp <= 3 {
+      lo = cur; hi = cur + ns - 1;
+      if hi < len(t.steps) {
+        cl.ways[r.tp] += 1;
+        cl.verts[r.tp] += ns;
+        cl.metres[r.tp] += run_length(t.steps, lo, hi);
+        for zj in 0..len(zs) {
+          cl.kept[r.tp * len(zs) + zj] += dp_keep_range(t.steps, lo, hi, tols[zj] ?? 0);
+        }
+      }
+    }
+    cur += ns;
+  }
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for av in arguments() { argv += [av]; }
+  path = argv[0] ?? "";
+  zspec = argv[1] ?? "8,10,12";
+  zs: vector<integer> = [];
+  for zt in zspec.split(',') { zs += [zt as integer ?? 10]; }
+  tols: vector<integer> = [];
+  mpp: vector<float> = [];
+  for zv in zs {
+    wpx = 256.0;
+    zi = 0;
+    while zi < zv { wpx = wpx * 2.0; zi += 1; }
+    tols += [round(((360.0 / wpx) ?? 0.0) * 10000000.0) as integer];
+    sc = 1.0;
+    zk = 0;
+    while zk < zv { sc = sc * 2.0; zk += 1; }
+    mpp += [((MPP0 * COSLAT) / sc) ?? 0.0];
+  }
+
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, path) { println("#S FAIL cannot load {path}"); return; }
+  cl = new_cls(len(zs));
+  tiles = 0;
+  for t in roads { tiles += 1; take_tile(t, zs, tols, cl); }
+
+  println("{path} · {tiles} tiles · spine = classes motorway..tertiary");
+  println("  class          |    ways |    verts |     km | zoom |   DP-per-way | merged ideal");
+  tp = 0;
+  while tp <= 3 {
+    km = (cl.metres[tp] ?? 0.0) / 1000.0;
+    for zk2 in 0..len(zs) {
+      kept = cl.kept[tp * len(zs) + zk2] ?? 0;
+      ideal = ((cl.metres[tp] ?? 0.0) / (mpp[zk2] ?? 1.0)) ?? 0.0;
+      if zk2 == 0 {
+        println("  {class_name(tp):<14} | {cl.ways[tp] ?? 0:>7} | {cl.verts[tp] ?? 0:>8} | {km:6.0} | z{zs[zk2] ?? 0:>3} | {kept:>12} | {ideal:12.0}");
+      } else {
+        println("  {\"\":<14} | {\"\":>7} | {\"\":>8} | {\"\":>6} | z{zs[zk2] ?? 0:>3} | {kept:>12} | {ideal:12.0}");
+      }
+    }
+    tp += 1;
+  }
+}

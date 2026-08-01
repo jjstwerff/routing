@@ -5,25 +5,101 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-08-01) — NL IS LIVE, AND THE MAP IS BLANK OUTSIDE ENSCHEDE
+## 0. START HERE (2026-08-02) — THE WHOLE-COUNTRY BASE MAP IS LIVE; ONE FIX IS WAITING TO MERGE
 
-**https://jjstwerff.github.io/routing/** — routing over the whole country, offline search, and the
-signposted walk/cycle/MTB networks the router actually uses.
+**https://jjstwerff.github.io/routing/** — routing, offline search and now a BASE MAP over the whole
+Netherlands. The blank background outside Enschede is gone: §6f F1–F4 are done and deployed.
 
-> ### ⚠ THE ONE THING THAT IS WRONG, and the next thing to fix
+> ### ⚠ THE BRANCH NOW CARRIES THE WHOLE OVERVIEW LADDER — merge it (2026-08-02, later)
 >
-> **Outside Enschede there is no base map.** You get a route drawn on an empty background, so you cannot
-> tell "the router picked a farm track" from "the map is missing". The maintainer hit this immediately.
+> `we-scale-evaluation` has grown well past the one-commit fix below. **The app now OPENS ON THE
+> NETHERLANDS**: `PLAN-SCALE` §6i designs and builds an *overview block* — the whole country generalised
+> to what a low zoom can show, **17 290 495 features → 132 094, 19.6 MB** — and every zoom below 14 is
+> answered by that one file in **0.6 s**, where z11 used to name 40 554 cell keys (~8 GB) and z12 10 314.
+> The block is **published on `data-v2026-08-02`** and the deploy's own fetcher verifies it, so the branch
+> is deployable. Also on it: sketch densification (a country-zoom drag returned NO route; it now returns
+> one), zoom bands in the index, and three keyed-read probes.
 >
-> It is not a bug — the NL base map is 2.06 GB, Pages caps a site at ~1 GB and the app already uses
-> 560 MB, so the base map went to the release, whose assets send no CORS header. **`PLAN-SCALE.md` §6f is
-> the design that fixes it**, and two measurements taken 2026-08-01 make it much cheaper than §6e assumed:
-> GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (so a second Pages site is a
-> free CORS host), and a country-scale base store PAGES correctly (512 kB fetched from a 1.11 GB file,
-> tile identical to a whole load). Start at **§6f F1**.
+> ⚠ **Two findings on the branch matter beyond this work.** (1) **The paged base map works only because
+> the data repos share the app's origin** — served cross-origin with `ACAO` but no
+> `Access-Control-Expose-Headers` (what GitHub Pages sends) the same code reads 2 requests, 0 bytes, blank
+> map, no error; `cors_host_gate` is green because our test server models a *correct* CORS host, which
+> Pages is not. That undercuts D2's off-origin plan. (2) **The unit of read cost is the KEY, not the
+> feature** — ~3 × 64 kB pages each, no batch amortisation, so an empty window costs MORE than a dense one.
+> That is `loft-lang/loft` material and it gates the remaining detail work (§6i O5).
 >
-> ⚠ And the process lesson: `nl_live_gate` proved routing and search on the live site and **never asked
-> whether anything was DRAWN**. A blank map passed every gate. §6f F5 adds the render assertion.
+> ⚠ **The installed loft moved mid-session: 2026.7.2 → 2026.8.0** (2026-08-02 19:59, md5 `13311104…`).
+> Everything was re-verified on it, including a wasm rebuild.
+
+> ### ⚠ DO THIS FIRST — a one-commit fix is on a branch and the live map needs it
+>
+> Branch **`we-scale-evaluation`** holds `85f174d` and `f3481d2`. **Open a PR and merge them.** Until
+> then the deployed app is only usable zoomed IN, and the reason is a regression F4 exposed:
+>
+> **Read mode was resolved once at startup from the CAMERA's block.** A camera over the small Enschede
+> block at z13.68 has a viewport WIDER than that block, so selection correctly picks a country region —
+> and the mode still said `whole`, so the app asked for a **774 MB base store as one download**. It never
+> finishes, which looks exactly like "the base map is still missing". Reproduced on the live site:
+> `base-store requests: 1 — nl-east.base.store:200` (a 200, not a 206) with `range reads: 0`.
+>
+> Fixed by deriving the mode per command from the blocks that command actually named
+> (`blocksChosenFor`); a set is PAGED if any block in it is. Verified at that exact camera against the
+> real four regions: **175 423 features drawn, 8331 range requests**, where before it was one 200 and
+> nothing. `browser/cdp_live_render.mjs <dt> <url>` re-checks any deployed URL in one run.
+
+### What is live (dataset `v2026-08-02`)
+
+| | |
+|---|---|
+| roads | four blocks, 502 MB, same-origin on Pages, paged |
+| names | `nl.names.store` 36 MB, searched offline |
+| **base map** | **2.75 GB across FOUR Pages data repos** — `routing-data-nl-{west,midwest,mideast,east}`, read cross-origin by byte range (206 + `access-control-allow-origin`, verified per repo) |
+| site total | 565 MB of a 950 MB budget (59%) |
+| release | `data-v2026-08-02`, 3.1 GB, every asset re-read for a 206 and its exact size |
+
+### The three rules F3/F4 added, each of which cost something to learn
+
+1. **A feature is keyed at the finest tier whose cells its bbox spans ≤ 2 of, at the cell holding the
+   bbox's MINIMUM CORNER.** That bounds its reach to one cell, in one direction, so a reader pads the low
+   side only and paging is EXACT: missed features at z16/z14 went 7/5 → **0/0**, keys asked 111 → 69, and
+   the store is the same size. Regions measure zero missed.
+2. **A region carries a 0.10° MARGIN of its neighbours**, wider than a padded z14 viewport, so no viewport
+   ever shows a seam: a z14 view centred on a cut draws 61 631 features from ONE region — the count the
+   whole country gives. Four regions rather than three because three cannot hold that margin under the
+   cap. ⚠ **Roads are cut WITHOUT the margin** — the client stitches road blocks and a duplicated way is a
+   different match, not a slower one — so a region's two stores do not describe the same ground.
+3. **Read mode belongs to the STORE**, not to the camera's block (the fix above).
+
+⚠ **`store_persist_bind` over an EXISTING file keeps the old image and returns `true`.** New counts
+printed, fresh mtime, previous map still on disk. It produced a wrong region cut that only reading the
+extent back caught. Every persisting tool now refuses an existing target (`#PERSIST FAIL`) — **delete
+before you regenerate.**
+
+⚠ **A tiered base store's EXTENT is not a geographic bound.** A 256 km tile makes all four region extents
+read the whole country, so selecting a block by base extent picked an arbitrary region and **Den Haag and
+Rotterdam rendered as two lines** while the gate stayed green on aggregate. Selection is on the ROADS
+extent. `build_index.sh` still writes a base extent — treat it as a size, not a location.
+
+### Next, in the order the evidence favours
+
+1. **Merge the branch** (above), then re-run `tools/nl_live_gate.sh` — it is F5 now: it asserts the map is
+   DRAWN, which is the check whose absence let a blank map ship.
+2. **Optimisation, which is what the maintainer wants next.** A z13.68 viewport costs **68 MB** and 124 MB
+   over the Randstad — measured, and the dominant term is not geometry: a keyed read costs ~100 kB whether
+   or not the key exists, so the bill is asking, not receiving. Levers, cheapest first: a coarser
+   `LAYOUT_CELL` (trades probe count against over-fetch, has an optimum worth measuring), a cheaper
+   absent-key probe in loft's paged loader (`layout_page_probe … pageload` is a ready reproducer), and
+   generalisation — a zoom pyramid — which is the only thing that helps a zoomed-out view.
+3. **Western Europe** — `PLAN-SCALE` §6h says the read path scales and the PUBLISHING does not, measured:
+   20.5 GB of source against NL's 1.40 GB (14.7×) projects to a 30 GB base map and ~58 regions. Three
+   patterns break first: the roads stop fitting the app's own site (3.5 GB vs 0.95 GB), one Pages repo per
+   region becomes 58 (this is where D2/R2 stops being optional, ~$0.61/month), and the 62-block ceiling in
+   `block_overlap.loft` binds. §6g has the automatic region planner design, prototyped.
+
+⚠ **Local browser gates run with `SITE_LOCAL_ONLY=1`**, which names only the blocks that ship with the
+app. Without it they reach the internet for an off-site base map and do a country's work to check a
+city's invariants — `map_render_gate` ran past a four-minute guard. Re-verified on a quiet box, because
+the first measurement was taken while a stranded headless chromium of mine sat at ~1000% CPU.
 
 | | |
 |---|---|
@@ -112,7 +188,15 @@ for the release, which serves ranges but no CORS header.
    green on aggregate. `baseUrlsFor` selects on the ROADS extent and reads the base URL off that region.
    `build_index.sh` still writes a base extent into the index — treat it as a size, not a location.
 
-**Next, and it is scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
+**Western Europe: the read path scales, the PUBLISHING does not (`PLAN-SCALE` §6h).** Measured, not
+guessed — Geofabrik's thirteen WE countries are 20.5 GB of source against NL's 1.40 GB, **14.7×**, which
+projects this session's blocks to a **30 GB base map (40.5 GB with margins), 3.5 GB of roads and ~58
+regions**. Three patterns break before any of that is buildable: the **roads stop fitting the app's own
+site** (3.5 GB vs 0.95 GB, so every store moves off-origin), **one Pages repo per region becomes 58**
+(this is where D2/R2 stops being optional — 40.5 GB is ~$0.61/month), and the **62-block ceiling in
+`block_overlap.loft` binds** at ~58 blocks. Each is a small known fix; all three are prerequisites.
+
+**Also scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
 four regions were cut by hand off a 1-D longitude profile, which does not survive Western Europe: a
 longitude cut cannot make a dense COLUMN smaller, and London / Paris / the Ruhr / Milan each can put a
 strip over the cap alone. The design is download → osmium → **count coords per 0.05° cell** → kd-split on

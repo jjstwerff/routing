@@ -575,6 +575,56 @@ export function orientBarriers(barriers, F) {
 // emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
 // including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
 // re-match redraw correctly rather than concatenate onto the previous route.
+// PLAN-SCALE §6i O2 — SPLIT A SKETCH'S LONG SEGMENTS BEFORE MATCHING.
+//
+// This is a MATCHER, not an A-to-B router: the corridor is a tube around the drawn line, so two points
+// far apart describe a straight band the road network need not follow, and the match comes back with the
+// sketch echoed rather than a route. Measured on the same Amsterdam corridor, three points each time:
+// 1 km spacing → 46 route points, 2 km → 104, **3 km → none**, 4 km → none. It was invisible while the
+// app opened at z16, where a drag is metres; at z8 a 100-pixel drag is ~40 km, so the country view makes
+// the failing case the ordinary gesture.
+//
+// Interpolation along the segment the user already drew adds no intent — the points are collinear with
+// what they placed — and it is applied to the MATCH SPEC only. The sketch the user edits keeps exactly
+// the points they put there, because ids, drag, delete and undo are all keyed on those.
+export function densifySketch(pts, maxStepM = 1000) {
+  if (!Array.isArray(pts) || pts.length < 2 || !(maxStepM > 0)) return pts;
+  // Returns the ORIGINAL array when nothing needed splitting, so "an ordinary sketch is untouched" is a
+  // structural fact rather than a promise — the caller's `dense.length > pts.length` guard then cannot
+  // fire on a rebuild of the same points.
+  let split = false;
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [la0, lo0] = pts[i], [la1, lo1] = pts[i + 1];
+    out.push(pts[i]);
+    // Equirectangular metres: exact enough to decide how many pieces a segment needs, and the segment is
+    // a straight line in the same space it will be drawn in.
+    const dy = (la1 - la0) * 111320;
+    const dx = (lo1 - lo0) * 111320 * Math.cos((la0 + la1) / 2 * Math.PI / 180);
+    const n = Math.ceil(Math.hypot(dx, dy) / maxStepM);
+    if (n > 1) split = true;
+    for (let k = 1; k < n; k++) {
+      const t = k / n;
+      out.push([la0 + (la1 - la0) * t, lo0 + (lo1 - lo0) * t]);
+    }
+  }
+  if (!split) return pts;
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+// Did the matcher hand the sketch straight back? That is how "no route" presents — `match_route` returns
+// its input trace when it cannot bridge — and it is the only signal the caller gets, since a failed match
+// still reports a summary and a length (the straight-line one).
+export function isSketchEcho(route, pts) {
+  if (!Array.isArray(route) || !Array.isArray(pts) || route.length !== pts.length || !pts.length) return false;
+  for (let i = 0; i < pts.length; i++) {
+    // loft prints coordinates at 6 decimals, so compare at the precision that survives the round trip.
+    if (Math.abs(route[i][0] - pts[i][0]) > 1e-6 || Math.abs(route[i][1] - pts[i][1]) > 1e-6) return false;
+  }
+  return true;
+}
+
 export function parseStretch(line) {
   if (!line || !line.startsWith('STRETCH ')) return null;
   const parts = line.split(';');
@@ -668,6 +718,14 @@ const LINE_STYLES = {                               // waterway = blue; railway 
   border: { color: '#a06ba0', width: 2.2, dash: [7, 3, 2, 3], minZoom: 8 },
   // Transmission lines are a landmark in open country, and the one thing that makes a polder legible.
   powerline: { color: '#9a9a9a', width: 0.9, minZoom: 14 },
+  // PLAN-SCALE §6i O1 — THE OVERVIEW'S ROAD SPINE. Below the handover zoom the map is one generalised
+  // block and there is no roads store in it at all, so the motorways arrive as LINES rather than through
+  // `loadRoadsFlat`. Colours track ROAD_STYLES' motorway/primary so crossing the handover changes the
+  // source and not the picture; the widths are a touch heavier because at z8 a road is the only structure
+  // on screen. `minZoom` matches the class the generator selected on (motorway z8, trunk/primary z9),
+  // which is what stops them drawing on top of the detailed roads once the regions take over.
+  motorway: { color: '#e892a2', width: 2.2, minZoom: 8 },
+  primary: { color: '#f9b29c', width: 1.6, minZoom: 9 },
 };
 const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
   // Small, grey and late: a pylon marks where the line it carries actually stands, and there are hundreds.
