@@ -1030,9 +1030,21 @@ the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a dif
 
 #### The order I would do it in
 
-1. **Chunked base build** — `build-base.sh` per bbox plus a matrix job. Finishes the automation AND is the
-   WE prerequisite, and is verifiable on NL today: build it in 4 chunks and assert the merged census equals
-   the 17 290 495 features already measured.
+1. ✅ **Chunked base build — DONE 2026-08-01.** `tools/build-base-chunked.sh` cuts a region into n
+   longitude bands and builds each as a whole region (roads then base, since the base map's street labels
+   come from the roads export for the same box). `tools/trim_base.loft` makes them disjoint: `osmium
+   extract` keeps whole ways, so a feature straddling an edge lands in both neighbouring extracts and is
+   binned by its first vertex to the same tile in both — trimming to a half-open cell band leaves it in
+   exactly one. **Measured on Enschede: 600 + 519 = 1119 tiles and 138 219 + 72 054 = 210 273 features,
+   identical to n=1, no shared cells.** `tools/base_chunk_gate.sh` asserts it and is verified to fail (a
+   trim that keeps everything gives exactly 2×).
+   Two mistakes worth keeping, both caught by counting: **the margin belongs on INTERIOR seams only** (on
+   the outer edges each end chunk extracted past the region and kept the overshoot — 355 554 against
+   209 932, a larger map rather than a partition), and **the control must be n=1 through the same script**
+   (comparing against the shipped block showed a 341-feature gap that was OSM drift between two build
+   dates, not chunking).
+   *Still to do:* run it on NL at n=4 against the 17 290 495 figure, and wire the matrix job into
+   `data-refresh.yml` so the base map stops being `--no-base`.
 2. **Raise the 62-block cap** — small, and it is a ceiling on everything above it.
 3. **Price D2** — the cost check C5 is already gated on, and the thing that decides whether the WE base map
    is coverage or opt-in. `tools/cors_host_gate.sh` passes today, so the path is tested, not hypothetical.
