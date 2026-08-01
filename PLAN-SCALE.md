@@ -1621,6 +1621,45 @@ the detailed regions do — and §6i's own arithmetic says the detailed path cos
 regression (it is what every zoom below z14 already cost) but the default camera now leads there, which
 makes **O3 — the middle levels on their own coarse grids — the next rung rather than a later one.**
 
+#### ✅ O3 — THE GAP IS CLOSED, and the fix is not the one the design proposed (2026-08-02)
+
+O1b left z11–z13 unaffordable and promoted this to the next rung. The handover is **z14** now, and every
+zoom below it is answered by the overview alone. Measured, cold, against the local site:
+
+| camera | requests | drawn | wall |
+|---|---|---|---|
+| z11 | 1 · overview · 19.62 MB | 16 687 areas · 2 441 lines · 53 places | **0.5 s** |
+| z12 | *(same file)* | 5 355 areas · 1 135 lines · 21 places | **0.5 s** |
+| z13 | *(same file)* | 1 411 areas · 495 lines · 3 places | **0.5 s** |
+| z14 | `nl-midwest`, 296 range reads, 18.5 MB | the detailed path, unchanged | 19.5 s |
+
+Against **2 GB at z12 and 8 GB at z11** before. One line of manifest, no new data.
+
+**§6i's own design for this rung was wrong, and the arithmetic says so.** The plan proposed "middle levels
+on their own coarse grids", and the natural cheap version of that is to keep reading the DETAILED store
+but floor the tier the reader starts at. It costs little — z13 floors to 76 keys (~15 MB), z12 to 216 —
+but it buys nothing, because **the tier ladder is a SIZE bin and not a visibility bin.** The coarse tiers
+of an Amsterdam window hold 611 of its 39 646 features and not one place label or motorway. That is §6i's
+already-falsified R1, re-derived from the other end: the features a low zoom needs are selected by DEBUT,
+which is exactly what the overview is and what a tier can never be.
+
+⚠ **And the detailed ROADS cannot be read in the gap at any grid** — one cell size (0.02°), so a padded
+z13 viewport names 231 keys and a z12 one 760, which is 46–152 MB before a single area is drawn. The
+overview's merged spine is what stands in for them, which is why it had to carry roads at all.
+
+**What is closed and what is not.** The PERFORMANCE gap is gone — the whole range z2–z13 is one 19.6 MB
+file, downloaded once and reused. A DETAIL gap remains: at z13 the map is z≤10 content (motorways, big
+areas, city labels) decimated at 94 m, which is ~8 px of error at that zoom. It is coarse, and it is
+instant, and it degrades in one direction only.
+
+⚠ **Closing the DETAIL gap is blocked on the per-key cost, and that is the real finding.** A mid level at
+z≤12 read paged is the right shape, and every grid for it lands in the same place because ~200 kB per key
+dominates whatever the cell size: **0.04° → 216 keys ≈ 54 MB · 0.08° → 66 keys ≈ 26 MB · 0.16° → 28 keys
+≈ 24 MB · 0.32° → 16 keys ≈ 37 MB** for one z12 viewport (probe cost plus over-fetch against ~10 MB of
+content). There is no cell size that makes it cheap. **O5 — loft's 3-pages-per-key with no batch
+amortisation — is therefore a PREREQUISITE for the detail half, not an optimisation beside it.** Fix that
+and every row above divides by ~3.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
@@ -1718,9 +1757,10 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 | **O0** ✅ | **Measure the country's overview population in ONE generator pass** — done 2026-08-02, above | **handover z10; ~11 MB base + ~3 MB spine ≈ 14 MB** |
 | **O1** ✅ | Build the NL z≤10 level (select + **merge** + decimate) **and wire it in** — both done, above | **a bare visit draws 132 094 features in 1 request / 19.62 MB / 0.6 s** |
 | **O2** ◐ | Zoom bands in the index + JS block selection by zoom — **done as part of O1b**. What remains is **sketch densification**: a country-zoom drag is ~40 km between points, which returns NO ROUTE | a country-zoom sketch returns a route |
-| **O3** ⬅ **next** | The middle levels on their own grids (z12 on 0.08° cells). Promoted: the default camera now leads INTO the z11–z13 gap | a z13 view costs ~16 keys instead of 2 777 |
+| **O3** ✅ | Close the z11–z13 gap — **done by extending the overview's band to z14, not by a middle level**: the tier floor buys nothing because a tier is a size bin (above) | **z11/z12/z13 all render in 0.5 s from one file**, against 8 GB / 2 GB / 539 MB of keys before |
+| **O3b** | The DETAIL half — a z≤12 mid level, paged on its own grid | blocked on O5: every cell size lands at 24–54 MB/viewport while a key costs 3 pages |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
-| **O5** | *(independent, upstream)* the per-key page cost — 3 pages per key with no batch amortisation | a z16 view drops from 14.2 MB toward its ~4 MB of content |
+| **O5** ⬅ **next** | *(upstream)* the per-key page cost — 3 pages per key with no batch amortisation. **Promoted: O3b cannot start until this lands** | a z16 view drops from 14.2 MB toward its ~4 MB of content |
 
 O5 is worth filing on `loft-lang/loft` with `tools/base_key_probe.loft` as the repro: it is a ~3× on
 **every** zoom, needs no data change, and it is what makes the ladder's per-level floor affordable.

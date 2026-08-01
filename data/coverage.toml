@@ -34,7 +34,7 @@
 [[region]]
 id        = "enschede"
 name      = "Enschede / south Overijssel"
-zoom_min  = 11
+zoom_min  = 14
 roads     = "stores/enschede.roads.store"
 base      = "stores/enschede.layout.store"
 names     = "stores/enschede.names.store"
@@ -121,12 +121,12 @@ name      = "Netherlands — overview"
 base      = "stores/nl-overview.base.store"
 names     = "stores/nl.names.store"
 read_mode = "whole"
-zoom_max  = 11
+zoom_max  = 14
 
 [[region]]
 id        = "nl-west"
 name      = "Netherlands (west of 4.70°E)"
-zoom_min  = 11
+zoom_min  = 14
 roads     = "stores/nl-west.roads.store"
 base      = "stores/nl-west.base.store"
 names     = "stores/nl.names.store"
@@ -137,7 +137,7 @@ base_cors     = true
 [[region]]
 id        = "nl-midwest"
 name      = "Netherlands (4.70–5.40°E)"
-zoom_min  = 11
+zoom_min  = 14
 roads     = "stores/nl-midwest.roads.store"
 base      = "stores/nl-midwest.base.store"
 names     = "stores/nl.names.store"
@@ -148,7 +148,7 @@ base_cors     = true
 [[region]]
 id        = "nl-mideast"
 name      = "Netherlands (5.40–5.90°E)"
-zoom_min  = 11
+zoom_min  = 14
 roads     = "stores/nl-mideast.roads.store"
 base      = "stores/nl-mideast.base.store"
 names     = "stores/nl.names.store"
@@ -159,7 +159,7 @@ base_cors     = true
 [[region]]
 id        = "nl-east"
 name      = "Netherlands (east of 5.90°E)"
-zoom_min  = 11
+zoom_min  = 14
 roads     = "stores/nl-east.roads.store"
 base      = "stores/nl-east.base.store"
 names     = "stores/nl.names.store"
