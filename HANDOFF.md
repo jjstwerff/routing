@@ -5,15 +5,30 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-08-01) — THE NETHERLANDS IS LIVE. Nothing is in flight.
+## 0. START HERE (2026-08-01) — NL IS LIVE, AND THE MAP IS BLANK OUTSIDE ENSCHEDE
 
 **https://jjstwerff.github.io/routing/** — routing over the whole country, offline search, and the
 signposted walk/cycle/MTB networks the router actually uses.
 
+> ### ⚠ THE ONE THING THAT IS WRONG, and the next thing to fix
+>
+> **Outside Enschede there is no base map.** You get a route drawn on an empty background, so you cannot
+> tell "the router picked a farm track" from "the map is missing". The maintainer hit this immediately.
+>
+> It is not a bug — the NL base map is 2.06 GB, Pages caps a site at ~1 GB and the app already uses
+> 560 MB, so the base map went to the release, whose assets send no CORS header. **`PLAN-SCALE.md` §6f is
+> the design that fixes it**, and two measurements taken 2026-08-01 make it much cheaper than §6e assumed:
+> GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (so a second Pages site is a
+> free CORS host), and a country-scale base store PAGES correctly (512 kB fetched from a 1.11 GB file,
+> tile identical to a whole load). Start at **§6f F1**.
+>
+> ⚠ And the process lesson: `nl_live_gate` proved routing and search on the live site and **never asked
+> whether anything was DRAWN**. A blank map passed every gate. §6f F5 adds the render assertion.
+
 | | |
 |---|---|
 | `main` | PR #39 merged 2026-08-01 09:27Z; `deploy` success. Protected — PR + green `build-test`, never a direct push |
-| in flight | **nothing** |
+| in flight | **`full-nl-design`** — docs only (§6f + this section), pushed, not PR'd |
 | data | release **`data-v2026-08-01`** (2.6 GB, every asset verified before the index went up); site index `v2026-08-01` |
 | verified live | `browser/cdp_nl_live.mjs` driven against the DEPLOYED site: Amsterdam → `nl-west`, no base map, 29-point route, **17.7 MB of 222 MB by Range (8.0%)**, search finds "lonneker" |
 
@@ -50,7 +65,15 @@ already specify.
 Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_base.loft`, proven lossless
 (Enschede n=2 exact; NL n=4 within a per-seam bound), and wired as a CI matrix in `data-refresh.yml`.
 
-Open, in the order §6e recommends:
+**Open, and the first two are the blank map:**
+
+| | what | why |
+|---|---|---|
+| **F1** | **page the layout in the kernel** — `web_basemap_kernel.loft` does a WHOLE `store_load_url_trusted`; it needs the roads' `store_load_keys(…, view_cell_keys(bbox))` | this is what makes a 690 MB base block readable at all |
+| **F2** | **re-`expose` as the working set grows** — the untested half, and the real risk: `expose` is O(collection) per call | if it is per-frame-expensive, the fallback is JS reading pages directly (§9 item 3) — never a decoder of our own |
+| F3–F5 | cut NL into three regions, publish base blocks to data repos, and **assert the map RENDERS** in `nl_live_gate` | see §6f |
+
+Then §6e's list, which is about Western Europe rather than NL:
 
 | | what | why it matters |
 |---|---|---|
