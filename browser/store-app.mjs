@@ -5,7 +5,7 @@
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
-         cameraFromHash, hashForCamera, PROFILES } from './map.mjs';
+         cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -419,6 +419,11 @@ function sketchBox(spec) {
   return { mnla: mnla - SKETCH_PAD_DEG, mnlo: mnlo - SKETCH_PAD_DEG,
            mxla: mxla + SKETCH_PAD_DEG, mxlo: mxlo + SKETCH_PAD_DEG };
 }
+// One kilometre: measured to route where 3 km does not, with the working end of the range (2 km) left as
+// margin. It is the step a segment is BROKEN INTO, not a threshold — a segment shorter than this is
+// untouched, which is why an ordinary sketch never sees this code.
+const DENSIFY_STEP_M = 1000;
+
 const matchMode = (spec) => { const b = sketchBox(spec); return b ? roadsModeFor(b) : READ_MODE(); };
 
 async function streamedMatch(spec, isCurrent) {
@@ -468,11 +473,34 @@ function requestMatch(pts) {
   }
   hud.textContent = 'matching…';
   return jobs.post('match', async (isCurrent) => {
-    const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'), isCurrent);
+    const spec = (p) => p.map(([a, b]) => `${a},${b}`).join(';');
+    let text = await streamedMatch(spec(pts), isCurrent);
     // A superseded match's route must not land: the user has already edited past it, and drawing it would
     // put a route on screen for a sketch that no longer exists. The newer job is already queued.
     if (!isCurrent()) return;
-    const sum = map.loadMatch(text);
+    let sum = map.loadMatch(text);
+    // PLAN-SCALE §6i O2 — RETRY DENSIFIED, and only when the first attempt handed the sketch back.
+    //
+    // A tube corridor around two distant points is a straight band the roads need not follow, so the
+    // match returns the trace unchanged. Measured on one Amsterdam corridor: 1 km spacing routes, 2 km
+    // routes, 3 km does not. At z16 a drag is metres and this never fired; the country view makes a
+    // 100-pixel drag ~40 km, which is the failing case as the ORDINARY gesture.
+    //
+    // ⚠ IT IS A FALLBACK, NOT A PREPROCESS, and that is deliberate. Densifying every sketch would change
+    // the route for every sketch whose points are more than a kilometre apart — including the ones that
+    // already route perfectly well (the Enschede corpus spans 3.5-4.8 km between points and matches
+    // fine), and a route-affecting change is gated on the 26-sketch corpus with 0 worse accepted. Firing
+    // only on the echo leaves every working match byte-identical and costs nothing but a retry on the
+    // case that returned nothing at all.
+    if (isSketchEcho(map.route, pts)) {
+      const dense = densifySketch(pts, DENSIFY_STEP_M);
+      if (dense.length > pts.length) {
+        hud.textContent = `matching… (${dense.length} pts)`;
+        text = await streamedMatch(spec(dense), isCurrent);
+        if (!isCurrent()) return;
+        sum = map.loadMatch(text);
+      }
+    }
     map.render();
     hud.textContent = sum || '(no route)';
     window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum,

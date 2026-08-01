@@ -6,6 +6,7 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
+import { densifySketch, isSketchEcho } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1319,6 +1320,41 @@ console.log('\nbarrier marks:');
      'a north-south way gives a north-south bearing (the bar is drawn perpendicular to it)');
   const untouched = orientBarriers(parseBarriers(['52.01,6.0,1']), F);
   ok(untouched[0].bearing === null, 'a shut barrier needs no bearing — it is a ring, not a bar');
+}
+
+{
+  // --- §6i O2: splitting a sketch's long segments before matching ---------------------------------
+  const legM = (a, b) => Math.hypot((b[0] - a[0]) * 111320,
+                                    (b[1] - a[1]) * 111320 * Math.cos((a[0] + b[0]) / 2 * Math.PI / 180));
+  const longest = (v) => Math.max(...v.slice(1).map((p, i) => legM(v[i], p)));
+
+  // A drawn sketch is already fine-grained: it must come back UNTOUCHED, because that is what keeps every
+  // working match byte-identical (the fallback would otherwise be a route-affecting change).
+  const fine = [[52.3626, 4.8735], [52.3600, 4.8750], [52.3580, 4.8770]];
+  ok(densifySketch(fine, 1000) === fine, 'a sketch with no long leg is returned as-is, same array');
+
+  // A country-zoom drag: ~40 km in one leg, which is the gesture the default camera now produces.
+  const far = [[52.3626, 4.8735], [52.0907, 5.1214]];
+  const dense = densifySketch(far, 1000);
+  ok(dense.length === 36, `a 34.7 km leg becomes 36 points — 35 legs under the step (got ${dense.length})`);
+  ok(longest(dense) <= 1000.0001, `no leg exceeds the step (worst ${longest(dense).toFixed(0)} m)`);
+  ok(dense[0] === far[0] && dense[dense.length - 1] === far[1], 'the endpoints are the ORIGINAL objects');
+  // Collinearity is what makes this add no intent: every inserted point lies on the segment drawn.
+  const cross = dense.slice(1, -1).map((p) => Math.abs((p[0] - far[0][0]) * (far[1][1] - far[0][1])
+                                                     - (p[1] - far[0][1]) * (far[1][0] - far[0][0])));
+  ok(Math.max(...cross) < 1e-12, 'every inserted point is collinear with the leg it splits');
+
+  // Degenerate inputs must not throw or invent points.
+  ok(densifySketch([[52, 5]], 1000).length === 1, 'a single point is untouched');
+  ok(densifySketch(far, 0) === far, 'a zero step is refused rather than looping forever');
+
+  // The echo test — how "no route" presents, and what triggers the retry.
+  ok(isSketchEcho([[52.3626, 4.8735], [52.0907, 5.1214]], far), 'the trace handed back IS the echo');
+  ok(!isSketchEcho([[52.3626, 4.8735], [52.2, 5.0], [52.0907, 5.1214]], far), 'a real route is not an echo');
+  ok(!isSketchEcho([[52.3626, 4.8735], [52.0907, 5.1215]], far), 'a route that merely ENDS nearby is not an echo');
+  ok(isSketchEcho([[52.36260004, 4.8735], [52.0907, 5.1214]], far),
+     'equality is at loft\'s 6 printed decimals, not exact');
+  ok(!isSketchEcho([], []), 'an empty route is not an echo (nothing was asked)');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

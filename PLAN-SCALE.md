@@ -1660,6 +1660,50 @@ content). There is no cell size that makes it cheap. **O5 — loft's 3-pages-per
 amortisation — is therefore a PREREQUISITE for the detail half, not an optimisation beside it.** Fix that
 and every row above divides by ~3.
 
+#### ✅ O2 — SKETCH DENSIFICATION, as a fallback rather than a preprocess (2026-08-02)
+
+The country view makes a 100-pixel drag ~40 km, and a matcher fed two distant points returns the sketch
+**echoed** — `match_route` hands back its input trace when it cannot bridge. Bracketed on one Amsterdam
+corridor, three points each time, spacing the only variable:
+
+| spacing | 1 km | 2 km | **3 km** | 4 km |
+|---|---|---|---|---|
+| result | 46 route pts | 104 route pts | **none** | **none** |
+
+`densifySketch` splits any leg longer than **1 km** into collinear pieces — the working end of the range
+with margin. Through the app's own path (`rough.commitEdit` → `requestMatch`):
+
+| sketch | before | after |
+|---|---|---|
+| 3 points at 3 km spacing | **no route** | **134 route pts**, 7 333 m, 5.0 s |
+| a country drag: 2 points, ~35 km | **no route** | **791 route pts**, 47 327 m, 45.6 s |
+
+**⚠ IT FIRES ONLY ON THE ECHO, AND THAT IS THE WHOLE DESIGN.** Densifying every sketch would change the
+route for every sketch whose points are more than a kilometre apart — including ones that already match
+perfectly (the Enschede corpus spans 3.5–4.8 km between points and returns 199 points), and a
+route-affecting change is gated on the 26-sketch corpus at 0 worse accepted. Retrying only when the
+matcher handed the trace straight back leaves **every working match byte-identical** and costs one retry
+on the case that returned nothing at all. `densifySketch` even returns the ORIGINAL array when no leg
+needed splitting, so "an ordinary sketch is untouched" is structural rather than promised.
+
+The two pure functions (`densifySketch`, `isSketchEcho`) are exported from `map.mjs` and carry **12
+DOM-free checks** in `browser/map.test.mjs` — collinearity, endpoint identity, the untouched-array case,
+a zero step, and the echo test at loft's 6 printed decimals.
+
+⚠ **The 45.6 s is honest and it is not the densifier's.** That sketch escalates to the fat-bbox corridor
+(162 834 ways) and then pays an anchor search per point on 36 points — PLAN-PERF §7 measures anchoring at
+~75% of a cold match on a dense sketch. It is a long walking route on a country-scale drag, and it now
+returns one instead of nothing.
+
+⚠ **TOOLCHAIN: the installed loft changed MID-SESSION and the version string moved with it** —
+`/usr/local/bin/loft` was reinstalled 2026-08-02 19:59, **2026.7.2 → 2026.8.0**, md5 `13311104…`,
+byte-identical to `../loft`'s build. The overview block, the kernel wasm and the first gate runs of §6i
+were all made on 7.2. Re-verified on 8.0: the block still loads and reads (7 tiles / 17 667 features at
+the Amsterdam window), `index_fresh_gate` still regenerates byte-identically, the wasm was rebuilt (same
+sources hash, **1 408 411 → 1 404 720 bytes** — the documented toolchain drift the sidecar deliberately
+does not hash), and `map_render_gate`, `cross_block_browser_gate`, `cors_host_gate` and
+`browser/map.test.mjs` are green on it.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
@@ -1756,7 +1800,7 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 |---|---|---|
 | **O0** ✅ | **Measure the country's overview population in ONE generator pass** — done 2026-08-02, above | **handover z10; ~11 MB base + ~3 MB spine ≈ 14 MB** |
 | **O1** ✅ | Build the NL z≤10 level (select + **merge** + decimate) **and wire it in** — both done, above | **a bare visit draws 132 094 features in 1 request / 19.62 MB / 0.6 s** |
-| **O2** ◐ | Zoom bands in the index + JS block selection by zoom — **done as part of O1b**. What remains is **sketch densification**: a country-zoom drag is ~40 km between points, which returns NO ROUTE | a country-zoom sketch returns a route |
+| **O2** ✅ | Zoom bands (O1b) + **sketch densification as an echo-triggered fallback** (above) | **a 2-point 35 km country drag returns a 791-point route**; every working match byte-identical |
 | **O3** ✅ | Close the z11–z13 gap — **done by extending the overview's band to z14, not by a middle level**: the tier floor buys nothing because a tier is a size bin (above) | **z11/z12/z13 all render in 0.5 s from one file**, against 8 GB / 2 GB / 539 MB of keys before |
 | **O3b** | The DETAIL half — a z≤12 mid level, paged on its own grid | blocked on O5: every cell size lands at 24–54 MB/viewport while a key costs 3 pages |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
