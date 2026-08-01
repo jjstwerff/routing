@@ -116,7 +116,12 @@ footpath-vs-road choice, from the UI. The gate asserts the routes DIFFER, not me
 options: a selector that sets a variable and nothing else passes every weaker test, and did, until it was
 caught passing `map.points` (point objects) where `requestMatch` destructures [lat, lon] pairs.
 
-### R2 · Bake ELEVATION into the blocks
+### R2 · Bake ELEVATION into the blocks — now the most expensive remaining step
+
+⚠ **It missed the bundled regeneration** (see §4). R3's `u16` widening forced a full country rebuild on
+2026-08-01 and R2 was not ready to ride along, so R2 now pays its own: ~35 min for NL via
+`tools/refresh-region.sh`, and it is the step that decides when the *next* one happens. Nothing else is
+waiting on a regeneration, so R2 sets that schedule — worth knowing before it is scoped as a small job.
 
 `gen-tiles` writes `h: 0` for every step today (`tools/gen-tiles.loft:84`), and the old elevation
 profile came from the server fetching AWS terrarium PNGs per request. Under the rule, height belongs in
@@ -301,6 +306,23 @@ new field, exactly as they already do for `barriers@`.
 
 **Sequence, deliberately:** R1 (no data) → §4's widening + R3 + R2 in ONE regeneration → R4/R5/R6 (no
 data). Doing R2 and R3 separately means regenerating the Netherlands twice.
+
+⚠ **PARTLY SPENT, 2026-08-01 — read this before planning R2.** The widening happened for R3 alone, and the
+country was regenerated for it. The advice above was to bundle R2 (elevation) into that same regeneration;
+it was not, so R2 will now cost its own full regeneration (~35 min for NL: 3 min roads + 26 min base +
+splits, per `tools/refresh-region.sh`).
+
+What that bought and what it cost:
+
+* **bought** — the schema cost is *already paid*. `flags` is `u16` with bits 0–10 used, so **bits 11–15 are
+  free**: `oneway=` (PLAN-SCALE §9 item 7) and R2's needs fit with no further widening and no third
+  regeneration. The next data change is additive rather than structural.
+* **cost** — one regeneration that could have carried two features carried one.
+
+The lesson is not "bundle harder" — R3 was ready and R2 was not, and holding a finished feature to wait for
+an unfinished one is its own failure. It is that **the bundling advice must name what it is waiting FOR**.
+Rewritten: the next block regeneration, whenever it happens and for whatever reason, should carry R2 if R2
+is ready, and the elevation sampler is the long pole that decides that.
 
 ---
 

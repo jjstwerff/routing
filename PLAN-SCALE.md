@@ -5,8 +5,14 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 # PLAN-SCALE — from one city to Western Europe
 
-**Status: design, nothing built (2026-07-30).** Plan of record for taking the app from its single
-283 km² block to WE-wide coverage **that is actually current**. Three parts, and the last two are the ones
+**Status (2026-08-01): C0–C2 BUILT. The Netherlands routes and searches on GitHub Pages.** Roads
+(233 + 264 MB) and a name index (36 MB) ship same-origin and paged; the base map (999 + 1058 MB) is
+regenerated and published but awaits a host (D2). The site sits at **560.5 MB of a ~950 MB budget**,
+measured on every build. §6c has the rung, **§6e has what NL taught about Western Europe** — including the
+correction that the client already streams and it is the GENERATOR that does not.
+
+Plan of record for taking the app from its single 283 km² block to WE-wide coverage **that is actually
+current**. Three parts, and the last two are the ones
 usually missing: the **capabilities** (§6), the **coverage ladder** that gets there in small revertible
 rungs (§6b), and the **refresh procedure + freshness target** that keep it up to date once it exists
 (§7–§8 — the recurring cost, and the part that is easiest to under-plan).
@@ -558,10 +564,17 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | **C0** | today: 283 km², one block, whole-file | 1 / 24 MB | — | the app routes and renders at all | shipped |
 | **C1a** | ✅ **DONE 2026-07-30, native AND browser** — no full-collection scans | 1 / 24 MB | S2 | keyed reads replacing scans — **at a size where a mistake is visible and cheap**; and the server reading a corridor at 7.3% of a block's bytes | `match_parity.sh` byte-identical; corridor tiles-touched a function of the sketch, not of the store |
 | **C1b** | ✅ **DONE 2026-07-30** — the app can read its roads block by BYTE RANGE (`readMode: 'paged'`), route-identical; shipped OFF for this block, see below | 1 / 24 MB | ✅ [loft#678](https://github.com/loft-lang/loft/issues/678) | the working-set read path where the app actually runs | ✅ route + pixel hash unchanged; the gate asserts range reads happen and reports the fraction |
-| **C2** | **Netherlands** — ⚠ see **§6c** for the current step list. Blocks EXIST (2 halves, roads 264 MB each, base 1.44 GB each) but the base ones predate the 2026-07-31 classification work, and release hosting has Range but **no CORS** | 2 halves / 0.5 + 2.9 GB | S6, S7, S9 | multi-block, hosting, a generator that streams | N0 conservation gate green per half; cross-block route through a seam (S8) |
+| **C2** | ✅ **DONE 2026-08-01 — the Netherlands ROUTES AND SEARCHES on Pages.** Roads (233 + 264 MB) and names (36 MB) same-origin and paged; base map (999 + 1058 MB) regenerated and on the release, awaiting D2. See §6c for the state and §6e for what it taught about WE | 2 halves / 0.53 + 2.06 GB | S6, S7, S9 | multi-block, hosting, a generator that streams | ✅ N0 green per half; S8 seam route identical; `nl_live_gate` routes + searches in Amsterdam |
 | **C3** | **Benelux + one big neighbour** (NL, BE, LU + FR-north or DE-west) | ~6 + ~12 / 1.5 + 9 GB | S4, S5, S8 | working-set eviction and the re-scoped render bridge under real panning; a cross-BORDER route between two countries | C2 stable; peak memory ceiling held on a 500 km pan |
 | **C4** | **WE roads, base map per region** (D1) | ~10–16 roads blocks / 7–15 GB; layout on demand | S10 | the product: a cold visitor routes anywhere in WE | C3 stable; 26-sketch corpus 0-worse; warm match inside its `CPU_THROTTLE=4` budget |
-| **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
+| **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB — ⚠ §6e's disk-derived chunking says **34–68**, from a different direction | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
+
+⚠ **"a generator that streams" (C2's wants column) was answered in §6e, and it does not mean what it
+sounds like.** The client already streams and already scales — a viewport is 75–190 kB whatever the store's
+size. What does not stream is the GENERATOR, which accumulates a whole store in memory (~350 bytes/feature;
+130–270 GB for WE). The fix is not a bigger machine or a smaller store but **never building one that big**:
+one region at a time, fed by a single `osmium extract --config` pass, which is the block structure C4/C5
+already specify.
 
 ✅ **C1b is unblocked (2026-07-30).** It was blocked for nine hours; the plan was written to keep moving
 without it and did not have to. C1a's work — ending the full-collection scans — is still the first thing to
@@ -590,18 +603,37 @@ what is actually on disk and on the wire, because three of C2's assumptions have
 
 **What is already true, measured today:**
 
+> ## ✅ N0–N3 AND N6 ARE DONE (2026-08-01). The rung below is kept for its reasoning; this is the state.
+>
+> | | |
+> |---|---|
+> | NL roads | **live on Pages, same-origin, paged** — `nl-west` 233.4 MB + `nl-east` 263.9 MB, regenerated from a fresh md5-verified extract, carrying `RF_NET_*` network bits (`TRoad.flags` u8→u16) |
+> | NL names | **new** — `nl.names.store`, 36.1 MB: 296 474 street names + 12 700 places, searched offline (PLAN-RESTORE R4) |
+> | NL base | regenerated and published, **999.3 + 1058.3 MB** — smaller than the 1.44 GB halves it replaces *while carrying more categories* (loft#710's allocation artifact, favourably); stays on the release |
+> | the site | **560.5 MB of a ~950 MB budget (59%)**, measured every build by `tools/site_size_gate.sh` |
+> | release | `data-v2026-08-01`, 2.6 GB, every asset verified 206-and-correct-size before the index was uploaded |
+> | refresh | `tools/refresh-region.sh` is the whole sequence; `data-refresh.yml` drives it, `workflow_dispatch` only |
+>
+> **N3's gate is `tools/nl_live_gate.sh`** — it opens the app in Amsterdam, where no other browser gate
+> goes, and proves the claim end to end: resolves to `nl-west`, base `NONE`, routes 29 points, reads
+> **17.7 MB of the 222 MB block (8.0%)** by Range, and finds "lonneker".
+
+**What was true when this rung was written (2026-07-31), kept because the reasoning still holds:**
+
 | | |
 |---|---|
-| NL road blocks | **exist and are published** — `nl-west`/`nl-east`, 264 MB each, in release `data-v2026-07-30`, listed in `coverage.toml` as `read_mode = "paged"`, and carrying the post-#30 `barriers@` schema |
-| NL base blocks | exist, **1.44 GB each** |
 | release hosting | **Range yes, CORS no** — re-measured: `206` with a correct `Content-Range`, and no `access-control-allow-origin`. The note in `build_index.sh` is right, which is why the site index excludes them |
-| Pages hosting | Range yes, ~1 GB per site. **NL roads (528 MB) fit. Roads + base (3.4 GB) do not.** |
+| Pages hosting | Range yes, ~1 GB per site. **NL roads fit. Roads + base do not.** |
 | the blocks vs the pipeline | the base blocks were built `2026-07-30 17:01`; the classification work landed `2026-07-31 18:23`, so **they predate relations, sites, aeroway, heath/scrub and cemetery labels** |
 
 **The one structural unknown**, and it is the whole difference between the two halves of this rung: the
 roads store has a paged read path and the **base store does not**. `store-app.mjs` fetches `LAYOUT` as one
 URL and `expose`s it into wasm memory. At 20 MB that is fine; at 1.44 GB it is not a tuning problem, it is
 wasm32. **Routing over NL is a hosting-and-regeneration job. A base MAP over NL is a design job.**
+
+⚠ **That framing was resolved by measurement on 2026-08-01, and the answer is not the one the two
+candidates below assume — see §6e.** Paging the base map is *cheap*; hosting it is what binds. The
+distinction matters because it moves the WE problem from the read path to the bucket.
 
 ---
 
@@ -642,8 +674,13 @@ the deploy job, do not assume**); the paged gate reports range reads, not whole-
 ⚠ This is the step that makes the tool useful to someone outside Enschede. Everything before it is
 preparation and everything after it is the map getting prettier.
 
-**N4 · Decide the base-map read path — a MEASUREMENT, not a build.** Two candidates, and the answer
-decides C4/C5 as much as it decides NL:
+**N4 · Decide the base-map read path — a MEASUREMENT, not a build.** ⚠ **ANSWERED 2026-08-01, and the
+question was slightly wrong — see §6e.** Both candidates below assume the read path is what stops the base
+map shipping. Measured, it is not: a base tile is **9.1 kB**, so a viewport of 8–20 cells is **75–190 kB
+whatever the store's total size**. Paging it would be about as cheap as paging the roads already is. What
+actually binds is that Pages caps the SITE at ~1 GB and the bytes must live somewhere — which no read path
+and no amount of splitting changes. Kept below as written, because the two candidates are still the right
+two once hosting is settled:
   * **page the base like the roads** — `store_load_keys` over `PTile[tkey]`, which needs `expose` to work
     on a partially-filled store. That is the open question, and it is a loft question: if it cannot, the
     deliverable is an issue on `loft-lang/loft` with the probe as its reproducer, not a decoder here.
@@ -652,14 +689,25 @@ decides C4/C5 as much as it decides NL:
 *Observable:* a browser probe that renders one viewport of base map out of a country-sized store, with the
 bytes fetched reported. Until that number exists, N5 is not plannable.
 
-**N5 · NL base map, built to whatever N4 answered.** Regenerate with today's classification (relations,
+**N5 · NL base map, built to whatever N4 answered.** ✅ **The REGENERATION half is done (2026-08-01)**:
+185 564 tiles / 17 290 495 features, split at 5.40°E into 999.3 + 1058.3 MB, carrying every category the
+old blocks lacked (heath 8620, scrub 58 791, reserve 1315, site 1553, border 309, powerline 3058, pylon
+9148, cemetery labels 968). Published to `data-v2026-08-01`. **The HOSTING half is open and is D2** — 2 GB
+does not fit beside a site already at 560 MB of 950. Regenerate with today's classification (relations,
 sites, aeroway, heath/scrub, cemeteries — none of which the current 1.44 GB blocks have). Host per N4: if
 it fits Pages, same origin and done; if not, the CORS bucket, for which `publish-bucket.sh` and
 `cors_host_gate.sh` already exist and pass.
 *Observable:* the reported map at a dozen sampled coordinates matches OSM by category — the same
 conservation check, sampled rather than eyeballed.
 
-**N6 · Turn the refresh loop on, for NL.** `data-refresh.yml` is deliberately disabled and its publish step
+**N6 · Turn the refresh loop on, for NL.** ✅ **DONE 2026-08-01, with the cron deliberately still off.**
+All three defects below are fixed: the workflow drives `tools/refresh-region.sh` + `tools/publish-release.sh`
+rather than its own inline commands, so it publishes from `blocks/`, tags `data-v<date>`, rebuilds the
+index and gets per-asset 206 verification. It opens a **PR** for the regenerated index rather than pushing,
+since `main` is protected. The cron stays off for three MEASURED reasons — the base map needs ~11.7 GB of
+intermediates and does not fit a runner (so the job runs `--no-base`); publishing replaces data a deploy
+verifies against, so an unscheduled republish reddens Pages until the index is committed; and loft is built
+from `main`, where the fixes this repo needs are routinely fixed-pending-merge. `data-refresh.yml` is deliberately disabled and its publish step
 is broken in three ways (uploads `dist/blocks/*` while the script writes `blocks/`; tags `data-202608`
 where everything else uses `data-v2026-07-30`; never rebuilds the index nor runs `publish-release.sh`'s
 verification). Fix those, run **N0 before publishing**, and re-enable the monthly cron.
@@ -896,6 +944,101 @@ count what arrived, and the gate requires a real route.
 
 ---
 
+### 6e. Western Europe needs a streaming GENERATOR, not a smaller store (2026-08-01)
+
+C2's wants column has said **"multi-block, hosting, a generator that streams"** since it was written. This
+is what that turned out to mean once the NL numbers existed, and it corrects two things the earlier rungs
+assumed.
+
+#### The client already streams, and already scales. Do not rebuild it.
+
+| measured | |
+|---|---|
+| a route on a country block | **17.7 MB of 222.4 MB (8.0%)**, 271 Range reads (`nl_live_gate`) |
+| a base-map tile | **9.1 kB** on disk (1058.3 MB / 116 561 tiles) |
+| ⇒ one viewport of base map | 8–20 cells ⇒ **75–190 kB, independent of the store's total size** |
+
+That last row is the important one: a viewport costs the same against an 88 GB base map as against a 1 GB
+one, because `store_load_keys` fetches cells, not files. **The read path is not what stops WE.**
+
+#### The generator is the wall, and it is arithmetic
+
+`client/basemap/build_store.loft` streams its INPUT (1 MB chunks, so a 4 GB geojsonseq is fine) and then
+accumulates the entire store in memory, writing it once with `store_persist_bind`.
+
+    NL base:  17.29 M features  →  ~6 GB RSS   ≈ 350 bytes/feature, linear
+    WE base:  390–780 M features (§1's 44–88 GB at ~113 B/feature payload)  →  130–270 GB RSS
+
+Nothing tunes out of that. Two ways past it:
+
+* **make the store writable incrementally** — a real capability, an upstream ask on `loft-lang/loft`, and
+  an unknown timeline;
+* **never build a store that big.**
+
+The second needs nothing from anyone, and it is not a workaround: **C4/C5 already specify 10–16 roads
+blocks and 25–45 base blocks.** The generator never has to stream a continent; it has to do one region at a
+time. What was genuinely missing is an ACQUIRE step that produces those regions without reading a 30 GB
+continent extract once per region — and osmium already has it (`osmium extract --config`, one pass, many
+outputs; verified on osmium 1.16).
+
+    europe-latest.osm.pbf (~30 GB)
+            |   ONE `osmium extract --config` pass
+            +-- region-01.pbf --+
+            +-- region-02.pbf   |   per region, independent -> CI matrix, parallel
+            +-- ...             |     build-blocks -> roads + networks
+            +-- region-NN.pbf --+     gen-names / build-base
+            |
+            +-- one index naming all of them -> CORS host (D2), read paged
+
+Every step is bounded by ONE region; nothing ever holds a continent. It is also the same change that makes
+the base map buildable in CI at all (N6 runs `--no-base` today purely because one region does not fit).
+
+#### Chunk size falls out of DISK, not RAM
+
+NL needed **~11.7 GB of intermediates** for 17.29 M features (1.8 GB areas + 4.1 GB buildings + 1.0 GB
+streets geojsonseq, then a 2.0 GB store) — about 680 bytes/feature. Against a ~10 GB working budget that is
+**~15 M features per chunk ⇒ 34–68 chunks for WE**, which lands on C5's independently-derived 25–45. Two
+estimates from different directions agreeing is mild evidence both are roughly right.
+
+#### Where the base map's bytes actually are
+
+Measured on `nl-east` (746 MB of payload, `tools/census.loft` + the `.dschema` record sizes):
+
+| | count | coords | payload | share |
+|---|---|---|---|---|
+| **buildings** | 5 599 287 | 44 495 091 | **400.8 MB** | 53.7% |
+| **areas** | 1 545 108 | 34 393 421 | **287.5 MB** | 38.5% |
+| labels | 619 320 | 1 504 651 | 24.4 MB | 3.3% |
+| lines | 249 389 | 1 511 552 | 15.1 MB | 2.0% |
+| pois | 555 995 | — | 8.9 MB | 1.2% |
+| tile headers | 116 561 | — | 9.8 MB | 1.3% |
+
+Buildings and areas are **92%**. Buildings are already lean at 7.9 coords each — there are simply 5.6 M of
+them; areas at 22.2 coords are the softer target for simplification. But the honest conclusion is that
+there is no 5× here: dropping buildings ENTIRELY and halving areas still lands at ~700 MB for two halves,
+against ~390 MB of remaining Pages budget. **Shrinking does not reach Pages. Splitting does not either** —
+the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a different host does.
+
+#### Ceilings to raise before they bind
+
+* ⚠ **`tools/block_overlap.loft` caps an index at 62 blocks** (one bit per block in its owner mask). Its
+  comment claims that is "far above the per-index counts C2 contemplates" — true when written, and no
+  longer true at 34–68 chunks. Cheap to fix (count per pair rather than masking); fix it before it is
+  load-bearing, not after.
+* `MARK_BLOCK = 10000000000` in `web_basemap_kernel.loft` namespaces cell marks as `block * MARK_BLOCK + k`
+  — fine to ~9e8 blocks on i64, so not a concern, but it is the other place block count is encoded.
+
+#### The order I would do it in
+
+1. **Chunked base build** — `build-base.sh` per bbox plus a matrix job. Finishes the automation AND is the
+   WE prerequisite, and is verifiable on NL today: build it in 4 chunks and assert the merged census equals
+   the 17 290 495 features already measured.
+2. **Raise the 62-block cap** — small, and it is a ceiling on everything above it.
+3. **Price D2** — the cost check C5 is already gated on, and the thing that decides whether the WE base map
+   is coverage or opt-in. `tools/cors_host_gate.sh` passes today, so the path is tested, not hypothetical.
+
+Leave the streaming-store ask upstream alone unless step 1 proves chunking cannot hold it.
+
 ## 7. Phase R — the update procedure (the recurring cost)
 
 Everything above is a one-off. **This is the part that runs forever**, and today it does not exist:
@@ -1031,16 +1174,18 @@ step in doing any of that required a codec of our own.
 | | question | how it gets answered |
 |---|---|---|
 | 1 | ~~Does the paged Range reader work in a `--html` build?~~ | ✅ **ANSWERED — and now YES.** It did not compile (E0599); [loft#678](https://github.com/loft-lang/loft/issues/678) fixed it the same night, and `tools/paged_http_gate.sh` reports `browser=pass` at 262 KB / 5 range requests. ⚠ Fix is `fixed-pending-merge` upstream, present in the installed binary only |
-| 2 | What does a realistic viewport working set actually cost in bytes? | S1 + S3 with `LOFT_LOADER_STATS=1` |
+| 2 | ~~What does a realistic viewport working set actually cost in bytes?~~ | ✅ **ANSWERED 2026-08-01.** Roads: **17.7 MB of 222.4 MB (8.0%)** for a route on a country block, 271 Range reads (`nl_live_gate`). Base map: **9.1 kB/tile**, so a viewport of 8–20 cells is **75–190 kB — independent of the store's total size**. That last property is what makes §6e's WE path work at all |
 | 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly |
 | 3b | Which builtins are missing on the browser target? | ✅ **ASK IT: `loft targets wasm`** (loft#680, shipped 2026-07-30 — derived from rustc, so it cannot drift from the cfgs). Today it answers *"every stdlib builtin is available here"* |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
 | 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9 |
-| 7 | `oneway=` is still dropped by the store | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
+| 7 | `oneway=` is still dropped by the store — ⚠ **the u16 widening it was waiting for HAPPENED** (2026-08-01, `RF_NET_*`), so the schema cost is already paid; bits 11–15 are free and the next regeneration can carry direction | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
 | 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
 | 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |
 | 10 | A barrier BETWEEN way vertices is dropped | `apply_barriers` lands a barrier on the node that shares its coordinate; one tagged mid-segment matches nothing. Correct today (a route cannot pass through a point that is not a node) and worth revisiting only if real data shows barriers tagged off-vertex |
+| 11 | An index is capped at **62 blocks** | ⚠ **MINE, and it may bind.** `tools/block_overlap.loft` tracks cell owners as a per-block bitmask; its comment says 62 is "far above the per-index counts C2 contemplates", which was true when written. §6e's disk-derived chunking puts WE at **34–68 blocks**. Cheap fix: count shared cells per PAIR instead of masking. Do it before it is load-bearing |
+| 12 | The GENERATOR does not stream | ~350 bytes of RSS per feature, so a WE-sized store is 130–270 GB. §6e's answer is to never build one that big — one region per run, fed by a single `osmium extract --config` pass. Only if chunking fails does this become an upstream ask for an incrementally-writable store |
 
 ---
 
@@ -1049,6 +1194,12 @@ step in doing any of that required a codec of our own.
 - **The base map's size is the project's shape.** If S0 comes in at the high end (~90 GB), D1 is not a
   preference — the base map has to become vector-tile-ish or externally sourced, and that is a different
   plan. Measure before committing storage.
+  ⚠ **Partially measured 2026-08-01, and the news is mixed.** NL came in at 2.06 GB for 17.29 M features,
+  and 92% of it is buildings (53.7%) plus landcover areas (38.5%). Buildings are already lean at 7.9 coords
+  each — there are simply 5.6 M of them — so there is **no 5× saving available**: dropping buildings
+  entirely and halving areas still lands at ~700 MB for two halves. Shrinking does not reach Pages, and
+  neither does splitting (the cap is on total site bytes). **Only a different host does**, which makes D2
+  the decision the base map hangs on rather than an optimisation of it.
 - **W5 is the one that can force a loft change.** Everything else is our own code; the render bridge's
   `expose` semantics are not.
 - **Page granularity may not amortise.** If Hilbert ordering does not make a viewport's tiles share

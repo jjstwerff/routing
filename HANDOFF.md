@@ -5,12 +5,38 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-07-31) — everything is merged and deployed
+## 0. START HERE (2026-08-01) — the Netherlands is live; one branch is waiting for a PR
 
 | | |
 |---|---|
-| `main` | `4e693a3` — protected (PR + green `build-test`, never a direct push) |
-| in flight | **nothing.** PR #30 merged 2026-07-31 06:03Z; `fix-access-tags` deleted |
+| `main` | protected (PR + green `build-test`, never a direct push) |
+| in flight | **`r3-networks`** — pushed, gates green, NOT yet PR'd. Carries R3, N3a/b/c, R4, the data refresh and the refresh automation |
+| data | release **`data-v2026-08-01`** published and verified (2.6 GB); site index `v2026-08-01` committed |
+
+**What that branch does, in one line each:**
+
+| | |
+|---|---|
+| **R3** | signposted walk/cycle/MTB networks ingested from OSM route RELATIONS and *preferred by the router* — `TRoad.flags` widened u8→u16, so **every block had to be regenerated** (loft#700) |
+| **N3** | NL roads live on Pages, same-origin and paged; hosting became per-STORE so the 2 GB base map could stay on the release while the 497 MB roads ship |
+| **R4** | offline search over 296 474 street names + 12 700 places (36 MB), replacing the old client's Nominatim call |
+| **refresh** | the whole country rebuilt from fresh OSM, and `tools/refresh-region.sh` + a fixed `data-refresh.yml` so it is one command next time |
+
+⚠ **The one thing to know before touching data:** `tools/fetch-site-blocks.sh` verifies every download
+against the sha256 in the committed index. That is deliberate — a truncated block otherwise shows up as
+"routing is broken" rather than as a missing file — but it means **a republish without regenerating and
+committing the index turns every Pages deploy red.** Regenerate the index in the same change.
+
+**Where to look next:** `PLAN-SCALE.md` §6e is the Western Europe design, written from NL's measurements.
+Its short version: the client already streams (a viewport is 75–190 kB whatever the store's size), the
+GENERATOR does not (~350 bytes RSS per feature ⇒ 130–270 GB for WE), and the answer is to never build a
+store that big — one region per run, fed by a single `osmium extract --config` pass. The three things it
+says to do first are the chunked base build, raising the 62-block cap in `block_overlap.loft`, and pricing
+D2.
+
+---
+
+### The previous rung (2026-07-31) — PR #30, for context
 
 PR #30 carried five fixes and their gates. `main`'s tree is byte-identical to the commit the full local
 matrix ran on, and the **Pages deploy is live**: the site serves `features: 49613` roads (was 25 971) at
