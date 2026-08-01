@@ -34,6 +34,7 @@
 [[region]]
 id        = "enschede"
 name      = "Enschede / south Overijssel"
+zoom_min  = 11
 roads     = "stores/enschede.roads.store"
 base      = "stores/enschede.layout.store"
 names     = "stores/enschede.names.store"
@@ -95,9 +96,37 @@ read_mode = "whole"
 # real 206, which a GitHub release does not. The roads and names ship with the site: 565 MB of a 950 MB
 # budget.
 
+# PLAN-SCALE §6i O1 — THE OVERVIEW: the map the app opens the country on.
+#
+# Not a region. It is the whole Netherlands generalised to what a low zoom can SHOW — every feature the
+# renderer draws at or below z10, decimated to one pixel at z10, plus the motorway/trunk/primary spine
+# lifted out of the roads store and merged into runs. 17 290 495 features become 132 094, and 159 Mcoords
+# become 774 431: **19.6 MB, downloaded WHOLE** (tools/build_overview.loft).
+#
+# Why whole and not paged: a country-wide viewport names 454 867 cell keys, and §6i measured a key at ~3
+# pages (~200 kB) whether or not it holds anything. The whole file is cheaper than six keys. Paging is
+# right for a city and wrong for a country, which is the same measurement read from both ends.
+#
+# ⚠ IT HAS NO ROADS STORE, AND THAT IS THE POINT. It is a picture, never a routing input — a route must
+# never be matched against decimated geometry. `chooseBlocks` skips it for `roads` automatically (it has
+# no store of that kind), so routing at any zoom still reads the detailed region blocks.
+#
+# ⚠ THE ZOOM BAND IS LOAD-BEARING, not a nicety. Without it a country-wide box selects the overview AND
+# the four regions: the app would ask 454 867 keys of each detailed block, and a `whole` block and a
+# `paged` one cannot share one working set anyway. `zoom_max`/`zoom_min` make the two sets EXCLUSIVE —
+# below the handover the map is the overview alone, above it the regions alone.
+[[region]]
+id        = "nl-overview"
+name      = "Netherlands — overview"
+base      = "stores/nl-overview.base.store"
+names     = "stores/nl.names.store"
+read_mode = "whole"
+zoom_max  = 11
+
 [[region]]
 id        = "nl-west"
 name      = "Netherlands (west of 4.70°E)"
+zoom_min  = 11
 roads     = "stores/nl-west.roads.store"
 base      = "stores/nl-west.base.store"
 names     = "stores/nl.names.store"
@@ -108,6 +137,7 @@ base_cors     = true
 [[region]]
 id        = "nl-midwest"
 name      = "Netherlands (4.70–5.40°E)"
+zoom_min  = 11
 roads     = "stores/nl-midwest.roads.store"
 base      = "stores/nl-midwest.base.store"
 names     = "stores/nl.names.store"
@@ -118,6 +148,7 @@ base_cors     = true
 [[region]]
 id        = "nl-mideast"
 name      = "Netherlands (5.40–5.90°E)"
+zoom_min  = 11
 roads     = "stores/nl-mideast.roads.store"
 base      = "stores/nl-mideast.base.store"
 names     = "stores/nl.names.store"
@@ -128,6 +159,7 @@ base_cors     = true
 [[region]]
 id        = "nl-east"
 name      = "Netherlands (east of 5.90°E)"
+zoom_min  = 11
 roads     = "stores/nl-east.roads.store"
 base      = "stores/nl-east.base.store"
 names     = "stores/nl.names.store"

@@ -668,6 +668,14 @@ const LINE_STYLES = {                               // waterway = blue; railway 
   border: { color: '#a06ba0', width: 2.2, dash: [7, 3, 2, 3], minZoom: 8 },
   // Transmission lines are a landmark in open country, and the one thing that makes a polder legible.
   powerline: { color: '#9a9a9a', width: 0.9, minZoom: 14 },
+  // PLAN-SCALE §6i O1 — THE OVERVIEW'S ROAD SPINE. Below the handover zoom the map is one generalised
+  // block and there is no roads store in it at all, so the motorways arrive as LINES rather than through
+  // `loadRoadsFlat`. Colours track ROAD_STYLES' motorway/primary so crossing the handover changes the
+  // source and not the picture; the widths are a touch heavier because at z8 a road is the only structure
+  // on screen. `minZoom` matches the class the generator selected on (motorway z8, trunk/primary z9),
+  // which is what stops them drawing on top of the detailed roads once the regions take over.
+  motorway: { color: '#e892a2', width: 2.2, minZoom: 8 },
+  primary: { color: '#f9b29c', width: 1.6, minZoom: 9 },
 };
 const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
   // Small, grey and late: a pylon marks where the line it carries actually stands, and there are hundreds.

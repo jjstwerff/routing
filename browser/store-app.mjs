@@ -46,7 +46,15 @@ const hud = document.getElementById('hud');
 //
 // Everything is validated: a hand-edited or stale fragment must degrade to the default, never boot the
 // app to a blank map at NaN.
-const DEFAULT_CAM = { lat: 52.2215, lon: 6.8937, zoom: 16 };
+// PLAN-SCALE §6i O1 — THE APP OPENS ON THE COUNTRY. It used to open on Enschede at z16 because that was
+// the only camera it could afford: a wider view read the detailed blocks, and a country-wide one names
+// ~1.1 M cell keys at ~200 kB each. The overview block answers this camera in ONE request of 19.6 MB and
+// nothing else is touched — measured, 132 094 features drawn, `R=0` detailed roads read.
+//
+// ⚠ Every headless driver PINS its own camera now (`GATE_CAM` in the cdp_*.mjs files). Seven of them
+// navigated to a bare URL and inherited whatever this said, so leaving it at Enschede was load-bearing
+// for gates that have nothing to do with the default — moving it silently re-baselines all of them.
+const DEFAULT_CAM = { lat: 52.15, lon: 5.30, zoom: 8 };
 const bootCam = cameraFromHash(location.hash);
 if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
 const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
@@ -88,12 +96,29 @@ const NAMES = coverage.block.names ? new URL(coverage.block.names.url, INDEX_URL
 const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
-const roadsFor = (b) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, coverage.block) || ROADS;
+// ⚠ THE VIEW'S ROADS ARE ZOOM-BANDED; A MATCH'S ARE NOT. Below the handover the overview answers the
+// whole screen and carries its own merged spine, so reading the detailed roads there asks ~70 000 cell
+// keys for motorways one 19.6 MB file already holds — measured, before this existed: 75 256 range
+// requests, 4.7 GB, and the view never returned. `roadsForSketch` deliberately passes no zoom, because a
+// route must always be matched against the DETAILED geometry whatever the camera is doing.
+//
+// The fallback follows the same rule as the set: the camera's block is only a sensible default while it
+// serves this zoom. Out of band it would drag a detailed store back in through the side door.
+const inBandOf = (b, z) => !b || !Array.isArray(b.zoom) || z === undefined || (z >= b.zoom[0] && z < b.zoom[1]);
+// ⚠ The fallback is applied HERE, not inside `chooseBlocks`. Passing `coverage.block` as the chooser's
+// fallback puts the camera's block back whenever the band excluded every candidate — which is exactly
+// the case this exists to prevent, and it downloaded a 123 MB roads store whole at z8.
+const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z)
+  || (inBandOf(coverage.block, z) ? ROADS : '');
 // PLAN-SCALE §6f F3 — the BASE map is a covering set too, now that a country is three base regions. A
 // viewport on a cut needs both sides: one region answers a straddling z16 viewport with 13 946 of its
 // 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
 // so a region with no base map behaves exactly as it did.
-const baseFor = (b) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo) || LAYOUT;
+// PLAN-SCALE §6i O2 — the ZOOM decides which map answers, not just the box. Below the handover the
+// overview alone answers (one 19.6 MB whole file); above it the detailed regions alone do. Passing the
+// camera's zoom is the whole of the client's side of that: `blocksForBox` filters on the band the index
+// declares, and a block that declares none is unaffected.
+const baseFor = (b, z) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z) || LAYOUT;
 // ⚠ A SESSION-WIDE READ MODE IS WRONG, AND IT BROKE THE LIVE MAP (2026-08-02). It is resolved from the
 // CAMERA's block, and the blocks a VIEWPORT needs are not always that block: at z13.68 over Enschede the
 // viewport escapes the little city block, selection correctly picks `nl-east` — and the mode said
@@ -120,10 +145,10 @@ const modeOf = (blocks, kind) => {
 // (reset, and the profiler hooks that drive a fixed sketch). Kept as a function so the override still
 // works and so nothing reads a session-wide variable that no longer exists.
 const READ_MODE = () => window.__readMode || coverage.block.readMode || 'whole';
-const roadsModeFor = (b) => window.__readMode
-  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads'), 'roads');
-const baseModeFor = (b) => window.__baseReadMode
-  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base'), 'base');
+const roadsModeFor = (b, z) => window.__readMode
+  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z), 'roads');
+const baseModeFor = (b, z) => window.__baseReadMode
+  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base', z), 'base');
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
@@ -170,10 +195,10 @@ const bboxOf = (b) => `${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixe
 // blank one, because the working set is never asked for. So every view goes through here.
 // (`match` / `find` / `reset` stop at line 6 and keep their literal form; if a line 8 is ever added,
 // they come through here too.)
-const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT, box = null) =>
+const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT, box = null, z = undefined) =>
   [base, roads, cmd, bbox, '',
-   box ? roadsModeFor(box) : (window.__readMode || coverage.block.readMode || 'whole'), '',
-   box ? baseModeFor(box)  : (window.__baseReadMode || coverage.block.readMode || 'whole')].join('\n');
+   box ? roadsModeFor(box, z) : (window.__readMode || coverage.block.readMode || 'whole'), '',
+   box ? baseModeFor(box, z) : (window.__baseReadMode || coverage.block.readMode || 'whole')].join('\n');
 
 let loadedBox = null, loadedBbox = null, lastViewText = null;
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
@@ -306,7 +331,8 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box), box));
+  const zoom = map.camera.zoom;
+  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -537,7 +563,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext', baseFor(box), box));
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, map.camera.zoom), 'viewtext', baseFor(box, map.camera.zoom), box, map.camera.zoom));
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -631,7 +657,8 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box), box));
+    const zoom = map.camera.zoom;
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();

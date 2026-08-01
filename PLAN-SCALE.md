@@ -1568,6 +1568,59 @@ is FEATURE COUNT, not vertices — and 116 703 of the 132 094 are areas, because
 *everything* over 0.008° of diagonal to z0, putting a 900 m field on the same footing as the IJsselmeer.
 A finer ladder above that threshold is the obvious follow-up and it is a renderer rule, not a store one.
 
+#### ✅ O1b WIRED — a bare visit opens on the Netherlands in 0.6 s (2026-08-02)
+
+`DEFAULT_CAM` is `z8 52.15,5.30` and the app resolves it to the overview alone. Measured on a bare URL
+against the local site:
+
+| | bare visit (z8) | z16 Amsterdam — the regression check |
+|---|---|---|
+| requests | **1 · `nl-overview.base.store` · 19.62 MB** | `nl-midwest`, 82 range reads, 4.97 MB |
+| drawn | **116 703 areas · 15 080 lines · 311 places** | roads `R=4866`, base paged |
+| detailed roads read | **`R=0`** | unchanged from before this work |
+| wall | **0.6 s** | 18.6 s (unchanged) |
+
+**Four things had to change, and one of them was the kernel:**
+
+1. **A zoom band per block, in the index** (`zoom_min` / `zoom_max` → `"zoom":[lo,hi)`), filtered in JS by
+   `blocksForBox`. A block that declares none serves every zoom, so an older index behaves as it did.
+2. **Selection falls back to the BASE extent when a block has no roads store.** The overview is a picture
+   and never a routing input, so `selBox` picks roads-when-present and the asked-for store otherwise —
+   which also keeps §6f's rule (a tiered base extent is meaningless) intact for the regions that do have
+   roads.
+3. **⚠ The VIEW's roads are zoom-banded; a MATCH's are not.** `roadsForSketch` deliberately passes no
+   zoom, because a route must always be matched against detailed geometry whatever the camera shows.
+4. **⚠ The kernel needed a branch: an empty roads URL is a supported state**, symmetric with the empty
+   layout URL it already had. Below the handover there is no roads store at all — the spine lives in the
+   overview as Lines.
+
+**Two defects this found, both mine, both measured rather than reasoned:**
+
+* **The chooser's fallback re-admitted the block the band had just excluded.** `roadsUrlsFor` was passed
+  `coverage.block` as its fallback, and `chooseBlocks` applies the fallback when the candidate set comes
+  out empty — which is precisely what a band exclusion produces. At z8 it downloaded a **123 MB roads
+  store whole**. The fallback belongs at the call site, where the band can be consulted.
+* **Before the kernel branch, a z8 view asked the detailed roads for the whole country: 75 256 range
+  requests, 4.7 GB into one block, and the view never returned.** The overview loaded correctly the whole
+  time — the base half was right and the roads half was catastrophic, which is exactly the shape §6i
+  warned about when it said the zoom band is load-bearing rather than cosmetic.
+
+⚠ **Seven headless drivers navigated to a bare URL and inherited `DEFAULT_CAM`.** Moving the default
+silently re-baselines every one of them onto a generalised national map. They each pin `GATE_CAM` now.
+Green after the change: `map_render_gate`, `base_paged_gate`, `cross_block_browser_gate`, `cors_host_gate`,
+`index_fresh_gate`, `browser/map.test.mjs`.
+
+⚠ **NOT DEPLOYABLE UNTIL THE BLOCK IS PUBLISHED.** The committed index now names
+`stores/nl-overview.base.store`, and `fetch-site-blocks.sh` verifies every relatively-named block against
+the release — by design it fails loudly rather than shipping a map with a hole. So the release needs the
+block before this reaches `main`.
+
+⚠ **AND THE GAP IS REAL AND NOW REACHABLE.** The handover is z11: below it the overview answers, above it
+the detailed regions do — and §6i's own arithmetic says the detailed path costs ~10 500 keys at z12 and
+~40 700 at z11. **A visitor who opens on the country and zooms in walks into that.** It is not a
+regression (it is what every zoom below z14 already cost) but the default camera now leads there, which
+makes **O3 — the middle levels on their own coarse grids — the next rung rather than a later one.**
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
@@ -1663,9 +1716,9 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 | | what | observable |
 |---|---|---|
 | **O0** ✅ | **Measure the country's overview population in ONE generator pass** — done 2026-08-02, above | **handover z10; ~11 MB base + ~3 MB spine ≈ 14 MB** |
-| **O1** ◐ | Build the NL z≤10 level (select + **merge** + decimate) — **done, 19.6 MB, above.** What remains is the APP half: a coverage entry, `read_mode = whole`, always loaded, and two `LINE_STYLES` rows so the spine's `motorway`/`primary` kinds draw | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
-| **O2** | Zoom bands in the index + JS block selection by zoom + sketch densification | no double-draw; a country-zoom sketch returns a route |
-| **O3** | The middle levels on their own grids (z12 on 0.08° cells) | a z13 view costs ~16 keys instead of 2 777 |
+| **O1** ✅ | Build the NL z≤10 level (select + **merge** + decimate) **and wire it in** — both done, above | **a bare visit draws 132 094 features in 1 request / 19.62 MB / 0.6 s** |
+| **O2** ◐ | Zoom bands in the index + JS block selection by zoom — **done as part of O1b**. What remains is **sketch densification**: a country-zoom drag is ~40 km between points, which returns NO ROUTE | a country-zoom sketch returns a route |
+| **O3** ⬅ **next** | The middle levels on their own grids (z12 on 0.08° cells). Promoted: the default camera now leads INTO the z11–z13 gap | a z13 view costs ~16 keys instead of 2 777 |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
 | **O5** | *(independent, upstream)* the per-key page cost — 3 pages per key with no batch amortisation | a z16 view drops from 14.2 MB toward its ~4 MB of content |
 

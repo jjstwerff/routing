@@ -123,7 +123,7 @@ echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
+id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
 flush() {
   [ -n "$id" ] || return 0
   # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
@@ -142,7 +142,7 @@ flush() {
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
   if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
     echo "  $id: published at $ubase — not in the site index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
     return 0
   fi
   # …and the mirror of it: each index names only what it can actually serve.
@@ -163,13 +163,18 @@ flush() {
   # no `blocks/` involved — and without the override the test read as "Enschede ships with the site", the
   # index came out empty, and the gate failed on every checkout (it had, since this test replaced the
   # `url_base` one). The rule is unchanged; what was hard-coded is the place it looks.
-  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
+  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ -n "$roads" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
     return 0
   fi
   local rj bj
-  rj="$(block_json "$roads" roads "$ubase")" || exit 1
+  # ⚠ A BLOCK NEED NOT HAVE ROADS. The overview (§6i O1) is a picture and never a routing input, so it
+  # ships a base store alone — and a block with no roads must not be forced through `block_json`, which
+  # would measure an extent for a file that does not exist. `roads: null` is the honest state; the client
+  # skips such a block for every roads question by the same filter that skips a region with no base map.
+  rj=null
+  if [ -n "$roads" ]; then rj="$(block_json "$roads" roads "$ubase")" || exit 1; fi
   # HOSTING IS PER STORE, not per region. The Netherlands is the case that forces it: its ROADS (502 MB
   # over four regions) fit beside the app on Pages, and its BASE MAP (2.75 GB) does not — so one region
   # has one store the site can serve and one it cannot. `base_url_base` says where the base lives when
@@ -196,11 +201,17 @@ flush() {
   local nj=null
   if [ -n "$names" ]; then nj="$(names_json "$names")" || exit 1; fi
   local entry
-  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$rj" "$bj" "$nj")"
+  # THE ZOOM BAND (§6i O2) — half-open [zmin, zmax), and absent means "every zoom", so a manifest that
+  # says nothing behaves exactly as it did. It is what makes the overview and the detailed regions
+  # EXCLUSIVE: without it a country-wide box selects both, and a `whole` block cannot share a working set
+  # with a `paged` one.
+  local zj=null
+  if [ -n "$zmin" ] || [ -n "$zmax" ]; then zj="[${zmin:-0},${zmax:-99}]"; fi
+  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "$rj" "$bj" "$nj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
-  echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+') tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode"
-  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
+  echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode${zj:+ zoom=$zj}"
+  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -222,6 +233,8 @@ while IFS= read -r line; do
     base_cors*=*)  bcors="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     base_url_base*=*) bubase="$(echo "$line" | cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
+    zoom_min*=*)   zmin="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
+    zoom_max*=*)   zmax="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;
     url_base*=*)   ubase="$(echo "$line" | cut -d'"' -f2)" ;;
   esac

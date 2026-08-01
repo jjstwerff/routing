@@ -136,9 +136,14 @@ if (existsSync(join(here, 'coverage.json'))) {
     // headless chromium sat at ~1000% CPU, which is precisely the confound CLAUDE.md warns about — with
     // the load average back at 4.5 from 13, the gate still times out on the full index, so the dataset
     // and not the noise is what makes it slow.
+    // The test is "is every store of this block on THIS origin and present", not "does it have roads".
+    // It used to be the latter, which was the same thing while every block was a routing region — the
+    // overview (§6i O1) is a base store alone, and the roads test dropped it from every local gate
+    // including the one that would prove the country view draws. A block whose stores are all local
+    // relative URLs that exist costs a gate nothing to name and reaches no network.
     const before = keep.length;
-    keep = keep.filter((b) => b.roads && b.roads.url && !b.roads.url.includes('://')
-                              && existsSync(join(here, b.roads.url)));
+    const local = (st) => !st || (st.url && !st.url.includes('://') && existsSync(join(here, st.url)));
+    keep = keep.filter((b) => (b.roads || b.base) && local(b.roads) && local(b.base) && local(b.names));
     offsite = before - keep.length;
   }
   writeFileSync(join(site, 'coverage.json'), JSON.stringify({ ...full, blocks: keep }));

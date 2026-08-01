@@ -35,7 +35,11 @@ const ev = async (x) => {
   return r.result?.result?.value;
 };
 
-await call('Page.navigate', { url: app });
+// ⚠ THE CAMERA IS PINNED, not inherited. `DEFAULT_CAM` opens on the whole country (PLAN-SCALE §6i O1),
+// which resolves to the OVERVIEW block — so a gate that navigated bare would measure a generalised
+// national map while claiming to check a city's invariants. Every driver states the camera it means.
+const GATE_CAM = '#16/52.2215/6.8937';
+await call('Page.navigate', { url: app + GATE_CAM });
 // wait for the app's initial view to complete
 let st = null;
 for (let i = 0; i < 200; i++) {
