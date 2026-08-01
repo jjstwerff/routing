@@ -39,7 +39,8 @@
 #cwd
 
 use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
-              cell_ix, origin, layout_tier, tier_cell, tier_key, dp_mask);
+              cell_ix, origin, layout_tier, tier_cell, tier_key, dp_mask,
+              area_debut, line_debut, label_debut, poi_debut, DEBUT_NEVER);
 use routing_kernel::(TTile, TRoad, TStep);
 
 // Metres per pixel at zoom 0 (256-px tiles) and the latitude factor for the Netherlands. A single cos(lat)
@@ -47,49 +48,12 @@ use routing_kernel::(TTile, TRoad, TStep);
 MPP0 = 156543.03;
 COSLAT = 0.6157;
 MPD = 111320.0;        // metres per degree of latitude
-NEVER = 19;
 
 // --- the renderer's debut rules (browser/map.mjs), ported verbatim ------------------------------------
 
-fn area_debut(ring: vector<Coord>) -> integer {
-  if len(ring) == 0 { return NEVER; }
-  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
-  for ac in ring {
-    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
-    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
-  }
-  adx = ((amxx - amnx) as float) / 10000000.0;
-  ady = ((amxy - amny) as float) / 10000000.0;
-  adiag = sqrt(adx * adx + ady * ady);
-  if adiag > 0.008 { 0 } else if adiag > 0.003 { 11 } else if adiag > 0.0015 { 12 }
-  else if adiag > 0.0007 { 13 } else { 14 }
-}
 
-fn line_debut(kind: text) -> integer {
-  if kind == "border" { 8 }
-  else if kind == "river" { 11 }
-  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
-  else if kind == "stream" || kind == "tram" { 13 }
-  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
-  else if kind == "hedge" || kind == "wall" { 15 }
-  else if kind == "fence" { 16 }
-  else { NEVER }
-}
 
-fn label_debut(kind: text, rank: integer) -> integer {
-  if kind == "street" { return 13; }
-  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
-  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
-  else { NEVER }
-}
 
-fn poi_debut(kind: text) -> integer {
-  if kind == "tower" || kind == "peak" || kind == "camp" { 12 }
-  else if kind == "viewpoint" || kind == "ruins" || kind == "monument" { 13 }
-  else if kind == "spring" || kind == "playground" { 14 }
-  else if kind == "bench" || kind == "drinking_water" || kind == "crossing" { 16 }
-  else { 15 }
-}
 
 // --- decimation ---------------------------------------------------------------------------------------
 

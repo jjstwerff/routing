@@ -6,7 +6,7 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { densifySketch, isSketchEcho } from './map.mjs';
+import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1355,6 +1355,35 @@ console.log('\nbarrier marks:');
   ok(isSketchEcho([[52.36260004, 4.8735], [52.0907, 5.1214]], far),
      'equality is at loft\'s 6 printed decimals, not exact');
   ok(!isSketchEcho([], []), 'an empty route is not an echo (nothing was asked)');
+}
+
+{
+  // --- §6i: the area debut ladder ------------------------------------------------------------------
+  // `areaMinZoom` is not exported (the render list attaches it), so drive it the way the app does.
+  const minZoomOf = (diag) => areaRenderList([{ cover: 'x', ring: [[52, 5], [52, 5 + diag], [52 + 1e-9, 5]] }])[0].minZoom;
+
+  ok(minZoomOf(0.5) === 0, 'geometry larger than 0.256° still draws at EVERY zoom (a z2 view is not empty)');
+  ok(minZoomOf(0.05) === 8, 'a 4 km area debuts at z8, not z0 — the cliff this replaced');
+  ok(minZoomOf(0.010) === 10, 'a 700 m area debuts at z10');
+  // The small end must be untouched: it is what the detailed map at z11+ already draws, and moving it
+  // would be a rendering change to every block, not just the overview.
+  ok(minZoomOf(0.005) === 11 && minZoomOf(0.002) === 12 && minZoomOf(0.001) === 13 && minZoomOf(0.0005) === 14,
+     'the small end is unchanged (11/12/13/14) — the detailed map draws exactly as before');
+
+  // Monotone: a bigger area can never debut LATER than a smaller one, or zooming out would add detail.
+  // Walking the ladder from the LARGEST diagonal down, the debut zoom must never go backwards: a bigger
+  // area has to appear at the same zoom or earlier, or zooming out would ADD detail.
+  let mono = true, prev = -1;
+  for (const [d] of AREA_DEBUT_LADDER) { const z = minZoomOf(Math.max(d + 1e-9, 1e-9)); if (z < prev) mono = false; prev = z; }
+  ok(mono, 'the ladder is monotone — a bigger area never debuts later than a smaller one');
+
+  // ⚠ The loft copy (`basemap::area_debut_diag`) must agree, because the generator SELECTS an overview's
+  // contents with it. These are the thresholds it carries; a change here that is not made there means a
+  // feature stored and never drawn, or drawn and never stored.
+  const loftLadder = [[0.256, 0], [0.128, 6], [0.064, 7], [0.032, 8], [0.016, 9],
+                      [0.008, 10], [0.003, 11], [0.0015, 12], [0.0007, 13]];
+  ok(loftLadder.every(([d, z]) => minZoomOf(d + 1e-9) === z),
+     'every threshold matches the loft ladder in basemap.loft');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

@@ -422,3 +422,78 @@ pub fn dp_mask(xs: vector<float>, ys: vector<float>, eps: float) -> vector<boole
   }
   keep
 }
+
+// --- WHEN A FEATURE FIRST DRAWS: the debut zoom -------------------------------------------------------
+//
+// The RENDERER decides what to draw at a zoom. A generator building an overview (PLAN-SCALE §6i) has to
+// decide the same thing, and the two must not drift: a disagreement is either a feature stored and never
+// drawn (waste) or one drawn and never stored (a hole in the map). `browser/map.mjs` holds the JS copy —
+// `areaMinZoom`, BUILDINGS_MINZOOM, LINE_STYLES, RANK_MINZOOM, POI_STYLES — and this is the loft one, so
+// every loft consumer reads it HERE instead of carrying a fifth private copy.
+pub const DEBUT_NEVER = 19;
+
+// An area debuts when it is about EIGHT PIXELS across, which is what the renderer's own thresholds
+// already encoded: 0.0007° at z14, 0.003° at z12 and 0.008° at z11 all land at 8–12 px.
+//
+// ⚠ The series used to STOP at 0.008 and send everything larger to z0, so a 900 m field arrived at the
+// same zoom as the IJsselmeer. At z8 that is 116 703 areas competing for a screen that can show a few
+// hundred. It continues now — doubling the diagonal per zoom, the same rule the small end already
+// follows — with a floor at the top so genuinely huge geometry still draws at ANY zoom, which is what
+// keeps a z2 view from being empty.
+pub fn area_debut_diag(diag: float) -> integer {
+  if diag > 0.256 { 0 }
+  else if diag > 0.128 { 6 } else if diag > 0.064 { 7 } else if diag > 0.032 { 8 }
+  else if diag > 0.016 { 9 } else if diag > 0.008 { 10 } else if diag > 0.003 { 11 }
+  else if diag > 0.0015 { 12 } else if diag > 0.0007 { 13 } else { 14 }
+}
+
+// The diagonal is measured in DEGREES on the ring's own bbox, exactly as `areaMinZoom` measures it —
+// including that it does not correct longitude for latitude. Matching the renderer matters more here
+// than being geometrically pure: this function exists to agree with it.
+pub fn area_debut(ring: vector<Coord>) -> integer {
+  if len(ring) == 0 { return DEBUT_NEVER; }
+  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
+  for ac in ring {
+    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
+    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
+  }
+  adx = ((amxx - amnx) as float) / 10000000.0;
+  ady = ((amxy - amny) as float) / 10000000.0;
+  area_debut_diag(sqrt(adx * adx + ady * ady))
+}
+
+// LINE_STYLES' minZoom, per kind. A kind this does not know is one the renderer has no style for, so it
+// is never drawn — `DEBUT_NEVER`, not zero.
+pub fn line_debut(kind: text) -> integer {
+  // The overview's road SPINE arrives as lines of these two kinds (§6i O1) — the only Line kinds that do
+  // not come from `line_kind` above. Their zooms track ROAD_STYLES' motorway/trunk, because that is what
+  // they stand in for below the handover.
+  if kind == "motorway" { 8 }
+  else if kind == "primary" { 9 }
+  else if kind == "border" { 8 }
+  else if kind == "river" { 11 }
+  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
+  else if kind == "stream" || kind == "tram" { 13 }
+  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
+  else if kind == "hedge" || kind == "wall" { 15 }
+  else if kind == "fence" { 16 }
+  else { DEBUT_NEVER }
+}
+
+// STREET_MINZOOM for a street label; RANK_MINZOOM for a place. A city (rank 6) draws at every zoom —
+// those are the 36 labels that make a country view legible.
+pub fn label_debut(kind: text, rank: integer) -> integer {
+  if kind == "street" { return 13; }
+  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
+  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
+  else { DEBUT_NEVER }
+}
+
+// POI_STYLES' z, per kind, with POI_FALLBACK's 15 for the rest.
+pub fn poi_debut(kind: text) -> integer {
+  if kind == "tower" || kind == "peak" || kind == "camp" { 12 }
+  else if kind == "viewpoint" || kind == "ruins" || kind == "monument" { 13 }
+  else if kind == "spring" || kind == "playground" { 14 }
+  else if kind == "bench" || kind == "drinking_water" || kind == "crossing" { 16 }
+  else { 15 }
+}
