@@ -64,6 +64,19 @@ ok(bare.stores.length === 1 && /overview/.test(bare.stores[0]),
    `from ONE store, the overview: ${JSON.stringify(bare.stores)}`);
 ok(bare.roads === 0, `and reads NO detailed roads (R=${bare.roads})`);
 
+// 1b — the ladder is consulted by the path that actually DRAWS.
+//
+// ⚠ This check exists because its absence shipped a no-op. The ladder was extended in `areaMinZoom`, six
+// unit tests passed, and the map was unchanged — because areas render from the STORE index through
+// `_drawAreasFromStore`, which carried its own inline copy of the thresholds, and `areaMinZoom` only
+// feeds the parity path. A rule is not in force until the drawing code asks it.
+const drawn = JSON.parse(await ev(`JSON.stringify((() => {
+  const m = window.__map0;
+  return { at8: m._drawAreasFromStore(8), at16: m._drawAreasFromStore(16) };
+})())`) || '{}');
+ok(drawn.at16 > 0 && drawn.at8 * 4 < drawn.at16,
+   `the DRAW path applies the ladder: ${drawn.at8} areas at z8 against ${drawn.at16} at z16`);
+
 // 2 — the handover, both directions. Below it the overview alone; above it the detailed block alone.
 const below = await load('#13/52.2215/6.8937');
 ok(below.drawn > 0 && below.stores.every((u) => /overview/.test(u)),
