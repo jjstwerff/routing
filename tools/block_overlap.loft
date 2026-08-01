@@ -32,6 +32,7 @@
 #cwd
 
 use routing_kernel::TTile;
+use basemap::PTile;
 
 // One cell and every block holding it, as a bitmask — the pair-wise question needs the whole owner set,
 // not just the first claimant. One bit per block caps this at 62 blocks per index, far above the
@@ -40,8 +41,15 @@ struct Owner { const k: integer, mask: integer }
 
 fn main() {
   paths: vector<text> = [];
-  for x in arguments() { paths += [x]; }
-  if len(paths) < 2 { println("usage: block_overlap <a.store> <b.store> [more…]"); return; }
+  base_mode = false;
+  // `--base` reads the stores as PTile (the presentation tiling) instead of TTile (roads). Without it a
+  // base store loads as ZERO cells and every check below passes VACUOUSLY — which is exactly what
+  // `base_chunk_gate.sh` was doing to four Netherlands chunks before this existed. A tool that silently
+  // answers about the wrong type is worse than one that refuses.
+  for x in arguments() {
+    if x == "--base" { base_mode = true; } else { paths += [x]; }
+  }
+  if len(paths) < 2 { println("usage: block_overlap [--base] <a.store> <b.store> [more…]"); return; }
   if len(paths) > 62 { println("#O FAIL — {len(paths)} blocks exceeds the 62 this bitmask holds"); return; }
 
   seen: hash<Owner[k]> = [];
@@ -49,16 +57,27 @@ fn main() {
 
   bi = 0;
   for p in paths {
-    tiles: hash<TTile[tkey]> = [];
-    store_load(tiles, p);
     n = 0;
     bit = 1;
     for sh in 0..bi { bit = bit * 2; }
-    for t in tiles {
-      n += 1;
-      o = seen[t.tkey];
-      if o == null { seen += Owner { k: t.tkey, mask: bit }; }
-      else { o.mask = o.mask | bit; }
+    if base_mode {
+      ptiles: hash<PTile[tkey]> = [];
+      store_load(ptiles, p);
+      for pt in ptiles {
+        n += 1;
+        po = seen[pt.tkey];
+        if po == null { seen += Owner { k: pt.tkey, mask: bit }; }
+        else { po.mask = po.mask | bit; }
+      }
+    } else {
+      tiles: hash<TTile[tkey]> = [];
+      store_load(tiles, p);
+      for t in tiles {
+        n += 1;
+        o = seen[t.tkey];
+        if o == null { seen += Owner { k: t.tkey, mask: bit }; }
+        else { o.mask = o.mask | bit; }
+      }
     }
     counts += [n];
     println("  block {bi}: {n} cells  ({p})");

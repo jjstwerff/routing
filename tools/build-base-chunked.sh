@@ -35,6 +35,15 @@ loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 out="${BLOCKS_OUT:-$here/blocks}"
 
 id="${1:-}"; src="${2:-}"; bbox="${3:-}"; n="${4:-4}"
+# CHUNKS ARE INDEPENDENT, so they can run at once — and until this existed they did not, which threw away
+# the other half of chunking's value. Every loft generator here is SINGLE-THREADED (measured: NL's base
+# build is `real 26m25s / user 26m10s`, i.e. 0.99 cores of the 24 on this box), so the parallelism has to
+# come from running whole chunks side by side rather than from inside them.
+#
+# Bounded by MEMORY, not by cores: `build_store` peaks around 6 GB for a country-sized chunk, so 4 jobs
+# want ~24 GB. Default 1 keeps the old behaviour for anyone who does not ask; CI runs one chunk per
+# runner and wants 1 anyway.
+jobs="${CHUNK_JOBS:-1}"
 [ -n "$id" ] && [ -n "$src" ] && [ -n "$bbox" ] \
   || { echo "usage: build-base-chunked.sh <region-id> <geofabrik-path> <W,S,E,N> <n-chunks>"; exit 2; }
 
@@ -49,9 +58,20 @@ for ((i = 0; i <= n; i++)); do
   edges+=("$(python3 -c "print(f'{$bw + ($be - $bw) * $i / $n:.6f}')")")
 done
 
-echo "== base map for $id in $n chunk(s), $bw..$be =="
-built=()
-for ((i = 0; i < n; i++)); do
+echo "== base map for $id in $n chunk(s), $bw..$be, $jobs at a time =="
+
+# ⚠ ACQUIRE ONCE, BEFORE ANY PARALLELISM. `build-blocks.sh` fetches the source extract itself, and four
+# copies of it racing on the same `.part` sidecar is precisely the cache-destroying shape its own header
+# warns about. So chunk 0 runs alone first — it downloads if needed — and the rest may then share the
+# cached extract read-only.
+pbf="${BLOCKS_WORK:-$HOME/.cache/routing-blocks}/$(basename "$src")-latest.osm.pbf"
+if [ "$jobs" -gt 1 ] && [ ! -s "$pbf" ]; then
+  echo "  (source extract not cached — chunk 0 runs alone first to fetch it)"
+fi
+
+one_chunk() {  # $1 = index
+  local i="$1"
+  local lo hi xlo xhi cid tlo thi raw
   lo="${edges[$i]}"; hi="${edges[$((i + 1))]}"
   # ⚠ THE MARGIN GOES ON INTERIOR SEAMS ONLY. Applied to the outer edges too — which is what this did
   # first — each end chunk extracts further out than the region itself, and its unbounded trim band then
@@ -79,20 +99,54 @@ for ((i = 0; i < n; i++)); do
   # "roads blocks + base map per region" wants anyway.
   # A chunk is a slice, so build-blocks' 100-tile non-vacuity floor does not apply — but it is lowered,
   # not disabled: an EMPTY chunk is still a failure and 10 tiles still catches it.
+  # ⚠ `return`, never `exit`. In the parallel branch this runs as a background subshell, where `exit`
+  # ends only that subshell — the parent sails on and reports totals for stores that were never built.
+  # And the log is KEPT rather than sent to /dev/null: a chunk that fails at 03:00 in a matrix job is
+  # unfixable without it.
+  local clog="${TMPDIR:-/tmp}/chunk-$cid.log"
   MIN_TILES="${CHUNK_MIN_TILES:-10}" \
-  "$here/tools/build-blocks.sh" "$cid" "$src" "$xlo,$bs,$xhi,$bn" >/dev/null 2>&1 \
-    || { echo "  FAIL: build-blocks for $cid"; exit 1; }
-  "$here/tools/build-base.sh" "$cid" "$src" "$xlo,$bs,$xhi,$bn" >/dev/null 2>&1 \
-    || { echo "  FAIL: build-base for $cid"; exit 1; }
+  "$here/tools/build-blocks.sh" "$cid" "$src" "$xlo,$bs,$xhi,$bn" >"$clog" 2>&1 \
+    || { echo "  FAIL: build-blocks for $cid — last lines of $clog:"; tail -4 "$clog" | sed 's/^/      /'; return 1; }
+  "$here/tools/build-base.sh" "$cid" "$src" "$xlo,$bs,$xhi,$bn" >>"$clog" 2>&1 \
+    || { echo "  FAIL: build-base for $cid — last lines of $clog:"; tail -4 "$clog" | sed 's/^/      /'; return 1; }
   raw="$out/$cid.base.store"
-  [ -f "$raw" ] || { echo "  FAIL: $cid produced no store"; exit 1; }
+  [ -f "$raw" ] || { echo "  FAIL: $cid produced no store"; return 1; }
   "$loft" --native --lib "$here/lib" "$here/tools/trim_base.loft" \
     "$raw" "$out/$cid.trimmed.store" "$tlo" "$thi" 2>&1 | grep '^#T' | sed 's/^/  /' \
-    || { echo "  FAIL: trim for $cid"; exit 1; }
+    || { echo "  FAIL: trim for $cid"; return 1; }
   mv -f "$out/$cid.trimmed.store" "$raw"
   rm -f "$out/$cid.trimmed.store.dschema"
-  built+=("$raw")
+  # No value on stdout: the caller already knows the path, and returning it here would force a redirect
+  # that also swallowed the `#T` trim lines — which are the ones base_chunk_gate.sh reads.
+}
+
+built=()
+running=0
+# ⚠ EVERY CHUNK WRITES ITS EXIT STATUS TO A FILE, and the parent reads them all at the end.
+#
+# The obvious `wait || exit 1` does NOT work and silently passed a broken run: bare `wait` waits for all
+# children and returns ZERO regardless of what they did (POSIX). So a chunk that failed was reported only
+# by its own message scrolling past, and the script went on to sum extents of stores that did not exist.
+# A status file per chunk is unambiguous and survives the subshell.
+stat="$(mktemp -d)"
+trap 'rm -rf "$stat"' EXIT
+for ((i = 0; i < n; i++)); do
+  cid="$(printf '%s-c%02d' "$id" "$i")"
+  built+=("$out/$cid.base.store")
+  if [ "$jobs" -le 1 ] || { [ "$i" = "0" ] && [ ! -s "$pbf" ]; }; then
+    one_chunk "$i"; echo "$?" > "$stat/$i"     # serial, and the acquire happens here
+  else
+    ( one_chunk "$i"; echo "$?" > "$stat/$i" ) &
+    running=$((running + 1))
+    if [ "$running" -ge "$jobs" ]; then wait -n 2>/dev/null || true; running=$((running - 1)); fi
+  fi
 done
+wait
+bad=0
+for ((i = 0; i < n; i++)); do
+  [ "$(cat "$stat/$i" 2>/dev/null || echo 1)" = "0" ] || { echo "  chunk $i FAILED"; bad=1; }
+done
+[ "$bad" = "0" ] || { echo "FAIL — $n chunk(s) requested, at least one did not build"; exit 1; }
 
 echo
 echo "== totals =="
