@@ -532,13 +532,38 @@ w/highway n/barrier` and `osmium export --geometry-types=linestring,point`, beca
 path is a NODE. `tools/build-blocks.sh` now invalidates its cached intermediates when that recipe
 changes; `tools/split_block.loft` asserts that no barriers are lost across a split.
 
-Current blocks (all carry `barriers@` in their `.dschema`):
+Current blocks — **all regenerated 2026-08-01** from a freshly fetched, md5-verified Geofabrik extract
+(1 395 092 512 bytes). Two things forced a full regeneration rather than a re-clip, and both mean an
+OLDER block reads as GARBAGE rather than as missing data (loft#700):
 
-| block | ways | barriers |
-|---|---|---|
-| `browser/stores/enschede.roads.store` (ships with the app) | 49 613 | 989 |
-| `blocks/nl-west.roads.store` | 1 388 733 | 17 581 |
-| `blocks/nl-east.roads.store` | 1 395 633 | 17 929 |
+* `TRoad.flags` widened **u8 → u16** to carry the signposted-network bits (`RF_NET_*`, PLAN-RESTORE R3);
+* the base map gained heath/scrub, nature reserves, amenity sites, borders, power lines and
+  cemetery/reserve/site labels, none of which the 2026-07-30 blocks contain.
+
+| block | ways / features | barriers | on a network (walk / cycle / mtb) | size |
+|---|---|---|---|---|
+| `browser/stores/enschede.roads.store` (ships with the app) | 49 890 | 4 048 | 4 543 / 2 832 / 671 | 4.2 MB |
+| `blocks/nl-west.roads.store` | 1 388 996 | 114 329 | 121 572 / 74 726 / 5 104 | 233.4 MB |
+| `blocks/nl-east.roads.store` | 1 396 480 | 119 924 | 191 046 / 108 300 / 19 096 | 263.9 MB |
+| `blocks/nl.names.store` (R4 search) | 296 474 streets + 12 700 places | — | — | 36.1 MB |
+| `browser/stores/enschede.names.store` | 4 502 + 85 | — | — | 0.5 MB |
+| `blocks/nl-west.base.store` | 8 721 396 features / 69 003 tiles | — | — | 999.3 MB |
+| `blocks/nl-east.base.store` | 8 569 099 features / 116 561 tiles | — | — | 1 058.3 MB |
+
+Conservation, checked rather than assumed: the road split is exact (1 388 996 + 1 396 480 = 2 785 476,
+the whole-country count) and so is the base split (69 003 + 116 561 = 185 564 tiles; 8 721 396 +
+8 569 099 = 17 290 495 features). OSM drift over the two days since the previous build was **+0.040%**
+on ways, and every category moved by a comparable fraction in the same direction — which is what a data
+refresh looks like, as against a pipeline change, which moves one category and leaves the rest.
+
+⚠ **The base halves got SMALLER while carrying MORE** — 999 + 1058 MB against 1370 MB each before,
+2 057 MB against 2 740 MB. That is loft#710 (a persisted store's size is a function of insert order, not
+of content) working in our favour, not data loss; the feature counts above are the check, and they rose.
+
+⚠ **The RELEASE still holds the 2026-07-30 assets.** Everything above is local. `tools/fetch-site-blocks.sh`
+verifies each download against the sha256 in the index and will correctly REFUSE the old assets, so a
+Pages deploy from `main` cannot succeed until ~3.4 GB is re-uploaded under the tag `data-v2026-08-01`
+(the tag `data/coverage.toml` and `browser/coverage.json` now both name).
 
 
 - The block **`soverijssel.tiles`** (21 MB, southern-Overijssel, 1215 tiles) is **gitignored** (`*.tiles`)
