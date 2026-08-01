@@ -1,0 +1,33 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Does a PAGED base-map read of one viewport find anything, in the block the app would name for it?
+//
+// The app's own reader is `map_kernel::layout_cell_keys` + `store_load_keys`, so this asks exactly that
+// pair against a store on disk, and reports how many of the keys the store actually holds. It separates
+// two failures the browser cannot tell apart — a viewport whose keys are simply ABSENT from the block it
+// was routed to, and a block that was never fetched — because both draw a blank map.
+//
+//   loft --native --lib lib tools/base_key_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo>
+//
+// Boxes are DEGREES in the app's own order (south,west,north,east), i.e. what `view` is given.
+#cwd
+
+use basemap::PTile;
+use map_kernel::(layout_cell_keys, LAYOUT_PAD);
+
+fn main() {
+  argv: vector<text> = [];
+  for x in arguments() { argv += [x]; }
+  store = argv[0] ?? "";
+  box = argv[1] ?? "";
+  keys = layout_cell_keys(box, LAYOUT_PAD);
+  ws: hash<PTile[tkey]> = [];
+  got = store_load_keys(ws, store, keys);
+  tiles = 0; feats = 0;
+  for t in ws {
+    tiles += 1;
+    feats += len(t.areas) + len(t.buildings) + len(t.lines) + len(t.labels) + len(t.pois);
+  }
+  println("box={box} asked={len(keys)} loaded={got} tiles={tiles} features={feats}");
+}

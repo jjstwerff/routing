@@ -1,0 +1,187 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// HOW BIG IS AN OVERVIEW BLOCK — and which of its two rules does the shrinking? (PLAN-SCALE §6i)
+//
+// An overview holds only what a low zoom DRAWS, generalised to what a low zoom can SHOW. Those are two
+// separate rules and they are not equally powerful, which is the thing this measures:
+//
+//   SELECTION   keep features whose debut zoom <= zmax (the renderer's own minZoom rules)
+//   DECIMATION  drop vertices no further than one PIXEL at zmax from the line they sit on
+//
+// §6h already measured selection alone — "no buildings, no pois, big areas simplified, place labels" came
+// to 75 MB west / 94 MB east — so if selection were the load-bearing rule the answer would already be a
+// 169 MB file, which does not ship beside the app. The suspicion this probe tests is that selection keeps
+// FEW features but MOST COORDINATES (a coastline is one feature and 40 000 vertices), so decimation, not
+// selection, is what decides whether the block is 1 MB or 900 MB.
+//
+//   loft --native --lib lib tools/overview_size_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo> <zmax> [tierlo-tierhi]
+//
+// Reads by KEY like the app does — never a whole-store walk. Boxes are DEGREES (south,west,north,east).
+#cwd
+
+use basemap::(PTile, Coord, cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
+
+NEVER = 19;
+
+// Douglas-Peucker, iterative with an explicit stack — the standard line generalisation, and the one whose
+// ratio decides the file size. Recursion is avoided on purpose: a coastline ring runs to tens of
+// thousands of vertices and the depth is data-dependent.
+struct Seg { lo: integer, hi: integer }
+
+fn dp_keep(pts: vector<Coord>, tol: integer) -> integer {
+  n = len(pts);
+  if n <= 2 { return n; }
+  keep: vector<boolean> = [for _ in 0..n { false }];
+  keep[0] = true; keep[n - 1] = true;
+  stack: vector<Seg> = [Seg { lo: 0, hi: n - 1 }];
+  while len(stack) > 0 {
+    sg = stack[len(stack) - 1];
+    stack = stack[0..(len(stack) - 1)];
+    slo = sg.lo; shi = sg.hi;
+    if shi <= slo + 1 { continue; }
+    ax = (pts[slo].x ?? 0) as integer; ay = (pts[slo].y ?? 0) as integer;
+    bx = (pts[shi].x ?? 0) as integer; by = (pts[shi].y ?? 0) as integer;
+    dx = bx - ax; dy = by - ay;
+    dnorm = sqrt(((dx * dx + dy * dy) as float));
+    best = -1; bestd = 0.0;
+    si = slo + 1;
+    while si < shi {
+      px = (pts[si].x ?? 0) as integer; py = (pts[si].y ?? 0) as integer;
+      // Perpendicular distance to the chord; a degenerate chord (both ends equal) falls back to radial.
+      dist = 0.0;
+      if dnorm > 0.0 {
+        cross = ((dx * (py - ay) - dy * (px - ax)) as float);
+        dist = ((if cross < 0.0 { 0.0 - cross } else { cross }) / dnorm) ?? 0.0;
+      } else {
+        ddx = (px - ax) as float; ddy = (py - ay) as float;
+        dist = sqrt(ddx * ddx + ddy * ddy);
+      }
+      if dist > bestd { bestd = dist; best = si; }
+      si += 1;
+    }
+    if best >= 0 && bestd > (tol as float) {
+      keep[best] = true;
+      stack += [Seg { lo: slo, hi: best }];
+      stack += [Seg { lo: best, hi: shi }];
+    }
+  }
+  kept = 0;
+  for kb in keep { if kb { kept += 1; } }
+  kept
+}
+
+fn area_debut(ring: vector<Coord>) -> integer {
+  if len(ring) == 0 { return NEVER; }
+  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
+  for ac in ring {
+    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
+    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
+  }
+  adx = ((amxx - amnx) as float) / 10000000.0;
+  ady = ((amxy - amny) as float) / 10000000.0;
+  adiag = sqrt(adx * adx + ady * ady);
+  if adiag > 0.008 { 0 } else if adiag > 0.003 { 11 } else if adiag > 0.0015 { 12 }
+  else if adiag > 0.0007 { 13 } else { 14 }
+}
+
+fn line_debut(kind: text) -> integer {
+  if kind == "border" { 8 }
+  else if kind == "river" { 11 }
+  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
+  else if kind == "stream" || kind == "tram" { 13 }
+  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
+  else if kind == "hedge" || kind == "wall" { 15 }
+  else if kind == "fence" { 16 }
+  else { NEVER }
+}
+
+fn label_debut(kind: text, rank: integer) -> integer {
+  if kind == "street" { return 13; }
+  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
+  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
+  else { NEVER }
+}
+
+struct Sum { feats: integer, before: integer, after: integer }
+
+fn take_areas(pt: PTile, zmax: integer, tol: integer, sm: Sum) {
+  for pa in pt.areas {
+    if area_debut(pa.ring) <= zmax {
+      sm.feats += 1; sm.before += len(pa.ring); sm.after += dp_keep(pa.ring, tol);
+    }
+  }
+}
+fn take_lines(lt: PTile, zmax: integer, tol: integer, sm: Sum) {
+  for ll in lt.lines {
+    if line_debut(ll.kind) <= zmax {
+      sm.feats += 1; sm.before += len(ll.geom); sm.after += dp_keep(ll.geom, tol);
+    }
+  }
+}
+fn take_labels(nt: PTile, zmax: integer, sm: Sum) {
+  for nl in nt.labels {
+    if label_debut(nl.kind, nl.rank) <= zmax {
+      sm.feats += 1; sm.before += len(nl.line); sm.after += (if len(nl.line) > 1 { 1 } else { len(nl.line) });
+    }
+  }
+}
+
+fn tier_keys(mnla: integer, mnlo: integer, mxla: integer, mxlo: integer, tier: integer) -> vector<integer> {
+  tk: vector<integer> = [];
+  tc = tier_cell(tier);
+  tx0 = cell_ix(mnlo, tc) - 1; tx1 = cell_ix(mxlo, tc);
+  ty0 = cell_ix(mnla, tc) - 1; ty1 = cell_ix(mxla, tc);
+  tyy = ty0;
+  while tyy <= ty1 {
+    txx = tx0;
+    while txx <= tx1 { tk += [tier_key(tier, txx, tyy)]; txx += 1; }
+    tyy += 1;
+  }
+  tk
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for av in arguments() { argv += [av]; }
+  path = argv[0] ?? "";
+  spec = argv[1] ?? "";
+  zmax = argv[2] as integer ?? 12;
+  span = argv[3] ?? "0-3";
+  sp = spec.split(',');
+  if len(sp) != 4 { println("#O FAIL bad box {spec}"); return; }
+  mnla = round((sp[0] as float ?? 0.0) * 10000000.0) as integer;
+  mnlo = round((sp[1] as float ?? 0.0) * 10000000.0) as integer;
+  mxla = round((sp[2] as float ?? 0.0) * 10000000.0) as integer;
+  mxlo = round((sp[3] as float ?? 0.0) * 10000000.0) as integer;
+  tp = span.split('-');
+  tlo = tp[0] as integer ?? 0;
+  thi = tp[1] as integer ?? (LAYOUT_TIERS - 1);
+  // One CSS pixel at `zmax`, in fixed-point degrees of longitude: the world is 256 * 2^z pixels wide.
+  // A vertex nearer than this to its own chord cannot be drawn apart from it at that zoom.
+  wpx = 256.0;
+  zi = 0;
+  while zi < zmax { wpx = wpx * 2.0; zi += 1; }
+  tol = round(((360.0 / wpx) ?? 0.0) * 10000000.0) as integer;
+
+  keys: vector<integer> = [];
+  tw = tlo;
+  while tw <= thi { keys += tier_keys(mnla, mnlo, mxla, mxlo, tw); tw += 1; }
+  ws: hash<PTile[tkey]> = [];
+  got = store_load_keys(ws, path, keys);
+  sm = Sum { feats: 0, before: 0, after: 0 };
+  allc = 0; allf = 0;
+  for wt in ws {
+    take_areas(wt, zmax, tol, sm); take_lines(wt, zmax, tol, sm); take_labels(wt, zmax, sm);
+    for ca in wt.areas { allc += len(ca.ring); allf += 1; }
+    for cb in wt.buildings { allc += len(cb.ring); allf += 1; }
+    for cl in wt.lines { allc += len(cl.geom); allf += 1; }
+    for cn in wt.labels { allc += len(cn.line); allf += 1; }
+    allf += len(wt.pois); allc += len(wt.pois);
+  }
+  println("box={spec} tiers={tlo}..{thi} zmax={zmax} tol={tol} units (1 px at z{zmax}) · keys {len(keys)} loaded {got}");
+  println("  everything here          : {allf} features, {allc} coords");
+  println("  SELECTED (debut<=z{zmax}) : {sm.feats} features ({(sm.feats * 100) / (allf + 1)}%), {sm.before} coords ({(sm.before * 100) / (allc + 1)}%)");
+  println("  + DECIMATED at 1 px      : {sm.after} coords ({(sm.after * 100) / (sm.before + 1)}% of selected, {(sm.after * 100) / (allc + 1)}% of all)");
+  println("  bytes at 8 B/coord       : selected {(sm.before * 8) / 1048576} MB -> decimated {(sm.after * 8) / 1048576} MB");
+}

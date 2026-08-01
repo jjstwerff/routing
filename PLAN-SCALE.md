@@ -1304,7 +1304,7 @@ visible rather than assumed.
    differently changes it by exactly nothing — it is density per SCREEN, not per region. This is what
    would make those cities "suddenly problematic" for a user, and the only answer is generalisation: a
    zoom pyramid that drops buildings and simplifies areas at low zoom (§6f's back-pocket overview tier
-   measured 75/94 MB for NL). **Measure a real Île-de-France or Greater London extract before committing
+   measured 75/94 MB for NL — **§6i is that design, measured**). **Measure a real Île-de-France or Greater London extract before committing
    to WE** — one download answers whether the viewport cost is 3× NL's or 10×, and that number decides
    whether generalisation is the next rung or the one after.
 
@@ -1390,6 +1390,213 @@ needs a render assertion, not just a route one.
 * **An overview tier only** (no buildings, no pois, big areas simplified, place labels) measures at
   **75 MB west / 94 MB east** and WOULD fit the current budget. Worth keeping in the back pocket as a
   never-blank fallback, but it is not "full support" — it is a different, thinner map.
+  ⚠ **§6i explains that number and shows it is a plateau, not a floor.** 75/94 MB is what SELECTION alone
+  buys: keeping only what a low zoom draws keeps 4% of the features and **45% of the coordinates**, because
+  the features it keeps are the huge ones. Adding 1-pixel decimation takes the same window to 1.2% of
+  coordinates at z≤10. The overview is not a thinner map you settle for — it is the top of a ladder.
+
+### 6i. THE OVERVIEW LADDER — what it takes to open the app on the Netherlands (2026-08-02)
+
+The app opens on Enschede at z16 because that is the only camera it can afford. Everything below is the
+design for opening it on the *country*, and the reason it is a design rather than a setting: **the read
+path has no zoom.** `viewCmd` sends base/roads/cmd/**bbox**/mode, and `layout_cell_keys` enumerates all
+four tiers over that box unconditionally, so a view costs what its GROUND AREA costs and nothing tells it
+that a building is invisible at z10. Measured on the deployed site (headless 1000×700, cold, cache off,
+`CPU_THROTTLE=4`, medians of 3 at 1.05× spread):
+
+| camera | block | first view | bytes | features drawn |
+|---|---|---|---|---|
+| Enschede z16 — today's default | `enschede`, whole | **1.64 s** | 10.7 MB | 26 630 |
+| Amsterdam z16 | `nl-midwest`, paged, 297 reads | **6.31 s** | 18.4 MB | 22 479 |
+| Amsterdam z15 | 761 reads | 11.9 s | 47.4 MB | 78 751 |
+| Amsterdam z14 | 1675 reads | 26.9 s | 104.6 MB | 252 373 |
+
+A whole-NL screen (z≈8.6, padded 0.6) enumerates **~1.1 M layout keys + 70 k road keys**. There is no
+setting that survives that.
+
+#### ⚠ THE UNIT OF COST IS THE KEY, NOT THE FEATURE — and it inverts the design
+
+This is the measurement everything else follows from, and it is the opposite of the intuition that a
+zoomed-out map is expensive because it holds more stuff. Two same-sized windows on `nl-midwest`, both read
+the way the app reads (`tools/base_key_probe.loft`):
+
+| window | keys | tiles | features | bytes |
+|---|---|---|---|---|
+| Amsterdam centre | 69 | 67 | 39 646 | 14.2 MB |
+| IJsselmeer (open water) | 69 | 68 | **6 107** | **17.7 MB** |
+
+**6.5× fewer features for MORE bytes.** Every key costs ~3 × 64 kB pages, and asking for more keys does not
+amortise it: 4 keys → 12 pages, 69 keys → 216, 163 keys → 787. A z16 window pays 14.2 MB for ~4 MB of
+content. So the bill is **asking**, not receiving — a directory descent per key, paid whether the key
+exists or not.
+
+Two consequences, both load-bearing below:
+* **Below the zoom where detail is drawn, a whole-file read of a generalised block beats a keyed read of
+  the detailed one.** A 25 MB overview downloaded once is cheaper than 128 keys.
+* **A pyramid cannot have many levels.** Every level costs ≥4 keys per view even when it holds nothing —
+  ~800 kB. A level-per-zoom ladder is a 16 MB floor on every view; ~4 levels is the ceiling.
+
+#### Three designs this killed. Do not re-open them without new evidence
+
+1. **⛔ "Make the reader zoom-aware over the existing tiers"** — no data change, just skip the fine tiers
+   when zoomed out. **Falsified**: of the features a z12 Amsterdam viewport should draw, **73% sit in
+   tier 0** (1452 of 1997 — every place label, canal and railway). The tier is a SIZE bin; a city name is a
+   point and sits at the finest tier. Skipping fine tiers gives polygons with no cities.
+   `tools/zoom_bin_probe.loft` is the cross-tab.
+2. **⛔ A level-per-zoom pyramid** — killed by the per-key floor above.
+3. **⛔ "Selection is the shrink"** — see below; it is the *plateau*, not the lever.
+
+#### Selection is not the lever. DECIMATION is — and that reconciles §6h's 75/94 MB
+
+§6h measured an overview tier (no buildings, no POIs, big areas simplified, place labels) at **75 MB west /
+94 MB east** and shelved it as "a different, thinner map". That number is right and it is exactly what
+SELECTION ALONE buys, because the features a low zoom keeps are the *huge* ones: on the Amsterdam window
+(39 646 features, 532 160 coords), keeping only debut ≤ z12 keeps **4% of the features and 45% of the
+coordinates**. One coastline is one feature and forty thousand vertices.
+
+Adding the second rule — drop every vertex nearer than **one pixel at the level's own zoom** to the chord
+it sits on (Douglas–Peucker) — is what actually shrinks it. Measured, same window
+(`tools/overview_size_probe.loft`):
+
+| level | features kept | coords kept | after 1-px decimation | of ALL coords |
+|---|---|---|---|---|
+| z ≤ 8 | 319 (0.8%) | 215 880 (40%) | **2 333** | 0.44% |
+| z ≤ 10 | 319 (0.8%) | 215 880 (40%) | **6 504** | 1.2% |
+| z ≤ 11 | 493 (1.2%) | 224 601 (42%) | **12 387** | 2.3% |
+| z ≤ 12 | 1 826 (4.6%) | 239 886 (45%) | **24 069** | 4.5% |
+| z ≤ 13 | 7 304 (18%) | 265 183 (49%) | **43 163** | 8.1% |
+
+Read the columns, not the rows: **selection is flat in coordinates (40–49% at every level) and decimation
+is ~2× per zoom level.** The handover zoom is therefore the *only* size knob, and it costs a factor of two
+per level.
+
+⚠ **Projected country sizes, and they are UPPER BOUNDS** — scaling the coordinate ratio onto the 2043 MB
+country base: **z≤10 ≲ 25 MB · z≤11 ≲ 47 MB · z≤12 ≲ 92 MB.** The ratio is measured on a dense-city
+window where a big polygon overlapping several windows is counted once per window, so the true total is
+lower; how much lower needs **one whole-store pass at generation time**, which is a generator
+measurement, not an app one. Run it before choosing the handover — the difference between 25 MB and
+92 MB is whether the block ships beside the app (565 MB of a 950 MB budget today).
+
+#### The design: a ladder of LEVELS, not a bigger tier ladder
+
+**Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
+debut zoom, decimated to one pixel at that level, on a grid whose cell scales with the level — so a view
+at any zoom reads a constant number of cells holding only what that zoom can show.*
+
+Three rules, each already computable from what exists:
+* **Selection** is the renderer's `minZoom` tables — `areaMinZoom` (an area's own diagonal),
+  `BUILDINGS_MINZOOM`, `LINE_STYLES`, `RANK_MINZOOM`, `POI_STYLES`. Nothing is invented; the probes above
+  port them verbatim. ⚠ Today `areaMinZoom` is recomputed **in JS, per area, per view** — storing the
+  debut removes that too.
+* **Decimation** is Douglas–Peucker at 1 px of the level's zoom. The road spine must be **MERGED first**:
+  the country holds 27 595 motorway *ways* for ~3 500 km of motorway (≈130 m per way, OSM fragmentation),
+  and keeping way identity costs ≥2 vertices each before any simplification.
+* **The level's own cell size** is what keeps key count constant. Today's tiers ×8 are already levels
+  z16/z13/z10/z7; the fix is that a view at zoom z asks the levels ≤ z on THEIR grids, not all four on all
+  of theirs.
+
+The top level(s) are small enough to ship **whole** — read once, same-origin, cached — which is where the
+key-cost measurement pays off. Only the lower levels stay keyed.
+
+**Contents of the top level** (what a country map is): area colour, borders, rivers, canals/railways/
+runways, places by rank, and the road spine — motorway 27 595 · trunk+primary 63 848 · secondary 75 886
+ways (`tools/census.loft` over `blocks/netherlands.roads.store`, 2 785 476 ways / 17 298 515 vertices
+total). ⚠ **The spine has to be lifted out of the ROADS store**, which the base map's `Line` kinds do not
+cover today (waterway/railway/barrier/aeroway/boundary/power only).
+
+#### Is the zoom seamless? By construction yes — but there is a GAP in the middle
+
+**The handover cannot be seen, and that is a property of the decimation rule rather than a blend.** A level
+decimated at 1 px of its own zoom differs from the detailed geometry by **less than one pixel at every zoom
+it serves**, so switching sources at the top of its band moves nothing the eye can resolve. Seamlessness is
+bought at generation time, not by cross-fading.
+
+Three things still have to be arranged, and they are cheap:
+* **Always loaded, never swapped.** The overview is the app's base layer, drawn *under* the detailed
+  blocks, not exchanged with them. That removes handover flicker, removes pop-in while a keyed read is in
+  flight, and gives a background everywhere the detailed blocks do not reach.
+* **One source per kind per frame**, or a motorway drawn from both levels smears. The rule is the level
+  band, so it is the same decision as selection.
+* **Hysteresis at the boundary**, because the camera zooms fractionally (~0.5 per wheel notch). Switch up
+  and down at different zooms or the boundary thrashes.
+
+⚠ **AND THE HONEST PROBLEM: the two paths do not meet.** The overview is affordable up to ~z11 (≲47 MB
+whole); the detailed regions are affordable from ~z15 (18.4 MB). Between them **neither is** — z13 is
+~230 MB keyed, and a z≤13 overview is ≲165 MB. So a single overview file does not make zooming continuous;
+it makes the *ends* work. The middle band is what the per-level grid is for: a z12 level on 0.08° cells is
+~16 keys ≈ 3 MB, where the same viewport on today's 0.005° grid is 2 777 keys. **The gap is the argument
+for the ladder** — one file alone leaves a hole from z12 to z14.
+
+#### Long routes: yes, and the mechanism is already right — but the overview walks it into a trap
+
+Routing does not go through the view path at all. `match` names its own blocks from the sketch
+(`roadsForSketch`) and reads a **tube** of corridor cells along the drawn polyline, so its cost is
+proportional to route LENGTH, not to viewport area. Measured on the deployed site through the app's own
+path:
+
+| sketch | corridor | route | network | time |
+|---|---|---|---|---|
+| 11 points over ~8 km (≈800 m apart) | 19 808 ways | **217 pts, 10 186 m** | 39 requests, 2.3 MB | 4.9 s |
+| 3 points over ~3 km | 28 902 ways | 59 pts, 3 185 m | 18 requests, 1.0 MB | 5.4 s |
+| **3 points over ~8 km** (≈4 km apart) | 35 833 ways | **NO ROUTE** | 39 requests, 2.3 MB | 8.6 s |
+| **3 points over ~40 km** | 162 834 ways | **NO ROUTE** | 415 requests, 25.9 MB | 41 s, wasm **1.45 GB** |
+
+**The limit is point SPACING, not length.** A drawn line at ~800 m spacing routes fine and pays ~5 keys and
+~290 kB per km; the same ground as three far-apart taps fails, because the tube tier is rejected, the fat
+bbox is read instead (162 834 ways, 1.45 GB of wasm memory) and no route comes back. This is a MATCHER, not
+an A→B router — which is by design (DESIGN §1), but it means:
+
+⚠ **The overview makes the failing case the DEFAULT.** At z8 a 100-pixel drag is ~40 km, so a sketch drawn
+on a country map is exactly the sparse sketch that returns nothing. **Densify the sketch before matching** —
+interpolate along the drawn polyline to ≤~1 km spacing (collinear points do not change the user's intent),
+or make the tube radius adapt to point spacing. Without it, "open on the Netherlands" ships a map you can
+draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one chokepoint it belongs in.
+
+#### Failure paths to design against
+
+1. **Block selection is by AREA, not by zoom.** `chooseBlocks` takes the smallest block CONTAINING the box
+   and drops nested hits — so a mid-width box straddling two regions is contained by the overview and by
+   neither region, and would draw the coarse map at z14 where detail exists. Fix: **each block declares its
+   zoom band in the index** (`"zoom": [0,12]` / `[12,19]`) and JS — which already chooses blocks — filters
+   on it. The kernel does not change.
+2. **Conservation gates must not be applied to an overview.** It is lossy on purpose. It needs its own gate
+   in BOTH directions: every overview feature exists in the detailed block, *and* every debut ≤ Z_HAND
+   feature of the detailed block is in the overview. The second direction is the one that catches a silent
+   hole — the same class of miss as F5's blank map.
+3. **Freshness.** Build it in the same `data-refresh.yml` run from the same extract, or it drifts from the
+   regions and the map disagrees with the route.
+4. **Double-draw and label duplication** at the handover — one source per kind per frame (above).
+
+#### The rungs, in the order the evidence favours
+
+| | what | observable |
+|---|---|---|
+| **O0** | **Measure the country's overview population in ONE generator pass** — the projections above are upper bounds from a city window | exact MB at z≤10 / z≤12; decides the handover |
+| **O1** | Build the NL top level (selection + merge + decimate) + a coverage entry, read `whole`, always loaded | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
+| **O2** | Zoom bands in the index + JS block selection by zoom + sketch densification | no double-draw; a country-zoom sketch returns a route |
+| **O3** | The middle levels on their own grids (z12 on 0.08° cells) | a z13 view costs ~16 keys instead of 2 777 |
+| **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
+| **O5** | *(independent, upstream)* the per-key page cost — 3 pages per key with no batch amortisation | a z16 view drops from 14.2 MB toward its ~4 MB of content |
+
+O5 is worth filing on `loft-lang/loft` with `tools/base_key_probe.loft` as the repro: it is a ~3× on
+**every** zoom, needs no data change, and it is what makes the ladder's per-level floor affordable.
+
+#### Instruments added for this (all keyed reads — none walks a whole store)
+
+* **`tools/base_key_probe.loft`** — one viewport through the app's own reader; asked/loaded/bytes. This is
+  the probe that separated "the data is missing" from "it was never fetched".
+* **`tools/zoom_bin_probe.loft`** — the debut-zoom × tier cross-tab, i.e. what a zoom-aware reader would
+  and would not be able to reach.
+* **`tools/overview_size_probe.loft`** — selection vs decimation, with Douglas–Peucker at 1 px of a given
+  zoom. The size curve above is its output.
+
+⚠ **One thing found while measuring this that belongs to §6h, not here: the paged base map works only
+because the data repos share the app's origin.** Same code, same block, same viewport — base served
+same-origin: 217 requests, 13.58 MB, 22 479 features; served from another origin that sends `ACAO: *` but
+no `Access-Control-Expose-Headers` (which is what GitHub Pages sends): **2 requests, ~0 bytes, blank map,
+`rangeFails: []`, no error anywhere.** `cors_host_gate.sh` is green because `tools/range_server.py` sends
+the expose header and answers the preflight — it models a CORRECT CORS host, and nobody asserted that Pages
+is one (it answers `OPTIONS` with 405). D2's off-origin plan rests on this working.
 
 ## 7. Phase R — the update procedure (the recurring cost)
 

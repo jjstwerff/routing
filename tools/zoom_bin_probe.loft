@@ -1,0 +1,185 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// What does a viewport COST, and what of it is worth DRAWING at the zoom that asked?
+//
+// The app's base-map read is bounded by AREA (`layout_cell_keys` names the cells a box covers) and by
+// nothing else, so a zoomed-out view pays for every cell of ground it spans at every tier. This probe
+// asks the two questions that decide whether that is fixable by reading FEWER CELLS or by storing LESS
+// DETAIL, and it asks them through the app's own reader — keyed reads, never a whole-store walk:
+//
+//   * per TIER, how many keys does this box name, and what do they cost?  (the asking)
+//   * per DEBUT ZOOM, how many of the features they return would actually be DRAWN at zoom z?
+//
+// The debut zoom mirrors browser/map.mjs exactly — `areaMinZoom`, BUILDINGS_MINZOOM, LINE_STYLES,
+// STREET_MINZOOM, RANK_MINZOOM, POI_STYLES. It is the renderer's own answer to "is this visible yet",
+// which today no part of the FETCH path consults. Bucket 99 is "this kind is never drawn".
+//
+//   loft --native --lib lib tools/zoom_bin_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo> [tierlo-tierhi]
+//
+// The tier range restricts which tiers are asked for, so the coarse tiers can be read ALONE — which is
+// what a zoom-aware reader would do, and therefore what its picture would contain. Boxes are DEGREES in
+// the app's own order (south,west,north,east). Run with LOFT_LOADER_STATS=1 to see loft's own byte count.
+#cwd
+
+use basemap::(PTile, Coord, Area, Building, Line, Label, Poi,
+              cell_ix, tier_cell, tier_key, key_tier, LAYOUT_TIERS);
+
+NBUCKET = 20;          // debut zooms 0..18, plus 19 = "never drawn"
+NEVER = 19;
+
+// counts[tier * NBUCKET + debut] and the coordinates riding with them — the cross-tab that says whether
+// the features a low zoom needs are reachable from the coarse tiers alone.
+struct Tally { counts: vector<integer>, coords: vector<integer>, kinds: vector<integer> }
+
+fn new_tally() -> Tally {
+  Tally { counts: [for _ in 0..(LAYOUT_TIERS * NBUCKET) { 0 }],
+          coords: [for _ in 0..(LAYOUT_TIERS * NBUCKET) { 0 }],
+          kinds:  [for _ in 0..(5 * NBUCKET) { 0 }] }
+}
+
+fn add(ty: Tally, tier: integer, debut: integer, kind: integer, ncoord: integer) {
+  slot = tier * NBUCKET + debut;
+  ty.counts[slot] += 1;
+  ty.coords[slot] += ncoord;
+  ty.kinds[kind * NBUCKET + debut] += 1;
+}
+
+// --- the renderer's debut rules, ported verbatim ------------------------------------------------------
+
+// `areaMinZoom`: an area's own DIAGONAL decides when it appears — the one per-feature rule the renderer
+// already has, and the proof that "when is this visible" is computable at generation time.
+fn area_debut(ring: vector<Coord>) -> integer {
+  if len(ring) == 0 { return NEVER; }
+  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
+  for ac in ring {
+    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
+    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
+  }
+  adx = ((amxx - amnx) as float) / 10000000.0;
+  ady = ((amxy - amny) as float) / 10000000.0;
+  adiag = sqrt(adx * adx + ady * ady);
+  if adiag > 0.008 { 0 } else if adiag > 0.003 { 11 } else if adiag > 0.0015 { 12 }
+  else if adiag > 0.0007 { 13 } else { 14 }
+}
+
+fn line_debut(kind: text) -> integer {
+  if kind == "border" { 8 }
+  else if kind == "river" { 11 }
+  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
+  else if kind == "stream" || kind == "tram" { 13 }
+  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
+  else if kind == "hedge" || kind == "wall" { 15 }
+  else if kind == "fence" { 16 }
+  else { NEVER }
+}
+
+// A street label appears at STREET_MINZOOM; a PLACE appears by its rank, and a city (rank 6) is drawn at
+// EVERY zoom. Those are the features a coarse-tier-only read has to be able to reach.
+fn label_debut(kind: text, rank: integer) -> integer {
+  if kind == "street" { return 13; }
+  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
+  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
+  else { NEVER }
+}
+
+fn poi_debut(kind: text) -> integer {
+  if kind == "tower" || kind == "peak" || kind == "camp" { 12 }
+  else if kind == "viewpoint" || kind == "ruins" || kind == "monument" { 13 }
+  else if kind == "spring" || kind == "playground" || kind == "taxiway" { 14 }
+  else if kind == "bench" || kind == "drinking_water" || kind == "crossing" { 16 }
+  else { 15 }
+}
+
+// --- one function per kind: a single function holding every one of these loops trips a codegen bug ----
+
+fn tally_areas(pt: PTile, tier: integer, ty: Tally) {
+  for pa in pt.areas { add(ty, tier, area_debut(pa.ring), 0, len(pa.ring)); }
+}
+fn tally_buildings(bt: PTile, tier: integer, ty: Tally) {
+  for bb in bt.buildings { add(ty, tier, 14, 1, len(bb.ring)); }
+}
+fn tally_lines(lt: PTile, tier: integer, ty: Tally) {
+  for ll in lt.lines { add(ty, tier, line_debut(ll.kind), 2, len(ll.geom)); }
+}
+fn tally_labels(nt: PTile, tier: integer, ty: Tally) {
+  for nl in nt.labels { add(ty, tier, label_debut(nl.kind, nl.rank), 3, len(nl.line)); }
+}
+fn tally_pois(ot: PTile, tier: integer, ty: Tally) {
+  for oo in ot.pois { add(ty, tier, poi_debut(oo.kind), 4, 1); }
+}
+
+// --- the key window, per tier, exactly as `map_kernel::layout_cell_keys` builds it --------------------
+
+fn tier_keys(mnla: integer, mnlo: integer, mxla: integer, mxlo: integer, tier: integer) -> vector<integer> {
+  tk: vector<integer> = [];
+  tc = tier_cell(tier);
+  tx0 = cell_ix(mnlo, tc) - 1; tx1 = cell_ix(mxlo, tc);
+  ty0 = cell_ix(mnla, tc) - 1; ty1 = cell_ix(mxla, tc);
+  tyy = ty0;
+  while tyy <= ty1 {
+    txx = tx0;
+    while txx <= tx1 { tk += [tier_key(tier, txx, tyy)]; txx += 1; }
+    tyy += 1;
+  }
+  tk
+}
+
+fn report(ty: Tally, label: text) {
+  println("  {label}");
+  println("    debut |    tier0    tier1    tier2    tier3 |    total     coords");
+  cum = 0;
+  for zb in 0..NBUCKET {
+    r0 = ty.counts[0 * NBUCKET + zb] ?? 0; r1 = ty.counts[1 * NBUCKET + zb] ?? 0;
+    r2 = ty.counts[2 * NBUCKET + zb] ?? 0; r3 = ty.counts[3 * NBUCKET + zb] ?? 0;
+    rt = r0 + r1 + r2 + r3;
+    rc = (ty.coords[0 * NBUCKET + zb] ?? 0) + (ty.coords[1 * NBUCKET + zb] ?? 0)
+       + (ty.coords[2 * NBUCKET + zb] ?? 0) + (ty.coords[3 * NBUCKET + zb] ?? 0);
+    if rt > 0 {
+      zname = if zb == NEVER { "never" } else { "z{zb}" };
+      println("    {zname:>5} | {r0:>8} {r1:>8} {r2:>8} {r3:>8} | {rt:>8} {rc:>10}");
+    }
+    if zb != NEVER { cum += rt; }
+  }
+  println("    drawn at some zoom: {cum}");
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for av in arguments() { argv += [av]; }
+  path = argv[0] ?? "";
+  spec = argv[1] ?? "";
+  span = argv[2] ?? "0-3";
+  sp = spec.split(',');
+  if len(sp) != 4 { println("#Z FAIL bad box {spec}"); return; }
+  mnla = round((sp[0] as float ?? 0.0) * 10000000.0) as integer;
+  mnlo = round((sp[1] as float ?? 0.0) * 10000000.0) as integer;
+  mxla = round((sp[2] as float ?? 0.0) * 10000000.0) as integer;
+  mxlo = round((sp[3] as float ?? 0.0) * 10000000.0) as integer;
+  tp = span.split('-');
+  tlo = tp[0] as integer ?? 0;
+  thi = tp[1] as integer ?? (LAYOUT_TIERS - 1);
+
+  keys: vector<integer> = [];
+  per: vector<integer> = [for _ in 0..LAYOUT_TIERS { 0 }];
+  tw = tlo;
+  while tw <= thi {
+    tks = tier_keys(mnla, mnlo, mxla, mxlo, tw);
+    per[tw] = len(tks);
+    keys += tks;
+    tw += 1;
+  }
+  ws: hash<PTile[tkey]> = [];
+  got = store_load_keys(ws, path, keys);
+  ty = new_tally();
+  tiles = 0;
+  for wt in ws {
+    wtier = key_tier(wt.tkey);
+    tiles += 1;
+    tally_areas(wt, wtier, ty); tally_buildings(wt, wtier, ty);
+    tally_lines(wt, wtier, ty); tally_labels(wt, wtier, ty); tally_pois(wt, wtier, ty);
+  }
+  println("box={spec} tiers={tlo}..{thi}");
+  println("  keys asked per tier: {per[0] ?? 0} / {per[1] ?? 0} / {per[2] ?? 0} / {per[3] ?? 0}  = {len(keys)} · loaded {got} tiles ({tiles})");
+  report(ty, "features by DEBUT ZOOM x the tier they are stored in");
+}
