@@ -1043,8 +1043,18 @@ the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a dif
    209 932, a larger map rather than a partition), and **the control must be n=1 through the same script**
    (comparing against the shipped block showed a 341-feature gap that was OSM drift between two build
    dates, not chunking).
-   *Still to do:* run it on NL at n=4 against the 17 290 495 figure, and wire the matrix job into
-   `data-refresh.yml` so the base map stops being `--no-base`.
+   **NL at n=4 (2026-08-01):** 185 559 tiles / 17 290 483 features against 185 564 / 17 290 495 from
+   n=1 on the same inputs — 99.99997%, with the four chunks a disjoint partition (185 559 cells, no
+   overlap). The shortfall is 5 tiles / 12 features, and its SHAPE is the point: **12 across 3 interior
+   seams is 4 per seam**, a boundary constant rather than a data-proportional loss. The gate bounds loss
+   per seam and treats any SURPLUS as a hard failure. Mechanism is a labelled hypothesis (a multipolygon
+   straddling a seam by more than MARGIN); `osmium extract --strategy=smart` and a larger margin are the
+   untried candidates.
+   **Wired into CI (2026-08-01):** `data-refresh.yml` now runs `refresh` (roads + names) →
+   `base-chunks` (matrix of 4, `CHUNK_ONLY=k`) → `base-assemble` (`merge_base.loft` back into
+   nl-west/nl-east, then publish). ⚠ Chunk edges must be a **superset of the REGION edges** or no
+   grouping of chunks is a region — `CHUNK_EDGES` exists for exactly that, and the NL edges include 5.40.
+   *Still to do:* actually run the workflow once (it has never fired), and settle the per-seam loss.
 2. **Raise the 62-block cap** — small, and it is a ceiling on everything above it.
 3. **Price D2** — the cost check C5 is already gated on, and the thing that decides whether the WE base map
    is coverage or opt-in. `tools/cors_host_gate.sh` passes today, so the path is tested, not hypothetical.
