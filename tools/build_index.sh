@@ -50,7 +50,12 @@ out="${1:-$here/browser/coverage.json}"
 # Resolution order is therefore source first, `_site` last: browser/ holds the committed site blocks,
 # blocks/ the release ones, and _site is kept only for blocks that exist NOWHERE ELSE — the split
 # fixtures tools/cross_block_browser_gate.sh stages there.
-roots="$here/browser|$here/blocks|$here/_site"
+# Overridable, because a dataset can be STAGED outside `blocks/` while it is being published — and a
+# resolution order that cannot see the staging directory silently measures the SUPERSEDED blocks instead.
+# Earned on 2026-08-02: the release index was built while the new blocks sat in `blocks/f4/`, so it
+# described the previous two-region dataset and dropped the two regions that had no old counterpart, over
+# assets that were themselves correct.
+roots="${BLOCK_ROOTS:-$here/browser|$here/blocks|$here/_site}"
 # THE VERSION IS A RELEASE NAME, NOT A MEASUREMENT — so regenerating an index must not rename the
 # dataset. Everything else in this file is measured out of the blocks and changes only when they do;
 # the version is chosen by whoever publishes them. Precedence: an explicit DATASET_VERSION, else the

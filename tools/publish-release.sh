@@ -36,7 +36,11 @@ command -v gh >/dev/null || { echo "FAIL: gh not found"; exit 1; }
 # references them: `data/coverage.toml` names the halves, so an index can never resolve to them, and
 # uploading them would have added 2.2 GB of dead weight to a 2.6 GB release and invited a consumer to
 # read a block the index does not describe.
-manifest_names="$(grep -oP '^\s*(roads|base|names)\s*=\s*"\K[^"]+' "$here/data/coverage.toml" | xargs -n1 basename | sort -u)"
+# Overridable for the same reason `build_index.sh` allows it: a dataset can be STAGED beside the live one
+# while it is being published, because the committed manifest is the contract the deploy verifies against
+# and may only move once the blocks it names actually exist.
+manifest="${COVERAGE_MANIFEST:-$here/data/coverage.toml}"
+manifest_names="$(grep -oP '^\s*(roads|base|names)\s*=\s*"\K[^"]+' "$manifest" | xargs -n1 basename | sort -u)"
 assets=()
 for f in "$blocks"/*.store "$blocks"/*.dschema; do
   [ -e "$f" ] || continue

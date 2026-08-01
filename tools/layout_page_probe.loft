@@ -343,6 +343,32 @@ fn run_lonprofile(path: text, bandw: integer) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// mode: grid — the 2-D weight map a region PLANNER needs.
+// ---------------------------------------------------------------------------------------------------
+//
+// `lonprofile` answers "where do the thirds fall" and cannot answer "is any single column too big on its
+// own", which is the question a continent asks: London, Paris, the Ruhr and Milan are far denser than
+// anything in the Netherlands, and a longitude cut cannot make a dense COLUMN smaller. This emits coords
+// per lat/lon cell so a planner can split in BOTH axes, and so the densest cell is visible as a number
+// rather than discovered as a region that will not fit its host.
+//
+// Coords are the weight because bytes are very nearly linear in them: calibrated on three measured
+// regions, MB = 12.97/Mcoord + 40 fits within 1%.
+fn run_grid(path: text, cell: integer) {
+  gl: hash<PTile[tkey]> = [];
+  if !store_load(gl, path) { println("#L FAIL cannot load {path}"); return; }
+  println("#G cell={cell}");
+  for gt in gl {
+    gc = coords_areas(gt) + coords_buildings(gt) + coords_lines(gt) + coords_labels(gt) + len(gt.pois);
+    if gc > 0 {
+      // Charged to the tile's ORIGIN cell. A tile is at most 2 cells wide at its own tier and the
+      // planning cell is coarser than the finest tier, so the error is a cell edge, not a region.
+      println("#G {cell_ix(gt.ox, cell)} {cell_ix(gt.oy, cell)} {gc}");
+    }
+  }
+}
+
 fn run_spans(path: text) {
   sl: hash<PTile[tkey]> = [];
   if !store_load(sl, path) { println("#L FAIL cannot load {path}"); return; }
@@ -450,6 +476,10 @@ fn main() {
     return;
   }
   if (a[1] ?? "") == "spans" { run_spans(a[0] ?? ""); return; }
+  if (a[1] ?? "") == "grid" {
+    run_grid(a[0] ?? "", (a[2] ?? "500000") as integer ?? 500000);
+    return;
+  }
   if (a[1] ?? "") == "lonprofile" {
     run_lonprofile(a[0] ?? "", (a[2] ?? "1000000") as integer ?? 1000000);
     return;
