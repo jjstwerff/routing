@@ -1101,7 +1101,7 @@ header, so a browser cannot read them. §6e concluded the fix was D2, a paid COR
 |---|---|---|
 | **F1** ✅ | **Page the layout in the kernel.** `web_basemap_kernel.loft` did `store_load_url_trusted(layout, url)` — a WHOLE load. It now gets the roads' treatment: `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, accumulating a working set | a viewport renders from a store read by RANGE — **done**, and the bytes are 50× what this row assumed; see below |
 | **F2** ✅ | **Re-`expose` as the working set grows.** `expose` pins the store read-only and is O(collection) per call, so it cannot run per frame — it must run once per LOAD, and the JS side must re-read the handle after each | **done, and the risk is disproven**: 13 viewports with a growing working set, per-viewport cost 211 ms → 176 ms (0.84×), bracket balanced 13/12 |
-| **F3** | **Cut NL into three regions** and rebuild roads + base + names per region — **and re-bin the base map while doing it** (see "What F1 measured" below; that is now the load-bearing half of this row) | `base_chunk_gate.sh` at n=3; each base block < 900 MB; a z14 viewport under 10 MB paged |
+| **F3** ✅ | **Cut NL into three regions** and rebuild roads + base per region — **and re-bin the base map while doing it**, which turned out to be the load-bearing half | **done**; each base block under 900 MB and every region paged-EXACT. See "F3, and what it cost" below |
 | **F4** | **Publish the base blocks to data repos** and name them by `base_url_base` | `cors_host_gate.sh` against the real data repo, not a local server |
 | **F5** | **Extend `nl_live_gate`** to assert the map RENDERS in Amsterdam | non-zero areas/buildings/labels from a cross-origin paged base — the check that would have caught "shows nothing" |
 
@@ -1169,6 +1169,102 @@ that holds the residual exists. What changed is F3: it was "cut NL into three re
 a country accumulates every cell it has visited. Flat per-viewport cost over 13 viewports says nothing
 about 500, and eviction is where §6b's Track 3 already puts it (blocks + stitching + LRU). It is a
 session-length question, not a correctness one, and it wants measuring before it wants solving.
+
+#### F3, and what it cost (2026-08-01)
+
+**The exactness fix is two rules in the GENERATOR, and it is free.**
+
+> A feature is keyed at the FINEST TIER whose cells its bbox spans at most 2 of, at the cell holding the
+> bbox's MINIMUM CORNER.
+
+Tiers step ×8 (500 m → 4 km → 32 km → 256 km) and share one store, the tier riding in the key above
+`TIER_STRIDE`. The first rule bounds a feature's reach to one cell *at its own tier*; the second makes
+that reach one-directional — a feature occupies its cell and the next one **up**, never the one below —
+so a reader pads the low side only. Padding stops being a guess measured in lost features:
+
+| on the shipped Enschede inputs | before | after |
+|---|---|---|
+| features missed at z16 / z14 | 7 / 5 | **0 / 0** |
+| keys asked for a z16 viewport | 111 | **69** (93% of them hit, was 65%) |
+| store bytes | 20 776 816 | **20 776 816** |
+
+Conservation was checked rather than assumed at both scales: the same inputs through the old and new
+binning give identical feature counts, and the country rebuild lands on **17 290 495 features — exactly
+the published total** — in the same bytes, with ~130 extra coarse tiles.
+
+**Cutting into regions puts a seam through ground people look at**, and that decided both the region
+count and the cut rule. Measured at a cut, at the app's own default zoom: a straddling viewport holds
+25 862 features and one region answered with **13 946 — 54%, half the screen silently blank.**
+
+**So a region carries its neighbours' edges: every internal side is widened by a 0.10° MARGIN**, which is
+wider than a padded z14 viewport (±0.0944° of longitude, measured off the app's own projection). One
+region therefore answers any viewport at z14 or tighter whole — checked rather than assumed, on a
+viewport centred exactly on a cut:
+
+| z14 viewport centred on the 5.40°E cut | visible | drawn | missed |
+|---|---|---|---|
+| the single region whose band holds it | 61 631 | 61 631 | **0** |
+| the whole-country store, same box | 61 631 | 61 631 | 0 |
+
+**FOUR regions, not three, and the count came out of the arithmetic.** `layout_page_probe … lonprofile`
+sums coords per 0.1° band — the weight is nothing like uniform, the Randstad carrying far more geometry
+per degree than the north-east — and a size model calibrated on three measured cuts (fits within 1%) says
+three regions cannot hold a 0.10° margin under the 900 MB cap; the eastern one lands at 957 MB. Four can,
+with room:
+
+| | west | midwest | mideast | east |
+|---|---|---|---|---|
+| base, cuts 4.7 / 5.4 / 5.9 | 555 MB | **794 MB** | 627 MB | 775 MB |
+| roads (disjoint, no margin) | 104 MB | 129 MB | 107 MB | 162 MB |
+
+Roads are split from the country block and conserve exactly — 2 785 476 ways and 234 253 barriers — and
+they are cut WITHOUT a margin on purpose: the client stitches road blocks (S8) and a duplicated way is
+not a slower match but a different one (`block_overlap_gate` enforces it). The base is the opposite case
+and gets the margin. The two stores of one region no longer describe the same ground, and that is
+deliberate.
+
+⚠ **A REGION and a CHUNK want opposite cuts, and `trim_base` now has both.** A chunk is re-assembled, so
+every feature must survive exactly once (`partition`, by tile origin — what `base_chunk_gate` counts). A
+region is HOSTED ALONE, so it has to be a complete map of its own ground: `cover` keeps every tile whose
+sealed EXTENT reaches the band. With the margin that costs **+27% features / +35% bytes** (2751 MB across
+four against 2043 MB for the country), and that is the price of never showing a seam.
+
+**The client keeps a covering SET as the backstop** — `baseUrlsFor`, `roadsUrlsFor` generalised over the
+store kind rather than copied. The margin makes it a no-op at z14 and tighter (one block covers, one URL
+is named); it is what answers a z13-or-wider viewport, and it is only possible at all because F1 made
+the loads PAGED: `store_load_keys` accumulates, where the whole-file load it replaced adopted an image
+and a second would have discarded the first.
+
+#### Two defects this rung found, both silent, both now loud
+
+1. **`store_persist_bind` ADOPTS AN EXISTING IMAGE.** Pointed at a file that already exists it keeps the
+   old contents, writes none of the new ones, and returns **true**. The three-region cut was produced
+   twice with different bands and the second run changed nothing: the tool printed the new feature counts
+   and `persist true`, the file had a fresh mtime, and it still held the previous map — caught only by
+   reading the extent back out of it. Every tool here that persists now refuses an existing target by
+   name (`#PERSIST FAIL`), which is the difference between a wrong answer and an error.
+2. **A tiered store's EXTENT no longer identifies a region.** A tier-3 tile is 256 km across, so a
+   region's sealed base extent is whatever its widest tile covers: after the four-way cut all four base
+   extents read lon 2.39..7.21 — the whole country, four times. Block selection by "smallest block
+   containing the box" then picked an arbitrary region, and **Den Haag and Rotterdam rendered as two
+   lines and nothing else** while the gate still passed on aggregate. `baseUrlsFor` selects on the ROADS
+   extent (untiered, disjoint, genuinely geographic) and reads the base URL off the region it picks.
+   ⚠ Anything else that treats a base extent as a geographic bound — `build_index.sh` writes one into the
+   index — needs the same reading.
+
+**What F3 did NOT fix, with the number:** a viewport still costs 12–24 MB paged (six real viewports
+across the four regions: 99.7 MB, 1611 range requests), and the reason is not the geometry. A keyed read
+costs **~100 kB whether or not the key exists** — 84 keys that hold nothing fetched 9 MB — so the bill is
+dominated by asking, not by receiving. The min-corner rule cut the asking by 38% and correct region
+selection halved the bytes again; that is the last cheap win on this side. The rest is either a coarser
+`LAYOUT_CELL` (which trades probe count against over-fetch and has an optimum worth measuring) or a
+cheaper absent-key probe in loft's paged loader, for which `layout_page_probe … pageload` is a
+ready-made reproducer.
+
+**F4 inherits four regions, not three**, and `data/coverage.toml` is deliberately NOT updated here: the
+committed index is the contract the Pages deploy verifies against, so naming blocks that are not
+published yet would turn every deploy red. The blocks are built and verified locally
+(`blocks/nl-*.r4.*`, gitignored); publishing them and moving the manifest is F4's first step.
 
 ⚠ **F5 is the lesson from shipping this blank.** `nl_live_gate` proved routing and search on the live site
 and never asked whether anything was DRAWN, so a blank map passed every gate. Every future coverage claim

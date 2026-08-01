@@ -24,6 +24,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
 dtport="${DTPORT:-9251}"
 httpport="${HTTPPORT:-8159}"
+loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
@@ -58,15 +59,23 @@ rc=$?
 #
 # Phase 1 pages a 20 MB city block, which proves the MECHANISM but not the CLAIM: what made the map blank
 # is that a country's base map is ~690 MB and could not be loaded whole at all. So if the local country
-# block is here, point the app at it and require it to DRAW — a browser, a real 1 GB store, real Range.
+# blocks are here, point the app at them and require it to DRAW — a browser, real stores, real Range.
 #
-# It SKIPS without the block, because `blocks/` is gitignored and does not travel (HANDOFF §7). That is
-# the honest shape: this is the strongest evidence available on a machine that has the data, and no
-# evidence at all on one that does not — never a pass by absence.
-country="$here/blocks/nl-west.base.store"
-croads="$here/blocks/nl-west.roads.store"
-if [ ! -f "$country" ] || [ ! -f "$croads" ]; then
-  echo "  phase 2 SKIP — no local country block at $country (gitignored; build with tools/build-base-chunked.sh)"
+# It SKIPS without them, because `blocks/` is gitignored and does not travel (HANDOFF §7). That is the
+# honest shape: this is the strongest evidence available on a machine that has the data, and no evidence
+# at all on one that does not — never a pass by absence.
+#
+# The FOUR regions PLAN-SCALE §6f F3 cuts the country into, if they have been built here. The interesting
+# case only exists once there is a cut: a viewport ON a seam. Each base region carries a 0.10° margin of
+# its neighbours so ONE region answers it whole — that margin is what this phase checks, by looking at a
+# viewport centred on a cut and requiring a full map rather than a half one.
+REGIONS="west midwest mideast east"
+r4=1
+for f in $REGIONS; do
+  [ -f "$here/blocks/nl-$f.r4.base.store" ] && [ -f "$here/blocks/nl-$f.r4.roads.store" ] || r4=0
+done
+if [ "$r4" = "0" ]; then
+  echo "  phase 2 SKIP — no local country blocks in $here/blocks (gitignored; build with tools/build-base-chunked.sh)"
   exit 0
 fi
 echo
@@ -75,33 +84,55 @@ root="$here/scratch/nlbase-$httpport"
 rm -rf "$root"; mkdir -p "$root"
 ln -s "$here/_site/index.html" "$root/index.html"
 ln -s "$here/_site/store-kernel.wasm" "$root/store-kernel.wasm"
-ln -s "$country" "$root/nl-west.base.store"
-ln -s "$croads" "$root/nl-west.roads.store"
-[ -f "$croads.dschema" ] && ln -s "$croads.dschema" "$root/nl-west.roads.store.dschema"
-[ -f "$country.dschema" ] && ln -s "$country.dschema" "$root/nl-west.base.store.dschema"
+for f in $REGIONS; do
+  ln -s "$here/blocks/nl-$f.r4.base.store" "$root/nl-$f.base.store"
+  ln -s "$here/blocks/nl-$f.r4.roads.store" "$root/nl-$f.roads.store"
+  [ -f "$here/blocks/nl-$f.r4.base.store.dschema" ] && ln -s "$here/blocks/nl-$f.r4.base.store.dschema" "$root/nl-$f.base.store.dschema"
+  [ -f "$here/blocks/nl-$f.r4.roads.store.dschema" ] && ln -s "$here/blocks/nl-$f.r4.roads.store.dschema" "$root/nl-$f.roads.store.dschema"
+done
 # An index of our own rather than the committed one: this names a base map the SITE index deliberately
 # does not (it cannot be hosted there — that is the whole problem), and a gate must not write to the tree
 # it is checking, so it is built in scratch. `readMode` sits on the base entry, which is where a per-STORE
 # hosting decision belongs (HANDOFF §0 rule 2).
-python3 - "$here/browser/coverage.json" "$root/coverage.json" "$country" "$croads" <<'PY'
-import json, os, sys
-src, dst, base, roads = sys.argv[1:5]
-idx = json.load(open(src))
-nl = next(b for b in idx['blocks'] if b['id'] == 'nl-west')
-nl['roads'] = dict(nl['roads'], url='nl-west.roads.store', bytes=os.path.getsize(roads))
-nl['base'] = {'url': 'nl-west.base.store', 'readMode': 'paged', 'bytes': os.path.getsize(base),
-              'sha256': '', 'tiles': 0, 'features': 0, 'bbox': nl['roads']['bbox']}
-nl['names'] = None
-json.dump({'version': 'local-country', 'unit': idx['unit'], 'blocks': [nl]}, open(dst, 'w'))
+# The extents come from the STORES, not from a guess: the app picks blocks by bbox intersection, so a
+# hand-written extent would decide the very thing under test (which regions a seam viewport names).
+for f in $REGIONS; do
+  "$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/nl-$f.roads.store" roads >"$root/.x-$f" 2>/dev/null
+  "$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$root/nl-$f.base.store"  base  >"$root/.b-$f" 2>/dev/null
+done
+python3 - "$root" <<'PY'
+import json, os, re, sys
+root = sys.argv[1]
+def extent(p):
+    m = re.search(r'^EXTENT (\S+) (\S+) (\S+) (\S+) (\d+) (\d+)', open(p).read(), re.M)
+    return {'mnla': int(m.group(1)), 'mnlo': int(m.group(2)), 'mxla': int(m.group(3)), 'mxlo': int(m.group(4))}
+blocks = []
+for f in ('west', 'midwest', 'mideast', 'east'):
+    rb, bb = extent(f'{root}/.x-{f}'), extent(f'{root}/.b-{f}')
+    blocks.append({'id': f'nl-{f}', 'name': f'NL {f} (local)', 'readMode': 'paged',
+                   'roads': {'url': f'nl-{f}.roads.store', 'bytes': os.path.getsize(f'{root}/nl-{f}.roads.store'),
+                             'sha256': '', 'tiles': 0, 'features': 0, 'bbox': rb},
+                   'base': {'url': f'nl-{f}.base.store', 'readMode': 'paged',
+                            'bytes': os.path.getsize(f'{root}/nl-{f}.base.store'),
+                            'sha256': '', 'tiles': 0, 'features': 0, 'bbox': bb},
+                   'names': None})
+json.dump({'version': 'local-country', 'unit': 'fixed-1e-7', 'blocks': blocks}, open(f'{root}/coverage.json', 'w'))
 PY
 kill "$srv" 2>/dev/null
 python3 "$here/tools/range_server.py" "$httpport" "$root" "$root/.report" >/dev/null 2>&1 &
 srv=$!
 for _ in $(seq 20); do curl -s -o /dev/null "http://127.0.0.1:$httpport/index.html" 2>/dev/null && break; sleep 0.3; done
-echo "  block: $(stat -c%s "$country") bytes of base store + $(stat -c%s "$croads") bytes of roads, both paged"
-# Two pans around Amsterdam, then two JUMPS — Den Haag, Rotterdam — 60 and 100 km away, because a pan
-# and a jump fail differently: a pan re-uses most of the working set, a jump shares none of it and is
-# what a search result or a shared link does.
+echo "  blocks: $(du -ch "$here"/blocks/nl-*.r4.base.store | tail -1 | cut -f1) of base across four regions, paged"
+# Two viewports ON a region seam (4.90°E and 5.80°E) and three away from one, because those fail
+# differently. A seam viewport is the case three regions CREATE: it has to name both sides, and before
+# F3 the app could only name one base store — measured, one region answers such a viewport with 13 946
+# of its 25 862 features. The jumps to Den Haag and Rotterdam are the other axis: a pan re-uses the
+# working set, a jump shares none of it and is what a search result or a shared link does.
+#
+# ⚠ EVERY WAYPOINT MUST BE A REAL MOVE. `ensureViewNow` loads only when the viewport leaves the box it
+# last loaded, padded by 60% — about 0.0124° of longitude at z16 — so a nearer "pan" produces no view at
+# all and the gate silently measures the same viewport twice. The first seam waypoint here was 0.004°
+# from the start and did exactly that.
 #
 # ⚠ Read phase 2's F2 ratio with that in mind. The last third of this walk is the two jumps, so its
 # per-viewport cost is dominated by how many bytes each viewport FETCHES, not by the size of the working
@@ -109,8 +140,9 @@ echo "  block: $(stat -c%s "$country") bytes of base store + $(stat -c%s "$croad
 # fetch, one variable.
 node "$here/browser/cdp_base_paged.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" \
   '{"mode":"paged","start":{"lat":52.3676,"lon":4.9041,"zoom":16},
-    "waypoints":[{"lat":52.3676,"lon":4.9341},{"lat":52.3876,"lon":4.9041},
-                 {"lat":52.0907,"lon":4.3007},{"lat":51.9244,"lon":4.4777}]}'
+    "waypoints":[{"lat":52.1000,"lon":5.4000},{"lat":52.0907,"lon":4.3007},
+                 {"lat":51.9244,"lon":4.4777},{"lat":52.2200,"lon":5.9000},
+                 {"lat":52.2215,"lon":6.8937}]}'
 rc=$?
 rm -rf "$root"
 exit $rc

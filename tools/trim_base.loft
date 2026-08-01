@@ -20,8 +20,19 @@
 //
 // The band is HALF-OPEN, [lo, hi) — so adjacent bands sharing an edge value cannot both claim a cell.
 //
-//   loft --native --lib lib tools/trim_base.loft <in.store> <out.store> <lon_lo> <lon_hi>
+//   loft --native --lib lib tools/trim_base.loft <in.store> <out.store> <lon_lo> <lon_hi> [cover]
 //     lon_lo/lon_hi in degrees; "" or "-999" means unbounded on that side (the first and last chunk).
+//
+// TWO RULES, because a CHUNK and a REGION want opposite things (PLAN-SCALE §6f F3):
+//
+//   partition (default)  a tile goes to the band containing its ORIGIN. Every feature survives exactly
+//                        once across all bands, which is what re-assembling a chunked build requires and
+//                        what `base_chunk_gate.sh` counts.
+//   cover     `cover`    a tile goes to every band its sealed EXTENT reaches. Regions are hosted
+//                        SEPARATELY and a viewer loads one of them, so each has to be a complete map of
+//                        its own ground — a motorway or a province border keyed just across the cut must
+//                        appear in both. It duplicates a few coarse tiles on purpose; `partition` would
+//                        leave a hole along every seam that only shows up as a missing feature.
 #cwd
 
 use basemap::(PTile, Area, Building, Line, Label, Poi, Coord, cell_ix);
@@ -85,20 +96,42 @@ fn main() {
   if lo_deg > (UNBOUND as float) { lo_cell = cell_ix(round(lo_deg * 10000000.0) as integer, CELL_P); }
   if hi_deg > (UNBOUND as float) { hi_cell = cell_ix(round(hi_deg * 10000000.0) as integer, CELL_P); }
 
+  cover = (a[4] ?? "") == "cover";
+
+  // ⚠ `store_persist_bind` ADOPTS AN EXISTING IMAGE. Pointed at a file that already exists it keeps the
+  // old contents, writes none of the new ones, and still returns TRUE — so a re-run silently produces
+  // the previous answer. It cost a wrong three-region cut on 2026-08-01: the trim reported the new
+  // feature counts, `persist true`, a fresh mtime, and the file still held the old map.
+  if file(a[1] ?? "").exists() {
+    println("#PERSIST FAIL {a[1] ?? ""} already exists — store_persist_bind would keep the OLD image and report success. Remove it first.");
+    return;
+  }
   src: hash<PTile[tkey]> = [];
   if !store_load(src, a[0] ?? "") { println("#T FAIL store_load"); return; }
 
   out: hash<PTile[tkey]> = [];
   kept = 0; dropped = 0; kf = 0; df = 0;
   for t in src {
-    c = cell_ix(t.ox, CELL_P);
     n = 0;
     for ca in t.areas { n += 1; }
     for cb in t.buildings { n += 1; }
     for cl in t.lines { n += 1; }
     for ck in t.labels { n += 1; }
     for cp in t.pois { n += 1; }
-    if c >= lo_cell && c < hi_cell { kept += 1; kf += copy_into(out, t); }
+    // `cover` asks where the tile's GEOMETRY reaches; the default asks where its origin is. On a tiered
+    // store the two differ for exactly the tiles that matter: a coarse tile's origin is the corner of a
+    // cell that can be hundreds of km wide, so an origin test drops it from every region but one.
+    take = false;
+    if cover {
+      if t.fcount > 0 {
+        take = cell_ix(t.fmxlo, CELL_P) >= lo_cell && cell_ix(t.fmnlo, CELL_P) < hi_cell;
+      } else {
+        take = cell_ix(t.ox, CELL_P) >= lo_cell && cell_ix(t.ox, CELL_P) < hi_cell;
+      }
+    } else {
+      take = cell_ix(t.ox, CELL_P) >= lo_cell && cell_ix(t.ox, CELL_P) < hi_cell;
+    }
+    if take { kept += 1; kf += copy_into(out, t); }
     else { dropped += 1; df += n; }
   }
   seal_extents(out);

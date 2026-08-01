@@ -39,11 +39,79 @@ pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
   tkey(cell_ix(to_fixed(lon), cell), cell_ix(to_fixed(lat), cell), cell)
 }
 
-// The cell every `PTile` in a layout store is keyed at (~500 m). One definition, because a CONSUMER has
-// to key by exactly the number the GENERATOR binned by: `client/basemap/build_store.loft` writes the
-// store with it and `map_kernel::layout_cell_keys` pages it back in by cell, and a mismatch between the
-// two does not fail — it looks up keys that exist in neither store and silently draws nothing.
+// The cell the FINEST tier of a layout store is keyed at. One definition, because a CONSUMER has to key
+// by exactly the number the GENERATOR binned by: `client/basemap/build_store.loft` writes the store with
+// it and `map_kernel::layout_cell_keys` pages it back in by cell, and a mismatch between the two does not
+// fail — it looks up keys that exist in neither store and silently draws nothing.
 pub const LAYOUT_CELL = 50000;
+
+// --- The tier ladder (PLAN-SCALE §6f F3) -----------------------------------------------------------
+//
+// WHY A LADDER AT ALL. A layout feature used to be keyed by its FIRST VERTEX at one cell size, and it was
+// never clipped — so it overhung its cell by however long it happened to be. A WHOLE load hides that (the
+// render path screens on each tile's sealed extent), but a PAGED load cannot: a tile that was never
+// fetched has no extent to consult and its features are silently missing from the picture. Measured with
+// `tools/layout_page_probe.loft` on nl-west: making a one-cell window exact would have needed ELEVEN
+// cells of padding at z16 and FIFTY at z14 — fetching the region to draw a screen.
+//
+// THE INVARIANT THAT REPLACES THE PADDING GUESS:
+//
+//     a feature is keyed at the FINEST tier where its bbox spans at most 2 cells per axis.
+//
+// A feature therefore reaches at most ONE cell beyond its own, at its own tier — so a reader that takes
+// each tier's window padded by one cell provably misses nothing. The padding stops being a compromise
+// measured in lost features and becomes arithmetic.
+//
+// It is keyed at the cell containing the MINIMUM CORNER of its bbox, not the cell containing its first
+// vertex. Both bound the reach, but the minimum corner bounds it in ONE DIRECTION: the feature
+// occupies cells c and c+1 and never c-1, so a reader needs a padding cell on the low side only. That is
+// (W+1)(H+1) keys per tier instead of (W+2)(H+2) — 66 instead of 84 for the app's own z16 viewport, and
+// 4 instead of 9 at every coarse tier, where nearly every key is a miss. It matters because a key that
+// finds NOTHING still costs ~100 kB to ask (measured, tools/layout_page_probe.loft `pageload`).
+//
+// Each tier is 8x the last. Four span 500 m to 256 km, which covers a country twice over — a feature
+// wider than two top cells would break the bound, so the ladder's depth is checked by the same
+// `verify` gate that checks the padding, not assumed.
+//
+// ⚠ `Coord` is an i32 delta from the tile origin, so the top tier's cell must stay under ~214° in fixed
+// units (i32 max / 1e7). Four tiers top out at 2.56°, and a feature there spans at most two of them —
+// 5.12°, comfortably wider than the Netherlands and comfortably inside i32.
+pub const LAYOUT_TIER_STEP = 8;
+pub const LAYOUT_TIERS = 4;
+// Keys from different tiers share one store, so they must not collide. The stride is above any key the
+// finest tier can produce (~2.6e9 for the whole world at 500 m cells) and below the point where an
+// i64 key could overflow, so `tier * TIER_STRIDE + tkey(...)` is unambiguous and decodes by division.
+pub const TIER_STRIDE = 10000000000;
+
+// The cell size at `tier` — LAYOUT_CELL * 8^tier.
+pub fn tier_cell(tier: integer) -> integer {
+  c = LAYOUT_CELL;
+  for _i in 0..tier { c = c * LAYOUT_TIER_STEP; }
+  c
+}
+
+// The store key for a cell at `tier`.
+pub fn tier_key(tier: integer, tx: integer, ty: integer) -> integer {
+  tier * TIER_STRIDE + tkey(tx, ty, tier_cell(tier))
+}
+
+// Which tier a feature belongs on: the finest whose cells it spans at most 2 of, per axis. Bounds are
+// fixed-point 1e-7°, as everything else in this store is.
+pub fn layout_tier(mnlo: integer, mnla: integer, mxlo: integer, mxla: integer) -> integer {
+  lt = 0;
+  while lt < LAYOUT_TIERS - 1 {
+    lc = tier_cell(lt);
+    if cell_ix(mxlo, lc) - cell_ix(mnlo, lc) <= 1 && cell_ix(mxla, lc) - cell_ix(mnla, lc) <= 1 {
+      return lt;
+    }
+    lt += 1;
+  }
+  LAYOUT_TIERS - 1
+}
+
+// The tier a key belongs to, and the cell size it is on — for a consumer holding a mixed store (the
+// splitters, which must keep a tile whole, and any probe that reports per tier).
+pub fn key_tier(key: integer) -> integer { (key / TIER_STRIDE) ?? 0 }
 
 // --- The presentation store schema (PLAN-BASEMAP) --------------------------------------------------
 // A parallel store to the routing block, on the same grid MECHANISM (its own cell size). Coords are i32

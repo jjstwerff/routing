@@ -71,8 +71,47 @@ Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_ba
 |---|---|---|
 | **F1** ✅ | **page the layout in the kernel** — `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, a working set with its own marks, driven by a per-STORE read mode (`__baseReadMode`, kernel line 7) | built; the app draws a base map it never downloaded whole, over real 206 Range requests |
 | **F2** ✅ | **re-`expose` as the working set grows** — the pin comes off around every load and back on after; JS re-reads the handle per view | built, **and the risk is disproven by measurement**: 13 viewports, per-viewport cost 195 → 162 ms (0.83×), bracket balanced 13/12 |
-| **F3** ⚠ | cut NL into three regions — **and re-bin the base map while doing it**. See the two rows below; PLAN-SCALE §6f "What F1 measured" has the numbers | not started |
-| F4–F5 | publish base blocks to data repos, and **assert the map RENDERS** in `nl_live_gate` | not started |
+| **F3** ✅ | cut NL into regions **and re-bin the base map**. It came out as **FOUR** regions, not three — see below | built and verified locally; blocks are gitignored and NOT published |
+| F4–F5 | publish the four base blocks to data repos, move `data/coverage.toml`, and **assert the map RENDERS** in `nl_live_gate` | not started |
+
+**F3 in one line: paging the base map is now EXACT, and no viewport ever shows a seam.**
+
+* **Exactness is two generator rules, and it is free.** A feature is keyed at the finest tier whose cells
+  its bbox spans at most 2 of (tiers ×8: 500 m → 4 km → 32 km → 256 km, the tier riding in the key), at
+  the cell holding the bbox's **minimum corner** — so it reaches one cell *up* and never down, and the
+  reader pads one side. Missed features at z16/z14: **7/5 → 0/0**. Keys asked per z16 viewport: 111 → 69,
+  93% of them hits (was 65%). Store bytes: **unchanged**. Country rebuild conserves exactly — 17 290 495
+  features, the published total.
+* **No seam, by DATA not by stitching.** Every region's internal sides are widened by a **0.10° margin**,
+  wider than a padded z14 viewport (±0.0944°). A viewport centred on a cut draws 61 631 features from ONE
+  region — the same count the whole-country store gives. Before the margin, one region answered such a
+  viewport with 54% of it.
+* **Four regions** (cuts 4.7 / 5.4 / 5.9), because three cannot hold that margin under the 900 MB cap —
+  the eastern one lands at 957 MB. Base 555 / 794 / 627 / 775 MB; roads 104 / 129 / 107 / 162 MB, split
+  from the country block with 2 785 476 ways and 234 253 barriers conserved exactly. ⚠ **Roads are cut
+  WITHOUT the margin** — the client stitches road blocks and a duplicated way is a different match, not a
+  slower one. The two stores of one region no longer describe the same ground, on purpose.
+
+⚠ **Two silent defects this rung found — read these before generating or publishing anything:**
+
+1. **`store_persist_bind` over an EXISTING file keeps the old image and returns `true`.** The tool prints
+   the new counts, the mtime updates, and the file still holds the previous map. It produced a wrong
+   three-region cut that only reading the extent back caught. Every persisting tool here now refuses an
+   existing target (`#PERSIST FAIL`); **delete before you regenerate.**
+2. **A tiered base store's EXTENT is not a geographic bound.** A tier-3 tile is 256 km wide, so all four
+   region extents read lon 2.39..7.21 — the whole country, four times. Selecting a block by base extent
+   picked an arbitrary region and **Den Haag and Rotterdam rendered as two lines**, with the gate still
+   green on aggregate. `baseUrlsFor` selects on the ROADS extent and reads the base URL off that region.
+   `build_index.sh` still writes a base extent into the index — treat it as a size, not a location.
+
+⚠ **The shipped city block is still keyed the OLD way**, and that is the one loose end F3 leaves.
+`browser/stores/enschede.layout.store` predates the tier rules, so the new reader's low-side padding is
+not exact against it: its residual grew from 7 features to 12 of 71 183 (0.15%), and
+`base_paged_gate` phase 1 bounds it at 20 as a regression guard. The four NL regions measure **zero**.
+Retire it by regenerating that block (`build-blocks.sh` + `build-base.sh` for its bbox → copy the layout
+store into `browser/stores/` → refresh the index); it was not done here because it also re-cuts the
+Enschede ROADS block, which re-baselines route fingerprints and the render pixel hash — a cascade that
+has nothing to do with NL.
 
 ⚠ **Two §6f premises were measured WRONG while building F1, and F3 is where they get fixed.** Both on
 `blocks/nl-west.base.store`, with `tools/layout_page_probe.loft`:

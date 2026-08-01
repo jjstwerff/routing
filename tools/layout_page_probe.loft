@@ -27,9 +27,9 @@
 // `tools/tile_overhang.loft`, the answer describes the data, not the code.
 #cwd
 
-use basemap::(PTile, cell_ix, to_fixed, tkey);
+use basemap::(PTile, cell_ix, to_fixed, tier_cell, tier_key, key_tier, LAYOUT_TIERS, LAYOUT_CELL);
 
-CELL_P = 50000;        // presentation cell (~500 m) — client/basemap/build_store.loft's CELL_P
+CELL_P = LAYOUT_CELL;  // the FINEST tier's cell — what `spans` measures a feature against
 DMAX = 60;             // histogram depth; anything further folds into the last bucket
 
 // ---------------------------------------------------------------------------------------------------
@@ -50,6 +50,20 @@ fn new_hist() -> Hist {
 }
 
 struct FBoxI { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer }
+
+// How far a TILE sits outside the viewport, in cells OF ITS OWN TIER (0 = its cell meets the box).
+//
+// PLAN-SCALE §6f F3 — a store now holds tiles at several cell sizes, so "how many cells away" is only
+// meaningful against the tile's own grid: a tier-3 tile is 256 km across and is never more than a cell
+// or two from anything. Measuring every tile on the finest grid, as this did before tiering, reports a
+// coarse tile as hundreds of cells away and makes the answer meaningless.
+fn tile_dist(t: PTile, b: FBoxI) -> integer {
+  tc = tier_cell(key_tier(t.tkey));
+  // Distance to the window's LOW edge only, matching `map_kernel::layout_cell_keys`: a tile keyed at the
+  // bbox minimum corner reaches up, never down, so `pad` is spent on one side.
+  cell_dist(cell_ix(t.ox, tc), cell_ix(t.oy, tc),
+            cell_ix(b.mnlo, tc), cell_ix(b.mxlo, tc), cell_ix(b.mnla, tc), cell_ix(b.mxla, tc))
+}
 
 // Chebyshev distance in CELLS from a tile's own cell to the viewport's cell window (0 = inside).
 fn cell_dist(tx: integer, ty: integer, bx0: integer, bx1: integer, by0: integer, by1: integer) -> integer {
@@ -287,13 +301,44 @@ fn run_misses(path: text, spec: text, k: integer) {
   if len(mp) != 4 { println("#L SKIP bad box {spec}"); return; }
   mb = FBoxI { mnla: to_fixed(mp[0] as float ?? 0.0), mnlo: to_fixed(mp[1] as float ?? 0.0),
                mxla: to_fixed(mp[2] as float ?? 0.0), mxlo: to_fixed(mp[3] as float ?? 0.0) };
-  mx0 = cell_ix(mb.mnlo, CELL_P); mx1 = cell_ix(mb.mxlo, CELL_P);
-  my0 = cell_ix(mb.mnla, CELL_P); my1 = cell_ix(mb.mxla, CELL_P);
   println("features VISIBLE in {spec} but keyed further than k={k} cells away:");
   for mt in ml {
-    md = cell_dist(cell_ix(mt.ox, CELL_P), cell_ix(mt.oy, CELL_P), mx0, mx1, my0, my1);
+    md = tile_dist(mt, mb);
     if md > k && !(mt.fmxla < mb.mnla || mt.fmnla > mb.mxla || mt.fmxlo < mb.mnlo || mt.fmnlo > mb.mxlo) {
       miss_areas(mt, md, mb); miss_buildings(mt, md, mb); miss_lines(mt, md, mb); miss_labels(mt, md, mb);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// mode: lonprofile — WHERE to cut a region into pieces of equal weight.
+// ---------------------------------------------------------------------------------------------------
+//
+// Regions are cut on longitude (PLAN-SCALE §6e: the axis both existing splits use), and each piece has to
+// fit a host — so the cut has to balance BYTES, not degrees. The Netherlands is not uniform: the Randstad
+// carries far more geometry per degree than the north-east, and an equal-degree cut would put one piece
+// over the cap while another sat half empty. This reports coords per 0.1° band so the cuts can be read
+// off the cumulative distribution instead of guessed.
+fn run_lonprofile(path: text, bandw: integer) {
+  ll: hash<PTile[tkey]> = [];
+  if !store_load(ll, path) { println("#L FAIL cannot load {path}"); return; }
+  // Bands over the whole world would be 3600 buckets; a region spans a few degrees, so bin relative to
+  // the first tile seen and report absolute longitudes.
+  bands: vector<integer> = [for i in 0..3600 { 0 }];
+  btiles: vector<integer> = [for i in 0..3600 { 0 }];
+  total = 0;
+  for lt in ll {
+    lc = coords_areas(lt) + coords_buildings(lt) + coords_lines(lt) + coords_labels(lt) + len(lt.pois);
+    bi = ((lt.ox + 1800000000) / bandw) ?? 0;
+    if bi >= 0 && bi < len(bands) { bands[bi] += lc; btiles[bi] += 1; total += lc; }
+  }
+  println("#L lonprofile {path} total_coords={total} band={bandw}");
+  cum = 0;
+  for bj in 0..3600 {
+    bc = bands[bj] ?? 0;
+    if bc > 0 {
+      cum += bc;
+      println("  lon {((bj * bandw) - 1800000000) as float / 10000000.0:3.2} coords={bc} tiles={btiles[bj] ?? 0} cum={cum} cum_pct={(cum * 100 / total) ?? 0}");
     }
   }
 }
@@ -325,12 +370,10 @@ fn run_verify(path: text, spec: text, pad: integer, maxmiss: integer) {
   if len(vp) != 4 { println("#L FAIL bad box {spec}"); return; }
   vb = FBoxI { mnla: to_fixed(vp[0] as float ?? 0.0), mnlo: to_fixed(vp[1] as float ?? 0.0),
                mxla: to_fixed(vp[2] as float ?? 0.0), mxlo: to_fixed(vp[3] as float ?? 0.0) };
-  vx0 = cell_ix(vb.mnlo, CELL_P); vx1 = cell_ix(vb.mxlo, CELL_P);
-  vy0 = cell_ix(vb.mnla, CELL_P); vy1 = cell_ix(vb.mxla, CELL_P);
   vh = new_hist();
   vfetch = 0;
   for vt in vl {
-    vd = cell_dist(cell_ix(vt.ox, CELL_P), cell_ix(vt.oy, CELL_P), vx0, vx1, vy0, vy1);
+    vd = tile_dist(vt, vb);
     if vd <= pad { vfetch += 1; }
     if vd > DMAX { vd = DMAX; }
     if !(vt.fmxla < vb.mnla || vt.fmnla > vb.mxla || vt.fmxlo < vb.mnlo || vt.fmnlo > vb.mxlo) {
@@ -358,14 +401,21 @@ fn run_pageload(path: text, spec: text, pad: integer) {
   if len(gp) != 4 { println("#L FAIL bad box {spec}"); return; }
   gmnla = to_fixed(gp[0] as float ?? 0.0); gmnlo = to_fixed(gp[1] as float ?? 0.0);
   gmxla = to_fixed(gp[2] as float ?? 0.0); gmxlo = to_fixed(gp[3] as float ?? 0.0);
+  // EVERY TIER, exactly as `map_kernel::layout_cell_keys` does — this has to model the reader, not a
+  // simplification of it, or the bytes it reports are nobody's cost.
   gkeys: vector<integer> = [];
-  gx0 = cell_ix(gmnlo, CELL_P) - pad; gx1 = cell_ix(gmxlo, CELL_P) + pad;
-  gy0 = cell_ix(gmnla, CELL_P) - pad; gy1 = cell_ix(gmxla, CELL_P) + pad;
-  gy = gy0;
-  while gy <= gy1 {
-    gx = gx0;
-    while gx <= gx1 { gkeys += [tkey(gx, gy, CELL_P)]; gx += 1; }
-    gy += 1;
+  gt = 0;
+  while gt < LAYOUT_TIERS {
+    gc = tier_cell(gt);
+    gx0 = cell_ix(gmnlo, gc) - pad; gx1 = cell_ix(gmxlo, gc);
+    gy0 = cell_ix(gmnla, gc) - pad; gy1 = cell_ix(gmxla, gc);
+    gy = gy0;
+    while gy <= gy1 {
+      gx = gx0;
+      while gx <= gx1 { gkeys += [tier_key(gt, gx, gy)]; gx += 1; }
+      gy += 1;
+    }
+    gt += 1;
   }
   gws: hash<PTile[tkey]> = [];
   ggot = store_load_keys(gws, path, gkeys);
@@ -400,6 +450,10 @@ fn main() {
     return;
   }
   if (a[1] ?? "") == "spans" { run_spans(a[0] ?? ""); return; }
+  if (a[1] ?? "") == "lonprofile" {
+    run_lonprofile(a[0] ?? "", (a[2] ?? "1000000") as integer ?? 1000000);
+    return;
+  }
   if (a[1] ?? "") == "verify" {
     run_verify(a[0] ?? "", a[2] ?? "", (a[3] ?? "1") as integer ?? 1, (a[4] ?? "0") as integer ?? 0);
     return;
@@ -424,12 +478,9 @@ fn main() {
     } else {
       box = FBoxI { mnla: to_fixed(parts[0] as float ?? 0.0), mnlo: to_fixed(parts[1] as float ?? 0.0),
                     mxla: to_fixed(parts[2] as float ?? 0.0), mxlo: to_fixed(parts[3] as float ?? 0.0) };
-      bx0 = cell_ix(box.mnlo, CELL_P); bx1 = cell_ix(box.mxlo, CELL_P);
-      by0 = cell_ix(box.mnla, CELL_P); by1 = cell_ix(box.mxla, CELL_P);
       h = new_hist();
       for t in layout {
-        tx = cell_ix(t.ox, CELL_P); ty = cell_ix(t.oy, CELL_P);
-        td = cell_dist(tx, ty, bx0, bx1, by0, by1);
+        td = tile_dist(t, box);
         if td > DMAX { td = DMAX; h.far += 1; }
         if td < len(h.ttiles) { h.ttiles[td] += 1; }
         if t.fcount == 0 && td == 0 { h.noext += 1; }
@@ -442,7 +493,7 @@ fn main() {
       }
       ksound = 0; vtot = 0;
       for kd in 0..=DMAX { rt = row_total(h, kd); vtot += rt; if rt > 0 { ksound = kd; } }
-      println("box {spec}: window={bx1 - bx0 + 1}x{by1 - by0 + 1} cells  visible_features={vtot} k_sound={ksound} unsealed_in_window={h.noext}");
+      println("box {spec}: visible_features={vtot} k_sound={ksound} unsealed_in_window={h.noext}");
       println("   k | fetch tiles | visible drawn      MISSED  (of which: areas/buildings/lines/labels/pois still missing)");
       cft = 0; cvis = 0;
       ra = 0; rb = 0; rl = 0; rk = 0; rp = 0;

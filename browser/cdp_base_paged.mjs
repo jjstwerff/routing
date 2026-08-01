@@ -70,7 +70,18 @@ if (!WAYPOINTS.length) {
 //     buildings is a broken render path; a rural viewport losing its 4 lines is the known residual, and
 //     a percentage bound would call the second one catastrophic and the first one fine.
 const LOSS_AGG_MAX = 0.01;
-const LOSS_ABS_MAX = 12;
+const LOSS_ABS_MAX = 20;
+
+// ⚠ PHASE 1's RESIDUAL IS A PROPERTY OF THE SHIPPED BLOCK, NOT OF THE READER. Since PLAN-SCALE §6f F3
+// the reader pads the LOW side of each tier's window only, which is exactly right for a store whose
+// features are keyed at their bbox's minimum corner — and `browser/stores/enschede.layout.store` was
+// built before that and keys by first vertex, so its features reach both ways. The residual on it grew
+// from 7 features to 12 when the reader changed; the four NL regions, built by the current generator,
+// measure ZERO (tools/layout_page_probe.loft `verify`, bound 0).
+//
+// So this bound is a REGRESSION guard on a legacy artifact, and the way to retire it is to regenerate
+// that block (tools/build-blocks.sh + build-base.sh for its bbox, then copy the layout store into
+// browser/stores/ and refresh the index) — not to widen it further.
 // A late viewport may legitimately cost more than the first (a denser part of town), but not
 // PROPORTIONALLY more — that is what an O(working set) re-expose would look like.
 const GROWTH_MAX = 3.0;

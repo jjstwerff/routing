@@ -10,7 +10,7 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
-import { resolveCoverage, roadsUrlsFor } from './coverage.mjs';
+import { resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
 
 // PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
 // the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
@@ -89,6 +89,11 @@ const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 const roadsFor = (b) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, coverage.block) || ROADS;
+// PLAN-SCALE §6f F3 — the BASE map is a covering set too, now that a country is three base regions. A
+// viewport on a cut needs both sides: one region answers a straddling z16 viewport with 13 946 of its
+// 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
+// so a region with no base map behaves exactly as it did.
+const baseFor = (b) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo) || LAYOUT;
 window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
 // PLAN-SCALE §6f F1 — how to read the BASE MAP, which is a decision PER STORE and not per region
 // (HANDOFF §0 rule 2): NL's roads ship beside the app and its base map does not, so the two are not
@@ -143,8 +148,8 @@ const bboxOf = (b) => `${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixe
 // blank one, because the working set is never asked for. So every view goes through here.
 // (`match` / `find` / `reset` stop at line 6 and keep their literal form; if a line 8 is ever added,
 // they come through here too.)
-const viewCmd = (bbox, roads = ROADS, cmd = 'view') =>
-  [LAYOUT, roads, cmd, bbox, '', window.__readMode, '', window.__baseReadMode].join('\n');
+const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT) =>
+  [base, roads, cmd, bbox, '', window.__readMode, '', window.__baseReadMode].join('\n');
 
 let loadedBox = null, loadedBbox = null, lastViewText = null;
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
@@ -277,7 +282,7 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box)));
+  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -491,7 +496,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext'));
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext', baseFor(box)));
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -585,7 +590,7 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box)));
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();
