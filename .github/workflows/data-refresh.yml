@@ -26,16 +26,44 @@ name: data-refresh
 #   * it builds loft from loft-lang/loft MAIN, and the fixes this repo depends on are routinely
 #     fixed-pending-merge — present in the installed binary, not yet in main.
 #
-# To re-enable: point the publish step at tools/publish-release.sh (which tags, verifies assets and
-# rebuilds the index with DATASET_VERSION from the tag), then restore the `schedule:` block below.
-# `workflow_dispatch` is kept so the pipeline can still be exercised on purpose.
+# FIXED 2026-08-01 — the job below now runs `tools/refresh-region.sh` and `tools/publish-release.sh`
+# instead of its own inline commands, so it publishes from `blocks/`, tags in the `data-v<date>` shape
+# every other tool reads, rebuilds the index, and gets publish-release's per-asset 206 verification.
+#
+# ⚠ THE CRON STAYS OFF, and now for MEASURED reasons rather than an unfinished pipeline:
+#
+#   * THE BASE MAP DOES NOT FIT A RUNNER. Measured on the Netherlands: ~28 min, ~6 GB RSS and ~11.7 GB
+#     of intermediates (1.8 GB areas + 4.1 GB buildings + 1.0 GB streets geojsonseq, then a 2.0 GB
+#     store). A GitHub-hosted runner has ~14 GB of disk before a checkout and a Rust toolchain. So this
+#     job runs `--no-base`: roads and names only, ~6 min and ~3 GB, which fits comfortably.
+#   * PUBLISHING REPLACES DATA SOMEONE MAY BE READING. `fetch-site-blocks.sh` verifies every download
+#     against the sha256 in the committed index, so a republish that nobody expected turns every Pages
+#     deploy red until the index is regenerated and committed. That is a decision, not a schedule.
+#   * LOFT IS A MOVING TARGET. This builds loft from loft-lang/loft MAIN, and the fixes this repo
+#     depends on are routinely fixed-pending-merge — present in the installed binary, absent from main.
+#     A monthly cron would discover that at 04:17 on the first, alone.
+#
+# `workflow_dispatch` is therefore the only trigger: the pipeline is one click, and choosing to run it
+# is a person's job.
 on:
   # schedule:
   #   - cron: "17 4 1 * *"   # 04:17 UTC on the 1st of each month — see the note above before restoring
   workflow_dispatch:
     inputs:
-      regions:
-        description: "Space-separated block ids to rebuild (default: all in tools/build-blocks.sh)"
+      region:
+        description: "Region id in data/coverage.toml (default: netherlands)"
+        required: false
+        default: "netherlands"
+      source:
+        description: "Geofabrik path, e.g. europe/netherlands"
+        required: false
+        default: "europe/netherlands"
+      split_lon:
+        description: "Longitude to cut the country into <id>-west / <id>-east"
+        required: false
+        default: "5.40"
+      tag_date:
+        description: "Dataset version, e.g. v2026-09-01 (default: today, UTC)"
         required: false
         default: ""
 
@@ -52,41 +80,61 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pipeline present?
-        id: gate
-        run: |
-          if [ -x tools/build-blocks.sh ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::tools/build-blocks.sh not present yet — data-refresh is dormant (PLAN-APP §11)."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Toolchain (osmium, mold, loft)
-        if: steps.gate.outputs.ready == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y osmium-tool mold
           git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
           (cd /tmp/loft && cargo build --release --bin loft)
-          echo "LOFT=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+          echo "LOFT_BIN=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
 
-      # Downloads fresh Geofabrik extracts, runs osmium extract/filter/export →
-      # converter → gen6 per block, and stamps each block's osm_snapshot from
-      # `osmium fileinfo -e -g data.timestamp.last`. Emits blocks + a top index.
-      - name: Build blocks from fresh OSM
-        if: steps.gate.outputs.ready == 'true'
+      - name: Disk before
+        run: df -h / | tail -1
+
+      # ROADS + NAMES ONLY. See the note at the top: the base map needs ~11.7 GB of intermediates and
+      # does not fit here. `--split 5.40` cuts the country into the halves data/coverage.toml names, and
+      # refresh-region.sh asserts the split conserves every way before anything is published.
+      - name: Refresh ${{ github.event.inputs.region || 'netherlands' }}
         env:
-          REGIONS: ${{ github.event.inputs.regions }}
-        run: ./tools/build-blocks.sh
+          DATASET_VERSION: ${{ github.event.inputs.tag_date }}
+        run: |
+          ver="${DATASET_VERSION:-v$(date -u +%Y-%m-%d)}"
+          DATASET_VERSION="$ver" ./tools/refresh-region.sh \
+            "${{ github.event.inputs.region || 'netherlands' }}" \
+            "${{ github.event.inputs.source || 'europe/netherlands' }}" \
+            --no-base --split "${{ github.event.inputs.split_lon || '5.40' }}"
+          echo "DATASET_VERSION=$ver" >> "$GITHUB_ENV"
 
-      - name: Publish blocks (dataset release)
-        if: steps.gate.outputs.ready == 'true'
+      - name: Disk after
+        run: df -h / | tail -1
+
+      # publish-release.sh uploads only what data/coverage.toml names, verifies every asset answers a
+      # Range request at the size we uploaded, and publishes the index LAST — so a half-uploaded release
+      # is never something a client can resolve into.
+      #
+      # ⚠ It will publish only the stores present in blocks/. With --no-base that is roads + names; the
+      # base map keeps whatever the previous release carried, which is correct — it is a separate store
+      # with its own extent, and a road with no landcover around it renders fine.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/publish-release.sh "data-$DATASET_VERSION"
+
+      # The index's sha256s changed, so the committed copy is now stale — and index_fresh_gate will say
+      # so on the next run. Opened as a PR rather than pushed: main is protected, and a data refresh that
+      # rewrites a committed file deserves the same review as any other change to it.
+      - name: Open a PR for the regenerated index
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Tag by snapshot month; the app fetches blocks from this release and
-          # reads osm_snapshot + the bumped dataset version from the top index.
-          tag="data-$(date -u +%Y%m)"
-          gh release create "$tag" dist/blocks/* --title "Dataset $tag" --notes "Automated OSM refresh." \
-            || gh release upload "$tag" dist/blocks/* --clobber
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          br="data-refresh-$DATASET_VERSION"
+          git checkout -b "$br"
+          git add browser/coverage.json data/coverage.toml
+          git diff --cached --quiet && { echo "::notice::index unchanged — nothing to open"; exit 0; }
+          git commit -m "data($GITHUB_WORKFLOW): refresh to $DATASET_VERSION"
+          git push -u origin "$br"
+          # One line, deliberately: a multi-line body inside a YAML block scalar has to be indented
+          # to stay inside it, and those leading spaces reach GitHub as a markdown code block.
+          gh pr create --title "Data refresh $DATASET_VERSION" --body "Automated OSM refresh. Blocks published as \`data-$DATASET_VERSION\`; this updates the index that names them. The BASE MAP was NOT refreshed — it needs ~11.7 GB of intermediates and ~6 GB RSS, which does not fit a GitHub-hosted runner (see the workflow header); rebuild it locally with \`tools/refresh-region.sh netherlands europe/netherlands --split 5.40\`."

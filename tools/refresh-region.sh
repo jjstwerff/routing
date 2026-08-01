@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Jurjen Stellingwerff
+# SPDX-License-Identifier: LGPL-3.0-or-later
+#
+# ONE COMMAND for a whole region refresh — acquire → roads → networks → names → base → split → index.
+#
+# Every step here already existed as its own script; what did not exist was the ORDER, and the order is
+# where the mistakes live. Doing it by hand on 2026-08-01 produced four of them, each of which passed the
+# step that caused it and failed something later:
+#
+#   * the base map was rebuilt but its halves were never split, so `blocks/` held a 2 GB store the
+#     manifest does not name and no halves that it does;
+#   * the index was bumped to a new version while `data/coverage.toml` still published from the old tag
+#     (caught by index_fresh_gate — two different files, nothing else would have noticed);
+#   * `publish-release.sh` would have uploaded the un-split whole-country intermediates, 2.2 GB nobody
+#     can resolve to;
+#   * the RELEASE index came out EMPTY, because the rule deciding what belongs in it still assumed
+#     hosting was per region.
+#
+# So this script's value is not that it saves typing. It is that the sequence is written down once, with
+# the conservation checks between the steps rather than after all of them.
+#
+#   tools/refresh-region.sh <region-id> <geofabrik-path> [bbox]
+#     --no-base    skip the base map (roads + names only — see the note on cost below)
+#     --split LON  cut the country blocks at this longitude into <id>-west / <id>-east
+#
+# ⚠ COST, measured on the Netherlands 2026-08-01, because it decides where this can run:
+#     roads + names   ~6 min, ~3 GB peak disk, well inside a CI runner
+#     base map        ~28 min, ~6 GB RSS and ~11.7 GB of intermediates — too big for a
+#                     GitHub-hosted runner's ~14 GB disk once a checkout and toolchain are on it
+#   That asymmetry is why `--no-base` exists and why the workflow uses it.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
+here="$(cd "$here" && pwd)"
+loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
+work="${BLOCKS_WORK:-$HOME/.cache/routing-blocks}"
+out="${BLOCKS_OUT:-$here/blocks}"
+
+id=""; src=""; bbox=""; do_base=1; split_lon=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --no-base) do_base=0; shift ;;
+    --split)   split_lon="${2:-}"; shift 2 ;;
+    *) if [ -z "$id" ]; then id="$1"; elif [ -z "$src" ]; then src="$1"; else bbox="$1"; fi; shift ;;
+  esac
+done
+[ -n "$id" ] && [ -n "$src" ] || { sed -n '/^#   tools\/refresh-region.sh/,/^#   That asymmetry/p' "$0" | sed 's/^# \?//'; exit 2; }
+
+step() { echo; echo "########## $* ##########"; }
+die()  { echo "FAIL: $*" >&2; exit 1; }
+
+step "1/6 roads — acquire, filter, export, join networks, generate"
+"$here/tools/build-blocks.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-blocks"
+
+step "2/6 names — street + place search index (PLAN-RESTORE R4)"
+"$loft" --native-release --lib "$here/lib" "$here/tools/gen-names.loft" \
+  "$out/$id.names.store" "$work/$id.geojsonseq" "$work/$id.places.geojsonseq" \
+  || die "gen-names"
+
+if [ "$do_base" = 1 ]; then
+  step "3/6 base map — landcover, buildings, lines, labels, pois"
+  "$here/tools/build-base.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-base"
+else
+  step "3/6 base map — SKIPPED (--no-base)"
+fi
+
+if [ -n "$split_lon" ]; then
+  step "4/6 split at ${split_lon}°E"
+  # ⚠ CONSERVATION IS CHECKED HERE, not at the end. A split that loses a tile produces two blocks that
+  # each look fine and a country with a hole in it; the only moment the whole and the parts can be
+  # compared is right now, while both exist.
+  rm -f "$out/$id-west.roads.store" "$out/$id-east.roads.store"
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" \
+    "$out/$id.roads.store" "$out/$id-west.roads.store" "$out/$id-east.roads.store" "$split_lon" \
+    | grep -E '^split at|persist' | sed 's/^/  /' || die "split_block"
+  if [ "$do_base" = 1 ] && [ -f "$out/$id.base.store" ]; then
+    rm -f "$out/$id-west.base.store" "$out/$id-east.base.store"
+    "$loft" --native --lib "$here/lib" "$here/tools/split_base.loft" \
+      "$out/$id.base.store" "$out/$id-west.base.store" "$out/$id-east.base.store" "$split_lon" \
+      | grep -E '^split at|persist' | sed 's/^/  /' || die "split_base"
+  fi
+  # The whole and the parts, compared. `census` is the same tool the conservation gate uses, so this is
+  # the gate's own arithmetic applied one step earlier — where it can still say WHICH step lost the data.
+  wh="$("$loft" --native --lib "$here/lib" "$here/tools/census.loft" roads "$out/$id.roads.store" 2>/dev/null | grep -oP '^count roads.ways \K[0-9]+')"
+  we="$("$loft" --native --lib "$here/lib" "$here/tools/census.loft" roads "$out/$id-west.roads.store" 2>/dev/null | grep -oP '^count roads.ways \K[0-9]+')"
+  ea="$("$loft" --native --lib "$here/lib" "$here/tools/census.loft" roads "$out/$id-east.roads.store" 2>/dev/null | grep -oP '^count roads.ways \K[0-9]+')"
+  echo "  conservation: $we + $ea = $((we + ea)) against $wh whole"
+  [ "$((we + ea))" = "$wh" ] || die "the split lost $((wh - we - ea)) ways — do not publish this"
+fi
+
+step "5/6 index"
+# The version and the release tag are ONE decision. Set them apart and index_fresh_gate rejects the
+# result — which is right, and is why this takes the tag rather than inventing a date.
+ver="${DATASET_VERSION:-v$(date -u +%Y-%m-%d)}"
+if grep -q 'base_url_base\|url_base' "$here/data/coverage.toml"; then
+  sed -i -E "s|(url_base = \"https://github.com/[^\"]*/download/)data-v[0-9-]+\"|\\1data-$ver\"|g" "$here/data/coverage.toml"
+fi
+DATASET_VERSION="$ver" "$here/tools/build_index.sh" || die "build_index"
+
+step "6/6 what is left, and why it is not automatic"
+cat <<EOF
+  Built into $out. NOT published — publishing replaces data other people may be reading, so it stays a
+  deliberate act:
+
+    tools/publish-release.sh data-$ver      # upload, verify each asset answers a Range request, index LAST
+
+  Then commit browser/coverage.json (its sha256s changed) and run the gates:
+
+    make test-native && make test-map
+EOF

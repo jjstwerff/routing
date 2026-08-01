@@ -98,6 +98,9 @@ block_json() {  # $1 = path relative to root, $2 = roads|base, $3 = per-region u
 # without the `store_extent` call, which only understands map layers.
 names_json() {  # $1 = path relative to root
   local rel="$1" abs=""
+  # Same hosting rule as `block_json`: a RELEASE index must name it absolutely, or a consumer resolving
+  # against the tag turns "stores/nl.names.store" into a 404. Missed on the first pass because the name
+  # store is the one store with no extent, so it took a different code path.
   local r; local IFS='|'
   for r in $roots; do
     if [ -f "$r/$rel" ]; then abs="$r/$rel"; break; fi
@@ -105,8 +108,10 @@ names_json() {  # $1 = path relative to root
   done
   unset IFS
   [ -f "$abs" ] || { echo "FAIL: manifest names a missing name store: $rel" >&2; return 1; }
+  local url="$rel"
+  [ -n "${RELEASE_BASE:-}" ] && url="$RELEASE_BASE/$(basename "$rel")"
   printf '{"url":"%s","bytes":%s,"sha256":"%s"}' \
-    "$rel" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)"
+    "$url" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)"
 }
 
 echo "== building the top index from $(basename "$manifest") =="
@@ -135,9 +140,19 @@ flush() {
     id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
     return 0
   fi
-  # …and the mirror of it: a site-only region has a RELATIVE url, which a consumer resolving against the
-  # release index would turn into a 404. Each index names only what it can actually serve.
-  if [ -z "$ubase" ] && [ "${RELEASE_INDEX:-0}" = "1" ]; then
+  # …and the mirror of it: each index names only what it can actually serve.
+  #
+  # ⚠ THE TEST IS "IS IT BEING PUBLISHED", NOT "DOES IT HAVE A url_base". It used to be the latter, which
+  # meant the same thing while hosting was per REGION — a region was either site-local or released. Since
+  # NL split its stores across both (roads beside the app, base map on the release, PLAN-SCALE N3) no
+  # region carries a plain `url_base` any more, and that rule excluded EVERY region: the release index
+  # came out empty, and `publish-release.sh` refused to publish it. Which is the ordering working — an
+  # empty index would have been a release nobody could resolve.
+  #
+  # A block is being published exactly when it sits in `blocks/`, the generated-output directory
+  # `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and ship with
+  # the app, so they are correctly absent from a release index.
+  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "$here/blocks/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
     id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
     return 0
