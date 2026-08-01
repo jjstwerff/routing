@@ -1526,6 +1526,48 @@ budget. It ships beside the app.
 errors in opposite directions, which is why a window is not a scale model of a country and why O0 was a
 rung rather than a footnote.
 
+#### ✅ O1 BUILT — `blocks/nl-overview.base.store`, 19.6 MB, 11 seconds (2026-08-02)
+
+`tools/build_overview.loft` reads the country base store and the country roads store and writes an
+**ordinary base store holding less** — the same `PTile`, the same tier keying, the same sealed extents, so
+every existing reader already understands it. Measured, on 17 290 495 features in:
+
+| | |
+|---|---|
+| kept | **116 703 areas · 449 lines · 311 labels · 0 buildings · 0 pois** |
+| base coordinates | 10 717 100 selected → **735 500 decimated** (94.1 m = 1 px at z10) |
+| spine | 91 443 ways → **14 631 chains** → 38 931 coordinates |
+| output | **90 tiles · 132 094 features · 774 431 coords · 20 570 304 bytes (19.6 MB)** |
+| checks | `persist true load true verify true`; base coords land within 93 of O0's independent 735 407 |
+
+Verified geographically, not just structurally: a keyed read over the Amsterdam window returns 7 tiles /
+17 667 features and one over the country returns all 90 — so re-keying moved features between tiles
+without moving them on the ground. (That country read asks **454 867 keys**, which is the same point §6i
+opens with: this block is read WHOLE, never paged.)
+
+**Two things cost real bytes, and neither was in the design:**
+
+1. **⚠ An overview must be RE-KEYED, or it inherits a grid built for a hundred times its density.** Keeping
+   each feature in its source tile is the obvious implementation and it produced **26 848 tiles holding 4.9
+   features each** — against 93 in the full store. A tile's fixed cost (five vector headers, origin, sealed
+   extent, store bookkeeping) is then paid 26 848 times: **25.5 MB → 19.6 MB** simply by flooring the
+   output at tier 2 (0.32° cells, 90 tiles). Coarser is always safe for the reader's one-cell window, so
+   the floor only ever moves a feature UP the ladder.
+2. **⚠ The merge had a silent half-failure.** Endpoint slots were *preferred* in order rather than
+   *tested*, so when the run we arrived on sat in the second slot the continuation was refused — exactly
+   half the time. It chained 1508 city ways into 814 pieces (1.85 each) and looked like it worked.
+   Fixed, and the same block chains into **223** (6.8 each). Nationally: 91 443 ways → 14 631 chains,
+   **184 583 unmerged coordinates → 38 931 (4.7×)**. Merging really is the spine's whole budget.
+
+⚠ **19.6 MB against a 14 MB projection, and the model was wrong in a knowable way.** §6i predicted 8 B per
+coordinate + 44 B per feature. Geometry did land at 5.9 MB (8 B/coord exactly), but the remaining 13.7 MB
+is **109 B per feature**, not 44 — because 44 B/feature was derived from a store averaging 9.2 coords per
+feature, and an overview averages 5.9, so each feature's own ring is a separate small allocation with its
+own header. **Per-feature cost does not scale down with the geometry**, which says the next lever on size
+is FEATURE COUNT, not vertices — and 116 703 of the 132 094 are areas, because `areaMinZoom` sends
+*everything* over 0.008° of diagonal to z0, putting a 900 m field on the same footing as the IJsselmeer.
+A finer ladder above that threshold is the obvious follow-up and it is a renderer rule, not a store one.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
@@ -1621,7 +1663,7 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 | | what | observable |
 |---|---|---|
 | **O0** ✅ | **Measure the country's overview population in ONE generator pass** — done 2026-08-02, above | **handover z10; ~11 MB base + ~3 MB spine ≈ 14 MB** |
-| **O1** | Build the NL z≤10 level (select + **merge** + decimate) + a coverage entry, read `whole`, always loaded | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
+| **O1** ◐ | Build the NL z≤10 level (select + **merge** + decimate) — **done, 19.6 MB, above.** What remains is the APP half: a coverage entry, `read_mode = whole`, always loaded, and two `LINE_STYLES` rows so the spine's `motorway`/`primary` kinds draw | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
 | **O2** | Zoom bands in the index + JS block selection by zoom + sketch densification | no double-draw; a country-zoom sketch returns a route |
 | **O3** | The middle levels on their own grids (z12 on 0.08° cells) | a z13 view costs ~16 keys instead of 2 777 |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
