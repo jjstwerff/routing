@@ -185,7 +185,12 @@ ext="$("$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$stor
 [ -n "$ext" ] || { echo "FAIL: the block does not open"; exit 1; }
 set -- $ext
 echo "  extent lat $(python3 -c "print(f'{$1/1e7:.4f}..{$3/1e7:.4f}')") lon $(python3 -c "print(f'{$2/1e7:.4f}..{$4/1e7:.4f}')") · tiles=$5 roads=$6"
-[ "$5" -ge 100 ] || { echo "FAIL: only $5 tiles — the block is empty or the filter dropped everything"; exit 1; }
+# A non-vacuity floor: a block that came out empty because the filter dropped everything looks exactly
+# like a successful build until something tries to route on it. 100 tiles is right for a city or a
+# country — and WRONG for a CHUNK, which is legitimately a slice of one (PLAN-SCALE §6e). An Enschede
+# half is 87 tiles and perfectly valid. So the floor is overridable, and the override is the caller
+# saying "I know how small this is meant to be" rather than the check being deleted.
+[ "$5" -ge "${MIN_TILES:-100}" ] || { echo "FAIL: only $5 tiles (floor ${MIN_TILES:-100}) — the block is empty or the filter dropped everything"; exit 1; }
 # A paged spot check: the read path the client uses, on the block it will actually read.
 LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" 2>&1 \
   | grep -E '^store_load_keys|^asked' | sed 's/^/  /'
