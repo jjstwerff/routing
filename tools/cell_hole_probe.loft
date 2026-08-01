@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// FIND AN IN-EXTENT EMPTY CELL — the control a miss measurement needs (PLAN-SCALE §6i O5).
+//
+// A keyed read that asks for a cell the store does not hold still costs pages, and how many decides how
+// much of a low-zoom viewport's bill is "being told nothing". Measuring that on a box OUTSIDE the store's
+// extent is the easy case and possibly the unrepresentative one: the interesting miss is a cell with data
+// all around it, which is what a rectangular window over real ground is full of.
+//
+// So this walks the store, records which cells at the FINEST tier actually exist, and reports square
+// blocks of `size` cells that are entirely absent yet have present cells within `REACH` in all four
+// directions — genuinely inside the covered area. It prints each as a degree box ready to hand to
+// `tools/zoom_bin_probe.loft`, whose low-side padding makes a `size`-square block ask exactly size² keys.
+//
+//   loft --native --lib lib tools/cell_hole_probe.loft <base.store> [size] [want]
+#cwd
+
+use basemap::(PTile, key_tier, tier_cell, cell_ix, origin);
+
+REACH = 60;              // how far to look for data around a hole, in cells (~21 km at tier 0)
+STRIDE = 1000000;        // row multiplier for the cell key; NL cell indices are far below it
+
+struct Cell { k: integer }
+
+fn present(cells: hash<Cell[k]>, cx: integer, cy: integer) -> boolean {
+  cells[cx * STRIDE + cy] != null
+}
+
+// Is the block at (bx,by) of `size` cells entirely absent?
+fn block_empty(cells: hash<Cell[k]>, bx: integer, by: integer, size: integer) -> boolean {
+  yy = 0;
+  while yy < size {
+    xx = 0;
+    while xx < size {
+      if present(cells, bx + xx, by + yy) { return false; }
+      xx += 1;
+    }
+    yy += 1;
+  }
+  true
+}
+
+// Data within REACH in all four directions — the test that says INSIDE the covered area rather than
+// past its edge, which is the whole point of this control.
+fn surrounded(cells: hash<Cell[k]>, bx: integer, by: integer, size: integer) -> boolean {
+  cx = bx + size / 2; cy = by + size / 2;
+  west = false; east = false; south = false; north = false;
+  d = 1;
+  while d <= REACH {
+    if !west && present(cells, cx - d, cy) { west = true; }
+    if !east && present(cells, cx + d, cy) { east = true; }
+    if !south && present(cells, cx, cy - d) { south = true; }
+    if !north && present(cells, cx, cy + d) { north = true; }
+    d += 1;
+  }
+  west && east && south && north
+}
+
+fn main() {
+  argv: vector<text> = [];
+  for av in arguments() { argv += [av]; }
+  path = argv[0] ?? "";
+  size = argv[1] as integer ?? 2;
+  want = argv[2] as integer ?? 3;
+
+  src: hash<PTile[tkey]> = [];
+  if !store_load(src, path) { println("#H FAIL cannot load {path}"); return; }
+
+  c0 = tier_cell(0);
+  cells: hash<Cell[k]> = [];
+  mnx = 0; mxx = 0; mny = 0; mxy = 0; n0 = 0;
+  for t in src {
+    if key_tier(t.tkey) == 0 {
+      tx = cell_ix(t.ox, c0); ty = cell_ix(t.oy, c0);
+      ck = tx * STRIDE + ty;
+      if cells[ck] == null { cells += [Cell { k: ck }]; }
+      if n0 == 0 { mnx = tx; mxx = tx; mny = ty; mxy = ty; }
+      else {
+        if tx < mnx { mnx = tx; } if tx > mxx { mxx = tx; }
+        if ty < mny { mny = ty; } if ty > mxy { mxy = ty; }
+      }
+      n0 += 1;
+    }
+  }
+  println("#H {n0} tier-0 tiles · cell x {mnx}..{mxx} y {mny}..{mxy} · looking for {size}x{size} holes");
+
+  found = 0;
+  by = mny + 1;
+  while by < mxy - size && found < want {
+    bx = mnx + 1;
+    while bx < mxx - size && found < want {
+      if block_empty(cells, bx, by, size) && surrounded(cells, bx, by, size) {
+        // The box that makes `layout_cell_keys` ask exactly this block: its own cells plus the one cell
+        // of low-side padding, which is the cell to the WEST/SOUTH — so start one cell in.
+        lo_lon = origin(bx + 1, c0); lo_lat = origin(by + 1, c0);
+        hi_lon = origin(bx + size, c0) - 1; hi_lat = origin(by + size, c0) - 1;
+        println("#H hole at cell ({bx},{by}) → {(lo_lat as float) / 10000000.0:2.6},{(lo_lon as float) / 10000000.0:2.6},{(hi_lat as float) / 10000000.0:2.6},{(hi_lon as float) / 10000000.0:2.6}");
+        found += 1;
+      }
+      bx += 1;
+    }
+    by += 1;
+  }
+  if found == 0 { println("#H no {size}x{size} hole is fully surrounded within {REACH} cells"); }
+}
