@@ -142,7 +142,12 @@ if (existsSync(join(here, 'coverage.json'))) {
     // including the one that would prove the country view draws. A block whose stores are all local
     // relative URLs that exist costs a gate nothing to name and reaches no network.
     const before = keep.length;
-    const local = (st) => !st || (st.url && !st.url.includes('://') && existsSync(join(here, st.url)));
+    // ⚠ Both locations, exactly like `served` above: a block can ship COMMITTED under browser/stores or be
+    // LINKED into _site from blocks/ a few lines earlier, and the overview is the second kind. Checking
+    // only browser/ dropped it from every local gate — including the one that exists to prove the country
+    // view draws.
+    const local = (st) => !st || (st.url && !st.url.includes('://')
+                                  && (existsSync(join(site, st.url)) || existsSync(join(here, st.url))));
     keep = keep.filter((b) => (b.roads || b.base) && local(b.roads) && local(b.base) && local(b.names));
     offsite = before - keep.length;
   }

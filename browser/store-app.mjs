@@ -496,6 +496,10 @@ function requestMatch(pts) {
       const dense = densifySketch(pts, DENSIFY_STEP_M);
       if (dense.length > pts.length) {
         hud.textContent = `matching… (${dense.length} pts)`;
+        // Counted, because the property that matters is that it does NOT fire on an ordinary sketch:
+        // a retry on a match that already worked would be a route-affecting change (§6i O2).
+        window.__storeApp = { ...(window.__storeApp || {}),
+                              densifyRetries: (window.__storeApp?.densifyRetries || 0) + 1 };
         text = await streamedMatch(spec(dense), isCurrent);
         if (!isCurrent()) return;
         sum = map.loadMatch(text);
@@ -539,6 +543,15 @@ window.__perfHooks = {
     for (let i = 0; i < route.length; i++) h = (Math.imul(h, 31) + route.charCodeAt(i)) | 0;
     return { roads, blocks: roads.split(',').length, summary, routeHash: (h >>> 0).toString(16), routeBytes: route.length };
   },
+  // §6i O2's observable — the retry's DECISION, with the app's own functions and its own step constant.
+  //
+  // The firing itself cannot be gated against the small local block: an echo needs a corridor that holds
+  // ways but no path through them, and the shipped city block routes everything at the distances where
+  // Amsterdam echoes (measured: it echoes at 3 km there, and not here at 4.8 km). So the gate asserts the
+  // WIRING — that these are the functions the retry consults, at this spacing — while `map.test.mjs`
+  // covers the functions and the live measurement covers the firing.
+  densifyProbe: (pts, route) => ({ echo: isSketchEcho(route, pts), step: DENSIFY_STEP_M,
+                                   dense: densifySketch(pts, DENSIFY_STEP_M).length }),
   // Step 9's observable: did loft actually hand JS a usable handle to the layout store?
   exposeInfo: () => {
     const e = kernel.exposedValue ? kernel.exposedValue(1) : null;

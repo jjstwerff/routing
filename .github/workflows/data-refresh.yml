@@ -229,6 +229,20 @@ jobs:
             echo "  fetched $f ($(stat -c%s "blocks/$f") bytes)"
           done
 
+      # ⚠⚠ THIS PIPELINE STILL PRODUCES TWO REGIONS AND THE MANIFEST NAMES FOUR — IT CANNOT RUN AS IS.
+      #
+      # `data/coverage.toml` has named nl-west / nl-midwest / nl-mideast / nl-east since §6f F3 (cuts at
+      # 4.70 / 5.40 / 5.90, each base region carrying a 0.10° margin of its neighbours, roads cut WITHOUT
+      # one). This job merges the chunks into the old two halves, and `refresh-region.sh --split 5.40`
+      # splits the roads the same old way — so `publish-release.sh` would fail building the release index
+      # on the two blocks the manifest names and this job never produced, AFTER uploading gigabytes.
+      #
+      # It is a pre-existing gap, not one the overview step below introduces, and it is the reason the
+      # workflow has never actually run (see the header). Fixing it means reproducing F3's cut here: four
+      # bands, `trim_base.loft … cover` for the base (a region must be a complete map of its own ground)
+      # and a plain partition for the roads (blocks must stay disjoint, `block_overlap_gate`). Do that
+      # against a real run with eyes on it — the recipe is in PLAN-SCALE §6f F3, and guessing it produces
+      # a dataset that looks published and is wrong.
       - name: Merge chunks into nl-west / nl-east
         run: |
           set -e
@@ -240,6 +254,33 @@ jobs:
           # The chunk files are a build intermediate; publish-release.sh only uploads what the manifest
           # names, but leaving 2 GB of them around invites someone to point an index at one.
           rm -f blocks/netherlands-c0*.base.store*
+      # --- the OVERVIEW must be rebuilt WITH the regions, or it silently describes older ground ---------
+      #
+      # PLAN-SCALE §6i O1. The overview is the map every zoom below 14 draws, and it is DERIVED from the
+      # regions — so a refresh that rebuilds them and not it leaves the country view describing the
+      # previous snapshot while the routes underneath describe the new one. Nothing would report that:
+      # `publish-release.sh` uploads whatever `blocks/` holds that the manifest names, so a stale file is
+      # re-published looking current. That is the silent direction, which is why this step exists at all.
+      #
+      # ⚠ DELETE FIRST. `store_persist_bind` over an existing file ADOPTS the old image and returns true
+      # (PLAN-SCALE §6f), so a rebuild without the `rm` is exactly the stale-but-fresh-looking artifact
+      # this step is here to prevent.
+      #
+      # Built from the REGION stores because no job holds a country-wide base and country-wide roads at
+      # once. That costs ~26% in bytes — measured 24.8 MB from four regions against 19.6 MB from one
+      # country store — because a region carries a 0.10° margin of its neighbours and a feature in a
+      # margin band is written twice. The geometry is identical, so it draws identically. Roads are cut
+      # WITHOUT margins, so the spine is unaffected (14 633 chains against 14 631).
+      - name: Build the country overview
+        run: |
+          set -e
+          rm -f blocks/nl-overview.base.store blocks/nl-overview.base.store.dschema
+          "$LOFT_BIN" --native --lib lib tools/build_overview.loft \
+            blocks/nl-west.base.store,blocks/nl-east.base.store \
+            blocks/nl-west.roads.store,blocks/nl-east.roads.store \
+            blocks/nl-overview.base.store 10 2 | grep '^#O'
+          ls -l blocks/nl-overview.base.store
+
       - name: Publish the base map
         env:
           GH_TOKEN: ${{ github.token }}

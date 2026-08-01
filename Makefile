@@ -234,4 +234,5 @@ test-map:
 	@./tools/base_paged_gate.sh
 	@./tools/cross_block_browser_gate.sh
 	@./tools/cors_host_gate.sh
+	@./tools/overview_gate.sh
 	@./tools/nl_live_gate.sh

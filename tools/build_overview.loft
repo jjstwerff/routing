@@ -23,7 +23,16 @@
 // vertices per way (measured: 56 071 for 27 595 motorway ways) however coarse the zoom. Chaining
 // consecutive same-class ways through their shared endpoints first is what makes the spine small.
 //
-//   loft --native --lib lib tools/build_overview.loft <base.store> <roads.store> <out.store> <zmax> [mintier]
+//   loft --native --lib lib tools/build_overview.loft <base.store[,…]> <roads.store[,…]> <out.store> <zmax> [mintier]
+//
+// Both inputs take a COMMA-SEPARATED SET, because no stage of the refresh pipeline holds a country-wide
+// base and a country-wide roads store at the same time — it holds the REGIONS. Reading a set is the same
+// thing the app's covering set does, and the output is keyed from each feature's own bbox, so which store
+// a feature arrived in does not affect where it lands.
+//
+// ⚠ Regions carry a 0.10° MARGIN of their neighbours, so a feature in a margin band exists in two region
+// stores and will be written twice. The geometry is identical, so it draws identically; it costs bytes,
+// not correctness. Building from ONE country store avoids it and is preferred when one exists.
 //
 // Refuses an existing output: `store_persist_bind` ADOPTS an existing image, keeps the old contents and
 // still returns true (PLAN-SCALE §6f). Delete before regenerating.
@@ -339,31 +348,41 @@ fn main() {
   while zk < zmax { sc = sc * 2.0; zk += 1; }
   eps = ((MPP0 * COSLAT) / sc) ?? 1.0;
 
-  src: hash<PTile[tkey]> = [];
-  if !store_load(src, base_path) { println("#O FAIL cannot load {base_path}"); return; }
   out: hash<PTile[tkey]> = [];
   c = Counts { areas: 0, lines: 0, labels: 0, pois: 0, coords_in: 0, coords_out: 0, spine: 0, spine_coords: 0 };
   srct = 0; srcf = 0;
-  for t in src {
-    srct += 1;
-    for _a in t.areas { srcf += 1; }
-    for _b in t.buildings { srcf += 1; }
-    for _l in t.lines { srcf += 1; }
-    for _k in t.labels { srcf += 1; }
-    for _p in t.pois { srcf += 1; }
-    take_areas(t, out, zmax, eps, mintier, c);
-    take_lines(t, out, zmax, eps, mintier, c);
-    take_labels(t, out, zmax, mintier, c);
-    take_pois(t, out, zmax, mintier, c);
+  for bp in base_path.split(',') {
+    if bp != "" {
+      src: hash<PTile[tkey]> = [];
+      if !store_load(src, bp) { println("#O FAIL cannot load {bp}"); return; }
+      for t in src {
+        srct += 1;
+        for _a in t.areas { srcf += 1; }
+        for _b in t.buildings { srcf += 1; }
+        for _l in t.lines { srcf += 1; }
+        for _k in t.labels { srcf += 1; }
+        for _p in t.pois { srcf += 1; }
+        take_areas(t, out, zmax, eps, mintier, c);
+        take_lines(t, out, zmax, eps, mintier, c);
+        take_labels(t, out, zmax, mintier, c);
+        take_pois(t, out, zmax, mintier, c);
+      }
+    }
   }
   println("#O base: {srct} tiles / {srcf} features in · kept {c.areas} areas, {c.lines} lines, {c.labels} labels, {c.pois} pois · coords {c.coords_in} -> {c.coords_out}");
 
   // --- the spine ---------------------------------------------------------------------------------------
-  roads: hash<TTile[tkey]> = [];
-  if !store_load(roads, roads_path) { println("#O FAIL cannot load {roads_path}"); return; }
   runs: vector<Run> = [];
   ends: hash<EndPt[k]> = [];
-  collect_runs(roads, zmax, runs, ends);
+  for rp in roads_path.split(',') {
+    if rp != "" {
+      roads: hash<TTile[tkey]> = [];
+      if !store_load(roads, rp) { println("#O FAIL cannot load {rp}"); return; }
+      // Chaining sees every region's ways at once, so a motorway that crosses a region cut still merges
+      // into one run — the ends hash is keyed on absolute coordinates, not on which store they came from.
+      collect_runs(roads, zmax, runs, ends);
+    }
+  }
   nways = len(runs);
 
   chains = 0;

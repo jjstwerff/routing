@@ -1744,6 +1744,51 @@ sources hash, **1 408 411 → 1 404 720 bytes** — the documented toolchain dri
 does not hash), and `map_render_gate`, `cross_block_browser_gate`, `cors_host_gate` and
 `browser/map.test.mjs` are green on it.
 
+#### ✅ THE REFRESH KNOWS ABOUT IT, AND THE BEHAVIOUR IS GATED (2026-08-02)
+
+Two gaps between "it works" and "it stays working", both closed:
+
+**`data-refresh.yml` rebuilds the overview with the regions.** It is DERIVED from them, so a refresh that
+regenerated the regions and not it would leave the country view describing the previous snapshot while
+the routes underneath describe the new one — and nothing would report that, because
+`publish-release.sh` uploads whatever `blocks/` holds that the manifest names. A stale file is
+re-published looking current. The step deletes first (`store_persist_bind` adopts an existing image) and
+builds from the REGION stores, because no job in that workflow holds a country-wide base and country-wide
+roads at once. `tools/build_overview.loft` therefore takes a comma-separated SET for both inputs, the way
+the app's covering set does. Measured cost of that: **24.8 MB from four regions against 19.6 MB from one
+country store (+26%)**, entirely margin duplication — a feature inside a region's 0.10° margin is written
+twice. The spine is unaffected (14 633 chains against 14 631) because roads are cut WITHOUT margins. Not
+deduped on purpose: any cheap key for "same feature" risks dropping a real one, and this repo's failures
+have all been silent drops rather than wasted bytes.
+
+⚠ **That workflow still cannot run, for a reason older than this change**: it merges chunks into the TWO
+halves and `refresh-region.sh --split 5.40` splits the roads the same way, while `data/coverage.toml` has
+named FOUR regions since §6f F3. `publish-release.sh` would fail building the release index on blocks the
+job never produced — after uploading gigabytes. The fix is to reproduce F3's cut there (four bands,
+`trim_base … cover` for the base, plain partition for the roads) against a real run with eyes on it; the
+note is now in the workflow beside the step.
+
+**`tools/overview_gate.sh` (in `make test-map`)** asserts what §6i shipped, which nothing did before —
+and F5 is the reason that matters:
+
+* a **bare url**, the camera a first visitor actually gets, draws **132 094 features from ONE store**, the
+  overview, reading **no detailed roads**;
+* the handover is **exclusive both ways** — at z13 only the overview is read, at z16 only the detailed
+  block and the overview is not touched. Getting that wrong is not a slower map, it is a 2 GB read at z12
+  or a blank one at z16;
+* the densified retry **does not fire** on a sketch that already matches — the property that keeps every
+  working route byte-identical — and its decision is wired to the app's own `isSketchEcho`/`densifySketch`
+  at the app's own 1 km step.
+
+⚠ **The retry's FIRING is not gateable against the shipped city block**, and the gate says so rather than
+pretending: an echo needs a corridor holding ways but no path through them, and that block routes
+everything at the distances where Amsterdam echoes (3 km there, 4.8 km fine here). The functions are
+covered by `browser/map.test.mjs`, the firing by the live measurement.
+
+⚠ **`build-site.mjs`'s `SITE_LOCAL_ONLY` filter looked only in `browser/`** while the check beside it
+looks in `_site` too — so it dropped every block LINKED in from `blocks/`, the overview included, and the
+gate written to prove the country view draws could not see it. Both locations now.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own
