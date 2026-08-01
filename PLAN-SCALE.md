@@ -1829,6 +1829,19 @@ monotonicity, and that the small end is unchanged.
 as "never drawn". Harmless where it sat (the spine is appended, not filtered) and exactly the kind of
 divergence one copy prevents.
 
+⚠ **THE LADDER SHIPPED AS A NO-OP FIRST, AND THE TESTS ALL PASSED.** Areas render from the STORE index
+through `_drawAreasFromStore`, which never materialises a ring and so recomputed its own minZoom from a
+bbox — **a sixth inline copy of the thresholds**, in the one path that actually paints. Extending
+`areaMinZoom` changed the parity path, six new unit tests went green, the browser gate went green, the
+live site redeployed, and the map was **identical**. Measured after the fix: **2 838 areas drawn at z8
+against 106 464 at z16**; before it, 103 262 against 106 464 — the ladder was not in force at all.
+
+Three things to take from it. **A rule is not in force until the code that DRAWS asks it** — the copy that
+mattered was the one no test exercised. **Consolidating five copies while leaving a sixth is worse than
+leaving five**, because the remaining one now looks authoritative. And the gate that catches it has to
+observe the drawing, not the decision: `overview_gate` calls `_drawAreasFromStore(8)` and `(16)` on the
+same loaded index and requires the first to be far smaller — **verified to fail** on the old inline rule.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own

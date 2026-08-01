@@ -30,7 +30,12 @@ command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; 
 # Self-sufficient on purpose: `build-site.mjs` REMOVES _site and rebuilds it, so the coverage index is
 # gone whenever the site was rebuilt since the last index build. A gate that depends on another gate
 # having just run is a gate that fails for the wrong reason.
-"$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
+# ⚠ INTO _site, NOT THE TREE. `build_index.sh` defaults to the COMMITTED browser/coverage.json, so a gate
+# calling it bare REWRITES the file it is meant to be checking — the defect 8c47628 fixed once already.
+# And the manifest is the FIXTURE one: Enschede is no longer coverage (data/coverage.toml says why), and
+# this gate exists to split that block in two.
+COVERAGE_MANIFEST="$here/data/coverage-fixture.toml" "$here/tools/build_index.sh" "$site/coverage.json" \
+  >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 
 srv=""; chr=""
 cleanup() { kill "$chr" "$srv" 2>/dev/null; rm -f "$site/stores/west.roads.store"* "$site/stores/east.roads.store"*; }

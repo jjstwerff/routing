@@ -1386,5 +1386,28 @@ console.log('\nbarrier marks:');
      'every threshold matches the loft ladder in basemap.loft');
 }
 
+{
+  // --- a block whose OWN store stops short must step aside (the Hengelo gap) --------------------------
+  // Measured on the live site: the committed city block routes over 6.74–7.01°E while its BASE was
+  // clipped to 6.761–7.027, and in the gap it drew 3 802 buildings where the country block gives 28 324.
+  const idx = { unit: 'fixed-1e-7', blocks: [
+    { id: 'city',    roads: { url: 'c.roads', bbox: { mnla: 521400000, mnlo: 67400000, mxla: 523367073, mxlo: 70103358 } },
+                     base:  { url: 'c.base',  bbox: { mnla: 521612059, mnlo: 67606181, mxla: 523292661, mxlo: 70267522 } } },
+    { id: 'country', roads: { url: 'n.roads', bbox: { mnla: 507200000, mnlo: 58520209, mxla: 535417904, mxlo: 72429640 } },
+                     base:  { url: 'n.base',  bbox: { mnla: 506533591, mnlo: 26837171, mxla: 542222799, mxlo: 73104290 } } },
+  ] };
+  const baseAt = (mnla, mnlo, mxla, mxlo) => baseUrlsFor(idx, 'https://x/i.json', mnla, mnlo, mxla, mxlo);
+
+  // Inside the city block's own base extent — it is the finer data and it answers.
+  ok(baseAt(52.1998, 6.8488, 52.2321, 6.9432) === 'https://x/c.base',
+     'inside the city base extent, the city block answers');
+  // In the gap: inside its ROADS extent, outside its BASE. It must step aside rather than draw a hole.
+  ok(baseAt(52.2489, 6.7458, 52.2811, 6.8402) === 'https://x/n.base',
+     'in the gap between its roads and base extents, the country block answers instead');
+  // Roads are unaffected — the city block still routes over its own ground.
+  ok(roadsUrlsFor(idx, 'https://x/i.json', 52.2489, 6.7458, 52.2811, 6.8402) === 'https://x/c.roads',
+     'and ROADS still come from the city block, whose roads extent does cover it');
+}
+
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');
 process.exit(fails ? 1 : 0);

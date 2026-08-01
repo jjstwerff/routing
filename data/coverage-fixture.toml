@@ -1,0 +1,24 @@
+# Gate fixture — NOT coverage (PLAN-SCALE §6i).
+#
+# The committed Enschede block: small, same-origin, offline, and the dataset every browser gate runs
+# against. It is deliberately absent from `data/coverage.toml`, because as a coverage region it shadowed
+# the country block with older, thinner data and drew nothing in the gap between its own two extents
+# (see the note there). Here it is only ever loaded by a gate that asks for it.
+#
+#   COVERAGE_MANIFEST=data/coverage-fixture.toml tools/build_index.sh browser/coverage-fixture.json
+#
+# `browser/build-site.mjs` merges that index into _site when SITE_LOCAL_ONLY=1, so every local gate keeps
+# the dataset it had while a visitor never resolves to it.
+
+[[region]]
+id        = "enschede"
+name      = "Enschede / south Overijssel"
+# ⚠ KEEP THE BAND. A fixture is still a DETAILED block, and the band is what makes the overview the
+# only answer below the handover — without it a z13 gate view reads this block's roads too
+# (measured the moment it was dropped: R=37676 where the overview alone gives R=0).
+zoom_min  = 14
+roads     = "stores/enschede.roads.store"
+base      = "stores/enschede.layout.store"
+names     = "stores/enschede.names.store"
+read_mode = "whole"
+

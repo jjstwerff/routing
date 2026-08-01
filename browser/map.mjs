@@ -224,13 +224,21 @@ const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
 //
 // ⚠ `basemap::area_debut_diag` is the loft copy and must agree: the generator selects an overview's
 // contents with it, so a disagreement is a feature stored and never drawn, or drawn and never stored.
-function areaMinZoom(ring) {
-  let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
-  for (const [a, b] of ring) { miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); }
-  const diag = Math.hypot(maLa - miLa, maLo - miLo);
+// ⚠ THE LADDER LIVES HERE AND NOWHERE ELSE IN THIS FILE. The store-backed draw path recomputes a
+// minZoom from a bbox rather than a ring (it never materialises the ring), and it used to carry its own
+// inline copy of these thresholds — so extending the ladder in `areaMinZoom` changed the parity path and
+// left the path that actually DRAWS on the old rule. The map looked exactly as before and every test
+// passed. Both callers go through this now.
+export function areaDebutDiag(diag) {
   return diag > 0.256 ? 0 : diag > 0.128 ? 6 : diag > 0.064 ? 7 : diag > 0.032 ? 8
        : diag > 0.016 ? 9 : diag > 0.008 ? 10 : diag > 0.003 ? 11
        : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
+}
+
+function areaMinZoom(ring) {
+  let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
+  for (const [a, b] of ring) { miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); }
+  return areaDebutDiag(Math.hypot(maLa - miLa, maLo - miLo));
 }
 export const AREA_DEBUT_LADDER = [[0.256, 0], [0.128, 6], [0.064, 7], [0.032, 8], [0.016, 9],
                                   [0.008, 10], [0.003, 11], [0.0015, 12], [0.0007, 13], [0, 14]];
@@ -1618,7 +1626,7 @@ export class RouteMap {
       const len = col.len[i];
       if (len < 3) continue;                                 // areaRenderList's drop, applied at draw
       const diag = Math.hypot(col.bb[o4 + 1] / 1e7 - col.bb[o4] / 1e7, col.bb[o4 + 3] / 1e7 - col.bb[o4 + 2] / 1e7);
-      const mz = diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
+      const mz = areaDebutDiag(diag);
       if (z < mz) continue;
       const cover = decodeText(mem, sb, col.sRec[i], cache);
       if (DESIGNATION_STYLES[cover]) continue;             // drawn in the overlay — drawDesignations()

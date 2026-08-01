@@ -64,6 +64,19 @@ ok(bare.stores.length === 1 && /overview/.test(bare.stores[0]),
    `from ONE store, the overview: ${JSON.stringify(bare.stores)}`);
 ok(bare.roads === 0, `and reads NO detailed roads (R=${bare.roads})`);
 
+// 1b — the ladder is consulted by the path that actually DRAWS.
+//
+// ⚠ This check exists because its absence shipped a no-op. The ladder was extended in `areaMinZoom`, six
+// unit tests passed, and the map was unchanged — because areas render from the STORE index through
+// `_drawAreasFromStore`, which carried its own inline copy of the thresholds, and `areaMinZoom` only
+// feeds the parity path. A rule is not in force until the drawing code asks it.
+const drawn = JSON.parse(await ev(`JSON.stringify((() => {
+  const m = window.__map0;
+  return { at8: m._drawAreasFromStore(8), at16: m._drawAreasFromStore(16) };
+})())`) || '{}');
+ok(drawn.at16 > 0 && drawn.at8 * 4 < drawn.at16,
+   `the DRAW path applies the ladder: ${drawn.at8} areas at z8 against ${drawn.at16} at z16`);
+
 // 2 — the handover, both directions. Below it the overview alone; above it the detailed block alone.
 const below = await load('#13/52.2215/6.8937');
 ok(below.drawn > 0 && below.stores.every((u) => /overview/.test(u)),
@@ -74,6 +87,24 @@ const above = await load('#16/52.2215/6.8937');
 ok(above.stores.length > 0 && !above.stores.some((u) => /overview/.test(u)),
    `above it (z16) the overview is NOT read: ${JSON.stringify(above.stores)}`);
 ok(above.roads > 0, `and the detailed roads are (R=${above.roads})`);
+
+// 2b — ZOOMING IN FROM THE COUNTRY MUST SWITCH TO THE DETAIL. Reported from the live site and the reason
+// this check exists: booting on the country loads a box that CONTAINS every later viewport, so the
+// "already loaded" test skipped the reload and z15 kept drawing country data — viewSeq stuck at 1, R=0,
+// no buildings, while a direct load of the same camera drew 51 350. A box test cannot see a change of
+// SOURCE, and crossing the handover is exactly that.
+await load('');
+const zoomed = JSON.parse(await ev(`(async () => {
+  const before = window.__storeApp.viewSeq;
+  const m = window.__map0;
+  m.camera.zoom = 15; m.camera.lat = 52.2159; m.camera.lon = 6.8960; m._fireMove();
+  for (let i = 0; i < 120; i++) { await new Promise((r) => setTimeout(r, 250));
+    if (window.__storeApp.viewSeq > before && !window.__jobs?.busy) break; }
+  return JSON.stringify({ before, after: window.__storeApp.viewSeq, view: window.__storeApp.view,
+                          buildings: window.__storeApp.layerCounts?.buildings || 0 });
+})()`) || '{}');
+ok(zoomed.after > zoomed.before, `zooming in from the country re-views (seq ${zoomed.before} → ${zoomed.after})`);
+ok(zoomed.buildings > 1000, `and the DETAILED layout arrives: ${zoomed.buildings} buildings, ${zoomed.view}`);
 
 // 3 — the densified retry. The load-bearing half is that it stays OFF for a sketch that already matches.
 const near = await ev(`(async () => {
