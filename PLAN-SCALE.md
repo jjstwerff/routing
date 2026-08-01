@@ -1470,12 +1470,61 @@ Read the columns, not the rows: **selection is flat in coordinates (40–49% at 
 is ~2× per zoom level.** The handover zoom is therefore the *only* size knob, and it costs a factor of two
 per level.
 
-⚠ **Projected country sizes, and they are UPPER BOUNDS** — scaling the coordinate ratio onto the 2043 MB
-country base: **z≤10 ≲ 25 MB · z≤11 ≲ 47 MB · z≤12 ≲ 92 MB.** The ratio is measured on a dense-city
-window where a big polygon overlapping several windows is counted once per window, so the true total is
-lower; how much lower needs **one whole-store pass at generation time**, which is a generator
-measurement, not an app one. Run it before choosing the handover — the difference between 25 MB and
-92 MB is whether the block ships beside the app (565 MB of a 950 MB budget today).
+#### ✅ O0 ANSWERED — the country measured in one pass, and the handover is z10 (2026-08-02)
+
+The window numbers above are a dense city and cannot be scaled to a country, so O0 walks
+`blocks/netherlands.tiered.base.store` once: **80 s, 4.0 GB RSS, 186 211 tiles**, and it sees
+**17 290 495 features / 159 329 825 coords** — the feature count is exactly the published country total,
+which is the conservation check that says the walk is complete.
+
+| overview | selected features | selected coords | after 1-px decimation | of which areas | **all-in MB** |
+|---|---|---|---|---|---|
+| **z ≤ 8** | 117 188 (0.68%) | 10 716 825 (6.7%) | **398 385** | 397 178 | **~8 MB** |
+| **z ≤ 10** | 117 463 (0.68%) | 10 717 100 (6.7%) | **735 407** | 733 087 | **~11 MB** |
+| z ≤ 11 | 714 921 (4.1%) | 30 486 234 (19%) | 4 073 287 | 4 057 679 | ~63 MB |
+| z ≤ 12 | 1 348 741 (7.8%) | 43 864 873 (28%) | 8 188 439 | 8 037 459 | ~120 MB |
+
+*All-in* uses this store's own measured rate rather than a guess: 2043 MB / 159.3 Mcoord = **12.8 B per
+coordinate**, which at 9.2 coords per feature decomposes into 8 B of geometry + **44 B per feature** of
+record, text and index. (§6g's `12.972·Mcoord + 40` fit is not usable here — its +40 MB intercept was
+calibrated on 555–775 MB regions and is meaningless at this size.)
+
+**The cliff is at z11, and it is one threshold in one function.** `areaMinZoom` debuts an area at z0 when
+its diagonal exceeds 0.008° and at z11 when it exceeds 0.003° — so z11 admits ~600 000 medium polygons at
+once: features **117 463 → 714 921 (6.1×)** and decimated coordinates **735 407 → 4 073 287 (5.5×)**. One
+zoom level costs 5.7× the file.
+
+**So the handover is z10** — the top of the "big areas only" band, ~11 MB of base, and the last level
+before that cliff. z11 at ~63 MB is possible but is a poor first paint; z12 at ~120 MB is not a whole
+download.
+
+⚠ **The overview is AREAS, by 99.7%** — 733 087 of 735 407 decimated coordinates at z≤10, against 2 009
+for lines and 311 for labels (36 city labels at z≤8, 311 cities+towns at z≤10). Whatever else the design
+does, it is a landcover-and-water file with a road spine bolted on.
+
+**And the road spine has to come from the ROADS store** (`tools/spine_size_probe.loft`, whole country):
+
+| class | ways | vertices | km | DP per way @z10 | merged bound @z8 |
+|---|---|---|---|---|---|
+| motorway | 27 595 | 153 913 | 6 994 | 56 071 | 18 577 |
+| trunk + primary | 63 848 | 352 778 | 9 126 | 128 512 | 24 240 |
+| secondary | 75 886 | 454 814 | 8 866 | 152 603 | 23 548 |
+| tertiary + unclassified | 316 713 | 2 334 221 | 66 436 | 648 629 | 176 458 |
+
+⚠ **Decimation alone buys NOTHING on roads: `DP per way` is exactly 2 × ways** (56 071 for 27 595
+motorway ways), because Douglas–Peucker can never drop a way's two endpoints and OSM fragments a motorway
+into ~130 m pieces. **Merging consecutive same-class ways into runs is not an optimisation here, it is the
+entire road-spine budget** — at z8 it is bounded 3.0× better on motorway and 6.4× on secondary. The
+z≤10 spine (motorway + trunk/primary) is **184 583 vertices unmerged ≈ 3 MB**, less once merged.
+
+**⇒ An NL overview at z≤10 is ~11 MB of base + ~3 MB of spine ≈ 14 MB**, against 385 MB of free site
+budget. It ships beside the app.
+
+⚠ **The window projection held where it mattered and failed where it did not.** It predicted z≤10 ≲25 MB
+(measured ~11) but z≤12 ≲92 MB (measured ~120). A dense-city window over-states the SELECTED share
+(45% of coords against the country's 28%) and under-states the DECIMATED share (4.5% against 5.1%) — two
+errors in opposite directions, which is why a window is not a scale model of a country and why O0 was a
+rung rather than a footnote.
 
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
@@ -1571,8 +1620,8 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 
 | | what | observable |
 |---|---|---|
-| **O0** | **Measure the country's overview population in ONE generator pass** — the projections above are upper bounds from a city window | exact MB at z≤10 / z≤12; decides the handover |
-| **O1** | Build the NL top level (selection + merge + decimate) + a coverage entry, read `whole`, always loaded | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
+| **O0** ✅ | **Measure the country's overview population in ONE generator pass** — done 2026-08-02, above | **handover z10; ~11 MB base + ~3 MB spine ≈ 14 MB** |
+| **O1** | Build the NL z≤10 level (select + **merge** + decimate) + a coverage entry, read `whole`, always loaded | the app opens on the Netherlands; `nl_live_gate` asserts features DRAWN at z8 |
 | **O2** | Zoom bands in the index + JS block selection by zoom + sketch densification | no double-draw; a country-zoom sketch returns a route |
 | **O3** | The middle levels on their own grids (z12 on 0.08° cells) | a z13 view costs ~16 keys instead of 2 777 |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
@@ -1588,7 +1637,17 @@ O5 is worth filing on `loft-lang/loft` with `tools/base_key_probe.loft` as the r
 * **`tools/zoom_bin_probe.loft`** — the debut-zoom × tier cross-tab, i.e. what a zoom-aware reader would
   and would not be able to reach.
 * **`tools/overview_size_probe.loft`** — selection vs decimation, with Douglas–Peucker at 1 px of a given
-  zoom. The size curve above is its output.
+  zoom, over a window (keyed) or a whole store (`whole`, for O0's country pass). The size curve above is
+  its output.
+* **`tools/spine_size_probe.loft`** — the road spine: ways, vertices, km and decimated vertices per class,
+  against the merged bound. This is what showed decimation alone buys nothing on roads.
+
+⚠ **A pixel is not a degree in both axes, and the first version of both probes got it wrong.** Mercator's
+screen-y follows `ln(tan(…))`, whose slope is `1/cos(lat)` — so at 52°N a degree of latitude is 1.62 screen
+pixels for every one a degree of longitude buys, and decimating on raw degrees silently drops vertices up
+to 1.6 px off the line. Corrected, the country's decimated coordinates rose 7–17% (z≤10: 626 692 →
+735 407). It did not change a verdict, but an instrument that flatters the answer it is measuring is the
+one to distrust.
 
 ⚠ **One thing found while measuring this that belongs to §6h, not here: the paged base map works only
 because the data repos share the app's origin.** Same code, same block, same viewport — base served

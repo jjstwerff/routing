@@ -15,9 +15,16 @@
 // FEW features but MOST COORDINATES (a coastline is one feature and 40 000 vertices), so decimation, not
 // selection, is what decides whether the block is 1 MB or 900 MB.
 //
-//   loft --native --lib lib tools/overview_size_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo> <zmax> [tierlo-tierhi]
+//   loft --native --lib lib tools/overview_size_probe.loft <layout.store> <mnla,mnlo,mxla,mxlo> <z,z,…> [tierlo-tierhi]
+//   loft --native --lib lib tools/overview_size_probe.loft <layout.store> whole <z,z,…>
 //
-// Reads by KEY like the app does — never a whole-store walk. Boxes are DEGREES (south,west,north,east).
+// Boxes are DEGREES (south,west,north,east) and are read BY KEY, like the app does. `whole` walks the
+// entire store instead, which is the only way to size a WHOLE-COUNTRY overview (PLAN-SCALE §6i O0): a
+// window read counts every big polygon that overlaps it in full, so summing windows counts a coastline
+// once per window and overstates. This is a GENERATION-time question, so the whole walk is the honest
+// instrument here — it is not something the app ever does.
+//
+// Several zooms are measured in ONE pass because the walk, not the arithmetic, is the expensive part.
 #cwd
 
 use basemap::(PTile, Coord, cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
@@ -27,6 +34,13 @@ NEVER = 19;
 // Douglas-Peucker, iterative with an explicit stack — the standard line generalisation, and the one whose
 // ratio decides the file size. Recursion is avoided on purpose: a coastline ring runs to tens of
 // thousands of vertices and the depth is data-dependent.
+// ⚠ A PIXEL IS NOT A DEGREE IN BOTH AXES. In Mercator, screen-x is proportional to longitude but
+// screen-y to ln(tan(...)), whose slope is 1/cos(lat) — so at 52°N one degree of LATITUDE is 1.62 screen
+// pixels for every one a degree of longitude buys. Decimating on raw degrees is therefore 1.62x too
+// generous vertically and quietly drops vertices that are up to 1.6 px off the line. The y-deltas are
+// scaled by this before any distance is taken.
+const MERC_Y = 1.624;
+
 struct Seg { lo: integer, hi: integer }
 
 fn dp_keep(pts: vector<Coord>, tol: integer) -> integer {
@@ -42,8 +56,8 @@ fn dp_keep(pts: vector<Coord>, tol: integer) -> integer {
     if shi <= slo + 1 { continue; }
     ax = (pts[slo].x ?? 0) as integer; ay = (pts[slo].y ?? 0) as integer;
     bx = (pts[shi].x ?? 0) as integer; by = (pts[shi].y ?? 0) as integer;
-    dx = bx - ax; dy = by - ay;
-    dnorm = sqrt(((dx * dx + dy * dy) as float));
+    dxf = (bx - ax) as float; dyf = ((by - ay) as float) * MERC_Y;
+    dnorm = sqrt(dxf * dxf + dyf * dyf);
     best = -1; bestd = 0.0;
     si = slo + 1;
     while si < shi {
@@ -51,10 +65,10 @@ fn dp_keep(pts: vector<Coord>, tol: integer) -> integer {
       // Perpendicular distance to the chord; a degenerate chord (both ends equal) falls back to radial.
       dist = 0.0;
       if dnorm > 0.0 {
-        cross = ((dx * (py - ay) - dy * (px - ax)) as float);
+        cross = dxf * (((py - ay) as float) * MERC_Y) - dyf * ((px - ax) as float);
         dist = ((if cross < 0.0 { 0.0 - cross } else { cross }) / dnorm) ?? 0.0;
       } else {
-        ddx = (px - ax) as float; ddy = (py - ay) as float;
+        ddx = (px - ax) as float; ddy = ((py - ay) as float) * MERC_Y;
         dist = sqrt(ddx * ddx + ddy * ddy);
       }
       if dist > bestd { bestd = dist; best = si; }
@@ -103,26 +117,51 @@ fn label_debut(kind: text, rank: integer) -> integer {
   else { NEVER }
 }
 
-struct Sum { feats: integer, before: integer, after: integer }
+// One row per measured zoom; `kafter` splits the decimated coordinates by kind (0 areas, 1 lines,
+// 2 labels) so the answer says WHERE the overview's bytes are, not just how many.
+struct Sums { feats: vector<integer>, before: vector<integer>, after: vector<integer>,
+              kafter: vector<integer>, nz: integer }
 
-fn take_areas(pt: PTile, zmax: integer, tol: integer, sm: Sum) {
+fn new_sums(nz: integer) -> Sums {
+  Sums { feats: [for _ in 0..nz { 0 }], before: [for _ in 0..nz { 0 }], after: [for _ in 0..nz { 0 }],
+         kafter: [for _ in 0..(3 * nz) { 0 }], nz: nz }
+}
+
+fn take_areas(pt: PTile, zs: vector<integer>, tols: vector<integer>, sm: Sums) {
   for pa in pt.areas {
-    if area_debut(pa.ring) <= zmax {
-      sm.feats += 1; sm.before += len(pa.ring); sm.after += dp_keep(pa.ring, tol);
+    ad = area_debut(pa.ring);
+    for ai in 0..sm.nz {
+      if ad <= (zs[ai] ?? 99) {
+        sm.feats[ai] += 1; sm.before[ai] += len(pa.ring);
+        ak = dp_keep(pa.ring, tols[ai] ?? 0);
+        sm.after[ai] += ak; sm.kafter[ai] += ak;
+      }
     }
   }
 }
-fn take_lines(lt: PTile, zmax: integer, tol: integer, sm: Sum) {
+fn take_lines(lt: PTile, zs: vector<integer>, tols: vector<integer>, sm: Sums) {
   for ll in lt.lines {
-    if line_debut(ll.kind) <= zmax {
-      sm.feats += 1; sm.before += len(ll.geom); sm.after += dp_keep(ll.geom, tol);
+    ld = line_debut(ll.kind);
+    for li in 0..sm.nz {
+      if ld <= (zs[li] ?? 99) {
+        sm.feats[li] += 1; sm.before[li] += len(ll.geom);
+        lk = dp_keep(ll.geom, tols[li] ?? 0);
+        sm.after[li] += lk; sm.kafter[sm.nz + li] += lk;
+      }
     }
   }
 }
-fn take_labels(nt: PTile, zmax: integer, sm: Sum) {
+// A place is a POINT and a street label reduces to one anchor, so labels are never decimated — they are
+// counted at one coordinate each, which is what an overview would store.
+fn take_labels(nt: PTile, zs: vector<integer>, sm: Sums) {
   for nl in nt.labels {
-    if label_debut(nl.kind, nl.rank) <= zmax {
-      sm.feats += 1; sm.before += len(nl.line); sm.after += (if len(nl.line) > 1 { 1 } else { len(nl.line) });
+    nd = label_debut(nl.kind, nl.rank);
+    for ni in 0..sm.nz {
+      if nd <= (zs[ni] ?? 99) {
+        nk = if len(nl.line) > 1 { 1 } else { len(nl.line) };
+        sm.feats[ni] += 1; sm.before[ni] += len(nl.line);
+        sm.after[ni] += nk; sm.kafter[2 * sm.nz + ni] += nk;
+      }
     }
   }
 }
@@ -146,42 +185,64 @@ fn main() {
   for av in arguments() { argv += [av]; }
   path = argv[0] ?? "";
   spec = argv[1] ?? "";
-  zmax = argv[2] as integer ?? 12;
+  zspec = argv[2] ?? "10,12";
   span = argv[3] ?? "0-3";
-  sp = spec.split(',');
-  if len(sp) != 4 { println("#O FAIL bad box {spec}"); return; }
-  mnla = round((sp[0] as float ?? 0.0) * 10000000.0) as integer;
-  mnlo = round((sp[1] as float ?? 0.0) * 10000000.0) as integer;
-  mxla = round((sp[2] as float ?? 0.0) * 10000000.0) as integer;
-  mxlo = round((sp[3] as float ?? 0.0) * 10000000.0) as integer;
-  tp = span.split('-');
-  tlo = tp[0] as integer ?? 0;
-  thi = tp[1] as integer ?? (LAYOUT_TIERS - 1);
-  // One CSS pixel at `zmax`, in fixed-point degrees of longitude: the world is 256 * 2^z pixels wide.
-  // A vertex nearer than this to its own chord cannot be drawn apart from it at that zoom.
-  wpx = 256.0;
-  zi = 0;
-  while zi < zmax { wpx = wpx * 2.0; zi += 1; }
-  tol = round(((360.0 / wpx) ?? 0.0) * 10000000.0) as integer;
 
-  keys: vector<integer> = [];
-  tw = tlo;
-  while tw <= thi { keys += tier_keys(mnla, mnlo, mxla, mxlo, tw); tw += 1; }
+  zs: vector<integer> = [];
+  for zt in zspec.split(',') { zs += [zt as integer ?? 12]; }
+  if len(zs) == 0 { println("#O FAIL no zooms in {zspec}"); return; }
+  // One CSS pixel at each zoom, in fixed-point degrees of longitude: the world is 256 * 2^z pixels wide.
+  // A vertex nearer than this to its own chord cannot be drawn apart from it at that zoom, so it is the
+  // exact tolerance at which decimation is INVISIBLE — which is also why the handover cannot be seen.
+  tols: vector<integer> = [];
+  for zv in zs {
+    wpx = 256.0;
+    zi = 0;
+    while zi < zv { wpx = wpx * 2.0; zi += 1; }
+    tols += [round(((360.0 / wpx) ?? 0.0) * 10000000.0) as integer];
+  }
+
   ws: hash<PTile[tkey]> = [];
-  got = store_load_keys(ws, path, keys);
-  sm = Sum { feats: 0, before: 0, after: 0 };
-  allc = 0; allf = 0;
+  nkey = 0;
+  if spec == "whole" {
+    if !store_load(ws, path) { println("#O FAIL cannot load {path}"); return; }
+  } else {
+    sp = spec.split(',');
+    if len(sp) != 4 { println("#O FAIL bad box {spec}"); return; }
+    mnla = round((sp[0] as float ?? 0.0) * 10000000.0) as integer;
+    mnlo = round((sp[1] as float ?? 0.0) * 10000000.0) as integer;
+    mxla = round((sp[2] as float ?? 0.0) * 10000000.0) as integer;
+    mxlo = round((sp[3] as float ?? 0.0) * 10000000.0) as integer;
+    tp = span.split('-');
+    tlo = tp[0] as integer ?? 0;
+    thi = tp[1] as integer ?? (LAYOUT_TIERS - 1);
+    keys: vector<integer> = [];
+    tw = tlo;
+    while tw <= thi { keys += tier_keys(mnla, mnlo, mxla, mxlo, tw); tw += 1; }
+    nkey = len(keys);
+    _ = store_load_keys(ws, path, keys);
+  }
+
+  sm = new_sums(len(zs));
+  allc = 0; allf = 0; tiles = 0;
   for wt in ws {
-    take_areas(wt, zmax, tol, sm); take_lines(wt, zmax, tol, sm); take_labels(wt, zmax, sm);
+    tiles += 1;
+    take_areas(wt, zs, tols, sm); take_lines(wt, zs, tols, sm); take_labels(wt, zs, sm);
     for ca in wt.areas { allc += len(ca.ring); allf += 1; }
     for cb in wt.buildings { allc += len(cb.ring); allf += 1; }
     for cl in wt.lines { allc += len(cl.geom); allf += 1; }
     for cn in wt.labels { allc += len(cn.line); allf += 1; }
     allf += len(wt.pois); allc += len(wt.pois);
   }
-  println("box={spec} tiers={tlo}..{thi} zmax={zmax} tol={tol} units (1 px at z{zmax}) · keys {len(keys)} loaded {got}");
-  println("  everything here          : {allf} features, {allc} coords");
-  println("  SELECTED (debut<=z{zmax}) : {sm.feats} features ({(sm.feats * 100) / (allf + 1)}%), {sm.before} coords ({(sm.before * 100) / (allc + 1)}%)");
-  println("  + DECIMATED at 1 px      : {sm.after} coords ({(sm.after * 100) / (sm.before + 1)}% of selected, {(sm.after * 100) / (allc + 1)}% of all)");
-  println("  bytes at 8 B/coord       : selected {(sm.before * 8) / 1048576} MB -> decimated {(sm.after * 8) / 1048576} MB");
+  println("{path} · {spec} · keys {nkey} · {tiles} tiles");
+  println("  everything: {allf} features, {allc} coords");
+  println("  zmax | selected feats |   sel coords | decimated |  areas |  lines | labels | MB@8B | MB calib");
+  for si in 0..len(zs) {
+    sf = sm.feats[si] ?? 0; sb = sm.before[si] ?? 0; sa = sm.after[si] ?? 0;
+    ka = sm.kafter[si] ?? 0; kl = sm.kafter[sm.nz + si] ?? 0; kb = sm.kafter[2 * sm.nz + si] ?? 0;
+    // §6g's calibration, measured on three real regions: MB = 12.972 * Mcoord + 40. The intercept is the
+    // store's own fixed overhead, so it is charged once and stated rather than hidden in a per-coord rate.
+    mb = (12.972 * ((sa as float) / 1000000.0)) + 40.0;
+    println("  z{zs[si] ?? 0:>3} | {sf:>14} | {sb:>12} | {sa:>9} | {ka:>6} | {kl:>6} | {kb:>6} | {(sa * 8) / 1048576:>5} | {mb:5.1}");
+  }
 }
