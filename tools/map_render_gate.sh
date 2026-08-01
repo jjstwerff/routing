@@ -189,7 +189,7 @@ fi
 # 2. Build the deployable site, and the TOP INDEX the app resolves its blocks through (PLAN-SCALE S7).
 # The index is generated from the manifest and the blocks themselves, never edited, so the gate rebuilds
 # it rather than trusting the copy in the tree — a stale index is the failure it exists to prevent.
-node "$here/browser/build-site.mjs" || exit 1
+SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
 "$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 echo "  ✓ coverage index: $(grep -oP '"id":"\K[^"]+' "$here/_site/coverage.json" | tr '\n' ' ')"
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }

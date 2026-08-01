@@ -5,7 +5,11 @@
 // the region on load, then drives a `match` and proves the route draws.
 //   node browser/cdp_verify_store.mjs <dt-host:port> <http-url>
 const [dt, app] = process.argv.slice(2);
-setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 90000);
+// 90 s was enough while this gate's index held one 4 MB city block. Since the four-region index landed
+// it also names country road blocks, which the app now correctly PAGES — many more round trips, all of
+// them real work. The budget is a deadlock guard, not a performance assertion; tools/map_profile.sh is
+// where timing is measured.
+setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 240000);
 
 const list = await (await fetch(`http://${dt}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');

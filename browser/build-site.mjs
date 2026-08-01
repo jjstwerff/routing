@@ -57,8 +57,7 @@ if (existsSync(join(here, 'stores'))) cpSync(join(here, 'stores'), join(site, 's
 // measures extents and hashes out of the stores, which needs loft, and the Pages deploy job has none. Its
 // absence is not subtle — the app boots to "no coverage index — the app has no data to show", which is
 // exactly what the deployed site did between S7 landing and this line existing.
-if (existsSync(join(here, 'coverage.json'))) cpSync(join(here, 'coverage.json'), join(site, 'coverage.json'));
-else console.log('build-site: WARNING — no browser/coverage.json; the app will have no data (run tools/build_index.sh)');
+if (!existsSync(join(here, 'coverage.json'))) console.log('build-site: WARNING — no browser/coverage.json; the app will have no data (run tools/build_index.sh)');
 // Generated blocks (tools/build-blocks.sh → blocks/, gitignored) land in the same place, so the coverage
 // index can name every block with one kind of URL. They are copied rather than committed: a country block
 // is ~300 MB and is rebuilt from OSM, so it is output, not source.
@@ -102,3 +101,49 @@ if (existsSync(blocks)) {
   if (n) console.log(`build-site: ${n} generated block file(s), ${(bytes / 1e6).toFixed(1)} MB (linked)`);
 }
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);
+
+// LAST, once every block this origin will serve is in place — the filter below asks what _site HAS.
+if (existsSync(join(here, 'coverage.json'))) {
+  // THE SITE INDEX MUST DESCRIBE WHAT THIS SITE CAN SERVE. A block named with a RELATIVE url is one this
+  // origin has to have; at deploy time `fetch-site-blocks.sh` puts it there first, so the full index is
+  // correct. Locally it usually is not — the NL road blocks are 502 MB and live in the release — and an
+  // index that names them anyway produces a page that waits forever on a 404 rather than one that says
+  // it has no data. That is how a browser gate hung after the four-region index landed: a sketch whose
+  // padded box escaped the little Enschede block resolved to a country block the local server never had.
+  //
+  // Blocks with an ABSOLUTE url (the base map, on its own Pages host) are someone else's to serve and are
+  // always kept.
+  const full = JSON.parse(readFileSync(join(here, 'coverage.json'), 'utf8'));
+  const served = (st) => !st || !st.url || st.url.includes('://')
+    || existsSync(join(site, st.url)) || existsSync(join(here, st.url));
+  let keep = (full.blocks || []).filter((b) => served(b.roads) && served(b.names));
+  const dropped = (full.blocks || []).length - keep.length;
+  // SITE_LOCAL_ONLY — for a browser GATE, which serves this directory from localhost and must not reach
+  // the internet. A base map hosted on its own origin is a real absolute URL that the deployed app must
+  // keep, and a gate that follows it fetches hundreds of MB across the network and times out (measured:
+  // map_render_gate, 90 s, right after the four-region index landed). `base: null` is a state the app
+  // already handles, and tools/base_paged_gate.sh covers the paged base path with an index of its own.
+  let offsite = 0;
+  if (process.env.SITE_LOCAL_ONLY === '1') {
+    // Keep only what SHIPS WITH THE APP — the committed blocks under browser/stores. A generated country
+    // block linked in from blocks/ is a build artifact of this machine, and naming it makes these gates
+    // do a country's work to check a city's invariants: `viewtext` iterates the whole working set, so the
+    // render/parity checks went from seconds to past a four-minute deadlock guard once the four-region
+    // index landed. Multi-block and paged behaviour have gates of their own with datasets of their own
+    // (cross_block_browser_gate, base_paged_gate), which is where they belong.
+    //
+    // ⚠ Re-checked on a QUIET box before being kept. The first measurement was taken while a stranded
+    // headless chromium sat at ~1000% CPU, which is precisely the confound CLAUDE.md warns about — with
+    // the load average back at 4.5 from 13, the gate still times out on the full index, so the dataset
+    // and not the noise is what makes it slow.
+    const before = keep.length;
+    keep = keep.filter((b) => b.roads && b.roads.url && !b.roads.url.includes('://')
+                              && existsSync(join(here, b.roads.url)));
+    offsite = before - keep.length;
+  }
+  writeFileSync(join(site, 'coverage.json'), JSON.stringify({ ...full, blocks: keep }));
+  if (dropped) console.log(`build-site: ${dropped} block(s) left out — their stores are not on this origin ` +
+                           `(deploy fetches them first; locally that is expected)`);
+  if (offsite) console.log(`build-site: SITE_LOCAL_ONLY — ${offsite} off-site base map(s) unnamed, so this build stays offline`);
+}
+
