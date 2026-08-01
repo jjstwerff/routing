@@ -112,7 +112,15 @@ for the release, which serves ranges but no CORS header.
    green on aggregate. `baseUrlsFor` selects on the ROADS extent and reads the base URL off that region.
    `build_index.sh` still writes a base extent into the index — treat it as a size, not a location.
 
-**Next, and it is scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
+**Western Europe: the read path scales, the PUBLISHING does not (`PLAN-SCALE` §6h).** Measured, not
+guessed — Geofabrik's thirteen WE countries are 20.5 GB of source against NL's 1.40 GB, **14.7×**, which
+projects this session's blocks to a **30 GB base map (40.5 GB with margins), 3.5 GB of roads and ~58
+regions**. Three patterns break before any of that is buildable: the **roads stop fitting the app's own
+site** (3.5 GB vs 0.95 GB, so every store moves off-origin), **one Pages repo per region becomes 58**
+(this is where D2/R2 stops being optional — 40.5 GB is ~$0.61/month), and the **62-block ceiling in
+`block_overlap.loft` binds** at ~58 blocks. Each is a small known fix; all three are prerequisites.
+
+**Also scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
 four regions were cut by hand off a 1-D longitude profile, which does not survive Western Europe: a
 longitude cut cannot make a dense COLUMN smaller, and London / Paris / the Ruhr / Milan each can put a
 strip over the cap alone. The design is download → osmium → **count coords per 0.05° cell** → kd-split on

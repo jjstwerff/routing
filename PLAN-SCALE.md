@@ -1311,6 +1311,59 @@ visible rather than assumed.
 *Do not build the planner and conclude WE is solved.* It removes one failure mode — a region that cannot
 be hosted — and leaves the one a user actually feels.
 
+### 6h. DO THE NL PATTERNS REACH WESTERN EUROPE? Measured verdict: three of them do not (2026-08-02)
+
+The scale factor is not a guess. Geofabrik's own extracts for the thirteen countries of Western Europe
+(FR, DE, GB, IT, ES, NL, BE, AT, CH, DK, PT, IE, LU) total **20.5 GB of source PBF against the
+Netherlands' 1.40 GB — 14.7×.** Projecting this session's *measured* NL blocks linearly in source bytes:
+
+| | NL measured | WE projected |
+|---|---|---|
+| base map | 2043 MB | **30.0 GB** (40.5 GB with the 0.10° margin) |
+| roads | 238 MB | **3.5 GB** |
+| names | 36 MB | 0.5 GB |
+| regions at ~700 MB of base | 4 | **~58** |
+
+**What still holds** — and it is most of the design. Paged reads (a viewport costs the same against a
+1 GB store as a 20 MB one, proven), the tier rules (exactness is a property of the data, not of scale),
+the covering set, the marks, the index-as-contract, and chunked generation. None of these care how big
+the continent is.
+
+**Three that break, in the order they will bite:**
+
+1. **⚠ THE ROADS STOP FITTING THE SITE — 3.5 GB against a 0.95 GB Pages site, 3.7× over.** Today's split
+   is "roads same-origin beside the app, base map elsewhere" (HANDOFF §0 rule 2), and at WE the roads are
+   themselves too big for the app's own site. The mechanism to fix it already exists and is gated
+   (`cors_host_gate.sh`: paged + CORS, cross-origin), but the RULE changes — every store moves off-origin
+   and the site keeps only the app.
+2. **⚠ ONE PAGES REPO PER REGION DOES NOT SCALE TO ~58 REPOS.** Four was a judgement call; fifty-eight
+   public repositories, each with its own workflow and deploy, is not an operational shape. This is where
+   **D2 stops being optional**: one R2 bucket holds 40.5 GB for roughly **$0.61/month** at $0.015/GB with
+   no egress fee, against 58 repos that are free and unmanageable. `publish-bucket.sh` already exists and
+   `data/bucket-cors.json` is the policy; what is missing is the account, not the code.
+3. **⚠ THE 62-BLOCK CEILING BINDS.** `block_overlap.loft` masks cell owners one bit per block and refuses
+   an index over 62 (`tools/block_overlap.loft:53`). At ~58 road blocks WE lands *inside the margin of
+   error of the cap* — one finer cut, one city block, and it fails. §6e already listed this as open item
+   (c); it is no longer theoretical. Fix: count per PAIR rather than one bit per block.
+
+**Two more that are not new but get worse:**
+
+* **The working set never shrinks** — there is no LRU anywhere in the kernel (grep: zero matches). A
+  session panning from Paris to Berlin accumulates every cell it crossed, in wasm memory. Tolerable
+  across NL; not across a continent. §6b Track 3 owns it.
+* **The margin costs more as regions get smaller** (§6g): +35% measured across NL's four ~1°-wide
+  regions, and worse for the smaller regions dense areas force. Per-region, cost-capped margins are the
+  answer, with the covering set as the fallback.
+
+**And the one the user feels, unchanged by any of this:** per-viewport bytes in a dense metro. An
+Amsterdam z14 viewport is 21.8 MB of geometry; London and Paris are denser still, and no region plan,
+bucket or block cap touches it. Generalisation is the only lever.
+
+*Verdict: the read path scales as designed; the PUBLISHING and BOOKKEEPING do not.* The three breakages
+are each small, known fixes — a bucket instead of repos, a wider overlap mask, and off-origin roads — but
+they are prerequisites, not follow-ups, and none of them is the thing that decides whether the map feels
+good in London.
+
 ⚠ **F5 is the lesson from shipping this blank.** `nl_live_gate` proved routing and search on the live site
 and never asked whether anything was DRAWN, so a blank map passed every gate. Every future coverage claim
 needs a render assertion, not just a route one.
