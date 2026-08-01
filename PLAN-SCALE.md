@@ -1610,10 +1610,15 @@ silently re-baselines every one of them onto a generalised national map. They ea
 Green after the change: `map_render_gate`, `base_paged_gate`, `cross_block_browser_gate`, `cors_host_gate`,
 `index_fresh_gate`, `browser/map.test.mjs`.
 
-⚠ **NOT DEPLOYABLE UNTIL THE BLOCK IS PUBLISHED.** The committed index now names
-`stores/nl-overview.base.store`, and `fetch-site-blocks.sh` verifies every relatively-named block against
-the release — by design it fails loudly rather than shipping a map with a hole. So the release needs the
-block before this reaches `main`.
+✅ **PUBLISHED (2026-08-02).** `nl-overview.base.store` + its `.dschema` are on release
+**`data-v2026-08-02`**, and the release's own `coverage.json` was regenerated so the release describes
+what it serves (5 blocks, the overview among them, with their zoom bands). Verified the way R6 requires —
+the asset answers a **206** with `content-range` total **20 570 304**, and a full download hashes to
+**`799e77da…`**, byte-identical to what the committed index promises. Then proved end to end by *removing
+the local block* and running the deploy's own `tools/fetch-site-blocks.sh`: **`nl-overview.base.store —
+fetching 20.6 MB`, 1 fetched, 9 already current**, sha verified on arrival. ⚠ The fetcher tolerates a
+block with `roads: null` only because its reader skips a store with no url — worth knowing before any
+other roads-less block is added.
 
 ⚠ **AND THE GAP IS REAL AND NOW REACHABLE.** The handover is z11: below it the overview answers, above it
 the detailed regions do — and §6i's own arithmetic says the detailed path costs ~10 500 keys at z12 and

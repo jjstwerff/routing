@@ -10,6 +10,27 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 **https://jjstwerff.github.io/routing/** — routing, offline search and now a BASE MAP over the whole
 Netherlands. The blank background outside Enschede is gone: §6f F1–F4 are done and deployed.
 
+> ### ⚠ THE BRANCH NOW CARRIES THE WHOLE OVERVIEW LADDER — merge it (2026-08-02, later)
+>
+> `we-scale-evaluation` has grown well past the one-commit fix below. **The app now OPENS ON THE
+> NETHERLANDS**: `PLAN-SCALE` §6i designs and builds an *overview block* — the whole country generalised
+> to what a low zoom can show, **17 290 495 features → 132 094, 19.6 MB** — and every zoom below 14 is
+> answered by that one file in **0.6 s**, where z11 used to name 40 554 cell keys (~8 GB) and z12 10 314.
+> The block is **published on `data-v2026-08-02`** and the deploy's own fetcher verifies it, so the branch
+> is deployable. Also on it: sketch densification (a country-zoom drag returned NO route; it now returns
+> one), zoom bands in the index, and three keyed-read probes.
+>
+> ⚠ **Two findings on the branch matter beyond this work.** (1) **The paged base map works only because
+> the data repos share the app's origin** — served cross-origin with `ACAO` but no
+> `Access-Control-Expose-Headers` (what GitHub Pages sends) the same code reads 2 requests, 0 bytes, blank
+> map, no error; `cors_host_gate` is green because our test server models a *correct* CORS host, which
+> Pages is not. That undercuts D2's off-origin plan. (2) **The unit of read cost is the KEY, not the
+> feature** — ~3 × 64 kB pages each, no batch amortisation, so an empty window costs MORE than a dense one.
+> That is `loft-lang/loft` material and it gates the remaining detail work (§6i O5).
+>
+> ⚠ **The installed loft moved mid-session: 2026.7.2 → 2026.8.0** (2026-08-02 19:59, md5 `13311104…`).
+> Everything was re-verified on it, including a wasm rebuild.
+
 > ### ⚠ DO THIS FIRST — a one-commit fix is on a branch and the live map needs it
 >
 > Branch **`we-scale-evaluation`** holds `85f174d` and `f3481d2`. **Open a PR and merge them.** Until
