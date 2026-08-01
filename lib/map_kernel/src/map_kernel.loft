@@ -12,7 +12,8 @@
 //                                   requests the visible bbox — the emit volume, not the store, is the cost.
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
-use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name);
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
+              cell_ix, tkey, LAYOUT_CELL);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
                      RF_ACCESS_NO, RF_FOOT_YES, BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
@@ -194,6 +195,50 @@ pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: t
 pub fn view_cell_keys(bbox: text) -> vector<integer> {
   vb = parse_fbox(bbox);
   bbox_cell_keys(vb.mnla, vb.mnlo, vb.mxla, vb.mxlo)
+}
+
+// The BASE MAP's fetch list — the layout counterpart of `view_cell_keys` (PLAN-SCALE §6f F1).
+//
+// It cannot BE `view_cell_keys`: the two stores are on different grids. Roads are keyed at
+// `routing_kernel`'s TILE_CELL (0.02° ≈ 2 km) with its fixed packing; the layout at `LAYOUT_CELL`
+// (~500 m) with basemap's parametric one. Handing one store the other's keys does not fail — it looks
+// up keys that exist in neither and silently returns an empty map.
+//
+// ⚠ `pad` IS A SOUNDNESS CONDITION, not a tuning knob. A layout feature is keyed by its FIRST VERTEX and
+// never clipped (PLAN-PERF §7g), so it overhangs its own cell. A WHOLE load still draws it, because the
+// render path screens on each tile's sealed extent; a PAGED load cannot — a tile that was never fetched
+// has no extent to consult, and its features are silently absent from the picture.
+//
+// `tools/layout_page_probe.loft` measures both sides of that on the real block. Amsterdam, the app's own
+// z16 viewport, `nl-west.base.store` (69 003 tiles), counting features actually VISIBLE in the viewport:
+//
+//   pad=0 →  50 tiles, 79 of 25 260 missing   pad=2 → 126 tiles,  7 missing
+//   pad=1 →  84 tiles, 12 missing             exact = pad 11 (864 tiles); at z14, pad 50 (13 661 tiles)
+//
+// So exactness is not reachable by padding — a viewport would fetch the region — and pad=1 is the knee:
+// it removes 85% of the misses for 1.7× the tiles. What remains is a handful of very wide features (a
+// province border, a power line, a big water body keyed kilometres away). Making it EXACT means bounding
+// a feature's reach at GENERATION — binning each into a tile whose cell CONTAINS its bbox, coarser tiers
+// for the wide ones — which is a rebuild (PLAN-SCALE §6f F3), not a client change.
+// `tools/base_paged_gate.sh` pins the residual at the measured value so it cannot grow unnoticed.
+pub const LAYOUT_PAD = 1;
+
+pub fn layout_cell_keys(bbox: text, pad: integer) -> vector<integer> {
+  lkeys: vector<integer> = [];
+  // A paged store has no "whole region" view: an empty spec parses to the WORLD box, and enumerating the
+  // world at 500 m cells is 2.6 billion keys. The app always sends a viewport; anything else asks for
+  // nothing rather than for everything.
+  if len(bbox.split(',')) != 4 { return lkeys; }
+  lb = parse_fbox(bbox);
+  lx0 = cell_ix(lb.mnlo, LAYOUT_CELL) - pad; lx1 = cell_ix(lb.mxlo, LAYOUT_CELL) + pad;
+  ly0 = cell_ix(lb.mnla, LAYOUT_CELL) - pad; ly1 = cell_ix(lb.mxla, LAYOUT_CELL) + pad;
+  lyy = ly0;
+  while lyy <= ly1 {
+    lxx = lx0;
+    while lxx <= lx1 { lkeys += [tkey(lxx, lyy, LAYOUT_CELL)]; lxx += 1; }
+    lyy += 1;
+  }
+  lkeys
 }
 
 pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {

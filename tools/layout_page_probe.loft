@@ -1,0 +1,464 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-SCALE §6f F1 — what CELL WINDOW must a viewport fetch from a PAGED layout store?
+//
+// The roads store is paged by `bbox_cell_keys`, a window with one cell of padding. The layout store
+// cannot copy that number, and the reason is PLAN-PERF §7g: a layout feature is keyed by its FIRST
+// VERTEX and never clipped, so it OVERHANGS its cell — a nature reserve keyed six cells away still
+// covers the screen. A whole load hides this, because `PTile.fmnla…fmxlo` (the sealed feature extent)
+// lets the render path include far tiles it already holds. A PAGED load cannot: a tile never fetched has
+// no extent to consult, so whatever the fetch window misses is silently NOT DRAWN.
+//
+// The padding is therefore a soundness condition, not a tuning knob, and it is a property of the DATA.
+// Two modes:
+//
+//   <mnla,mnlo,mxla,mxlo>…   per viewport: what padding k COSTS (tiles fetched) against what it BUYS
+//                            (features actually visible in the viewport, counted per kind and charged to
+//                            the distance of the tile they are keyed in). `k_sound` is the padding at
+//                            which nothing is missing.
+//   spans                    WHY: every feature by the number of cells its own bbox spans, weighted by
+//                            coords — the tally that says whether the fix is a bigger window, a coarse
+//                            tier for the wide ones, or clipping at generation (`dup_factor`).
+//
+//   loft --native --lib lib tools/layout_page_probe.loft <layout.store> [spans | <box>…]
+//
+// Boxes are DEGREES in the app's own order (south,west,north,east). Re-run after any regeneration: like
+// `tools/tile_overhang.loft`, the answer describes the data, not the code.
+#cwd
+
+use basemap::(PTile, cell_ix, to_fixed, tkey);
+
+CELL_P = 50000;        // presentation cell (~500 m) — client/basemap/build_store.loft's CELL_P
+DMAX = 60;             // histogram depth; anything further folds into the last bucket
+
+// ---------------------------------------------------------------------------------------------------
+// mode: viewport
+// ---------------------------------------------------------------------------------------------------
+
+// Per-viewport tallies indexed by cell distance d. `ttiles` is every tile that EXISTS at that distance
+// (what padding to k costs); the five kind columns count features whose OWN bbox overlaps the viewport
+// (what it buys) — per feature, not per tile, because a far tile is usually fetched for one big polygon.
+struct Hist { ttiles: vector<integer>,
+              areas: vector<integer>, buildings: vector<integer>, lines: vector<integer>,
+              labels: vector<integer>, pois: vector<integer>, far: integer, noext: integer }
+
+fn new_hist() -> Hist {
+  Hist { ttiles: [for i in 0..=DMAX { 0 }], areas: [for i in 0..=DMAX { 0 }],
+         buildings: [for i in 0..=DMAX { 0 }], lines: [for i in 0..=DMAX { 0 }],
+         labels: [for i in 0..=DMAX { 0 }], pois: [for i in 0..=DMAX { 0 }], far: 0, noext: 0 }
+}
+
+struct FBoxI { mnla: integer, mnlo: integer, mxla: integer, mxlo: integer }
+
+// Chebyshev distance in CELLS from a tile's own cell to the viewport's cell window (0 = inside).
+fn cell_dist(tx: integer, ty: integer, bx0: integer, bx1: integer, by0: integer, by1: integer) -> integer {
+  d = 0;
+  if bx0 - tx > d { d = bx0 - tx; }
+  if tx - bx1 > d { d = tx - bx1; }
+  if by0 - ty > d { d = by0 - ty; }
+  if ty - by1 > d { d = ty - by1; }
+  d
+}
+
+// One function per kind: `tools/tile_overhang.loft` and `map_kernel` both note that a single function
+// holding every one of these nested loops trips a loft codegen bug.
+fn vis_areas(t: PTile, d: integer, b: FBoxI, h: Hist) {
+  for ar in t.areas {
+    amnx = 0; amxx = 0; amny = 0; amxy = 0; afirst = true;
+    for ca in ar.ring {
+      ax = t.ox + (ca.x as integer); ay = t.oy + (ca.y as integer);
+      if afirst { amnx = ax; amxx = ax; amny = ay; amxy = ay; afirst = false; }
+      else { if ax < amnx { amnx = ax; } if ax > amxx { amxx = ax; }
+             if ay < amny { amny = ay; } if ay > amxy { amxy = ay; } }
+    }
+    if !afirst && !(amxy < b.mnla || amny > b.mxla || amxx < b.mnlo || amnx > b.mxlo) {
+      if d < len(h.areas) { h.areas[d] += 1; }
+    }
+  }
+}
+fn vis_buildings(t: PTile, d: integer, b: FBoxI, h: Hist) {
+  for bl in t.buildings {
+    bmnx = 0; bmxx = 0; bmny = 0; bmxy = 0; bfirst = true;
+    for cb in bl.ring {
+      bx = t.ox + (cb.x as integer); by = t.oy + (cb.y as integer);
+      if bfirst { bmnx = bx; bmxx = bx; bmny = by; bmxy = by; bfirst = false; }
+      else { if bx < bmnx { bmnx = bx; } if bx > bmxx { bmxx = bx; }
+             if by < bmny { bmny = by; } if by > bmxy { bmxy = by; } }
+    }
+    if !bfirst && !(bmxy < b.mnla || bmny > b.mxla || bmxx < b.mnlo || bmnx > b.mxlo) {
+      if d < len(h.buildings) { h.buildings[d] += 1; }
+    }
+  }
+}
+fn vis_lines(t: PTile, d: integer, b: FBoxI, h: Hist) {
+  for ln in t.lines {
+    lmnx = 0; lmxx = 0; lmny = 0; lmxy = 0; lfirst = true;
+    for cl in ln.geom {
+      lx = t.ox + (cl.x as integer); ly = t.oy + (cl.y as integer);
+      if lfirst { lmnx = lx; lmxx = lx; lmny = ly; lmxy = ly; lfirst = false; }
+      else { if lx < lmnx { lmnx = lx; } if lx > lmxx { lmxx = lx; }
+             if ly < lmny { lmny = ly; } if ly > lmxy { lmxy = ly; } }
+    }
+    if !lfirst && !(lmxy < b.mnla || lmny > b.mxla || lmxx < b.mnlo || lmnx > b.mxlo) {
+      if d < len(h.lines) { h.lines[d] += 1; }
+    }
+  }
+}
+fn vis_labels(t: PTile, d: integer, b: FBoxI, h: Hist) {
+  for lb in t.labels {
+    kmnx = 0; kmxx = 0; kmny = 0; kmxy = 0; kfirst = true;
+    for cc in lb.line {
+      kx = t.ox + (cc.x as integer); ky = t.oy + (cc.y as integer);
+      if kfirst { kmnx = kx; kmxx = kx; kmny = ky; kmxy = ky; kfirst = false; }
+      else { if kx < kmnx { kmnx = kx; } if kx > kmxx { kmxx = kx; }
+             if ky < kmny { kmny = ky; } if ky > kmxy { kmxy = ky; } }
+    }
+    if !kfirst && !(kmxy < b.mnla || kmny > b.mxla || kmxx < b.mnlo || kmnx > b.mxlo) {
+      if d < len(h.labels) { h.labels[d] += 1; }
+    }
+  }
+}
+fn vis_pois(t: PTile, d: integer, b: FBoxI, h: Hist) {
+  for po in t.pois {
+    px = t.ox + (po.at.x as integer); py = t.oy + (po.at.y as integer);
+    if !(py < b.mnla || py > b.mxla || px < b.mnlo || px > b.mxlo) {
+      if d < len(h.pois) { h.pois[d] += 1; }
+    }
+  }
+}
+
+fn row_total(h: Hist, d: integer) -> integer {
+  (h.areas[d] ?? 0) + (h.buildings[d] ?? 0) + (h.lines[d] ?? 0) + (h.labels[d] ?? 0) + (h.pois[d] ?? 0)
+}
+
+// ---------------------------------------------------------------------------------------------------
+// mode: spans — WHY the window has to be padded, and what each fix would cost
+// ---------------------------------------------------------------------------------------------------
+
+// Every feature by the number of cells its own bbox spans, weighted by COORDS as well as by count: the
+// answer that matters is bytes, not features — one province boundary outweighs a thousand houses.
+// `dup` accumulates storing each feature in EVERY cell it touches (the clip-at-generation alternative).
+struct Span { n: vector<integer>, c: vector<integer>, dup: integer, coords: integer, worst: integer }
+
+fn new_span() -> Span {
+  Span { n: [for i in 0..=DMAX { 0 }], c: [for i in 0..=DMAX { 0 }], dup: 0, coords: 0, worst: 0 }
+}
+
+fn note_span(s: Span, mnx: integer, mxx: integer, mny: integer, mxy: integer, coords: integer) {
+  sx = cell_ix(mxx, CELL_P) - cell_ix(mnx, CELL_P) + 1;
+  sy = cell_ix(mxy, CELL_P) - cell_ix(mny, CELL_P) + 1;
+  sp = sx; if sy > sp { sp = sy; }
+  if sp > s.worst { s.worst = sp; }
+  s.coords += coords;
+  s.dup += sx * sy * coords;
+  sb = sp - 1; if sb > DMAX { sb = DMAX; }
+  if sb < len(s.n) { s.n[sb] += 1; s.c[sb] += coords; }
+}
+
+fn span_areas(t: PTile, s: Span) {
+  for sar in t.areas {
+    qmnx = 0; qmxx = 0; qmny = 0; qmxy = 0; qfirst = true;
+    for qa in sar.ring {
+      qx = t.ox + (qa.x as integer); qy = t.oy + (qa.y as integer);
+      if qfirst { qmnx = qx; qmxx = qx; qmny = qy; qmxy = qy; qfirst = false; }
+      else { if qx < qmnx { qmnx = qx; } if qx > qmxx { qmxx = qx; }
+             if qy < qmny { qmny = qy; } if qy > qmxy { qmxy = qy; } }
+    }
+    if !qfirst { note_span(s, qmnx, qmxx, qmny, qmxy, len(sar.ring)); }
+  }
+}
+fn span_buildings(t: PTile, s: Span) {
+  for sbl in t.buildings {
+    wmnx = 0; wmxx = 0; wmny = 0; wmxy = 0; wfirst = true;
+    for wb in sbl.ring {
+      wx = t.ox + (wb.x as integer); wy = t.oy + (wb.y as integer);
+      if wfirst { wmnx = wx; wmxx = wx; wmny = wy; wmxy = wy; wfirst = false; }
+      else { if wx < wmnx { wmnx = wx; } if wx > wmxx { wmxx = wx; }
+             if wy < wmny { wmny = wy; } if wy > wmxy { wmxy = wy; } }
+    }
+    if !wfirst { note_span(s, wmnx, wmxx, wmny, wmxy, len(sbl.ring)); }
+  }
+}
+fn span_lines(t: PTile, s: Span) {
+  for sln in t.lines {
+    emnx = 0; emxx = 0; emny = 0; emxy = 0; efirst = true;
+    for el in sln.geom {
+      ex = t.ox + (el.x as integer); ey = t.oy + (el.y as integer);
+      if efirst { emnx = ex; emxx = ex; emny = ey; emxy = ey; efirst = false; }
+      else { if ex < emnx { emnx = ex; } if ex > emxx { emxx = ex; }
+             if ey < emny { emny = ey; } if ey > emxy { emxy = ey; } }
+    }
+    if !efirst { note_span(s, emnx, emxx, emny, emxy, len(sln.geom)); }
+  }
+}
+fn span_labels(t: PTile, s: Span) {
+  for slb in t.labels {
+    zmnx = 0; zmxx = 0; zmny = 0; zmxy = 0; zfirst = true;
+    for zc in slb.line {
+      zx = t.ox + (zc.x as integer); zy = t.oy + (zc.y as integer);
+      if zfirst { zmnx = zx; zmxx = zx; zmny = zy; zmxy = zy; zfirst = false; }
+      else { if zx < zmnx { zmnx = zx; } if zx > zmxx { zmxx = zx; }
+             if zy < zmny { zmny = zy; } if zy > zmxy { zmxy = zy; } }
+    }
+    if !zfirst { note_span(s, zmnx, zmxx, zmny, zmxy, len(slb.line)); }
+  }
+}
+
+fn report_span(tag: text, s: Span) {
+  one = s.n[0] ?? 0;
+  dupf = ((s.dup * 100) / s.coords) ?? 0;
+  println("  {tag}: one_cell={one} worst_span={s.worst} cells coords={s.coords} dup_if_binned_everywhere={dupf}%");
+  wide = 0; wide_c = 0;
+  for si in 1..=DMAX {
+    sn = s.n[si] ?? 0; sc = s.c[si] ?? 0;
+    if si >= 2 { wide += sn; wide_c += sc; }
+    if sn > 0 { println("    span {si + 1:>3} cells: {sn:>8} features {sc:>10} coords"); }
+  }
+  println("    → wider than 2 cells: {wide} features, {wide_c} coords");
+}
+
+// ---------------------------------------------------------------------------------------------------
+// mode: misses — WHICH features a padding of k drops. A count cannot answer "is this a hedge or the
+// forest you are standing in", and that is the whole question for a base map.
+// ---------------------------------------------------------------------------------------------------
+
+fn miss_areas(t: PTile, d: integer, b: FBoxI) {
+  for mar in t.areas {
+    fmnx = 0; fmxx = 0; fmny = 0; fmxy = 0; ffirst = true;
+    for fa in mar.ring {
+      fx = t.ox + (fa.x as integer); fy = t.oy + (fa.y as integer);
+      if ffirst { fmnx = fx; fmxx = fx; fmny = fy; fmxy = fy; ffirst = false; }
+      else { if fx < fmnx { fmnx = fx; } if fx > fmxx { fmxx = fx; }
+             if fy < fmny { fmny = fy; } if fy > fmxy { fmxy = fy; } }
+    }
+    if !ffirst && !(fmxy < b.mnla || fmny > b.mxla || fmxx < b.mnlo || fmnx > b.mxlo) {
+      println("    d={d} area cover={mar.cover} coords={len(mar.ring)} span={cell_ix(fmxx, CELL_P) - cell_ix(fmnx, CELL_P) + 1}x{cell_ix(fmxy, CELL_P) - cell_ix(fmny, CELL_P) + 1}");
+    }
+  }
+}
+fn miss_lines(t: PTile, d: integer, b: FBoxI) {
+  for mln in t.lines {
+    gmnx = 0; gmxx = 0; gmny = 0; gmxy = 0; gfirst = true;
+    for gl in mln.geom {
+      gx = t.ox + (gl.x as integer); gy = t.oy + (gl.y as integer);
+      if gfirst { gmnx = gx; gmxx = gx; gmny = gy; gmxy = gy; gfirst = false; }
+      else { if gx < gmnx { gmnx = gx; } if gx > gmxx { gmxx = gx; }
+             if gy < gmny { gmny = gy; } if gy > gmxy { gmxy = gy; } }
+    }
+    if !gfirst && !(gmxy < b.mnla || gmny > b.mxla || gmxx < b.mnlo || gmnx > b.mxlo) {
+      println("    d={d} line kind={mln.kind} name={mln.name} coords={len(mln.geom)} span={cell_ix(gmxx, CELL_P) - cell_ix(gmnx, CELL_P) + 1}x{cell_ix(gmxy, CELL_P) - cell_ix(gmny, CELL_P) + 1}");
+    }
+  }
+}
+fn miss_labels(t: PTile, d: integer, b: FBoxI) {
+  for mlb in t.labels {
+    hmnx = 0; hmxx = 0; hmny = 0; hmxy = 0; hfirst = true;
+    for hc in mlb.line {
+      hx = t.ox + (hc.x as integer); hy = t.oy + (hc.y as integer);
+      if hfirst { hmnx = hx; hmxx = hx; hmny = hy; hmxy = hy; hfirst = false; }
+      else { if hx < hmnx { hmnx = hx; } if hx > hmxx { hmxx = hx; }
+             if hy < hmny { hmny = hy; } if hy > hmxy { hmxy = hy; } }
+    }
+    if !hfirst && !(hmxy < b.mnla || hmny > b.mxla || hmxx < b.mnlo || hmnx > b.mxlo) {
+      println("    d={d} label name={mlb.name} kind={mlb.kind} coords={len(mlb.line)}");
+    }
+  }
+}
+fn miss_buildings(t: PTile, d: integer, b: FBoxI) {
+  for mbl in t.buildings {
+    jmnx = 0; jmxx = 0; jmny = 0; jmxy = 0; jfirst = true;
+    for jb in mbl.ring {
+      jx = t.ox + (jb.x as integer); jy = t.oy + (jb.y as integer);
+      if jfirst { jmnx = jx; jmxx = jx; jmny = jy; jmxy = jy; jfirst = false; }
+      else { if jx < jmnx { jmnx = jx; } if jx > jmxx { jmxx = jx; }
+             if jy < jmny { jmny = jy; } if jy > jmxy { jmxy = jy; } }
+    }
+    if !jfirst && !(jmxy < b.mnla || jmny > b.mxla || jmxx < b.mnlo || jmnx > b.mxlo) {
+      println("    d={d} building name={mbl.name} coords={len(mbl.ring)}");
+    }
+  }
+}
+
+fn run_misses(path: text, spec: text, k: integer) {
+  ml: hash<PTile[tkey]> = [];
+  if !store_load(ml, path) { println("#L FAIL cannot load {path}"); return; }
+  mp = spec.split(',');
+  if len(mp) != 4 { println("#L SKIP bad box {spec}"); return; }
+  mb = FBoxI { mnla: to_fixed(mp[0] as float ?? 0.0), mnlo: to_fixed(mp[1] as float ?? 0.0),
+               mxla: to_fixed(mp[2] as float ?? 0.0), mxlo: to_fixed(mp[3] as float ?? 0.0) };
+  mx0 = cell_ix(mb.mnlo, CELL_P); mx1 = cell_ix(mb.mxlo, CELL_P);
+  my0 = cell_ix(mb.mnla, CELL_P); my1 = cell_ix(mb.mxla, CELL_P);
+  println("features VISIBLE in {spec} but keyed further than k={k} cells away:");
+  for mt in ml {
+    md = cell_dist(cell_ix(mt.ox, CELL_P), cell_ix(mt.oy, CELL_P), mx0, mx1, my0, my1);
+    if md > k && !(mt.fmxla < mb.mnla || mt.fmnla > mb.mxla || mt.fmxlo < mb.mnlo || mt.fmnlo > mb.mxlo) {
+      miss_areas(mt, md, mb); miss_buildings(mt, md, mb); miss_lines(mt, md, mb); miss_labels(mt, md, mb);
+    }
+  }
+}
+
+fn run_spans(path: text) {
+  sl: hash<PTile[tkey]> = [];
+  if !store_load(sl, path) { println("#L FAIL cannot load {path}"); return; }
+  sa = new_span(); sb = new_span(); sc = new_span(); sd = new_span();
+  for pt in sl { span_areas(pt, sa); span_buildings(pt, sb); span_lines(pt, sc); span_labels(pt, sd); }
+  println("spans in {path} (cells of {CELL_P} fixed units ≈ 500 m):");
+  report_span("areas    ", sa);
+  report_span("buildings", sb);
+  report_span("lines    ", sc);
+  report_span("labels   ", sd);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// mode: verify — the gate form. One box, one pad, one bound, one verdict line.
+// ---------------------------------------------------------------------------------------------------
+//
+// What it holds is a property of the DATA: `map_kernel::LAYOUT_PAD` is sound only to the extent that
+// this block's features do not reach further than it. A regeneration that adds a wider feature class
+// (a province border, a power grid) moves this number silently — nothing else in the suite would
+// notice, because the map still renders and the route is unaffected.
+fn run_verify(path: text, spec: text, pad: integer, maxmiss: integer) {
+  vl: hash<PTile[tkey]> = [];
+  if !store_load(vl, path) { println("#L FAIL cannot load {path}"); return; }
+  vp = spec.split(',');
+  if len(vp) != 4 { println("#L FAIL bad box {spec}"); return; }
+  vb = FBoxI { mnla: to_fixed(vp[0] as float ?? 0.0), mnlo: to_fixed(vp[1] as float ?? 0.0),
+               mxla: to_fixed(vp[2] as float ?? 0.0), mxlo: to_fixed(vp[3] as float ?? 0.0) };
+  vx0 = cell_ix(vb.mnlo, CELL_P); vx1 = cell_ix(vb.mxlo, CELL_P);
+  vy0 = cell_ix(vb.mnla, CELL_P); vy1 = cell_ix(vb.mxla, CELL_P);
+  vh = new_hist();
+  vfetch = 0;
+  for vt in vl {
+    vd = cell_dist(cell_ix(vt.ox, CELL_P), cell_ix(vt.oy, CELL_P), vx0, vx1, vy0, vy1);
+    if vd <= pad { vfetch += 1; }
+    if vd > DMAX { vd = DMAX; }
+    if !(vt.fmxla < vb.mnla || vt.fmnla > vb.mxla || vt.fmxlo < vb.mnlo || vt.fmnlo > vb.mxlo) {
+      vis_areas(vt, vd, vb, vh); vis_buildings(vt, vd, vb, vh); vis_lines(vt, vd, vb, vh);
+      vis_labels(vt, vd, vb, vh); vis_pois(vt, vd, vb, vh);
+    }
+  }
+  vtot = 0; vgot = 0;
+  for vk in 0..=DMAX { vr = row_total(vh, vk); vtot += vr; if vk <= pad { vgot += vr; } }
+  println("#L pad={pad} fetch={vfetch} tiles  visible={vtot}  drawn={vgot}  missed={vtot - vgot} (bound {maxmiss})");
+  if vtot - vgot <= maxmiss { println("#L PASS"); } else { println("#L FAIL a padded window now drops {vtot - vgot} of {vtot} visible features"); }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// mode: pageload — what a viewport COSTS to page, in requests and bytes, from the loader's own mouth.
+// ---------------------------------------------------------------------------------------------------
+//
+// Run it with LOFT_LOADER_STATS=1; the line that matters is loft's, not ours:
+//   store_load_keys: asked=84 loaded=71 bytes_fetched=5386240 file=20776816
+// `asked` vs `bytes_fetched` is the whole question. A tile is ~18 kB, so 84 of them are ~1.5 MB of DATA;
+// anything much above that is the page granularity of the read, and page granularity is decided by
+// whether cells that are neighbours on the MAP are neighbours in the FILE (PLAN-SCALE S3's ordering).
+fn run_pageload(path: text, spec: text, pad: integer) {
+  gp = spec.split(',');
+  if len(gp) != 4 { println("#L FAIL bad box {spec}"); return; }
+  gmnla = to_fixed(gp[0] as float ?? 0.0); gmnlo = to_fixed(gp[1] as float ?? 0.0);
+  gmxla = to_fixed(gp[2] as float ?? 0.0); gmxlo = to_fixed(gp[3] as float ?? 0.0);
+  gkeys: vector<integer> = [];
+  gx0 = cell_ix(gmnlo, CELL_P) - pad; gx1 = cell_ix(gmxlo, CELL_P) + pad;
+  gy0 = cell_ix(gmnla, CELL_P) - pad; gy1 = cell_ix(gmxla, CELL_P) + pad;
+  gy = gy0;
+  while gy <= gy1 {
+    gx = gx0;
+    while gx <= gx1 { gkeys += [tkey(gx, gy, CELL_P)]; gx += 1; }
+    gy += 1;
+  }
+  gws: hash<PTile[tkey]> = [];
+  ggot = store_load_keys(gws, path, gkeys);
+  gt = 0; gf = 0; gc = 0;
+  for gtt in gws {
+    gt += 1; gf += feats_of(gtt);
+    gc += coords_areas(gtt) + coords_buildings(gtt) + coords_lines(gtt) + coords_labels(gtt) + len(gtt.pois);
+  }
+  // The floor a fetch could hope for: a Coord is two i32, so the geometry alone is 8 bytes each. Print it
+  // beside loft's `bytes_fetched` — the ratio is what says whether a viewport is paying for its own data
+  // or for the pages its data happens to be scattered across.
+  println("#L pageload box={spec} pad={pad} asked={len(gkeys)} loaded={ggot} tiles={gt} features={gf} coords={gc} geometry_bytes={gc * 8}");
+}
+
+fn feats_of(t: PTile) -> integer {
+  len(t.areas) + len(t.buildings) + len(t.lines) + len(t.labels) + len(t.pois)
+}
+
+// One function per kind: `tools/tile_overhang.loft` and `map_kernel` both note that a single function
+// holding every one of these nested loops trips a loft codegen bug.
+fn coords_areas(t: PTile) -> integer { ca = 0; for xa in t.areas { ca += len(xa.ring); } ca }
+fn coords_buildings(t: PTile) -> integer { cb = 0; for xb in t.buildings { cb += len(xb.ring); } cb }
+fn coords_lines(t: PTile) -> integer { cl = 0; for xl in t.lines { cl += len(xl.geom); } cl }
+fn coords_labels(t: PTile) -> integer { ck = 0; for xk in t.labels { ck += len(xk.line); } ck }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: layout_page_probe <layout.store> [spans | misses <box> <k> | verify <box> <pad> <max> | pageload <box> <pad> | <box>…]"); return; }
+  if (a[1] ?? "") == "pageload" {
+    run_pageload(a[0] ?? "", a[2] ?? "", (a[3] ?? "1") as integer ?? 1);
+    return;
+  }
+  if (a[1] ?? "") == "spans" { run_spans(a[0] ?? ""); return; }
+  if (a[1] ?? "") == "verify" {
+    run_verify(a[0] ?? "", a[2] ?? "", (a[3] ?? "1") as integer ?? 1, (a[4] ?? "0") as integer ?? 0);
+    return;
+  }
+  if (a[1] ?? "") == "misses" {
+    run_misses(a[0] ?? "", a[2] ?? "", (a[3] ?? "0") as integer ?? 0);
+    return;
+  }
+
+  layout: hash<PTile[tkey]> = [];
+  if !store_load(layout, a[0] ?? "") { println("#L FAIL cannot load {a[0] ?? \"\"}"); return; }
+  stiles = 0; sempty = 0;
+  for st in layout { stiles += 1; if st.fcount == 0 { sempty += 1; } }
+  println("store {a[0] ?? \"\"}: tiles={stiles} unsealed={sempty}");
+
+  bi = 1;
+  while bi < len(a) {
+    spec = a[bi] ?? "";
+    parts = spec.split(',');
+    if len(parts) != 4 {
+      println("#L SKIP bad box {spec}");
+    } else {
+      box = FBoxI { mnla: to_fixed(parts[0] as float ?? 0.0), mnlo: to_fixed(parts[1] as float ?? 0.0),
+                    mxla: to_fixed(parts[2] as float ?? 0.0), mxlo: to_fixed(parts[3] as float ?? 0.0) };
+      bx0 = cell_ix(box.mnlo, CELL_P); bx1 = cell_ix(box.mxlo, CELL_P);
+      by0 = cell_ix(box.mnla, CELL_P); by1 = cell_ix(box.mxla, CELL_P);
+      h = new_hist();
+      for t in layout {
+        tx = cell_ix(t.ox, CELL_P); ty = cell_ix(t.oy, CELL_P);
+        td = cell_dist(tx, ty, bx0, bx1, by0, by1);
+        if td > DMAX { td = DMAX; h.far += 1; }
+        if td < len(h.ttiles) { h.ttiles[td] += 1; }
+        if t.fcount == 0 && td == 0 { h.noext += 1; }
+        // Only tiles whose sealed extent reaches the box can contribute a visible feature — the same
+        // screen the render path applies, so the expensive per-coord walk runs on a handful of tiles.
+        if !(t.fmxla < box.mnla || t.fmnla > box.mxla || t.fmxlo < box.mnlo || t.fmnlo > box.mxlo) {
+          vis_areas(t, td, box, h); vis_buildings(t, td, box, h); vis_lines(t, td, box, h);
+          vis_labels(t, td, box, h); vis_pois(t, td, box, h);
+        }
+      }
+      ksound = 0; vtot = 0;
+      for kd in 0..=DMAX { rt = row_total(h, kd); vtot += rt; if rt > 0 { ksound = kd; } }
+      println("box {spec}: window={bx1 - bx0 + 1}x{by1 - by0 + 1} cells  visible_features={vtot} k_sound={ksound} unsealed_in_window={h.noext}");
+      println("   k | fetch tiles | visible drawn      MISSED  (of which: areas/buildings/lines/labels/pois still missing)");
+      cft = 0; cvis = 0;
+      ra = 0; rb = 0; rl = 0; rk = 0; rp = 0;
+      for ka in 0..=DMAX { ra += h.areas[ka] ?? 0; rb += h.buildings[ka] ?? 0; rl += h.lines[ka] ?? 0;
+                           rk += h.labels[ka] ?? 0; rp += h.pois[ka] ?? 0; }
+      for kk in 0..=DMAX {
+        tt = h.ttiles[kk] ?? 0;
+        cft += tt; cvis += row_total(h, kk);
+        ra -= h.areas[kk] ?? 0; rb -= h.buildings[kk] ?? 0; rl -= h.lines[kk] ?? 0;
+        rk -= h.labels[kk] ?? 0; rp -= h.pois[kk] ?? 0;
+        if kk <= ksound + 1 {
+          println("  {kk:>2} | {cft:>11} | {cvis:>7}/{vtot:<7} {vtot - cvis:>8}  ({ra}/{rb}/{rl}/{rk}/{rp})");
+        }
+      }
+      if h.far > 0 { println("  ⚠ {h.far} tiles beyond d={DMAX} folded into the last bucket"); }
+    }
+    bi += 1;
+  }
+}

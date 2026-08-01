@@ -39,6 +39,12 @@ pub fn tkey_of(lat: float, lon: float, cell: integer) -> integer {
   tkey(cell_ix(to_fixed(lon), cell), cell_ix(to_fixed(lat), cell), cell)
 }
 
+// The cell every `PTile` in a layout store is keyed at (~500 m). One definition, because a CONSUMER has
+// to key by exactly the number the GENERATOR binned by: `client/basemap/build_store.loft` writes the
+// store with it and `map_kernel::layout_cell_keys` pages it back in by cell, and a mismatch between the
+// two does not fail — it looks up keys that exist in neither store and silently draws nothing.
+pub const LAYOUT_CELL = 50000;
+
 // --- The presentation store schema (PLAN-BASEMAP) --------------------------------------------------
 // A parallel store to the routing block, on the same grid MECHANISM (its own cell size). Coords are i32
 // deltas from the tile origin (ox,oy), exactly like the routing TStep. The map matcher never reads this.

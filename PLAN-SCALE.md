@@ -1099,11 +1099,76 @@ header, so a browser cannot read them. §6e concluded the fix was D2, a paid COR
 
 | | what | observable |
 |---|---|---|
-| **F1** | **Page the layout in the kernel.** `web_basemap_kernel.loft` today does `store_load_url_trusted(layout, url)` — a WHOLE load. It needs the roads' treatment: `store_load_keys(layout, url, view_cell_keys(bbox))`, accumulating a working set | a viewport renders from a 1 GB store with `rangeReads > 0` and bytes in the low hundreds of kB |
-| **F2** | **Re-`expose` as the working set grows.** `expose` pins the store read-only and is O(collection) per call, so it cannot run per frame — it must run once per LOAD, and the JS side must re-read the handle after each | `tools/expose_probe.sh` extended to a partially-filled store; pan across 20 viewports and the per-pan cost stays flat |
-| **F3** | **Cut NL into three regions** and rebuild roads + base + names per region | `base_chunk_gate.sh` at n=3; each base block < 900 MB |
+| **F1** ✅ | **Page the layout in the kernel.** `web_basemap_kernel.loft` did `store_load_url_trusted(layout, url)` — a WHOLE load. It now gets the roads' treatment: `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, accumulating a working set | a viewport renders from a store read by RANGE — **done**, and the bytes are 50× what this row assumed; see below |
+| **F2** ✅ | **Re-`expose` as the working set grows.** `expose` pins the store read-only and is O(collection) per call, so it cannot run per frame — it must run once per LOAD, and the JS side must re-read the handle after each | **done, and the risk is disproven**: 13 viewports with a growing working set, per-viewport cost 211 ms → 176 ms (0.84×), bracket balanced 13/12 |
+| **F3** | **Cut NL into three regions** and rebuild roads + base + names per region — **and re-bin the base map while doing it** (see "What F1 measured" below; that is now the load-bearing half of this row) | `base_chunk_gate.sh` at n=3; each base block < 900 MB; a z14 viewport under 10 MB paged |
 | **F4** | **Publish the base blocks to data repos** and name them by `base_url_base` | `cors_host_gate.sh` against the real data repo, not a local server |
 | **F5** | **Extend `nl_live_gate`** to assert the map RENDERS in Amsterdam | non-zero areas/buildings/labels from a cross-origin paged base — the check that would have caught "shows nothing" |
+
+#### What F1 measured, and what it changes (2026-08-01)
+
+F1 is built and works — the app draws a base map it never downloaded whole, over real 206 Range requests
+(`tools/base_paged_gate.sh` runs the same camera path twice, whole vs paged, and compares what got
+DRAWN). But building it required measuring the two things this section had assumed, and **both
+assumptions were wrong**. The instrument is `tools/layout_page_probe.loft`; the numbers are from
+`blocks/nl-west.base.store`, the block that would actually ship.
+
+**1 · A viewport is not 75–190 kB. It is 10 MB, and at one zoom out, 68 MB.**
+
+| viewport (the app's own padded box) | keys | features | geometry | **fetched** |
+|---|---|---|---|---|
+| Amsterdam z16 | 84 | 54 974 | 3.4 MB | **10.3 MB** |
+| Amsterdam z14 | 779 | 344 195 | 21.8 MB | **68.4 MB** |
+| open water / outside the block, z16 | 84 | 0 | 0 | **9.0 MB** |
+
+The row above got 75–190 kB by multiplying the store-wide average tile (9.1 kB) by an unpadded
+viewport (8–20 cells). Both factors are wrong in the same direction: **the average tile is rural and the
+viewed tile is urban** (a city cell is 5× the mean), and a real viewport at z16 is 84 cells once padded.
+This is `CLAUDE.md`'s own rule — *measure the common case, not the outlier* — with the outlier being the
+average. The marginal cost is **~104–139 kB per key against ~31 kB of geometry**, and the third row is
+the one that names the mechanism: **84 keys that hold nothing still cost 9 MB**, so most of that is the
+per-key probe, not the payload.
+
+**2 · No affordable padding is exact.** A layout feature is keyed by its FIRST VERTEX and never clipped,
+so it overhangs its cell (PLAN-PERF §7g). A whole load hides this — the render path screens on each
+tile's sealed extent — but a paged load cannot consult the extent of a tile it never fetched. Counting
+features actually VISIBLE in an Amsterdam z16 viewport:
+
+| pad | 0 | 1 | 2 | … | exact |
+|---|---|---|---|---|---|
+| tiles fetched | 50 | 84 | 126 | | 864 (z16) · 13 661 (z14) |
+| features missed of 25 260 | 79 | 12 | 7 | | 0 |
+
+`LAYOUT_PAD = 1` is the knee — 85% of the misses for 1.7× the tiles — and it is **a compromise, not a
+fix**. What is left is a handful of very wide features: a province border, a power line, a railway, a
+big water body keyed kilometres from where it is drawn. In a dense viewport that is invisible; in a
+rural one it can be all four of the lines on screen.
+
+**3 · Both problems have the same fix, and it belongs to F3's rebuild.** Bound a feature's reach at
+GENERATION instead of widening the window at read time:
+
+* **Bin each feature into a tile whose cell CONTAINS it**, with coarser tiers (×8 each) for the ones that
+  do not fit the finest. Then *at its own tier a feature spans at most 2 cells*, so a window padded by 1
+  cell **per tier** is EXACT — 4 tiers cover NL (500 m → 4 km → 32 km → 256 km), each feature is stored
+  once, and the store does not grow. A low zoom then reads only the coarse tiers, which is also the
+  answer to 68 MB: today a zoom-out multiplies the key count by 4 while the useful detail shrinks.
+* **And reconsider `LAYOUT_CELL` (500 m) itself.** At ~110 kB of per-key cost against ~31 kB of payload,
+  the grid is finer than the read path can pay for. A coarser cell cuts the key count 16× for the same
+  area *and* shrinks every feature's span in cells, which improves 2 as well.
+
+The alternative — storing each feature in every cell it touches — is measured at **1.5× the store**
+(`layout_page_probe … spans` reports `dup_if_binned_everywhere` per kind: areas 211%, lines 404%), so it
+is the expensive way to buy what tiering gives for nothing.
+
+⚠ **None of this makes F1 wrong to have built.** The kernel has to page the layout under every one of
+these designs, F2's O(collection) re-expose risk is now measured away rather than feared, and the gate
+that holds the residual exists. What changed is F3: it was "cut NL into three regions", and it is now
+"cut NL into three regions **and re-bin the base map**", with the numbers above as its acceptance test.
+
+⚠ **The layout working set never shrinks**, exactly like the roads one (C1b): a session that pans across
+a country accumulates every cell it has visited. Flat per-viewport cost over 13 viewports says nothing
+about 500, and eviction is where §6b's Track 3 already puts it (blocks + stitching + LRU). It is a
+session-length question, not a correctness one, and it wants measuring before it wants solving.
 
 ⚠ **F5 is the lesson from shipping this blank.** `nl_live_gate` proved routing and search on the live site
 and never asked whether anything was DRAWN, so a blank map passed every gate. Every future coverage claim

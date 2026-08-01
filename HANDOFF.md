@@ -65,13 +65,43 @@ already specify.
 Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_base.loft`, proven lossless
 (Enschede n=2 exact; NL n=4 within a per-seam bound), and wired as a CI matrix in `data-refresh.yml`.
 
-**Open, and the first two are the blank map:**
+**F1 and F2 are DONE (2026-08-01). F3 is next, and F1's measurements changed what it has to do.**
 
-| | what | why |
+| | what | state |
 |---|---|---|
-| **F1** | **page the layout in the kernel** — `web_basemap_kernel.loft` does a WHOLE `store_load_url_trusted`; it needs the roads' `store_load_keys(…, view_cell_keys(bbox))` | this is what makes a 690 MB base block readable at all |
-| **F2** | **re-`expose` as the working set grows** — the untested half, and the real risk: `expose` is O(collection) per call | if it is per-frame-expensive, the fallback is JS reading pages directly (§9 item 3) — never a decoder of our own |
-| F3–F5 | cut NL into three regions, publish base blocks to data repos, and **assert the map RENDERS** in `nl_live_gate` | see §6f |
+| **F1** ✅ | **page the layout in the kernel** — `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, a working set with its own marks, driven by a per-STORE read mode (`__baseReadMode`, kernel line 7) | built; the app draws a base map it never downloaded whole, over real 206 Range requests |
+| **F2** ✅ | **re-`expose` as the working set grows** — the pin comes off around every load and back on after; JS re-reads the handle per view | built, **and the risk is disproven by measurement**: 13 viewports, per-viewport cost 195 → 162 ms (0.83×), bracket balanced 13/12 |
+| **F3** ⚠ | cut NL into three regions — **and re-bin the base map while doing it**. See the two rows below; PLAN-SCALE §6f "What F1 measured" has the numbers | not started |
+| F4–F5 | publish base blocks to data repos, and **assert the map RENDERS** in `nl_live_gate` | not started |
+
+⚠ **Two §6f premises were measured WRONG while building F1, and F3 is where they get fixed.** Both on
+`blocks/nl-west.base.store`, with `tools/layout_page_probe.loft`:
+
+1. **A viewport is not 75–190 kB — it is 10.3 MB at z16 and 68.4 MB at z14.** The old figure multiplied
+   the store-wide average tile (9.1 kB, i.e. a RURAL tile) by an unpadded 8–20-cell window; a real
+   padded z16 viewport is 84 cells of CITY. The marginal cost is ~110 kB per key against ~31 kB of
+   geometry — and **84 keys that hold nothing still cost 9 MB**, which says most of it is the per-key
+   probe. `LAYOUT_CELL` (500 m) is finer than the read path can pay for.
+2. **No affordable padding is exact.** A layout feature is keyed by its first vertex and never clipped,
+   so it overhangs its cell; a paged load cannot consult the extent of a tile it never fetched. At z16,
+   exactness needs 11 cells of padding (864 tiles) and at z14 fifty (13 661 — the region).
+   `LAYOUT_PAD = 1` is the knee (85% of the misses removed for 1.7× the tiles) and is a **compromise**:
+   `base_paged_gate.sh` measures the residual at **0.07% of features**, worst single drop 6.
+
+   *Both* are fixed by the same generation-side change, which is why F3 owns it: **bin each feature into
+   a tile whose cell CONTAINS it, with coarser tiers (×8) for the ones that do not fit.** Then a feature
+   spans ≤ 2 cells at its own tier, so pad=1 per tier is EXACT; each feature is still stored once; and a
+   low zoom reads only the coarse tiers, which is also the answer to 68 MB.
+
+**New gates** (both in `make test-map` / `make test-native`): `tools/base_paged_gate.sh` runs the same
+13-viewport camera path twice — base map WHOLE vs PAGED — and compares what got DRAWN per kind, because
+a paged read that silently drops features is invisible from every other angle; `tools/paged_gate.sh`
+gained the native half, which pins the fetch window's residual against the shipped block.
+
+⚠ **`browser/build-store-kernel.mjs` was hashing only three of the kernel's five source trees** —
+`lib/basemap` and `lib/web` were missing, so a change to the PTile schema or the layout grid reported the
+committed wasm CURRENT. Fixed here; that is the silent direction of the check HANDOFF §0 already warns
+about.
 
 Then §6e's list, which is about Western Europe rather than NL:
 

@@ -231,6 +231,7 @@ test-map:
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
 	@./tools/paged_http_gate.sh
+	@./tools/base_paged_gate.sh
 	@./tools/cross_block_browser_gate.sh
 	@./tools/cors_host_gate.sh
 	@./tools/nl_live_gate.sh

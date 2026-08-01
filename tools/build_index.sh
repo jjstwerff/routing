@@ -149,10 +149,16 @@ flush() {
   # came out empty, and `publish-release.sh` refused to publish it. Which is the ordering working — an
   # empty index would have been a release nobody could resolve.
   #
-  # A block is being published exactly when it sits in `blocks/`, the generated-output directory
-  # `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and ship with
-  # the app, so they are correctly absent from a release index.
-  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "$here/blocks/$(basename "$roads")" ]; then
+  # A block is being published exactly when it sits in the PUBLISH ROOT — `blocks/`, the generated-output
+  # directory `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and
+  # ship with the app, so they are correctly absent from a release index.
+  #
+  # `PUBLISH_ROOT` overrides that directory for a harness that publishes somewhere else. `cors_host_gate`
+  # is the case: it serves a committed block from a second local ORIGIN, which is a real publication with
+  # no `blocks/` involved — and without the override the test read as "Enschede ships with the site", the
+  # index came out empty, and the gate failed on every checkout (it had, since this test replaced the
+  # `url_base` one). The rule is unchanged; what was hard-coded is the place it looks.
+  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
     id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
     return 0

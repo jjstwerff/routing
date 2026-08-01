@@ -29,8 +29,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..');
 const loft = process.env.LOFT_BIN || 'loft';
 
-// The same three trees the gate used to scan, so the hash covers exactly what a stale wasm could miss.
-const KERNEL_SRC_DIRS = ['lib/routing_kernel/src', 'lib/map_kernel/src', 'client'];
+// EVERY tree the wasm is compiled FROM, which is what a stale wasm could miss. It used to be three —
+// routing_kernel, map_kernel, client — and that left two of the kernel's own libraries unhashed:
+// `web_basemap_kernel.loft` imports `basemap` (the PTile schema and the layout grid) and `web`
+// (`frame_yield`). PLAN-SCALE §6f F1 walked straight into it: a change to `lib/basemap` that the wasm
+// genuinely needed was reported CURRENT. Over-covering is harmless (a false STALE costs a rebuild);
+// under-covering is the silent direction this check exists to close.
+const KERNEL_SRC_DIRS = ['lib/routing_kernel/src', 'lib/map_kernel/src', 'lib/basemap/src',
+                         'lib/web/src', 'client'];
 
 function kernelSources(dir, out = []) {
   for (const e of readdirSync(join(repo, dir), { withFileTypes: true })) {

@@ -60,7 +60,13 @@ awk -v ub="http://127.0.0.1:$dataport/stores" '
   /^\[\[region\]\]/ { if (keep) exit; n++ }
   n == 1 { if ($0 ~ /^read_mode/) print "read_mode = \"paged\"\nurl_base  = \"" ub "\""; else print }
 ' "$here/data/coverage.toml" > "$work/coverage.toml"
-COVERAGE_MANIFEST="$work/coverage.toml" RELEASE_INDEX=1 "$here/tools/build_index.sh" "$site/coverage.json" \
+# PUBLISH_ROOT — this gate publishes to a local ORIGIN, not to `blocks/`, and `build_index.sh` decides
+# "is this region being published" by looking there. Point it at the stores this gate actually serves, or
+# the region is judged site-local, the release index comes out empty and the build fails.
+mkdir -p "$work/published"
+for s in "$site"/stores/enschede.*; do ln -sf "$s" "$work/published/"; done
+COVERAGE_MANIFEST="$work/coverage.toml" RELEASE_INDEX=1 PUBLISH_ROOT="$work/published" \
+  "$here/tools/build_index.sh" "$site/coverage.json" \
   >/dev/null || { echo "  FAIL: could not build the cross-origin index"; exit 1; }
 grep -c '^\[\[region\]\]' "$work/coverage.toml" | grep -qx 1 || { echo "  FAIL: the test manifest holds more than one region"; exit 1; }
 grep -q "127.0.0.1:$dataport" "$site/coverage.json" || { echo "  FAIL: the index does not name the data origin"; exit 1; }

@@ -12,7 +12,7 @@
 #cwd
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, area_use, area_label_kind, place_rank, line_kind, poi_kind, dp_mask,
-              to_fixed, cell_ix, origin, tkey);
+              to_fixed, cell_ix, origin, tkey, LAYOUT_CELL);
 
 // Local atag — a JsonValue does not survive being passed into a LIB (cross-package) function, so the
 // tag reader must live in this file. (Reading scalar/nested fields off a locally-held JsonValue is fine.)
@@ -21,7 +21,10 @@ fn atag(obj: JsonValue, name: text) -> text {
   if v.kind() == "JString" { v.as_text() } else { "" }
 }
 
-CELL_P = 50000;        // presentation cell (~500 m)
+// The presentation cell (~500 m) is `basemap::LAYOUT_CELL`, not a number of this file's own: the client
+// PAGES the store back in by exactly this cell (`map_kernel::layout_cell_keys`), and two copies of the
+// figure would drift silently — a consumer keying at the wrong cell finds nothing and draws nothing.
+CELL_P = LAYOUT_CELL;
 STREET_EPS = 10.0;     // metres — street centerline simplification tolerance
 
 
