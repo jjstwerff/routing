@@ -31,14 +31,17 @@
 # round numbers — that changes the block. Expect tile/feature counts to drift with the OSM snapshot (the
 # 2026-07-31 rebuild came out at 1093 tiles / 208536 features against 1089 / 204982 two days earlier);
 # the four EXTENT bounds are the thing that must match.
-[[region]]
-id        = "enschede"
-name      = "Enschede / south Overijssel"
-zoom_min  = 14
-roads     = "stores/enschede.roads.store"
-base      = "stores/enschede.layout.store"
-names     = "stores/enschede.names.store"
-read_mode = "whole"
+# ⚠ ENSCHEDE IS NO LONGER A COVERAGE REGION — it is a GATE FIXTURE (`data/coverage-fixture.toml`).
+#
+# It was the block that shipped with the app before the country existed, and once NL landed it did not
+# just become redundant, it became HARMFUL: `chooseBlocks` prefers the smallest block containing a box, so
+# the city block shadowed `nl-east` over its whole roads extent (6.74–7.01°E) while its BASE was clipped
+# tighter, to 6.761–7.027 / 52.161–52.329. In the gap between the two the app drew roads on an empty
+# background. Measured on the live site: **Hengelo 3 802 buildings against the 28 324 the country block
+# gives one town away**, and reported as "it tries the Enschede block and draws nothing, even inside NL".
+#
+# The stores stay in the repo and still drive every offline gate — they are just not something a visitor
+# can be routed to any more. `browser/build-site.mjs` merges the fixture index under SITE_LOCAL_ONLY.
 
 # ⚠ ROAD BLOCKS MUST NOT OVERLAP. The Enschede roads block was removed here when the Netherlands block
 # landed, because NL covers the same ground: with both listed, a sketch whose padded bbox escapes the small

@@ -159,9 +159,26 @@ function chooseBlocks(index, mnla, mnlo, mxla, mxlo, kind, fallback, urlKind, zo
     if (!x || !y) return false;
     const inside = (p, q) => p.mnla >= q.mnla && p.mxla <= q.mxla && p.mnlo >= q.mnlo && p.mxlo <= q.mxlo;
     return inside(x, y) || inside(y, x); };
+  // ⚠ A BLOCK THAT CANNOT COVER THE BOX WITH THE STORE BEING ASKED FOR IS NOT THE BEST ANSWER FOR IT.
+  //
+  // Selection is on the ROADS extent (see `baseUrlsFor`), and a block's two stores need not describe the
+  // same ground: the committed Enschede block routes over 6.74–7.01°E but its BASE was clipped tighter,
+  // to 6.761–7.027 / 52.161–52.329. In the gap between them the smallest-containing rule picked it and
+  // then read a base map that stops short — measured on the live site, Hengelo drew 3 802 buildings
+  // against the 28 324 the country block gives one town away. Roads on an empty background, and it looks
+  // exactly like "the data ends here".
+  //
+  // So when the asked-for store has an extent of its own that does NOT cover the box, the block steps
+  // aside for the next one that contains it. A tiered base extent is meaningless (§6f F3: a 256 km tile
+  // makes every region read as the whole country) — which is harmless here, because meaningless means
+  // "covers everything" and such a block is never the one that steps aside.
+  const urlCovers = (b) => { if (!urlKind || !b[urlKind] || !b[urlKind].bbox) return true;
+    const x = b[urlKind].bbox;
+    return x.mnla <= Math.round(mnla * FIXED) && x.mxla >= Math.round(mxla * FIXED)
+        && x.mnlo <= Math.round(mnlo * FIXED) && x.mxlo >= Math.round(mxlo * FIXED); };
   let chosen;
   if (whole.length) {
-    const best = whole[0];
+    const best = whole.find(urlCovers) || whole[0];
     chosen = [best, ...hits.filter((b) => b !== best && !nested(b, best))];
   } else {
     chosen = hits.length ? hits : (fallback ? [fallback] : []);
@@ -181,5 +198,12 @@ export async function resolveCoverage(indexUrl, lat, lon, fetchImpl = fetch) {
   } catch { index = null; }
   if (!index || !index.blocks || !index.blocks.length) return { index: null, block: null, outside: true };
   const hit = pickBlock(index, lat, lon);
-  return { index, block: hit || index.blocks[0], outside: !hit };
+  // ⚠ THE FALLBACK MUST BE A ROUTABLE BLOCK. A camera outside every block still has to open the app, and
+  // the session's `ROADS`/`NAMES` are taken from whatever this returns — so falling back to `blocks[0]`
+  // hands the app a block with no roads the moment one exists (the overview is exactly that, and it is
+  // first in the index). Measured: the app threw on `coverage.block.roads.url` and never booted, so
+  // `window.__map0` was undefined and every later check read as a mystery. Prefer the first block that
+  // can actually route; only if there is none does the first block stand.
+  const fallback = index.blocks.find((b) => b.roads && b.roads.url) || index.blocks[0];
+  return { index, block: hit || fallback, outside: !hit };
 }

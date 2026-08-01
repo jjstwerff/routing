@@ -64,7 +64,10 @@ if (ref.blocks !== 1) { console.log(`  FAIL: the reference run named ${ref.block
 // 2. Swap the page's index for one naming the two halves, and force paged reads (a plural covering set
 // can only be paged — the kernel enforces it, and this makes the intent explicit).
 await ev(`(() => {
-  const idx = window.__coverage.index, b = idx.blocks[0];
+  const idx = window.__coverage.index;
+  // The block to split is the one with BOTH stores — not blocks[0], which is the overview now that the
+  // index leads with a picture that has no roads at all.
+  const b = idx.blocks.find((x) => x.roads && x.base) || idx.blocks[0];
   const half = (url, mnlo, mxlo) => ({ id: url, name: url, readMode: 'paged',
     roads: { url, bbox: { mnla: b.roads.bbox.mnla, mxla: b.roads.bbox.mxla, mnlo, mxlo } },
     base: b.base });

@@ -56,10 +56,13 @@ echo "== D2: the app on one origin, its blocks on another =="
 # So: AN INDEX MUST NOT MIX REACHABLE AND UNREACHABLE HOSTS. One unreachable block in a covering set does
 # not degrade the match, it ends it. That is the same rule as "each index names only what it can serve",
 # and this is what violating it looks like from the inside.
+# The FIXTURE manifest, whose one region is the Enschede block this gate republishes at a second origin
+# (the symlink below already assumes it). `data/coverage.toml`'s first region is the overview now, which
+# has no roads at all — taking it left the index naming a block the driver could not resolve.
 awk -v ub="http://127.0.0.1:$dataport/stores" '
   /^\[\[region\]\]/ { if (keep) exit; n++ }
   n == 1 { if ($0 ~ /^read_mode/) print "read_mode = \"paged\"\nurl_base  = \"" ub "\""; else print }
-' "$here/data/coverage.toml" > "$work/coverage.toml"
+' "$here/data/coverage-fixture.toml" > "$work/coverage.toml"
 # PUBLISH_ROOT — this gate publishes to a local ORIGIN, not to `blocks/`, and `build_index.sh` decides
 # "is this region being published" by looking there. Point it at the stores this gate actually serves, or
 # the region is judged site-local, the release index comes out empty and the build fails.

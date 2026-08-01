@@ -88,6 +88,24 @@ ok(above.stores.length > 0 && !above.stores.some((u) => /overview/.test(u)),
    `above it (z16) the overview is NOT read: ${JSON.stringify(above.stores)}`);
 ok(above.roads > 0, `and the detailed roads are (R=${above.roads})`);
 
+// 2b — ZOOMING IN FROM THE COUNTRY MUST SWITCH TO THE DETAIL. Reported from the live site and the reason
+// this check exists: booting on the country loads a box that CONTAINS every later viewport, so the
+// "already loaded" test skipped the reload and z15 kept drawing country data — viewSeq stuck at 1, R=0,
+// no buildings, while a direct load of the same camera drew 51 350. A box test cannot see a change of
+// SOURCE, and crossing the handover is exactly that.
+await load('');
+const zoomed = JSON.parse(await ev(`(async () => {
+  const before = window.__storeApp.viewSeq;
+  const m = window.__map0;
+  m.camera.zoom = 15; m.camera.lat = 52.2159; m.camera.lon = 6.8960; m._fireMove();
+  for (let i = 0; i < 120; i++) { await new Promise((r) => setTimeout(r, 250));
+    if (window.__storeApp.viewSeq > before && !window.__jobs?.busy) break; }
+  return JSON.stringify({ before, after: window.__storeApp.viewSeq, view: window.__storeApp.view,
+                          buildings: window.__storeApp.layerCounts?.buildings || 0 });
+})()`) || '{}');
+ok(zoomed.after > zoomed.before, `zooming in from the country re-views (seq ${zoomed.before} → ${zoomed.after})`);
+ok(zoomed.buildings > 1000, `and the DETAILED layout arrives: ${zoomed.buildings} buildings, ${zoomed.view}`);
+
 // 3 — the densified retry. The load-bearing half is that it stays OFF for a sketch that already matches.
 const near = await ev(`(async () => {
   const r = window.__rough; r.points.length = 0;

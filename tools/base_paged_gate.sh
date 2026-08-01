@@ -29,7 +29,12 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 
-node "$here/browser/build-site.mjs" || exit 1
+# ⚠ SITE_LOCAL_ONLY, and phase 1 depends on it for its DATASET rather than only for staying offline: the
+# Enschede block is a FIXTURE now (data/coverage.toml), and only a local build merges it back in. Without
+# it a z16 camera over Enschede resolves to `nl-east`, whose base map is off-origin and 774 MB, and the
+# app never becomes ready — which is exactly how this read when the block left coverage.
+# Phase 2 is unaffected: it stages its own index and serves it from its own root.
+SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 layout="$here/_site/stores/enschede.layout.store"
 [ -f "$layout" ] || { echo "SKIP: no layout store at $layout"; exit 2; }

@@ -93,7 +93,10 @@ const NAMES = coverage.block.names ? new URL(coverage.block.names.url, INDEX_URL
 // The single-block default. Every command below re-derives the covering SET for the box it is about to
 // read (PLAN-SCALE C2) — this is what it collapses to when one block covers everything, and the fallback
 // when a box covers none.
-const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
+// …and a block may have NO roads at all (the overview is a picture, never a routing input). That is a
+// supported state, not a crash: the per-command covering set names the roads a view or a match needs, and
+// this is only the single-block default it collapses to.
+const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_URL).href : '';
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 // ⚠ THE VIEW'S ROADS ARE ZOOM-BANDED; A MATCH'S ARE NOT. Below the handover the overview answers the
@@ -200,7 +203,7 @@ const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT, box = null, z
    box ? roadsModeFor(box, z) : (window.__readMode || coverage.block.readMode || 'whole'), '',
    box ? baseModeFor(box, z) : (window.__baseReadMode || coverage.block.readMode || 'whole')].join('\n');
 
-let loadedBox = null, loadedBbox = null, lastViewText = null;
+let loadedBox = null, loadedBbox = null, lastViewText = null, loadedSrc = null;
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
 // so commands must be serialized; this does that AND coalesces per key, which the old shared `busy`
 // boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
@@ -326,12 +329,22 @@ initSearch();
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
 function ensureView() { return jobs.post('view', ensureViewNow); }
 async function ensureViewNow() {
-  if (covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
   const box = viewportBox(0.6);
+  const zoom0 = map.camera.zoom;
+  // WHAT THIS VIEW WOULD READ — the covering set and the modes, not just the box.
+  //
+  // ⚠ "The box is already loaded" is NOT enough once a zoom band exists, and shipping it that way broke
+  // zooming in: booting on the country loads a `loadedBox` that CONTAINS every later viewport, so every
+  // zoom-in was answered from the country data and no view was ever requested again. Reported from the
+  // live site and reproduced exactly — z8 → z15 over Enschede left `viewSeq` at 1, `R=0`, 0 buildings,
+  // while a direct load of the same camera drew 51 350. The box test cannot see a change of SOURCE, and
+  // crossing the handover is exactly that.
+  const src = `${baseFor(box, zoom0)}|${roadsFor(box, zoom0)}|${baseModeFor(box, zoom0)}|${roadsModeFor(box, zoom0)}`;
+  if (loadedSrc === src && covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const zoom = map.camera.zoom;
+  const zoom = zoom0;
   const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
@@ -359,7 +372,7 @@ async function ensureViewNow() {
     map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
-  loadedBox = box; loadedBbox = bbox; lastViewText = text;
+  loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;

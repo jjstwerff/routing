@@ -141,6 +141,18 @@ if (existsSync(join(here, 'coverage.json'))) {
     // overview (§6i O1) is a base store alone, and the roads test dropped it from every local gate
     // including the one that would prove the country view draws. A block whose stores are all local
     // relative URLs that exist costs a gate nothing to name and reaches no network.
+    // ⚠ AND THE GATE FIXTURE COMES BACK IN. Enschede stopped being a coverage region because it shadowed
+    // the country block with older, thinner data (data/coverage.toml says why), but it is still the
+    // offline dataset every browser gate runs against — small, committed, same-origin. Merging its index
+    // here keeps every one of them working unchanged while a visitor never resolves to it.
+    const fx = join(here, 'coverage-fixture.json');
+    if (existsSync(fx)) {
+      try {
+        for (const b of JSON.parse(readFileSync(fx, 'utf8')).blocks ?? []) {
+          if (!keep.some((k) => k.id === b.id)) keep.push(b);
+        }
+      } catch { /* an unreadable fixture must not take the gate's real blocks with it */ }
+    }
     const before = keep.length;
     // ⚠ Both locations, exactly like `served` above: a block can ship COMMITTED under browser/stores or be
     // LINKED into _site from blocks/ a few lines earlier, and the overview is the second kind. Checking
