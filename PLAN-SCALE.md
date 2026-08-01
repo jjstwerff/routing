@@ -1425,10 +1425,34 @@ the way the app reads (`tools/base_key_probe.loft`):
 | Amsterdam centre | 69 | 67 | 39 646 | 14.2 MB |
 | IJsselmeer (open water) | 69 | 68 | **6 107** | **17.7 MB** |
 
-**6.5× fewer features for MORE bytes.** Every key costs ~3 × 64 kB pages, and asking for more keys does not
-amortise it: 4 keys → 12 pages, 69 keys → 216, 163 keys → 787. A z16 window pays 14.2 MB for ~4 MB of
-content. So the bill is **asking**, not receiving — a directory descent per key, paid whether the key
-exists or not.
+**6.5× fewer features for MORE bytes.** A key costs pages whether or not it holds anything, and a z16
+window pays 14.2 MB for ~4 MB of content. So the bill is **asking**, not receiving.
+
+⚠ **A FIRST READING OF THIS WAS WRONG, AND IT REACHED A PLAN AND A PR BEFORE IT WAS CHECKED.** It said
+*"~3 × 64 kB pages per key, and asking for more keys does not amortise it — a directory descent per key"*,
+from three reads that differed in more than one variable at once. Reading loft's loader and controlling
+the variables says otherwise on all three counts:
+
+* **the descent is already shared** — `load_keys` (`src/database/allocation.rs`) builds ONE `PagedReader`
+  for the whole call and loops `load_one`;
+* **there is already a page cache** — 64 KiB pages, a 64-page (4 MiB) LRU;
+* **it does amortise.** On a dense contiguous single-tier read, pages/key FALLS with batch size:
+  **4 → 3.00 · 9 → 3.11 · 20 → 2.45 · 48 → 2.35 · 140 → 2.04.**
+
+What actually drives the cost is LOCALITY and HIT RATE, measured at one tier with the window size held
+constant (`tools/zoom_bin_probe.loft`, and `tools/cell_hole_probe.loft` to find the in-extent holes):
+
+| window | loaded / asked | pages per key |
+|---|---|---|
+| dense city | 4/4 | **3.00** |
+| sparse ground (open water) | 20/20 | 4.50 |
+| **in-extent hole** — data on all four sides | 0/9 | **4.22 and 6.22** |
+| out-of-extent | 0/4 | 7.50 |
+
+So a miss costs **~1.4–2× a hit in extent**, not the ~4× an out-of-extent probe suggests, and the
+per-key figure to design against is **~2–3 pages (130–200 kB) for a clustered read**, rising with
+scatter. The earlier 3.1–4.8 figures came from reads spanning FOUR TIERS — different regions of the
+file — which is scatter, not batch size.
 
 Two consequences, both load-bearing below:
 * **Below the zoom where detail is drawn, a whole-file read of a generalised block beats a keyed read of
@@ -1657,13 +1681,24 @@ file, downloaded once and reused. A DETAIL gap remains: at z13 the map is z≤10
 areas, city labels) decimated at 94 m, which is ~8 px of error at that zoom. It is coarse, and it is
 instant, and it degrades in one direction only.
 
-⚠ **Closing the DETAIL gap is blocked on the per-key cost, and that is the real finding.** A mid level at
-z≤12 read paged is the right shape, and every grid for it lands in the same place because ~200 kB per key
-dominates whatever the cell size: **0.04° → 216 keys ≈ 54 MB · 0.08° → 66 keys ≈ 26 MB · 0.16° → 28 keys
-≈ 24 MB · 0.32° → 16 keys ≈ 37 MB** for one z12 viewport (probe cost plus over-fetch against ~10 MB of
-content). There is no cell size that makes it cheap. **O5 — loft's 3-pages-per-key with no batch
-amortisation — is therefore a PREREQUISITE for the detail half, not an optimisation beside it.** Fix that
-and every row above divides by ~3.
+⚠ **Closing the DETAIL gap is bounded by the per-key cost, and no cell size escapes it.** A mid level at
+z≤12 read paged is the right shape, and every grid lands in the same band because the per-key cost
+dominates whatever the cell size. At **~160 kB per key** (2.5 pages, the clustered-read figure above),
+against ~10 MB of content for one z12 viewport: **0.04° → 216 keys ≈ 45 MB · 0.08° → 66 keys ≈ 23 MB ·
+0.16° → 28 keys ≈ 22 MB · 0.32° → 16 keys ≈ 36 MB**. The optimum is a shallow bowl around 0.08–0.16° and
+nothing makes it cheap — the numbers scale linearly with the per-key figure, so they are worth recomputing
+if O5 moves it.
+
+⚠ **But O5 is NOT the blocker it was first written as, and the correction matters because it changes what
+loft should do first.** A miss costs ~1.4–2× a hit in extent, and the app's own reads are mostly HITS
+where it spends its time: the z16 Amsterdam window loads 67 of 69 keys, so cheap misses buy it nothing.
+The 7.5× that cheap misses would win (the country coarse read: 128 misses of 163) is a LOW-ZOOM effect,
+and low zoom is exactly what the overview removed from the keyed path. So:
+
+* **for the app as it ships**, the lever is the HIT floor — 2.0–3.0 pages/key — which is page-fetch
+  COALESCING (the browser made **217 requests for 13.58 MB**: round-trip-bound, not bandwidth-bound) and
+  entry LOCALITY;
+* **cheap misses are a prerequisite for O3b**, not a win today.
 
 #### ✅ O2 — SKETCH DENSIFICATION, as a fallback rather than a preprocess (2026-08-02)
 
@@ -1809,7 +1844,7 @@ draw on and get no route from. `browser/rough.mjs`'s `commitEdit` is the one cho
 | **O3** ✅ | Close the z11–z13 gap — **done by extending the overview's band to z14, not by a middle level**: the tier floor buys nothing because a tier is a size bin (above) | **z11/z12/z13 all render in 0.5 s from one file**, against 8 GB / 2 GB / 539 MB of keys before |
 | **O3b** | The DETAIL half — a z≤12 mid level, paged on its own grid | blocked on O5: every cell size lands at 24–54 MB/viewport while a key costs 3 pages |
 | **O4** | The same generator for WE — the only part of §6h's list needing no bucket, no CORS and no 58 regions | a WE overview ships beside the app |
-| **O5** ⬅ **next** | *(upstream)* the per-key page cost — 3 pages per key with no batch amortisation. **Promoted: O3b cannot start until this lands** | a z16 view drops from 14.2 MB toward its ~4 MB of content |
+| **O5** ⬅ **next** | *(upstream)* the per-key page cost, **re-characterised**: coalesce adjacent page fetches (217 HTTP requests for 13.58 MB) and cluster an entry's pages, which attacks the 2.0–3.0 pages/key HIT floor. Cheap misses are third, and gate O3b rather than today | a z16 view drops from 14.2 MB toward its ~4 MB of content |
 
 O5 is worth filing on `loft-lang/loft` with `tools/base_key_probe.loft` as the repro: it is a ~3× on
 **every** zoom, needs no data change, and it is what makes the ladder's per-level floor affordable.
@@ -1825,6 +1860,9 @@ O5 is worth filing on `loft-lang/loft` with `tools/base_key_probe.loft` as the r
   its output.
 * **`tools/spine_size_probe.loft`** — the road spine: ways, vertices, km and decimated vertices per class,
   against the merged bound. This is what showed decimation alone buys nothing on roads.
+* **`tools/cell_hole_probe.loft`** — finds cells the store does NOT hold that have data on all four sides.
+  It exists because the obvious way to measure a miss is a box outside the extent, and that over-states it
+  by ~2×: the honest control is a hole with the map around it.
 
 ⚠ **A pixel is not a degree in both axes, and the first version of both probes got it wrong.** Mercator's
 screen-y follows `ln(tan(…))`, whose slope is `1/cos(lat)` — so at 52°N a degree of latitude is 1.62 screen
