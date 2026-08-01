@@ -1261,10 +1261,55 @@ selection halved the bytes again; that is the last cheap win on this side. The r
 cheaper absent-key probe in loft's paged loader, for which `layout_page_probe … pageload` is a
 ready-made reproducer.
 
-**F4 inherits four regions, not three**, and `data/coverage.toml` is deliberately NOT updated here: the
-committed index is the contract the Pages deploy verifies against, so naming blocks that are not
-published yet would turn every deploy red. The blocks are built and verified locally
-(`blocks/nl-*.r4.*`, gitignored); publishing them and moving the manifest is F4's first step.
+### 6g. PLANNING REGIONS AUTOMATICALLY — the design, and what it cannot fix (2026-08-02)
+
+NL's four regions were cut BY HAND: a 1-D longitude weight profile, cuts read off the thirds, the 900 MB
+cap checked afterwards. That does not survive Western Europe, and the reason is specific rather than
+general — **a longitude cut cannot make a dense COLUMN smaller.** London, Paris, the Ruhr, Milan and
+Berlin are each denser than anything in the Randstad, and any of them can put a strip over the cap on its
+own. So the region plan has to be computed from the data, in both axes, before anything is built.
+
+#### The pipeline: download → analyse → plan → build
+
+The analysis pass reads the **geojsonseq exports**, not a built store. They exist immediately after the
+osmium step, so nothing is built twice and no region is ever discovered oversized after the fact:
+
+    acquire(PBF) → osmium per layer → COUNT COORDS PER CELL → plan regions → build only the plan
+
+**Coords are the weight, because bytes are near-linear in them.** Calibrated on three measured regions,
+`MB = 12.972/Mcoord + 40` predicts within 1% — the slope is a `Coord` (two i32) and the intercept is the
+store's own fixed overhead. A pass that counts coordinates per 0.05° cell is a streaming line-scan of
+files the pipeline already produces.
+
+**The planner is a kd-split**: while any region's predicted size (INCLUDING its margin ring) exceeds the
+cap, split the worst one along its longer axis at the WEIGHTED median. Prototyped against the real NL
+grid it reproduces the hand cut and improves on it — 4 regions, max 727 MB against 794, duplication +33%
+against +35% — and it splits the eastern half by LATITUDE, which the longitude-only cut could not do.
+
+**Resolution is not the binding constraint, and that is the reassuring measurement.** At 0.05° NL's
+densest cell holds 0.64 Mcoords ≈ **8.4 MB of geometry — 107× under the cap**. A metro would have to be
+two orders of magnitude denser per km² than the worst cell in the Randstad before the grid could not
+subdivide. Region sizing is therefore safely automatable; report the densest cell so the headroom stays
+visible rather than assumed.
+
+#### The two things the planner cannot fix
+
+1. **The margin gets expensive exactly where regions get small.** The 0.10° margin is a RING, so
+   duplication is `((S + 2m)/S)² − 1`: **+44% at 1.0° across, +96% at 0.5°, +178% at 0.3°.** Dense metros
+   need small regions, which is where the ring costs most. So the margin must be per-region and
+   cost-capped, falling back to the client's covering set (`baseUrlsFor`, already built and gated) where
+   it is not worth paying. The planner should emit the margin it chose and the duplication it bought.
+2. **⚠ PER-VIEWPORT COST IN A DENSE METRO, WHICH NO REGION PLAN TOUCHES.** An Amsterdam z14 viewport is
+   already 21.8 MB of geometry; London or Paris will be several times that, and cutting regions
+   differently changes it by exactly nothing — it is density per SCREEN, not per region. This is what
+   would make those cities "suddenly problematic" for a user, and the only answer is generalisation: a
+   zoom pyramid that drops buildings and simplifies areas at low zoom (§6f's back-pocket overview tier
+   measured 75/94 MB for NL). **Measure a real Île-de-France or Greater London extract before committing
+   to WE** — one download answers whether the viewport cost is 3× NL's or 10×, and that number decides
+   whether generalisation is the next rung or the one after.
+
+*Do not build the planner and conclude WE is solved.* It removes one failure mode — a region that cannot
+be hosted — and leaves the one a user actually feels.
 
 ⚠ **F5 is the lesson from shipping this blank.** `nl_live_gate` proved routing and search on the live site
 and never asked whether anything was DRAWN, so a blank map passed every gate. Every future coverage claim

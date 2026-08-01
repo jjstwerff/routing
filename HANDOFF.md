@@ -72,7 +72,15 @@ Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_ba
 | **F1** ✅ | **page the layout in the kernel** — `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, a working set with its own marks, driven by a per-STORE read mode (`__baseReadMode`, kernel line 7) | built; the app draws a base map it never downloaded whole, over real 206 Range requests |
 | **F2** ✅ | **re-`expose` as the working set grows** — the pin comes off around every load and back on after; JS re-reads the handle per view | built, **and the risk is disproven by measurement**: 13 viewports, per-viewport cost 195 → 162 ms (0.83×), bracket balanced 13/12 |
 | **F3** ✅ | cut NL into regions **and re-bin the base map**. It came out as **FOUR** regions, not three — see below | built and verified locally; blocks are gitignored and NOT published |
-| F4–F5 | publish the four base blocks to data repos, move `data/coverage.toml`, and **assert the map RENDERS** in `nl_live_gate` | not started |
+| **F4** ✅ | publish the four base blocks to data repos and move `data/coverage.toml` | **done** — release `data-v2026-08-02` (3.1 GB) + four Pages data repos, each verified by a cross-origin ranged GET (206 · ACAO · exact size). ⚠ the LIVE site still serves v2026-08-01 until this branch reaches `main` |
+| F5 | **assert the map RENDERS** in `nl_live_gate` — against the deployed site, once main moves | not started, and it is the check that would have caught the blank map |
+
+**Where the data lives now.** Roads (4 blocks, 502 MB), the name store and the app ship on the main Pages
+site — 565 MB of a 950 MB budget. The base map (2.75 GB) is four Pages DATA REPOS,
+`routing-data-nl-{west,midwest,mideast,east}`, read cross-origin by byte range; each holds a workflow that
+downloads its block from the release, because GitHub rejects committed files over 100 MB.
+`base_cors = true` in `data/coverage.toml` is what lets the site index NAME those URLs — it stayed silent
+for the release, which serves ranges but no CORS header.
 
 **F3 in one line: paging the base map is now EXACT, and no viewport ever shows a seam.**
 
@@ -103,6 +111,16 @@ Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_ba
    picked an arbitrary region and **Den Haag and Rotterdam rendered as two lines**, with the gate still
    green on aggregate. `baseUrlsFor` selects on the ROADS extent and reads the base URL off that region.
    `build_index.sh` still writes a base extent into the index — treat it as a size, not a location.
+
+**Next, and it is scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
+four regions were cut by hand off a 1-D longitude profile, which does not survive Western Europe: a
+longitude cut cannot make a dense COLUMN smaller, and London / Paris / the Ruhr / Milan each can put a
+strip over the cap alone. The design is download → osmium → **count coords per 0.05° cell** → kd-split on
+weight → build only the plan; the analysis reads the geojsonseq exports, so nothing is built twice.
+Prototyped on the real NL grid it beats the hand cut (max 727 MB vs 794, +33% vs +35% duplication) and
+splits in BOTH axes. ⚠ **It fixes region SIZE and not per-viewport COST** — an Amsterdam z14 viewport is
+already 21.8 MB of geometry and London will be several times that, which no region plan touches. Measure
+an Île-de-France or Greater London extract before committing to WE.
 
 ⚠ **The shipped city block is still keyed the OLD way**, and that is the one loose end F3 leaves.
 `browser/stores/enschede.layout.store` predates the tier rules, so the new reader's low-side padding is
