@@ -50,7 +50,12 @@ out="${1:-$here/browser/coverage.json}"
 # Resolution order is therefore source first, `_site` last: browser/ holds the committed site blocks,
 # blocks/ the release ones, and _site is kept only for blocks that exist NOWHERE ELSE — the split
 # fixtures tools/cross_block_browser_gate.sh stages there.
-roots="$here/browser|$here/blocks|$here/_site"
+# Overridable, because a dataset can be STAGED outside `blocks/` while it is being published — and a
+# resolution order that cannot see the staging directory silently measures the SUPERSEDED blocks instead.
+# Earned on 2026-08-02: the release index was built while the new blocks sat in `blocks/f4/`, so it
+# described the previous two-region dataset and dropped the two regions that had no old counterpart, over
+# assets that were themselves correct.
+roots="${BLOCK_ROOTS:-$here/browser|$here/blocks|$here/_site}"
 # THE VERSION IS A RELEASE NAME, NOT A MEASUREMENT — so regenerating an index must not rename the
 # dataset. Everything else in this file is measured out of the blocks and changes only when they do;
 # the version is chosen by whoever publishes them. Precedence: an explicit DATASET_VERSION, else the
@@ -118,7 +123,7 @@ echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
+id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
 flush() {
   [ -n "$id" ] || return 0
   # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
@@ -137,7 +142,7 @@ flush() {
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
   if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
     echo "  $id: published at $ubase — not in the site index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
     return 0
   fi
   # …and the mirror of it: each index names only what it can actually serve.
@@ -149,26 +154,38 @@ flush() {
   # came out empty, and `publish-release.sh` refused to publish it. Which is the ordering working — an
   # empty index would have been a release nobody could resolve.
   #
-  # A block is being published exactly when it sits in `blocks/`, the generated-output directory
-  # `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and ship with
-  # the app, so they are correctly absent from a release index.
-  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "$here/blocks/$(basename "$roads")" ]; then
+  # A block is being published exactly when it sits in the PUBLISH ROOT — `blocks/`, the generated-output
+  # directory `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and
+  # ship with the app, so they are correctly absent from a release index.
+  #
+  # `PUBLISH_ROOT` overrides that directory for a harness that publishes somewhere else. `cors_host_gate`
+  # is the case: it serves a committed block from a second local ORIGIN, which is a real publication with
+  # no `blocks/` involved — and without the override the test read as "Enschede ships with the site", the
+  # index came out empty, and the gate failed on every checkout (it had, since this test replaced the
+  # `url_base` one). The rule is unchanged; what was hard-coded is the place it looks.
+  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
     return 0
   fi
   local rj bj
   rj="$(block_json "$roads" roads "$ubase")" || exit 1
-  # HOSTING IS PER STORE, not per region. The Netherlands is the case that forces it: its ROADS (497 MB
-  # both halves) fit beside the app on Pages, and its BASE MAP (2.87 GB) does not — so one region has one
-  # store the site can serve and one it cannot. `base_url_base` says where the base lives when that is
-  # somewhere else, and a SITE index then names no base at all rather than a URL the page cannot fetch.
+  # HOSTING IS PER STORE, not per region. The Netherlands is the case that forces it: its ROADS (502 MB
+  # over four regions) fit beside the app on Pages, and its BASE MAP (2.75 GB) does not — so one region
+  # has one store the site can serve and one it cannot. `base_url_base` says where the base lives when
+  # that is somewhere else.
   #
-  # `base: null` is a real state the app handles (store-app.mjs: LAYOUT becomes ""), not a degraded one:
-  # roads and a route on a plain background is the product outside Enschede until N4/N5 land.
+  # ⚠ WHETHER THE SITE INDEX MAY NAME IT DEPENDS ON WHAT THAT HOST SENDS, WHICH IS `base_cors`.
+  #   * a GitHub RELEASE serves `Range` and NO `Access-Control-Allow-Origin` — a page on the app's origin
+  #     cannot read it, so naming the URL would hand the app something it can only fail on. `base: null`
+  #     is the honest state and one the app handles (store-app.mjs: LAYOUT becomes "").
+  #   * a second Pages SITE sends `access-control-allow-origin: *` with a real 206 (measured 2026-08-01),
+  #     so the browser CAN read it and the index must name it — suppressing it there would leave the map
+  #     blank for no reason, which is the bug §6f exists to fix.
+  # It defaults to false, so a manifest that says nothing keeps the release behaviour.
   bj=null
-  if [ -n "$bubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
-    echo "  $id: base map published at $bubase — the site index names roads only"
+  if [ -n "$bubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ] && [ "${bcors:-false}" != "true" ]; then
+    echo "  $id: base map published at $bubase (no CORS) — the site index names roads only"
   elif [ -n "$base" ]; then
     bj="$(block_json "$base" base "${bubase:-$ubase}")" || exit 1
   fi
@@ -183,7 +200,7 @@ flush() {
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
   echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+') tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode"
-  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
+  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -199,6 +216,10 @@ while IFS= read -r line; do
     # or `base*=*` swallows it and the key silently reads as the base STORE path. Same reason
     # `read_mode` sits above nothing that could shadow it. Adding a key here means checking what
     # already-listed prefix could match it.
+    # ⚠ BEFORE `base_url_base`, which would otherwise swallow it — same glob-ordering rule as the
+    # `names`/`name` pair above. `base_cors` is a BOOLEAN, so it is read off the bare token, not a
+    # quoted value.
+    base_cors*=*)  bcors="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     base_url_base*=*) bubase="$(echo "$line" | cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;

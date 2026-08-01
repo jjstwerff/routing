@@ -16,15 +16,18 @@
 //
 // Input framing — one host_input() blob per command, newline-separated (JS sets globalThis.loftInput
 // before loft_start; step 5 adds loftPush for subsequent commands):
-//   line 0: <layout.store URL>
+//   line 0: <layout.store URLs — the covering SET, comma-separated>
 //   line 1: <roads.store URL>
 //   line 2: view | match
 //   line 3: view → <bbox "mnla,mnlo,mxla,mxlo"> (empty = whole region);  match → <sketch "lat,lon;…">
 //   line 4: <profile e.g. cycling_road>    (match only)
+//   line 5: <roads read mode: paged | whole>
+//   line 6: <names.store URL>              (find only)
+//   line 7: <base-map read mode: paged | whole>   (PLAN-SCALE §6f F1; absent ⇒ whole, i.e. pre-F1)
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys, do_find);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys, layout_cell_keys, LAYOUT_PAD, do_find);
 use basemap::(PTile, NameRec);
 use routing_kernel::(TTile, GeoPoint, corridor_cell_keys, corridor_margin);
 use web::frame_yield;
@@ -43,9 +46,12 @@ struct CellMark { const k: integer }
 //   * and the store CANNOT live in a struct field to be passed as one — the paged loaders refuse a
 //     field-declared collection (loft#632), which is the whole mechanism this path runs on.
 // So the caller keeps both collections as bare locals and this only decides what is missing.
-fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>, blk: integer) -> vector<integer> {
+// `base` is the caller's ALREADY-MULTIPLIED block offset, not a block number. The two stores mark on
+// different strides (a layout key carries its tier, so it needs a wider one), and a helper that applied
+// one stride to both would silently answer the layout's question with the roads' arithmetic.
+fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>, base: integer) -> vector<integer> {
   need: vector<integer> = [];
-  for k in keys { if marks[blk * MARK_BLOCK + k] == null { need += [k]; } }
+  for k in keys { if marks[base + k] == null { need += [k]; } }
   need
 }
 
@@ -54,6 +60,12 @@ fn cells_to_fetch(marks: hash<CellMark[k]>, keys: vector<integer>, blk: integer)
 // nothing for a key must not mark it fetched for its neighbour. The multiplier is far above any cell key
 // (the packing tops out around 1.6e8 for the whole world at this cell size).
 MARK_BLOCK = 10000000000;
+
+// The layout's own mark stride, and it CANNOT be MARK_BLOCK. A layout key carries its tier in the high
+// digits (`basemap::TIER_STRIDE` is 1e10), so the top tier's keys reach ~4.3e10 — past the roads stride,
+// which would make block 4's cell 0 collide with block 0's tier-4 cells. This sits above any layout key
+// at any tier, with room for the tier ladder to grow.
+LMARK_BLOCK = 1000000000000;
 
 // End-of-response marker. `loft_start` never returns now, so the host cannot use "the call returned" as
 // "this command is done" — it needs an in-band terminator. A bare `#EOR` line can only come from here:
@@ -91,7 +103,14 @@ fn main() {
   // for each cell once and a warm edit inside the loaded area fetches nothing at all.
   roads: hash<TTile[tkey]> = [];
   marks: hash<CellMark[k]> = [];
+  // PLAN-SCALE §6f F1 — the base map is a WORKING SET too, on its own grid. A country's layout store is
+  // ~690 MB, so "load it whole" is what made the map blank outside Enschede: it was left on a release
+  // the browser cannot read rather than cut down to what a screen needs. `lmarks` is `marks`' twin for
+  // the layout's cell keys — same reason (a paged loader reports "no such key" exactly as it reports
+  // "loaded nothing", so an empty cell would be re-requested by every command for the rest of the
+  // session), and separate because the two stores key on different grids at different cell sizes.
   layout: hash<PTile[tkey]> = [];
+  lmarks: hash<CellMark[k]> = [];
   // Which URL each store currently holds ("" = empty). The URLs arrive IN the command, so the loads
   // cannot literally precede the loop — this is the equivalent: load on first use, reuse after, and
   // reload only if the command names a different region. Re-validating a static 20 MB image on every
@@ -121,6 +140,11 @@ fn main() {
       frame_yield();
     } else {
       lines = blob.split('\n');
+      // PLAN-SCALE §6f F3 — line 0 is the COVERING SET of base blocks, not one block. NL is cut into
+      // three base regions to fit a host each, and a viewport ON a cut needs both sides: measured at the
+      // 4.90°E seam, one region answers a straddling z16 viewport with 13 946 of its 25 862 features.
+      // Paging is what allows it — `store_load_keys` accumulates, where the whole-file load this
+      // replaced adopted an image and a second one would have discarded the first.
       layout_url = lines[0] ?? "";
       // PLAN-SCALE C2 — line 1 is the COVERING SET, not a block: a comma-separated list of the roads
       // blocks whose extent this command touches. One entry is the C0/C1 case and behaves exactly as
@@ -143,8 +167,17 @@ fn main() {
       // which command it was. Absent for every command except `find`, and empty is a valid answer there
       // (a region with no name store simply finds nothing).
       names_url  = lines[6] ?? "";
+      // How to read the BASE MAP, per store rather than per region (HANDOFF §0 rule 2): NL ships roads
+      // beside the app and its base map somewhere else, so the two stores do not have to be read the
+      // same way. Absent ⇒ "whole", which is the pre-F1 behaviour and what a 20 MB city block wants.
+      lmode      = lines[7] ?? "whole";
       roads_urls: vector<text> = [];
       for u in roads_url.split(',') { if u != "" { roads_urls += [u]; } }
+      layout_urls: vector<text> = [];
+      for lu in layout_url.split(',') { if lu != "" { layout_urls += [lu]; } }
+      // More than one base block can only be PAGED, for the same reason the roads set can only be: a
+      // whole-file load adopts an image and the second would replace the first, where a keyed load adds.
+      if len(layout_urls) > 1 { lmode = "paged"; }
       // More than one block can only be PAGED. A whole-file load adopts an image — the second would
       // replace the first rather than add to it — whereas `store_load_keys` accumulates by design. So
       // the covering set decides the strategy when it is plural, and the per-block hint decides when it
@@ -223,7 +256,7 @@ fn main() {
             for burl in roads_urls {
               // Ask EVERY covering block for the window. A block that holds none of these cells returns
               // nothing and costs one request; a corridor near a seam gets its cells from both (S8).
-              bneed: vector<integer> = cells_to_fetch(marks, mkeys, bi);
+              bneed: vector<integer> = cells_to_fetch(marks, mkeys, bi * MARK_BLOCK);
               if len(bneed) > 0 {
                 // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent from
                 // THIS block: a paged loader reports "no such key" exactly as it reports "loaded
@@ -258,7 +291,16 @@ fn main() {
             layout_pinned = false;
           }
           if layout_url != layout_at {
-            if store_load_url_trusted(layout, layout_url) {
+            // A changed URL is a different region: the working set and its marks describe the old one.
+            layout = [];
+            lmarks = [];
+            if layout_url == "" {
+              layout_at = "";                     // a region with no base map — supported, not an error
+            } else if lmode == "paged" {
+              // PLAN-SCALE §6f F1 — nothing is fetched HERE: the view below asks for exactly the cells
+              // it is about to read. This is the roads' own treatment (C1b), one grid finer.
+              layout_at = layout_url;
+            } else if len(layout_urls) == 1 && store_load_url_trusted(layout, layout_urls[0] ?? "") {
               layout_at = layout_url;
             } else {
               println("ERR layout store_load_url failed: {layout_url}");
@@ -267,13 +309,41 @@ fn main() {
             }
           }
           if ok {
+            // F1 — the base-map cells this viewport reads, in the LAYOUT's key space (~500 m cells),
+            // which is not the roads' (2 km). Paged mode only: a whole-loaded store holds them already.
+            lkeys: vector<integer> = [];
+            if lmode == "paged" && layout_at != "" { lkeys = layout_cell_keys(arg3, LAYOUT_PAD); }
+            lbi = 0;
+            for lburl in layout_urls {
+              // Ask EVERY covering base block for the window, exactly as the roads loop below does. A
+              // block holding none of these cells returns nothing and costs one request; a viewport on a
+              // seam gets its cells from both sides.
+              lbneed: vector<integer> = cells_to_fetch(lmarks, lkeys, lbi * LMARK_BLOCK);
+              if len(lbneed) > 0 {
+                // F2 — the pin comes OFF and goes back ON around every growth of the working set.
+                // `expose` pins the store read-only and a load WRITES, so loading under the pin is
+                // rejected — in wasm silently, as a trap (§7d(2)). The pin used to be taken once per
+                // session and never disturbed, because after the initial whole load nothing touched the
+                // store again; a paged base map touches it on every viewport that reaches new ground.
+                // What makes that safe on the other side is that JS re-reads the handle after EVERY
+                // command (browser/store-app.mjs re-fetches `exposedValue(1)` per view) — it must, since
+                // a `memory.grow` during the call detaches its ArrayBuffer anyway.
+                if layout_pinned { release(EXPOSE_LAYOUT, layout); layout_pinned = false; }
+                // Marked BEFORE the fetch, and the mark stays even when the cell turns out to be absent
+                // from THIS block: a paged loader reports "no such key" exactly as it reports "loaded
+                // nothing", so an empty cell would otherwise be re-requested for the rest of the session.
+                for lk in lbneed { lmarks += CellMark { k: lbi * LMARK_BLOCK + lk }; }
+                _ = store_load_keys(layout, lburl, lbneed);
+              }
+              lbi += 1;
+            }
             vkeys: vector<integer> = [];
             if readmode == "paged" { vkeys = view_cell_keys(arg3); }
             vbi = 0;
             for vburl in roads_urls {
               // Ask EVERY covering block for the window. A block that holds none of these cells returns
               // nothing and costs one request; a corridor near a seam gets its cells from both (S8).
-              vbneed: vector<integer> = cells_to_fetch(marks, vkeys, vbi);
+              vbneed: vector<integer> = cells_to_fetch(marks, vkeys, vbi * MARK_BLOCK);
               if len(vbneed) > 0 {
                 // Mark BEFORE fetching, and leave the mark even when the key turns out to be absent from
                 // THIS block: a paged loader reports "no such key" exactly as it reports "loaded

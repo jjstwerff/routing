@@ -10,7 +10,7 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
-import { resolveCoverage, roadsUrlsFor } from './coverage.mjs';
+import { resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
 
 // PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
 // the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
@@ -89,7 +89,19 @@ const ROADS  = new URL(coverage.block.roads.url, INDEX_URL).href;
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 const roadsFor = (b) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, coverage.block) || ROADS;
+// PLAN-SCALE §6f F3 — the BASE map is a covering set too, now that a country is three base regions. A
+// viewport on a cut needs both sides: one region answers a straddling z16 viewport with 13 946 of its
+// 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
+// so a region with no base map behaves exactly as it did.
+const baseFor = (b) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo) || LAYOUT;
 window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
+// PLAN-SCALE §6f F1 — how to read the BASE MAP, which is a decision PER STORE and not per region
+// (HANDOFF §0 rule 2): NL's roads ship beside the app and its base map does not, so the two are not
+// read the same way. A country's base map is ~690 MB and only a viewport of it is ever on screen.
+// The index may carry it per store; until a base block is published with one, inheriting the block's
+// own read mode is right for both regions today (Enschede's 21 MB whole, a country's paged). Settable
+// before load, like `__readMode`, so a gate can page the shipped city block on purpose.
+window.__baseReadMode = window.__baseReadMode || coverage.block.base?.readMode || coverage.block.readMode || 'whole';
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
@@ -128,6 +140,16 @@ const fboxOf = (bbox) => {
   const p = bbox.split(',').map((s) => Math.round(parseFloat(s) * 1e7));
   return { mnla: p[0], mnlo: p[1], mxla: p[2], mxlo: p[3] };
 };
+const bboxOf = (b) => `${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`;
+
+// The kernel's command blob is POSITIONAL, and it has grown past the point where writing one by hand is
+// safe: line 5 is the roads read mode and line 7 the base map's (PLAN-SCALE §6f F1). A `view` built as
+// four lines therefore reads BOTH as "whole" — which on a paged region is not a slower map, it is a
+// blank one, because the working set is never asked for. So every view goes through here.
+// (`match` / `find` / `reset` stop at line 6 and keep their literal form; if a line 8 is ever added,
+// they come through here too.)
+const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT) =>
+  [base, roads, cmd, bbox, '', window.__readMode, '', window.__baseReadMode].join('\n');
 
 let loadedBox = null, loadedBbox = null, lastViewText = null;
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
@@ -260,7 +282,7 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nview\n${bbox}\n\n${window.__readMode}`);
+  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -294,8 +316,12 @@ async function ensureViewNow() {
   // The app's OWN first view is the only genuinely cold one — it pays the session's store load. Every
   // __perfHooks.timedView after it is warm, so the profiler cannot see the load unless we record it here.
   const ms = performance.now() - t0;
+  // `viewSeq` counts COMPLETED views. A driver that panned and then waited on `lastViewMs` would be
+  // waiting on a number that can legitimately repeat, and would read the PREVIOUS viewport's counts as
+  // the new one's — so the gate needs something that only ever goes up (tools/base_paged_gate.sh).
   window.__storeApp = { ...(window.__storeApp || {}), viewOk: /R=\d+/.test(sum), view: sum,
                         firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms,
+                        viewSeq: (window.__storeApp?.viewSeq || 0) + 1, viewBbox: bbox,
                         layerCounts: counts, areaSource: h ? 'store' : 'text' };
 }
 
@@ -470,7 +496,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nviewtext\n${bbox}\n\n${window.__readMode}`);
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext', baseFor(box)));
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -542,7 +568,7 @@ window.__perfHooks = {
       return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
     }
     const b = viewportBox(0.6);
-    return kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+    return kernel.runKernel(viewCmd(bboxOf(b)));
   },
   // C0 — is cost growing with session history? Run the SAME command N times and report wasm memory and
   // duration for each, so growth is attributed rather than averaged away.
@@ -554,7 +580,7 @@ window.__perfHooks = {
         await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
       } else {
         const b = viewportBox(0.6);
-        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+        await kernel.runKernel(viewCmd(bboxOf(b)));
       }
       rows.push({ i, ms: performance.now() - t0, wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1) });
     }
@@ -564,7 +590,7 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${roadsFor(box)}\nview\n${bbox}\n\n${window.__readMode}`);
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();
@@ -596,7 +622,7 @@ window.__perfHooks = {
   // A degenerate arg makes the command's own work ≈ 0, so what's left is the decode.
   async timedDecodeBoth() {   // empty bbox ⇒ view serialize ≈ 0 ⇒ kernel ≈ decode(layout + roads)
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n0.0,0.0,0.000001,0.000001`);
+    const text = await kernel.runKernel(viewCmd('0.0,0.0,0.000001,0.000001'));
     return { kernel: performance.now() - t0, bytes: text.length };
   },
   async timedDecodeRoads() {  // 2 identical pts ⇒ match compute ≈ 0 ⇒ kernel ≈ decode(roads only)
@@ -1166,7 +1192,7 @@ window.__perfHooks = {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
     } else {
       const b = viewportBox(0.6);
-      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nview\n${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixed(6)},${b.mxlo.toFixed(6)}`);
+      await kernel.runKernel(viewCmd(bboxOf(b)));
     }
     const total = performance.now() - t0;
     stop = true;

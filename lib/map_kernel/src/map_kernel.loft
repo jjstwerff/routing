@@ -12,7 +12,8 @@
 //                                   requests the visible bbox — the emit volume, not the store, is the cost.
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
-use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name);
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
+              cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
                      RF_ACCESS_NO, RF_FOOT_YES, BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
@@ -194,6 +195,58 @@ pub fn do_view_bbox(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, bbox: t
 pub fn view_cell_keys(bbox: text) -> vector<integer> {
   vb = parse_fbox(bbox);
   bbox_cell_keys(vb.mnla, vb.mnlo, vb.mxla, vb.mxlo)
+}
+
+// The BASE MAP's fetch list — the layout counterpart of `view_cell_keys` (PLAN-SCALE §6f F1).
+//
+// It cannot BE `view_cell_keys`: the two stores are on different grids. Roads are keyed at
+// `routing_kernel`'s TILE_CELL (0.02° ≈ 2 km) with its fixed packing; the layout at `LAYOUT_CELL`
+// (~500 m) with basemap's parametric one. Handing one store the other's keys does not fail — it looks
+// up keys that exist in neither and silently returns an empty map.
+//
+// ⚠ `pad` IS A SOUNDNESS CONDITION, not a tuning knob — and since PLAN-SCALE §6f F3 it is a condition
+// the DATA satisfies rather than one this side has to guess at.
+//
+// The problem it answers: a layout feature is never clipped, so it reaches out of the tile it is keyed
+// in. A WHOLE load still draws it (the render path screens on each tile's sealed extent); a PAGED load
+// cannot, because a tile that was never fetched has no extent to consult, and its features are simply
+// absent from the picture. When features were keyed by their FIRST VERTEX at one cell size, that reach
+// was unbounded, and `tools/layout_page_probe.loft` measured what covering it would cost on nl-west:
+// ELEVEN cells of padding for a z16 viewport of Amsterdam (864 tiles) and FIFTY for a z14 one (13 661 —
+// the region). Exactness was not reachable by padding at all; pad=1 was a knee that still dropped a
+// handful of very wide features (a province border, a power line, a big water body).
+//
+// The generator now bins each feature at the finest tier where its bbox spans AT MOST 2 CELLS
+// (`basemap::layout_tier`), keyed at the cell holding the bbox's MINIMUM CORNER. So a feature occupies
+// its own cell and at most the next one UP in each axis — never the one below. One cell of padding on
+// the LOW side, per tier, is therefore exactly enough, and the reader takes every tier's window because
+// a feature that did not fit a fine cell is on a coarse one.
+pub const LAYOUT_PAD = 1;
+
+pub fn layout_cell_keys(bbox: text, pad: integer) -> vector<integer> {
+  lkeys: vector<integer> = [];
+  // A paged store has no "whole region" view: an empty spec parses to the WORLD box, and enumerating the
+  // world at 500 m cells is 2.6 billion keys. The app always sends a viewport; anything else asks for
+  // nothing rather than for everything.
+  if len(bbox.split(',')) != 4 { return lkeys; }
+  lb = parse_fbox(bbox);
+  ltier = 0;
+  while ltier < LAYOUT_TIERS {
+    lc = tier_cell(ltier);
+    // Low side only — a feature keyed at cell c is drawn in c..c+1, so it is visible here iff
+    // c >= x0 - 1 and c <= x1. Padding the high side too would ask for a ring of cells that cannot hold
+    // anything this viewport can see, and an empty answer is not a cheap one.
+    lx0 = cell_ix(lb.mnlo, lc) - pad; lx1 = cell_ix(lb.mxlo, lc);
+    ly0 = cell_ix(lb.mnla, lc) - pad; ly1 = cell_ix(lb.mxla, lc);
+    lyy = ly0;
+    while lyy <= ly1 {
+      lxx = lx0;
+      while lxx <= lx1 { lkeys += [tier_key(ltier, lxx, lyy)]; lxx += 1; }
+      lyy += 1;
+    }
+    ltier += 1;
+  }
+  lkeys
 }
 
 pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {

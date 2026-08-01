@@ -5,7 +5,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 # PLAN-SCALE — from one city to Western Europe
 
-**Status (2026-08-01): C0–C2 BUILT. The Netherlands routes and searches on GitHub Pages.** Roads
+**Status (2026-08-01): C0–C2 BUILT. The Netherlands routes and searches on GitHub Pages — but the map is
+BLANK outside Enschede, and §6f is the design that fixes it.** Roads
 (233 + 264 MB) and a name index (36 MB) ship same-origin and paged; the base map (999 + 1058 MB) is
 regenerated and published but awaits a host (D2). The site sits at **560.5 MB of a ~950 MB budget**,
 measured on every build. §6c has the rung, **§6e has what NL taught about Western Europe** — including the
@@ -1061,6 +1062,282 @@ the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a dif
 
 Leave the streaming-store ask upstream alone unless step 1 proves chunking cannot hold it.
 
+### 6f. FULL NL BASE MAP — the design (2026-08-01)
+
+**The problem, stated as a user sees it:** outside Enschede the map is BLANK. Roads route and search
+works, but there is nothing to look at, so you cannot tell "the router picked a farm track" from "the map
+is missing". A route on an empty background is not a product.
+
+**Why it was blank:** the NL base map is 2.06 GB. GitHub Pages caps a SITE at ~1 GB and the app already
+uses 560 MB, so the base map was published to the release instead — and release assets send no CORS
+header, so a browser cannot read them. §6e concluded the fix was D2, a paid CORS bucket.
+
+**Three things measured on 2026-08-01 make that conclusion obsolete.**
+
+| # | measured | why it matters |
+|---|---|---|
+| 1 | **GitHub Pages sends `access-control-allow-origin: *`** *and* a real `206` — verified against the live site with a cross-origin ranged GET | Pages IS a CORS host. A SECOND Pages site (a data-only repo) can serve blocks to the app, cross-origin, free. D2's premise — that CORS forces a paid bucket — was assumed, never tested |
+| 2 | **A country-scale base store PAGES correctly**: `store_load_key` on `nl-east.base.store` fetched **524 288 bytes of 1 109 719 080** and returned a tile identical to the whole-load one (653 areas / 1034 buildings / 563 lines / 41 labels / 252 pois / 17 379 coords) | N4's open question — "can `expose` work on a partially-filled store" — is answered for the READ half. The base map does not need to fit in memory, only the viewport does |
+| 3 | **A base tile is 9.1 kB**, so a viewport of 8–20 cells is 75–190 kB | The per-screen cost is the same against 88 GB as against 1 GB |
+
+#### The design
+
+    main Pages site  (~560 MB, unchanged)      data Pages repos (~690 MB each, 3 of them)
+      app shell                                  nl-a.base.store
+      roads   nl-*.roads.store                   nl-b.base.store
+      names   nl.names.store                     nl-c.base.store
+      base    enschede.layout.store            served cross-origin, 206 + ACAO, read PAGED
+
+* **NL becomes three regions**, cut so each base block fits a Pages site with margin. `build-base-chunked.sh`
+  already produces roads AND base per chunk, and `CHUNK_EDGES` already forces the cuts to land where the
+  coverage manifest wants them.
+* **Each base block gets its own data repo**, named by `base_url_base` in `data/coverage.toml` — the
+  per-store hosting that already exists. The app resolves it to an absolute cross-origin URL.
+* **The base map is read PAGED**, like the roads, by the cells the viewport touches.
+
+#### The work, in order, each with its own observable
+
+| | what | observable |
+|---|---|---|
+| **F1** ✅ | **Page the layout in the kernel.** `web_basemap_kernel.loft` did `store_load_url_trusted(layout, url)` — a WHOLE load. It now gets the roads' treatment: `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, accumulating a working set | a viewport renders from a store read by RANGE — **done**, and the bytes are 50× what this row assumed; see below |
+| **F2** ✅ | **Re-`expose` as the working set grows.** `expose` pins the store read-only and is O(collection) per call, so it cannot run per frame — it must run once per LOAD, and the JS side must re-read the handle after each | **done, and the risk is disproven**: 13 viewports with a growing working set, per-viewport cost 211 ms → 176 ms (0.84×), bracket balanced 13/12 |
+| **F3** ✅ | **Cut NL into three regions** and rebuild roads + base per region — **and re-bin the base map while doing it**, which turned out to be the load-bearing half | **done**; each base block under 900 MB and every region paged-EXACT. See "F3, and what it cost" below |
+| **F4** | **Publish the base blocks to data repos** and name them by `base_url_base` | `cors_host_gate.sh` against the real data repo, not a local server |
+| **F5** | **Extend `nl_live_gate`** to assert the map RENDERS in Amsterdam | non-zero areas/buildings/labels from a cross-origin paged base — the check that would have caught "shows nothing" |
+
+#### What F1 measured, and what it changes (2026-08-01)
+
+F1 is built and works — the app draws a base map it never downloaded whole, over real 206 Range requests
+(`tools/base_paged_gate.sh` runs the same camera path twice, whole vs paged, and compares what got
+DRAWN). But building it required measuring the two things this section had assumed, and **both
+assumptions were wrong**. The instrument is `tools/layout_page_probe.loft`; the numbers are from
+`blocks/nl-west.base.store`, the block that would actually ship.
+
+**1 · A viewport is not 75–190 kB. It is 10 MB, and at one zoom out, 68 MB.**
+
+| viewport (the app's own padded box) | keys | features | geometry | **fetched** |
+|---|---|---|---|---|
+| Amsterdam z16 | 84 | 54 974 | 3.4 MB | **10.3 MB** |
+| Amsterdam z14 | 779 | 344 195 | 21.8 MB | **68.4 MB** |
+| open water / outside the block, z16 | 84 | 0 | 0 | **9.0 MB** |
+
+The row above got 75–190 kB by multiplying the store-wide average tile (9.1 kB) by an unpadded
+viewport (8–20 cells). Both factors are wrong in the same direction: **the average tile is rural and the
+viewed tile is urban** (a city cell is 5× the mean), and a real viewport at z16 is 84 cells once padded.
+This is `CLAUDE.md`'s own rule — *measure the common case, not the outlier* — with the outlier being the
+average. The marginal cost is **~104–139 kB per key against ~31 kB of geometry**, and the third row is
+the one that names the mechanism: **84 keys that hold nothing still cost 9 MB**, so most of that is the
+per-key probe, not the payload.
+
+**2 · No affordable padding is exact.** A layout feature is keyed by its FIRST VERTEX and never clipped,
+so it overhangs its cell (PLAN-PERF §7g). A whole load hides this — the render path screens on each
+tile's sealed extent — but a paged load cannot consult the extent of a tile it never fetched. Counting
+features actually VISIBLE in an Amsterdam z16 viewport:
+
+| pad | 0 | 1 | 2 | … | exact |
+|---|---|---|---|---|---|
+| tiles fetched | 50 | 84 | 126 | | 864 (z16) · 13 661 (z14) |
+| features missed of 25 260 | 79 | 12 | 7 | | 0 |
+
+`LAYOUT_PAD = 1` is the knee — 85% of the misses for 1.7× the tiles — and it is **a compromise, not a
+fix**. What is left is a handful of very wide features: a province border, a power line, a railway, a
+big water body keyed kilometres from where it is drawn. In a dense viewport that is invisible; in a
+rural one it can be all four of the lines on screen.
+
+**3 · Both problems have the same fix, and it belongs to F3's rebuild.** Bound a feature's reach at
+GENERATION instead of widening the window at read time:
+
+* **Bin each feature into a tile whose cell CONTAINS it**, with coarser tiers (×8 each) for the ones that
+  do not fit the finest. Then *at its own tier a feature spans at most 2 cells*, so a window padded by 1
+  cell **per tier** is EXACT — 4 tiers cover NL (500 m → 4 km → 32 km → 256 km), each feature is stored
+  once, and the store does not grow. A low zoom then reads only the coarse tiers, which is also the
+  answer to 68 MB: today a zoom-out multiplies the key count by 4 while the useful detail shrinks.
+* **And reconsider `LAYOUT_CELL` (500 m) itself.** At ~110 kB of per-key cost against ~31 kB of payload,
+  the grid is finer than the read path can pay for. A coarser cell cuts the key count 16× for the same
+  area *and* shrinks every feature's span in cells, which improves 2 as well.
+
+The alternative — storing each feature in every cell it touches — is measured at **1.5× the store**
+(`layout_page_probe … spans` reports `dup_if_binned_everywhere` per kind: areas 211%, lines 404%), so it
+is the expensive way to buy what tiering gives for nothing.
+
+⚠ **None of this makes F1 wrong to have built.** The kernel has to page the layout under every one of
+these designs, F2's O(collection) re-expose risk is now measured away rather than feared, and the gate
+that holds the residual exists. What changed is F3: it was "cut NL into three regions", and it is now
+"cut NL into three regions **and re-bin the base map**", with the numbers above as its acceptance test.
+
+⚠ **The layout working set never shrinks**, exactly like the roads one (C1b): a session that pans across
+a country accumulates every cell it has visited. Flat per-viewport cost over 13 viewports says nothing
+about 500, and eviction is where §6b's Track 3 already puts it (blocks + stitching + LRU). It is a
+session-length question, not a correctness one, and it wants measuring before it wants solving.
+
+#### F3, and what it cost (2026-08-01)
+
+**The exactness fix is two rules in the GENERATOR, and it is free.**
+
+> A feature is keyed at the FINEST TIER whose cells its bbox spans at most 2 of, at the cell holding the
+> bbox's MINIMUM CORNER.
+
+Tiers step ×8 (500 m → 4 km → 32 km → 256 km) and share one store, the tier riding in the key above
+`TIER_STRIDE`. The first rule bounds a feature's reach to one cell *at its own tier*; the second makes
+that reach one-directional — a feature occupies its cell and the next one **up**, never the one below —
+so a reader pads the low side only. Padding stops being a guess measured in lost features:
+
+| on the shipped Enschede inputs | before | after |
+|---|---|---|
+| features missed at z16 / z14 | 7 / 5 | **0 / 0** |
+| keys asked for a z16 viewport | 111 | **69** (93% of them hit, was 65%) |
+| store bytes | 20 776 816 | **20 776 816** |
+
+Conservation was checked rather than assumed at both scales: the same inputs through the old and new
+binning give identical feature counts, and the country rebuild lands on **17 290 495 features — exactly
+the published total** — in the same bytes, with ~130 extra coarse tiles.
+
+**Cutting into regions puts a seam through ground people look at**, and that decided both the region
+count and the cut rule. Measured at a cut, at the app's own default zoom: a straddling viewport holds
+25 862 features and one region answered with **13 946 — 54%, half the screen silently blank.**
+
+**So a region carries its neighbours' edges: every internal side is widened by a 0.10° MARGIN**, which is
+wider than a padded z14 viewport (±0.0944° of longitude, measured off the app's own projection). One
+region therefore answers any viewport at z14 or tighter whole — checked rather than assumed, on a
+viewport centred exactly on a cut:
+
+| z14 viewport centred on the 5.40°E cut | visible | drawn | missed |
+|---|---|---|---|
+| the single region whose band holds it | 61 631 | 61 631 | **0** |
+| the whole-country store, same box | 61 631 | 61 631 | 0 |
+
+**FOUR regions, not three, and the count came out of the arithmetic.** `layout_page_probe … lonprofile`
+sums coords per 0.1° band — the weight is nothing like uniform, the Randstad carrying far more geometry
+per degree than the north-east — and a size model calibrated on three measured cuts (fits within 1%) says
+three regions cannot hold a 0.10° margin under the 900 MB cap; the eastern one lands at 957 MB. Four can,
+with room:
+
+| | west | midwest | mideast | east |
+|---|---|---|---|---|
+| base, cuts 4.7 / 5.4 / 5.9 | 555 MB | **794 MB** | 627 MB | 775 MB |
+| roads (disjoint, no margin) | 104 MB | 129 MB | 107 MB | 162 MB |
+
+Roads are split from the country block and conserve exactly — 2 785 476 ways and 234 253 barriers — and
+they are cut WITHOUT a margin on purpose: the client stitches road blocks (S8) and a duplicated way is
+not a slower match but a different one (`block_overlap_gate` enforces it). The base is the opposite case
+and gets the margin. The two stores of one region no longer describe the same ground, and that is
+deliberate.
+
+⚠ **A REGION and a CHUNK want opposite cuts, and `trim_base` now has both.** A chunk is re-assembled, so
+every feature must survive exactly once (`partition`, by tile origin — what `base_chunk_gate` counts). A
+region is HOSTED ALONE, so it has to be a complete map of its own ground: `cover` keeps every tile whose
+sealed EXTENT reaches the band. With the margin that costs **+27% features / +35% bytes** (2751 MB across
+four against 2043 MB for the country), and that is the price of never showing a seam.
+
+**The client keeps a covering SET as the backstop** — `baseUrlsFor`, `roadsUrlsFor` generalised over the
+store kind rather than copied. The margin makes it a no-op at z14 and tighter (one block covers, one URL
+is named); it is what answers a z13-or-wider viewport, and it is only possible at all because F1 made
+the loads PAGED: `store_load_keys` accumulates, where the whole-file load it replaced adopted an image
+and a second would have discarded the first.
+
+#### Two defects this rung found, both silent, both now loud
+
+1. **`store_persist_bind` ADOPTS AN EXISTING IMAGE.** Pointed at a file that already exists it keeps the
+   old contents, writes none of the new ones, and returns **true**. The three-region cut was produced
+   twice with different bands and the second run changed nothing: the tool printed the new feature counts
+   and `persist true`, the file had a fresh mtime, and it still held the previous map — caught only by
+   reading the extent back out of it. Every tool here that persists now refuses an existing target by
+   name (`#PERSIST FAIL`), which is the difference between a wrong answer and an error.
+2. **A tiered store's EXTENT no longer identifies a region.** A tier-3 tile is 256 km across, so a
+   region's sealed base extent is whatever its widest tile covers: after the four-way cut all four base
+   extents read lon 2.39..7.21 — the whole country, four times. Block selection by "smallest block
+   containing the box" then picked an arbitrary region, and **Den Haag and Rotterdam rendered as two
+   lines and nothing else** while the gate still passed on aggregate. `baseUrlsFor` selects on the ROADS
+   extent (untiered, disjoint, genuinely geographic) and reads the base URL off the region it picks.
+   ⚠ Anything else that treats a base extent as a geographic bound — `build_index.sh` writes one into the
+   index — needs the same reading.
+
+**What F3 did NOT fix, with the number:** a viewport still costs 12–24 MB paged (six real viewports
+across the four regions: 99.7 MB, 1611 range requests), and the reason is not the geometry. A keyed read
+costs **~100 kB whether or not the key exists** — 84 keys that hold nothing fetched 9 MB — so the bill is
+dominated by asking, not by receiving. The min-corner rule cut the asking by 38% and correct region
+selection halved the bytes again; that is the last cheap win on this side. The rest is either a coarser
+`LAYOUT_CELL` (which trades probe count against over-fetch and has an optimum worth measuring) or a
+cheaper absent-key probe in loft's paged loader, for which `layout_page_probe … pageload` is a
+ready-made reproducer.
+
+### 6g. PLANNING REGIONS AUTOMATICALLY — the design, and what it cannot fix (2026-08-02)
+
+NL's four regions were cut BY HAND: a 1-D longitude weight profile, cuts read off the thirds, the 900 MB
+cap checked afterwards. That does not survive Western Europe, and the reason is specific rather than
+general — **a longitude cut cannot make a dense COLUMN smaller.** London, Paris, the Ruhr, Milan and
+Berlin are each denser than anything in the Randstad, and any of them can put a strip over the cap on its
+own. So the region plan has to be computed from the data, in both axes, before anything is built.
+
+#### The pipeline: download → analyse → plan → build
+
+The analysis pass reads the **geojsonseq exports**, not a built store. They exist immediately after the
+osmium step, so nothing is built twice and no region is ever discovered oversized after the fact:
+
+    acquire(PBF) → osmium per layer → COUNT COORDS PER CELL → plan regions → build only the plan
+
+**Coords are the weight, because bytes are near-linear in them.** Calibrated on three measured regions,
+`MB = 12.972/Mcoord + 40` predicts within 1% — the slope is a `Coord` (two i32) and the intercept is the
+store's own fixed overhead. A pass that counts coordinates per 0.05° cell is a streaming line-scan of
+files the pipeline already produces.
+
+**The planner is a kd-split**: while any region's predicted size (INCLUDING its margin ring) exceeds the
+cap, split the worst one along its longer axis at the WEIGHTED median. Prototyped against the real NL
+grid it reproduces the hand cut and improves on it — 4 regions, max 727 MB against 794, duplication +33%
+against +35% — and it splits the eastern half by LATITUDE, which the longitude-only cut could not do.
+
+**Resolution is not the binding constraint, and that is the reassuring measurement.** At 0.05° NL's
+densest cell holds 0.64 Mcoords ≈ **8.4 MB of geometry — 107× under the cap**. A metro would have to be
+two orders of magnitude denser per km² than the worst cell in the Randstad before the grid could not
+subdivide. Region sizing is therefore safely automatable; report the densest cell so the headroom stays
+visible rather than assumed.
+
+#### The two things the planner cannot fix
+
+1. **The margin gets expensive exactly where regions get small.** The 0.10° margin is a RING, so
+   duplication is `((S + 2m)/S)² − 1`: **+44% at 1.0° across, +96% at 0.5°, +178% at 0.3°.** Dense metros
+   need small regions, which is where the ring costs most. So the margin must be per-region and
+   cost-capped, falling back to the client's covering set (`baseUrlsFor`, already built and gated) where
+   it is not worth paying. The planner should emit the margin it chose and the duplication it bought.
+2. **⚠ PER-VIEWPORT COST IN A DENSE METRO, WHICH NO REGION PLAN TOUCHES.** An Amsterdam z14 viewport is
+   already 21.8 MB of geometry; London or Paris will be several times that, and cutting regions
+   differently changes it by exactly nothing — it is density per SCREEN, not per region. This is what
+   would make those cities "suddenly problematic" for a user, and the only answer is generalisation: a
+   zoom pyramid that drops buildings and simplifies areas at low zoom (§6f's back-pocket overview tier
+   measured 75/94 MB for NL). **Measure a real Île-de-France or Greater London extract before committing
+   to WE** — one download answers whether the viewport cost is 3× NL's or 10×, and that number decides
+   whether generalisation is the next rung or the one after.
+
+*Do not build the planner and conclude WE is solved.* It removes one failure mode — a region that cannot
+be hosted — and leaves the one a user actually feels.
+
+⚠ **F5 is the lesson from shipping this blank.** `nl_live_gate` proved routing and search on the live site
+and never asked whether anything was DRAWN, so a blank map passed every gate. Every future coverage claim
+needs a render assertion, not just a route one.
+
+#### What is still unknown, and the honest risks
+
+* **F2 is the real engineering risk.** `expose`'s cost is O(collection), and a growing working set means
+  re-exposing a growing store. If that turns out to be per-frame-expensive, the fallback is JS reading
+  pages directly (§9 item 3's stated fallback) — not a decoder of our own (§0's rule).
+* **Pages acceptable use.** GitHub documents Pages as not intended as a CDN, with soft limits of ~1 GB per
+  site and 100 GB/month bandwidth. Paged reads make a visitor cost ~100 kB per viewport, so the bandwidth
+  is unremarkable — but three data repos holding 2 GB of map tiles is a judgement call, and it should be a
+  deliberate one. **D2 (R2/B2) remains the answer that scales**: at WE's 44–88 GB this stops being a
+  judgement call and becomes a bucket, for roughly $0.66–1.32/month of storage with no egress fee on R2.
+* **Three repos is an NL answer, not a WE one.** 44–88 GB would be 45–90 Pages repos. Do not build
+  tooling that assumes this shape; F4 should be "publish to a base URL", with the URL a config value.
+
+#### Why not the alternatives
+
+* **Shrink it** — buildings (53.7%) + areas (38.5%) are 92% of the bytes, and buildings are already lean
+  at 7.9 coords each. Dropping buildings ENTIRELY and halving areas still lands at ~700 MB against ~390 MB
+  of free budget. There is no 5x, and it costs the detail that makes the map worth having.
+* **Split it further onto the SAME site** — the cap is on total site bytes. 2 GB in eight parts is 2 GB.
+* **An overview tier only** (no buildings, no pois, big areas simplified, place labels) measures at
+  **75 MB west / 94 MB east** and WOULD fit the current budget. Worth keeping in the back pocket as a
+  never-blank fallback, but it is not "full support" — it is a different, thinner map.
+
 ## 7. Phase R — the update procedure (the recurring cost)
 
 Everything above is a one-off. **This is the part that runs forever**, and today it does not exist:
@@ -1197,11 +1474,11 @@ step in doing any of that required a codec of our own.
 |---|---|---|
 | 1 | ~~Does the paged Range reader work in a `--html` build?~~ | ✅ **ANSWERED — and now YES.** It did not compile (E0599); [loft#678](https://github.com/loft-lang/loft/issues/678) fixed it the same night, and `tools/paged_http_gate.sh` reports `browser=pass` at 262 KB / 5 range requests. ⚠ Fix is `fixed-pending-merge` upstream, present in the installed binary only |
 | 2 | ~~What does a realistic viewport working set actually cost in bytes?~~ | ✅ **ANSWERED 2026-08-01.** Roads: **17.7 MB of 222.4 MB (8.0%)** for a route on a country block, 271 Range reads (`nl_live_gate`). Base map: **9.1 kB/tile**, so a viewport of 8–20 cells is **75–190 kB — independent of the store's total size**. That last property is what makes §6e's WE path work at all |
-| 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly |
+| 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly. ⚠ Now the **critical path** for a full NL base map — §6f F2. The READ half is answered (a paged `store_load_key` on a 1.11 GB base store returns a tile identical to the whole load, for 512 kB) ; what is untested is re-`expose` as the working set GROWS |
 | 3b | Which builtins are missing on the browser target? | ✅ **ASK IT: `loft targets wasm`** (loft#680, shipped 2026-07-30 — derived from rustc, so it cannot drift from the cfgs). Today it answers *"every stdlib builtin is available here"* |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
-| 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9 |
+| 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9. ⚠ **Less urgent than it looked**: GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (measured 2026-08-01 against the live site), so a second Pages site is a free CORS host for NL-sized data. A bucket is still the answer at WE scale — 44–88 GB is 45–90 Pages repos — so this becomes a cost question at C4/C5, not at C2 |
 | 7 | `oneway=` is still dropped by the store — ⚠ **the u16 widening it was waiting for HAPPENED** (2026-08-01, `RF_NET_*`), so the schema cost is already paid; bits 11–15 are free and the next regeneration can carry direction | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
 | 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
 | 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |

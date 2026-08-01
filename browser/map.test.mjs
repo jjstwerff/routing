@@ -8,7 +8,7 @@
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
-import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
+import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1204,6 +1204,20 @@ console.log('\nS7 · coverage index → block');
   ok(two.split(',').length === 2 && two.includes('nl.roads') && two.includes('be.roads'),
      `a box no single block contains names BOTH (${two})`);
   ok(roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6) === two, 'the same box always yields the same string, in index order');
+
+  // PLAN-SCALE §6f F3 — the BASE map is a covering set on the same rules, and it has to be: cutting NL
+  // into three base regions puts a cut through ground people look at. Measured on the real 4.90°E cut at
+  // the app's default zoom, one region answers a straddling viewport with 13 946 of its 25 862 features.
+  const bone = baseUrlsFor(index, IDX, 52.20, 6.85, 52.23, 6.90);
+  ok(bone === 'https://example.test/enschede.base', `a box inside one block names its base (${bone})`);
+  const btwo = baseUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6);
+  ok(btwo.split(',').length === 2 && btwo.includes('nl.base') && btwo.includes('be.base'),
+     `a box no single block contains names BOTH bases (${btwo})`);
+  // A region with NO base map must not appear in the set — `base: null` is most of the country until the
+  // blocks are published, and naming a URL the page cannot fetch takes the whole working set down.
+  const noBase = { version: 'v-test', unit: 'fixed-1e-7',
+                   blocks: [{ id: 'x', readMode: 'paged', roads: { url: 'x.roads', bbox: nl.roads.bbox }, base: null }] };
+  ok(baseUrlsFor(noBase, IDX, 52.2, 5.0, 52.3, 5.1) === '', 'a region with base: null contributes no base URL');
 
   // ⚠ THE CASE THAT DROPPED ROADS. `nl` and `be` PARTIALLY overlap — neither contains the other — so a
   // box inside the shared band is "covered" by both and the smaller AREA used to win outright, silently

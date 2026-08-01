@@ -38,3 +38,29 @@ if ! echo "$out" | grep -q '^#P ALL PASS'; then
   exit 1
 fi
 echo "PASS — both tile shapes page in identically, from a fraction of the file"
+
+# --- PLAN-SCALE §6f F1: what the base map's FETCH WINDOW misses --------------------------------------
+#
+# Paging the layout is sound only to the extent that `map_kernel::LAYOUT_PAD` covers how far a feature
+# reaches beyond the cell it is keyed in — and a feature is keyed by its first vertex and never clipped,
+# so some reach much further (PLAN-PERF §7g). A whole load draws them anyway; a paged load cannot,
+# because a tile it never fetched has no extent to consult.
+#
+# That residual is a property of the DATA, not of the code: a regeneration that adds a wider feature
+# class moves it, and nothing else in the suite would notice — the map still renders, the route is
+# unaffected, there is simply less on the screen. Same reason `tools/tile_overhang.loft` exists.
+#
+# The box is the app's own first viewport at its default z16 camera; the bound is the measured 7 plus
+# one. Raising it is a decision about how much of the map may go missing, so it belongs in a diff.
+echo "== PLAN-SCALE §6f F1: the paged base map's fetch window =="
+vout="$("$loft" --native --lib "$here/lib" "$here/tools/layout_page_probe.loft" "$layout" \
+        verify 52.213446,6.870097,52.229554,6.917303 1 8 2>&1)" || {
+  echo "$vout"; echo "FAIL — layout_page_probe did not run"; exit 1; }
+echo "$vout" | grep -E '^#L'
+if ! echo "$vout" | grep -q '^#L PASS'; then
+  echo "FAIL — a one-cell fetch window now drops more of the base map than it did when LAYOUT_PAD was set."
+  echo "       Do NOT just raise the pad: exactness needs 11 cells at z16 and 50 at z14 (PLAN-SCALE §6f)."
+  echo "       The fix is to bound a feature's reach at GENERATION — re-bin into containing tiles (F3)."
+  exit 1
+fi
+echo "PASS — the base map's one-cell fetch window still covers what it covered"

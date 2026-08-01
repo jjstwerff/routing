@@ -5,34 +5,174 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-08-01) — the Netherlands is live; one branch is waiting for a PR
+## 0. START HERE (2026-08-01) — NL IS LIVE, AND THE MAP IS BLANK OUTSIDE ENSCHEDE
+
+**https://jjstwerff.github.io/routing/** — routing over the whole country, offline search, and the
+signposted walk/cycle/MTB networks the router actually uses.
+
+> ### ⚠ THE ONE THING THAT IS WRONG, and the next thing to fix
+>
+> **Outside Enschede there is no base map.** You get a route drawn on an empty background, so you cannot
+> tell "the router picked a farm track" from "the map is missing". The maintainer hit this immediately.
+>
+> It is not a bug — the NL base map is 2.06 GB, Pages caps a site at ~1 GB and the app already uses
+> 560 MB, so the base map went to the release, whose assets send no CORS header. **`PLAN-SCALE.md` §6f is
+> the design that fixes it**, and two measurements taken 2026-08-01 make it much cheaper than §6e assumed:
+> GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (so a second Pages site is a
+> free CORS host), and a country-scale base store PAGES correctly (512 kB fetched from a 1.11 GB file,
+> tile identical to a whole load). Start at **§6f F1**.
+>
+> ⚠ And the process lesson: `nl_live_gate` proved routing and search on the live site and **never asked
+> whether anything was DRAWN**. A blank map passed every gate. §6f F5 adds the render assertion.
 
 | | |
 |---|---|
-| `main` | protected (PR + green `build-test`, never a direct push) |
-| in flight | **`r3-networks`** — pushed, gates green, NOT yet PR'd. Carries R3, N3a/b/c, R4, the data refresh and the refresh automation |
-| data | release **`data-v2026-08-01`** published and verified (2.6 GB); site index `v2026-08-01` committed |
+| `main` | PR #39 merged 2026-08-01 09:27Z; `deploy` success. Protected — PR + green `build-test`, never a direct push |
+| in flight | **`full-nl-design`** — docs only (§6f + this section), pushed, not PR'd |
+| data | release **`data-v2026-08-01`** (2.6 GB, every asset verified before the index went up); site index `v2026-08-01` |
+| verified live | `browser/cdp_nl_live.mjs` driven against the DEPLOYED site: Amsterdam → `nl-west`, no base map, 29-point route, **17.7 MB of 222 MB by Range (8.0%)**, search finds "lonneker" |
 
-**What that branch does, in one line each:**
+### What ships
 
 | | |
 |---|---|
-| **R3** | signposted walk/cycle/MTB networks ingested from OSM route RELATIONS and *preferred by the router* — `TRoad.flags` widened u8→u16, so **every block had to be regenerated** (loft#700) |
-| **N3** | NL roads live on Pages, same-origin and paged; hosting became per-STORE so the 2 GB base map could stay on the release while the 497 MB roads ship |
-| **R4** | offline search over 296 474 street names + 12 700 places (36 MB), replacing the old client's Nominatim call |
-| **refresh** | the whole country rebuilt from fresh OSM, and `tools/refresh-region.sh` + a fixed `data-refresh.yml` so it is one command next time |
+| **roads** | `nl-west` 233.4 MB + `nl-east` 263.9 MB, same-origin on Pages, `read_mode = "paged"` |
+| **names** | `nl.names.store` 36.1 MB — 296 474 streets + 12 700 places, searched offline |
+| **base map** | Enschede only (20.8 MB). The NL base is **2 GB and does not fit** the ~1 GB Pages cap, so it is on the release for the native server and offline use. Outside Enschede you route on a plain background |
+| **site total** | 560.5 MB of a 950 MB budget (59%), measured every build by `tools/site_size_gate.sh` |
 
-⚠ **The one thing to know before touching data:** `tools/fetch-site-blocks.sh` verifies every download
-against the sha256 in the committed index. That is deliberate — a truncated block otherwise shows up as
-"routing is broken" rather than as a missing file — but it means **a republish without regenerating and
-committing the index turns every Pages deploy red.** Regenerate the index in the same change.
+### Three rules that are load-bearing, and cost a session each to learn
 
-**Where to look next:** `PLAN-SCALE.md` §6e is the Western Europe design, written from NL's measurements.
-Its short version: the client already streams (a viewport is 75–190 kB whatever the store's size), the
-GENERATOR does not (~350 bytes RSS per feature ⇒ 130–270 GB for WE), and the answer is to never build a
-store that big — one region per run, fed by a single `osmium extract --config` pass. The three things it
-says to do first are the chunked base build, raising the 62-block cap in `block_overlap.loft`, and pricing
-D2.
+1. **The index is the contract.** `tools/fetch-site-blocks.sh` verifies every download against the
+   sha256 in the committed index, and the Pages deploy runs it. So **a republish without regenerating
+   and committing the index turns every deploy red** — do both in one change. (The strictness is
+   deliberate: a truncated block otherwise presents as "routing is broken", not as a missing file.)
+2. **Hosting is per STORE, not per region.** NL's roads ship beside the app and its base map does not.
+   `data/coverage.toml` uses `base_url_base` for that; `build_index.sh` emits `base: null` in the SITE
+   index and the app treats it as a supported state (`LAYOUT = ''`), not an error.
+3. **A schema change makes older blocks read GARBAGE, not empty** (loft#700). `TRoad.flags` went u8→u16
+   for the network bits, which is why every block was regenerated. `build_index.sh` and `access_gate.sh`
+   refuse a block whose `.dschema` is stale.
+
+### Where to go next
+
+`PLAN-SCALE.md` **§6e** is the Western Europe design, written from NL's measurements. Short version: the
+**client already streams and already scales** (a viewport is 75–190 kB whatever the store's size); the
+**GENERATOR does not** (~350 bytes RSS per feature ⇒ 130–270 GB for WE); so never build a store that big —
+one region per run, fed by a single `osmium extract --config` pass, which is the block structure C4/C5
+already specify.
+
+Step 1 is **done**: `tools/build-base-chunked.sh` + `trim_base.loft` + `merge_base.loft`, proven lossless
+(Enschede n=2 exact; NL n=4 within a per-seam bound), and wired as a CI matrix in `data-refresh.yml`.
+
+**F1 and F2 are DONE (2026-08-01). F3 is next, and F1's measurements changed what it has to do.**
+
+| | what | state |
+|---|---|---|
+| **F1** ✅ | **page the layout in the kernel** — `store_load_keys(layout, url, layout_cell_keys(bbox, LAYOUT_PAD))`, a working set with its own marks, driven by a per-STORE read mode (`__baseReadMode`, kernel line 7) | built; the app draws a base map it never downloaded whole, over real 206 Range requests |
+| **F2** ✅ | **re-`expose` as the working set grows** — the pin comes off around every load and back on after; JS re-reads the handle per view | built, **and the risk is disproven by measurement**: 13 viewports, per-viewport cost 195 → 162 ms (0.83×), bracket balanced 13/12 |
+| **F3** ✅ | cut NL into regions **and re-bin the base map**. It came out as **FOUR** regions, not three — see below | built and verified locally; blocks are gitignored and NOT published |
+| **F4** ✅ | publish the four base blocks to data repos and move `data/coverage.toml` | **done** — release `data-v2026-08-02` (3.1 GB) + four Pages data repos, each verified by a cross-origin ranged GET (206 · ACAO · exact size). ⚠ the LIVE site still serves v2026-08-01 until this branch reaches `main` |
+| F5 | **assert the map RENDERS** in `nl_live_gate` — against the deployed site, once main moves | not started, and it is the check that would have caught the blank map |
+
+**Where the data lives now.** Roads (4 blocks, 502 MB), the name store and the app ship on the main Pages
+site — 565 MB of a 950 MB budget. The base map (2.75 GB) is four Pages DATA REPOS,
+`routing-data-nl-{west,midwest,mideast,east}`, read cross-origin by byte range; each holds a workflow that
+downloads its block from the release, because GitHub rejects committed files over 100 MB.
+`base_cors = true` in `data/coverage.toml` is what lets the site index NAME those URLs — it stayed silent
+for the release, which serves ranges but no CORS header.
+
+**F3 in one line: paging the base map is now EXACT, and no viewport ever shows a seam.**
+
+* **Exactness is two generator rules, and it is free.** A feature is keyed at the finest tier whose cells
+  its bbox spans at most 2 of (tiers ×8: 500 m → 4 km → 32 km → 256 km, the tier riding in the key), at
+  the cell holding the bbox's **minimum corner** — so it reaches one cell *up* and never down, and the
+  reader pads one side. Missed features at z16/z14: **7/5 → 0/0**. Keys asked per z16 viewport: 111 → 69,
+  93% of them hits (was 65%). Store bytes: **unchanged**. Country rebuild conserves exactly — 17 290 495
+  features, the published total.
+* **No seam, by DATA not by stitching.** Every region's internal sides are widened by a **0.10° margin**,
+  wider than a padded z14 viewport (±0.0944°). A viewport centred on a cut draws 61 631 features from ONE
+  region — the same count the whole-country store gives. Before the margin, one region answered such a
+  viewport with 54% of it.
+* **Four regions** (cuts 4.7 / 5.4 / 5.9), because three cannot hold that margin under the 900 MB cap —
+  the eastern one lands at 957 MB. Base 555 / 794 / 627 / 775 MB; roads 104 / 129 / 107 / 162 MB, split
+  from the country block with 2 785 476 ways and 234 253 barriers conserved exactly. ⚠ **Roads are cut
+  WITHOUT the margin** — the client stitches road blocks and a duplicated way is a different match, not a
+  slower one. The two stores of one region no longer describe the same ground, on purpose.
+
+⚠ **Two silent defects this rung found — read these before generating or publishing anything:**
+
+1. **`store_persist_bind` over an EXISTING file keeps the old image and returns `true`.** The tool prints
+   the new counts, the mtime updates, and the file still holds the previous map. It produced a wrong
+   three-region cut that only reading the extent back caught. Every persisting tool here now refuses an
+   existing target (`#PERSIST FAIL`); **delete before you regenerate.**
+2. **A tiered base store's EXTENT is not a geographic bound.** A tier-3 tile is 256 km wide, so all four
+   region extents read lon 2.39..7.21 — the whole country, four times. Selecting a block by base extent
+   picked an arbitrary region and **Den Haag and Rotterdam rendered as two lines**, with the gate still
+   green on aggregate. `baseUrlsFor` selects on the ROADS extent and reads the base URL off that region.
+   `build_index.sh` still writes a base extent into the index — treat it as a size, not a location.
+
+**Next, and it is scoped rather than started: `PLAN-SCALE` §6g — planning regions AUTOMATICALLY.** NL's
+four regions were cut by hand off a 1-D longitude profile, which does not survive Western Europe: a
+longitude cut cannot make a dense COLUMN smaller, and London / Paris / the Ruhr / Milan each can put a
+strip over the cap alone. The design is download → osmium → **count coords per 0.05° cell** → kd-split on
+weight → build only the plan; the analysis reads the geojsonseq exports, so nothing is built twice.
+Prototyped on the real NL grid it beats the hand cut (max 727 MB vs 794, +33% vs +35% duplication) and
+splits in BOTH axes. ⚠ **It fixes region SIZE and not per-viewport COST** — an Amsterdam z14 viewport is
+already 21.8 MB of geometry and London will be several times that, which no region plan touches. Measure
+an Île-de-France or Greater London extract before committing to WE.
+
+⚠ **The shipped city block is still keyed the OLD way**, and that is the one loose end F3 leaves.
+`browser/stores/enschede.layout.store` predates the tier rules, so the new reader's low-side padding is
+not exact against it: its residual grew from 7 features to 12 of 71 183 (0.15%), and
+`base_paged_gate` phase 1 bounds it at 20 as a regression guard. The four NL regions measure **zero**.
+Retire it by regenerating that block (`build-blocks.sh` + `build-base.sh` for its bbox → copy the layout
+store into `browser/stores/` → refresh the index); it was not done here because it also re-cuts the
+Enschede ROADS block, which re-baselines route fingerprints and the render pixel hash — a cascade that
+has nothing to do with NL.
+
+⚠ **Two §6f premises were measured WRONG while building F1, and F3 is where they get fixed.** Both on
+`blocks/nl-west.base.store`, with `tools/layout_page_probe.loft`:
+
+1. **A viewport is not 75–190 kB — it is 10.3 MB at z16 and 68.4 MB at z14.** The old figure multiplied
+   the store-wide average tile (9.1 kB, i.e. a RURAL tile) by an unpadded 8–20-cell window; a real
+   padded z16 viewport is 84 cells of CITY. The marginal cost is ~110 kB per key against ~31 kB of
+   geometry — and **84 keys that hold nothing still cost 9 MB**, which says most of it is the per-key
+   probe. `LAYOUT_CELL` (500 m) is finer than the read path can pay for.
+2. **No affordable padding is exact.** A layout feature is keyed by its first vertex and never clipped,
+   so it overhangs its cell; a paged load cannot consult the extent of a tile it never fetched. At z16,
+   exactness needs 11 cells of padding (864 tiles) and at z14 fifty (13 661 — the region).
+   `LAYOUT_PAD = 1` is the knee (85% of the misses removed for 1.7× the tiles) and is a **compromise**:
+   `base_paged_gate.sh` measures the residual at **0.07% of features**, worst single drop 6.
+
+   *Both* are fixed by the same generation-side change, which is why F3 owns it: **bin each feature into
+   a tile whose cell CONTAINS it, with coarser tiers (×8) for the ones that do not fit.** Then a feature
+   spans ≤ 2 cells at its own tier, so pad=1 per tier is EXACT; each feature is still stored once; and a
+   low zoom reads only the coarse tiers, which is also the answer to 68 MB.
+
+**New gates** (both in `make test-map` / `make test-native`): `tools/base_paged_gate.sh` runs the same
+13-viewport camera path twice — base map WHOLE vs PAGED — and compares what got DRAWN per kind, because
+a paged read that silently drops features is invisible from every other angle; `tools/paged_gate.sh`
+gained the native half, which pins the fetch window's residual against the shipped block.
+
+⚠ **`browser/build-store-kernel.mjs` was hashing only three of the kernel's five source trees** —
+`lib/basemap` and `lib/web` were missing, so a change to the PTile schema or the layout grid reported the
+committed wasm CURRENT. Fixed here; that is the silent direction of the check HANDOFF §0 already warns
+about.
+
+Then §6e's list, which is about Western Europe rather than NL:
+
+| | what | why it matters |
+|---|---|---|
+| a | **the workflow has never actually run** | `data-refresh.yml` is `workflow_dispatch`-only and its first firing will publish. Trigger it once with eyes on it |
+| b | the 4-features-per-seam chunk loss | NL n=4 loses 5 tiles / 12 features. Hypothesis: a multipolygon straddling a seam. Untried fixes: `osmium extract --strategy=smart`, or a larger `MARGIN` |
+| c | **raise the 62-block cap** | `block_overlap.loft` masks cell owners one bit per block. §6e's chunking puts WE at 34–68 blocks, so it may bind. Fix: count per PAIR |
+| d | **price D2** | 44–88 GB is past Pages and past a release asset. `cors_host_gate.sh` already passes against a CORS origin, so the path is tested — this is a cost question, and it is what would put the base map on the map |
+| e | R2 (elevation) | now costs its own full regeneration (~35 min for NL) — see PLAN-RESTORE §4. Bits 11–15 of `flags` are free, so no further widening |
+
+⚠ **The cron in `data-refresh.yml` is off deliberately.** Publishing replaces data a deploy verifies
+against, and loft is built there from `loft-lang/loft` **main**, where the fixes this repo needs are
+routinely fixed-pending-merge. Both reasons are in the workflow header.
 
 ---
 

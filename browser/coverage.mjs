@@ -36,12 +36,12 @@ export function pickBlock(index, lat, lon) {
 // Every block whose roads extent intersects a viewport box (degrees). What a multi-block viewport needs
 // at C2 — a pan across a border shows two blocks at once — and already the honest answer to "what does
 // this screen need", even when the answer is one.
-export function blocksForBox(index, mnla, mnlo, mxla, mxlo) {
+export function blocksForBox(index, mnla, mnlo, mxla, mxlo, kind = 'roads') {
   if (!index || !Array.isArray(index.blocks)) return [];
   const a = { mnla: Math.round(mnla * FIXED), mnlo: Math.round(mnlo * FIXED),
               mxla: Math.round(mxla * FIXED), mxlo: Math.round(mxlo * FIXED) };
   return index.blocks.filter((b) => {
-    const x = b.roads && b.roads.bbox;
+    const x = b[kind] && b[kind].bbox;
     return x && !(x.mxla < a.mnla || x.mnla > a.mxla || x.mxlo < a.mnlo || x.mnlo > a.mxlo);
   });
 }
@@ -56,17 +56,52 @@ export function blocksForBox(index, mnla, mnlo, mxla, mxlo) {
 // The order is the index's, so the same viewport always produces the same string — which is what lets the
 // kernel treat "the covering set changed" as "the session is stale" with a plain comparison.
 export function roadsUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) {
-  const hits = blocksForBox(index, mnla, mnlo, mxla, mxlo);
+  return storeUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, 'roads', fallback);
+}
+
+// The BASE-MAP counterpart, and it exists for the same reason the roads one does — PLAN-SCALE §6f F3
+// cuts the Netherlands into three base regions, and a viewport ON a cut needs both sides. Measured on
+// the 4.90°E cut at the app's own default zoom: a box straddling it holds 25 862 features, and ONE
+// region answers with 13 946 of them. Half the screen, silently blank.
+//
+// It became possible in the same step that made it necessary: `store_load_keys` ACCUMULATES, so a second
+// base block adds to the working set, where the old whole-file load would have replaced the image. That
+// is why the app could only ever name one base store before, and why it can name a set now.
+//
+// A region with no base map at all (`base: null`, which is most of the country until F4 publishes) is
+// simply not a candidate — `blocksForBox` skips it, and an empty set is the app's existing "no base map"
+// state rather than an error.
+export function baseUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) {
+  // ⚠ SELECTED BY THE ROADS EXTENT, not the base one. Since PLAN-SCALE §6f F3 the base map is TIERED, and
+  // a coarse tile is 256 km across — so a region's sealed base extent is whatever its widest tile covers,
+  // which is most of the country for every region. Measured after the four-way cut: all four base extents
+  // read lon 2.39..7.21, i.e. they no longer identify a region at all, and "smallest block containing the
+  // box" picked an arbitrary one. Den Haag and Rotterdam rendered as two lines and nothing else.
+  //
+  // The ROADS extent is the region's real geographic band: untiered, disjoint, cut on a cell boundary.
+  // A region is roads + base over the same ground, so choosing on roads and reading the base URL is the
+  // honest question — and a viewport past the band picks the neighbour, which is what it should do.
+  return storeUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, 'roads', fallback, 'base');
+}
+
+// One implementation, two stores. It used to be roads-only, and duplicating it for the base map would
+// have duplicated the two rules below — the ones that took a session and a wrong route each to find.
+function storeUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, kind, fallback, urlKind = null) {
+  const want = urlKind || kind;
+  // A region that ships no store of the kind being ASKED FOR is not a candidate, however well its
+  // selection extent fits: `base: null` is most of the country until the blocks are published, and
+  // naming a URL the page cannot fetch takes the whole working set down with it.
+  const hits = blocksForBox(index, mnla, mnlo, mxla, mxlo, kind).filter((b) => b[want]);
   // ⚠ If one block CONTAINS the whole box, use the smallest such and nothing else.
   //
   // Real blocks are disjoint — regions are cut on cell boundaries — but the index cannot enforce that, and
   // an overlap is exactly what a detailed city block inside a country block looks like. Naming both would
   // feed the SAME roads to `build_graph` twice, and a duplicated way is not a slower match, it is a
   // different one. Only when no single block covers the box (a genuine border case) is the set plural.
-  const covers = (b) => { const x = b.roads.bbox;
+  const covers = (b) => { const x = b[kind].bbox;
     return x.mnla <= Math.round(mnla * FIXED) && x.mxla >= Math.round(mxla * FIXED)
         && x.mnlo <= Math.round(mnlo * FIXED) && x.mxlo >= Math.round(mxlo * FIXED); };
-  const area = (b) => (b.roads.bbox.mxla - b.roads.bbox.mnla) * (b.roads.bbox.mxlo - b.roads.bbox.mnlo);
+  const area = (b) => (b[kind].bbox.mxla - b[kind].bbox.mnla) * (b[kind].bbox.mxlo - b[kind].bbox.mnlo);
   const whole = hits.filter(covers).sort((a, b) => area(a) - area(b));
   // ⚠ "One block covers the box" is NOT enough on its own, and believing it drops roads.
   //
@@ -82,7 +117,7 @@ export function roadsUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) 
   // half-country blocks PARTIALLY overlap — neither contains the other — so each may hold cells the other
   // lacks and both are needed. So: take the smallest containing block, then add back any hit that is not
   // nested with it.
-  const nested = (a, b) => { const x = a.roads.bbox, y = b.roads.bbox;
+  const nested = (a, b) => { const x = a[kind].bbox, y = b[kind].bbox;
     const inside = (p, q) => p.mnla >= q.mnla && p.mxla <= q.mxla && p.mnlo >= q.mnlo && p.mxlo <= q.mxlo;
     return inside(x, y) || inside(y, x); };
   let chosen;
@@ -92,7 +127,7 @@ export function roadsUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) 
   } else {
     chosen = hits.length ? hits : (fallback ? [fallback] : []);
   }
-  return chosen.map((b) => new URL(b.roads.url, indexUrl).href).join(',');
+  return chosen.filter((b) => b[want]).map((b) => new URL(b[want].url, indexUrl).href).join(',');
 }
 
 // Resolve the block for a camera, with the fallbacks stated rather than implied:

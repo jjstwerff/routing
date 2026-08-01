@@ -78,20 +78,59 @@ read_mode = "whole"
 # ⚠ The blocks are NOT committed: nl-east.roads.store is 263.9 MB and GitHub hard-rejects any file over
 # 100 MB. The Pages job downloads them from the release into blocks/ before the site build.
 
+# PLAN-SCALE §6f F3/F4 — the Netherlands as FOUR regions, cut at 4.70 / 5.40 / 5.90°E.
+#
+# Four, not two, and the count came out of arithmetic rather than taste: each base block has to fit a
+# Pages site (~1 GB), and each carries a 0.10° MARGIN of its neighbours so that a viewport ON a cut is
+# answered whole by ONE region. Three regions cannot hold that margin under the cap — the eastern one
+# lands at 957 MB. The margin is what stops a seam ever being drawn; without it one region answers a
+# straddling viewport with 54% of it.
+#
+# ⚠ ROADS ARE CUT WITHOUT THE MARGIN, so a region's two stores do NOT describe the same ground. The
+# client stitches road blocks across a seam (S8) and a duplicated way is a different match, not a slower
+# one — `block_overlap_gate` enforces that they stay disjoint. The base map is the opposite case.
+#
+# ⚠ AND THE BASE MAP IS HOSTED ELSEWHERE. 2.75 GB does not fit beside the app, so each block gets its own
+# Pages data repo (`base_url_base`) — free, and measured to send `access-control-allow-origin: *` with a
+# real 206, which a GitHub release does not. The roads and names ship with the site: 565 MB of a 950 MB
+# budget.
+
 [[region]]
 id        = "nl-west"
-name      = "Netherlands (west of 5.40°E)"
+name      = "Netherlands (west of 4.70°E)"
 roads     = "stores/nl-west.roads.store"
 base      = "stores/nl-west.base.store"
 names     = "stores/nl.names.store"
 read_mode = "paged"
-base_url_base = "https://github.com/jjstwerff/routing/releases/download/data-v2026-08-01"
+base_url_base = "https://jjstwerff.github.io/routing-data-nl-west"
+base_cors     = true
+
+[[region]]
+id        = "nl-midwest"
+name      = "Netherlands (4.70–5.40°E)"
+roads     = "stores/nl-midwest.roads.store"
+base      = "stores/nl-midwest.base.store"
+names     = "stores/nl.names.store"
+read_mode = "paged"
+base_url_base = "https://jjstwerff.github.io/routing-data-nl-midwest"
+base_cors     = true
+
+[[region]]
+id        = "nl-mideast"
+name      = "Netherlands (5.40–5.90°E)"
+roads     = "stores/nl-mideast.roads.store"
+base      = "stores/nl-mideast.base.store"
+names     = "stores/nl.names.store"
+read_mode = "paged"
+base_url_base = "https://jjstwerff.github.io/routing-data-nl-mideast"
+base_cors     = true
 
 [[region]]
 id        = "nl-east"
-name      = "Netherlands (east of 5.40°E)"
+name      = "Netherlands (east of 5.90°E)"
 roads     = "stores/nl-east.roads.store"
 base      = "stores/nl-east.base.store"
 names     = "stores/nl.names.store"
 read_mode = "paged"
-base_url_base = "https://github.com/jjstwerff/routing/releases/download/data-v2026-08-01"
+base_url_base = "https://jjstwerff.github.io/routing-data-nl-east"
+base_cors     = true

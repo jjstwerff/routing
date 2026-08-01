@@ -31,6 +31,14 @@ fn main() {
   for x in arguments() { a += [x]; }
   if len(a) < 3 { println("usage: merge_base <out.store> <in1.store> <in2.store> [more…]"); return; }
 
+  // ⚠ `store_persist_bind` ADOPTS AN EXISTING IMAGE. Pointed at a file that already exists it keeps the
+  // old contents, writes none of the new ones, and still returns TRUE — so a re-run silently produces
+  // the previous answer. It cost a wrong three-region cut on 2026-08-01: the trim reported the new
+  // feature counts, `persist true`, a fresh mtime, and the file still held the old map.
+  if file(a[0] ?? "").exists() {
+    println("#PERSIST FAIL {a[0] ?? ""} already exists — store_persist_bind would keep the OLD image and report success. Remove it first.");
+    return;
+  }
   out: hash<PTile[tkey]> = [];
   total = 0; tiles = 0; clashes = 0;
 
