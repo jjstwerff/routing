@@ -27,9 +27,9 @@
 // Several zooms are measured in ONE pass because the walk, not the arithmetic, is the expensive part.
 #cwd
 
-use basemap::(PTile, Coord, cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
+use basemap::(PTile, Coord, cell_ix, tier_cell, tier_key, LAYOUT_TIERS, dp_mask,
+              area_debut, line_debut, label_debut, DEBUT_NEVER);
 
-NEVER = 19;
 
 // Douglas-Peucker, iterative with an explicit stack — the standard line generalisation, and the one whose
 // ratio decides the file size. Recursion is avoided on purpose: a coastline ring runs to tens of
@@ -85,37 +85,8 @@ fn dp_keep(pts: vector<Coord>, tol: integer) -> integer {
   kept
 }
 
-fn area_debut(ring: vector<Coord>) -> integer {
-  if len(ring) == 0 { return NEVER; }
-  amnx = ring[0].x; amxx = ring[0].x; amny = ring[0].y; amxy = ring[0].y;
-  for ac in ring {
-    if ac.x < amnx { amnx = ac.x; } if ac.x > amxx { amxx = ac.x; }
-    if ac.y < amny { amny = ac.y; } if ac.y > amxy { amxy = ac.y; }
-  }
-  adx = ((amxx - amnx) as float) / 10000000.0;
-  ady = ((amxy - amny) as float) / 10000000.0;
-  adiag = sqrt(adx * adx + ady * ady);
-  if adiag > 0.008 { 0 } else if adiag > 0.003 { 11 } else if adiag > 0.0015 { 12 }
-  else if adiag > 0.0007 { 13 } else { 14 }
-}
 
-fn line_debut(kind: text) -> integer {
-  if kind == "border" { 8 }
-  else if kind == "river" { 11 }
-  else if kind == "canal" || kind == "railway" || kind == "runway" { 12 }
-  else if kind == "stream" || kind == "tram" { 13 }
-  else if kind == "ditch" || kind == "taxiway" || kind == "powerline" { 14 }
-  else if kind == "hedge" || kind == "wall" { 15 }
-  else if kind == "fence" { 16 }
-  else { NEVER }
-}
 
-fn label_debut(kind: text, rank: integer) -> integer {
-  if kind == "street" { return 13; }
-  if rank == 6 { 0 } else if rank == 5 { 9 } else if rank == 4 { 11 }
-  else if rank == 3 { 12 } else if rank == 2 { 13 } else if rank == 1 { 14 }
-  else { NEVER }
-}
 
 // One row per measured zoom; `kafter` splits the decimated coordinates by kind (0 areas, 1 lines,
 // 2 labels) so the answer says WHERE the overview's bytes are, not just how many.

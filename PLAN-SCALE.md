@@ -1789,6 +1789,46 @@ covered by `browser/map.test.mjs`, the firing by the live measurement.
 looks in `_site` too — so it dropped every block LINKED in from `blocks/`, the overview included, and the
 gate written to prove the country view draws could not see it. Both locations now.
 
+#### ✅ THE areaMinZoom CLIFF, AND WHERE THE DEBUT RULES NOW LIVE (2026-08-02)
+
+O1 found that **116 703 of the overview's 132 094 features are areas**, because `areaMinZoom` sent
+*everything* over 0.008° of diagonal to z0 — a 900 m field arriving at the same zoom as the IJsselmeer.
+At the country camera that is a screen asked to draw a hundred thousand shapes it cannot resolve.
+
+**The fix is not a new rule, it is the existing one continued.** The small end already encodes "about
+eight pixels across": 0.0007° at z14, 0.003° at z12 and 0.008° at z11 all land at 8–12 px. It simply
+stopped at 0.008. The series now doubles the diagonal per zoom up the ladder — **>0.016 → z9 · >0.032 →
+z8 · >0.064 → z7 · >0.128 → z6** — with a floor above 0.256° so genuinely huge geometry still draws at
+ANY zoom, which is what keeps a z2 view from being empty.
+
+Measured country-wide on the overview block, features by debut:
+
+| debut ≤ | z0 | z6 | z7 | **z8** | z9 | z10 |
+|---|---|---|---|---|---|---|
+| areas | 95 | 221 | 862 | **4 408** | 21 059 | 114 076 |
+
+**At the default camera the map draws 4 408 areas instead of 116 703 — 26× less, and what remains is what
+is big enough to see.** The small end is untouched, so the detailed map at z11+ draws exactly as before.
+
+⚠ **The block does not change and did not need republishing.** Selection is `debut ≤ 10`, and everything
+over 0.008° still lands at 6–10, so the same set is kept: rebuilt, it comes to the same **116 703 areas ·
+449 lines · 311 labels · 14 631 chains · 774 431 coords · 20 570 304 bytes**. ⚠ The byte IMAGE is not
+reproducible across the 2026.7.2 → 8.0 toolchain move, so a block is checked by its counts and extents,
+never by a diff.
+
+**The rules moved into `lib/basemap` in the same change, and that is the part worth keeping.** §6i's own
+design step counted the re-assertion sites and this rule had **five** — the renderer plus four loft files
+that each carried a private copy, ported "verbatim". A rule duplicated five ways is one that drifts, and
+a drift here is either a feature stored and never drawn or one drawn and never stored. `area_debut`,
+`line_debut`, `label_debut` and `poi_debut` are `pub` in `basemap.loft` now, so loft has ONE copy and the
+count is two: loft and JS. `browser/map.test.mjs` asserts the JS ladder against the loft thresholds, its
+monotonicity, and that the small end is unchanged.
+
+⚠ **Moving them exposed a drift that already existed**: the spine's `motorway`/`primary` kinds have
+`LINE_STYLES` rows in the renderer and were absent from every loft `line_debut`, so a probe reported them
+as "never drawn". Harmless where it sat (the spine is appended, not filtered) and exactly the kind of
+divergence one copy prevents.
+
 #### The design: a ladder of LEVELS, not a bigger tier ladder
 
 **Invariant.** *A feature is stored once per level at which it is drawn — selected by the renderer's own

@@ -213,12 +213,27 @@ const RANK_MINZOOM = { 6: 0, 5: 9, 4: 11, 3: 12, 2: 13, 1: 14 };
 const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
 
 // S13 generalization: big areas (forest, water) survive to low zoom; tiny patches only appear zoomed in.
+// An area appears once it is about EIGHT PIXELS across — which is what the small end of this ladder
+// already encoded (0.0007° at z14, 0.003° at z12, 0.008° at z11 all land at 8–12 px).
+//
+// ⚠ It used to STOP at 0.008 and send everything larger to z0, so a 900 m field arrived at the same zoom
+// as the IJsselmeer. That is invisible while the app opens at z16 and ruinous once it opens on the
+// country: 116 703 of the overview's areas debuted at z0, competing for a screen that can show a few
+// hundred. The series continues now, doubling the diagonal per zoom, with a floor at the top so genuinely
+// huge geometry still draws at ANY zoom — which is what keeps a z2 view from being empty.
+//
+// ⚠ `basemap::area_debut_diag` is the loft copy and must agree: the generator selects an overview's
+// contents with it, so a disagreement is a feature stored and never drawn, or drawn and never stored.
 function areaMinZoom(ring) {
   let miLa = Infinity, maLa = -Infinity, miLo = Infinity, maLo = -Infinity;
   for (const [a, b] of ring) { miLa = Math.min(miLa, a); maLa = Math.max(maLa, a); miLo = Math.min(miLo, b); maLo = Math.max(maLo, b); }
   const diag = Math.hypot(maLa - miLa, maLo - miLo);
-  return diag > 0.008 ? 0 : diag > 0.003 ? 11 : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
+  return diag > 0.256 ? 0 : diag > 0.128 ? 6 : diag > 0.064 ? 7 : diag > 0.032 ? 8
+       : diag > 0.016 ? 9 : diag > 0.008 ? 10 : diag > 0.003 ? 11
+       : diag > 0.0015 ? 12 : diag > 0.0007 ? 13 : 14;
 }
+export const AREA_DEBUT_LADDER = [[0.256, 0], [0.128, 6], [0.064, 7], [0.032, 8], [0.016, 9],
+                                  [0.008, 10], [0.003, 11], [0.0015, 12], [0.0007, 13], [0, 14]];
 
 // --- Layer parsers (the emit_*.loft text formats) ---------------------------------------------
 // --- PLAN-PERF §0 step 11 — areas read from the EXPOSED store instead of from loft's text ------------
