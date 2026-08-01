@@ -86,7 +86,19 @@ export function baseUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, fallback) {
 
 // One implementation, two stores. It used to be roads-only, and duplicating it for the base map would
 // have duplicated the two rules below — the ones that took a session and a wrong route each to find.
+// The blocks a box needs, as BLOCKS — so a caller can ask them anything, not just their URL. Read mode
+// is the case that forced it: it is a property of the STORE, and resolving it from the camera's block
+// instead is wrong exactly when the two differ, which is any viewport wider than the block under it.
+export function blocksChosenFor(index, mnla, mnlo, mxla, mxlo, kind, urlKind = null) {
+  return chooseBlocks(index, mnla, mnlo, mxla, mxlo, kind, null, urlKind).chosen;
+}
+
 function storeUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, kind, fallback, urlKind = null) {
+  const { chosen, want } = chooseBlocks(index, mnla, mnlo, mxla, mxlo, kind, fallback, urlKind);
+  return chosen.filter((b) => b[want]).map((b) => new URL(b[want].url, indexUrl).href).join(',');
+}
+
+function chooseBlocks(index, mnla, mnlo, mxla, mxlo, kind, fallback, urlKind) {
   const want = urlKind || kind;
   // A region that ships no store of the kind being ASKED FOR is not a candidate, however well its
   // selection extent fits: `base: null` is most of the country until the blocks are published, and
@@ -127,7 +139,7 @@ function storeUrlsFor(index, indexUrl, mnla, mnlo, mxla, mxlo, kind, fallback, u
   } else {
     chosen = hits.length ? hits : (fallback ? [fallback] : []);
   }
-  return chosen.filter((b) => b[want]).map((b) => new URL(b[want].url, indexUrl).href).join(',');
+  return { chosen, want };
 }
 
 // Resolve the block for a camera, with the fallbacks stated rather than implied:

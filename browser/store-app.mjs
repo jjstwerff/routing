@@ -10,7 +10,7 @@ import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
-import { resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
+import { resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
 
 // PLAN-SCALE C1b — how the kernel READS the roads block: 'whole' downloads it once, 'paged' pulls only
 // the cells each command touches (store_load_keys over HTTP Range). 'whole' is right for THIS block:
@@ -94,14 +94,36 @@ const roadsFor = (b) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, 
 // 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
 // so a region with no base map behaves exactly as it did.
 const baseFor = (b) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo) || LAYOUT;
-window.__readMode = window.__readMode || coverage.block.readMode || 'whole';
+// ⚠ A SESSION-WIDE READ MODE IS WRONG, AND IT BROKE THE LIVE MAP (2026-08-02). It is resolved from the
+// CAMERA's block, and the blocks a VIEWPORT needs are not always that block: at z13.68 over Enschede the
+// viewport escapes the little city block, selection correctly picks `nl-east` — and the mode said
+// `whole`, so the app asked for a 774 MB store as ONE download instead of paging it. It never finished,
+// so the map stayed as whatever had loaded first, which looked exactly like "the base map is missing".
+//
+// Read mode belongs to the STORE. These stay only as the OVERRIDE a gate sets before load; the per
+// command answer comes from `modeOf`, over the blocks that command actually named.
+window.__readMode = window.__readMode || null;
 // PLAN-SCALE §6f F1 — how to read the BASE MAP, which is a decision PER STORE and not per region
 // (HANDOFF §0 rule 2): NL's roads ship beside the app and its base map does not, so the two are not
 // read the same way. A country's base map is ~690 MB and only a viewport of it is ever on screen.
 // The index may carry it per store; until a base block is published with one, inheriting the block's
 // own read mode is right for both regions today (Enschede's 21 MB whole, a country's paged). Settable
 // before load, like `__readMode`, so a gate can page the shipped city block on purpose.
-window.__baseReadMode = window.__baseReadMode || coverage.block.base?.readMode || coverage.block.readMode || 'whole';
+window.__baseReadMode = window.__baseReadMode || null;
+// The mode for a set of chosen blocks: PAGED if any of them says so. A whole-file load adopts an image,
+// so mixing the two over one working set cannot work — and the big block is always the one that decides.
+const modeOf = (blocks, kind) => {
+  if (!blocks.length) return 'whole';
+  return blocks.some((b) => (b[kind] && b[kind].readMode) === 'paged' || b.readMode === 'paged') ? 'paged' : 'whole';
+};
+// The camera block's mode, which is the right answer for every command that is NOT scoped to a box
+// (reset, and the profiler hooks that drive a fixed sketch). Kept as a function so the override still
+// works and so nothing reads a session-wide variable that no longer exists.
+const READ_MODE = () => window.__readMode || coverage.block.readMode || 'whole';
+const roadsModeFor = (b) => window.__readMode
+  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads'), 'roads');
+const baseModeFor = (b) => window.__baseReadMode
+  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base'), 'base');
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
@@ -148,8 +170,10 @@ const bboxOf = (b) => `${b.mnla.toFixed(6)},${b.mnlo.toFixed(6)},${b.mxla.toFixe
 // blank one, because the working set is never asked for. So every view goes through here.
 // (`match` / `find` / `reset` stop at line 6 and keep their literal form; if a line 8 is ever added,
 // they come through here too.)
-const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT) =>
-  [base, roads, cmd, bbox, '', window.__readMode, '', window.__baseReadMode].join('\n');
+const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT, box = null) =>
+  [base, roads, cmd, bbox, '',
+   box ? roadsModeFor(box) : (window.__readMode || coverage.block.readMode || 'whole'), '',
+   box ? baseModeFor(box)  : (window.__baseReadMode || coverage.block.readMode || 'whole')].join('\n');
 
 let loadedBox = null, loadedBbox = null, lastViewText = null;
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
@@ -237,7 +261,7 @@ function initSearch() {
   const run = async (q) => {
     const mine = ++seq;
     const text = await jobs.post('find', () =>
-      kernel.runKernel(`${LAYOUT}\n${ROADS}\nfind\n${map.camera.lat.toFixed(6)},${map.camera.lon.toFixed(6)},${q}\n\n${window.__readMode}\n${NAMES}`));
+      kernel.runKernel(`${LAYOUT}\n${ROADS}\nfind\n${map.camera.lat.toFixed(6)},${map.camera.lon.toFixed(6)},${q}\n\n${READ_MODE()}\n${NAMES}`));
     // A slower earlier query must not overwrite a newer one's results.
     if (mine !== seq) return;
     hits = [];
@@ -282,7 +306,7 @@ async function ensureViewNow() {
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
-  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
+  const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box), box));
   map.loadRoadsFlat(text);
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -354,10 +378,27 @@ function roadsForSketch(spec) {
                     mxla: mxla + SKETCH_PAD_DEG, mxlo: mxlo + SKETCH_PAD_DEG });
 }
 
+// The mode for a match, from the SAME box that chose its blocks — `roadsForSketch` pads the sketch and
+// can name a country block from a camera sitting over a city one, which is exactly the mismatch that
+// made a 774 MB base map download as one file.
+function sketchBox(spec) {
+  let mnla = Infinity, mnlo = Infinity, mxla = -Infinity, mxlo = -Infinity;
+  for (const tok of String(spec).split(';')) {
+    const [la, lo] = tok.split(',').map(Number);
+    if (!Number.isFinite(la) || !Number.isFinite(lo)) continue;
+    if (la < mnla) mnla = la; if (la > mxla) mxla = la;
+    if (lo < mnlo) mnlo = lo; if (lo > mxlo) mxlo = lo;
+  }
+  if (!Number.isFinite(mnla)) return null;
+  return { mnla: mnla - SKETCH_PAD_DEG, mnlo: mnlo - SKETCH_PAD_DEG,
+           mxla: mxla + SKETCH_PAD_DEG, mxlo: mxlo + SKETCH_PAD_DEG };
+}
+const matchMode = (spec) => { const b = sketchBox(spec); return b ? roadsModeFor(b) : READ_MODE(); };
+
 async function streamedMatch(spec, isCurrent) {
   map.beginStretches();
   let growSteps = 0, lastLen = 0;
-  const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
+  const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${matchMode(spec)}`, (line) => {
     // A line sink is drained in a microtask, so one belonging to a SUPERSEDED match could still fire once
     // a newer match has begun and blend two routes into the same stretch accumulator (PLAN-EDIT failure
     // path 10). The generation check makes that impossible rather than unlikely.
@@ -436,7 +477,7 @@ window.__perfHooks = {
   matchSpec: async (spec) => {
     const roads = roadsForSketch(spec);
     await kernel.runKernel(`${LAYOUT}\n${roads}\nreset`);
-    const text = await kernel.runKernel(`${LAYOUT}\n${roads}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${roads}\nmatch\n${spec}\n${PROFILE}\n${READ_MODE()}`);
     const summary = (text.split('\n').find((l) => l.startsWith('SUMMARY')) || '').trim();
     // A hash of the ROUTE lines, not just the summary: two different routes can share a length to 0.1 m.
     const route = text.split('\n').filter((l) => l.startsWith('ROUTE')).join('\n');
@@ -496,7 +537,7 @@ window.__perfHooks = {
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
     // comparison possible after step 13 without charging every user-facing view for it.
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext', baseFor(box)));
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'viewtext', baseFor(box), box));
     const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
     if (!h) return { err: 'no exposed layout handle' };
     const txt = parseView(text);
@@ -540,7 +581,7 @@ window.__perfHooks = {
     for (const [i, pts] of areas.entries()) {
       const t0 = performance.now();
       const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
-      const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+      const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${READ_MODE()}`);
       const m = text.match(/ways=(\d+)/);
       rows.push({ i, ms: Math.round(performance.now() - t0), wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1), ways: m ? +m[1] : -1 });
     }
@@ -565,7 +606,7 @@ window.__perfHooks = {
   },
   run(kind) {
     if (kind === 'match') {
-      return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
+      return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     }
     const b = viewportBox(0.6);
     return kernel.runKernel(viewCmd(bboxOf(b)));
@@ -577,7 +618,7 @@ window.__perfHooks = {
     for (let i = 0; i < n; i++) {
       const t0 = performance.now();
       if (kind === 'match') {
-        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
+        await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
       } else {
         const b = viewportBox(0.6);
         await kernel.runKernel(viewCmd(bboxOf(b)));
@@ -590,7 +631,7 @@ window.__perfHooks = {
     const box = viewportBox(0.6);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
-    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box)));
+    const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box), 'view', baseFor(box), box));
     const t1 = performance.now();
     map.loadRoadsFlat(text);
     const t2 = performance.now();
@@ -653,7 +694,7 @@ window.__perfHooks = {
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${READ_MODE()}`);
     const total = performance.now() - t0;
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
@@ -1126,7 +1167,7 @@ window.__perfHooks = {
     await kernel.runKernel(`${LAYOUT}\n${ROADS}\nreset`);
     const d0 = kernel.stats().deliveries;
     let earlyStretches = 0, done = false, afterDone = 0;
-    const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`, (line) => {
+    const text = await kernel.runKernel(`${LAYOUT}\n${roadsForSketch(spec)}\nmatch\n${spec}\n${PROFILE}\n${matchMode(spec)}`, (line) => {
       if (!line.startsWith('STRETCH ')) return;
       if (done) afterDone++; else earlyStretches++;
     });
@@ -1163,7 +1204,7 @@ window.__perfHooks = {
     const tick = () => { const t = performance.now(); gaps.push(t - last); last = t; if (!stop) requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
     const t0 = performance.now();
-    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
+    const text = await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     const total = performance.now() - t0;
     stop = true; await new Promise((r) => setTimeout(r, 50));
     const stretches = text.split('\n').filter((l) => l.startsWith('STRETCH ')).length;
@@ -1189,7 +1230,7 @@ window.__perfHooks = {
     if (kind === 'matchWarm') {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3118272,6.9090554\n${PROFILE}`);
     } else if (kind === 'match') {
-      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${window.__readMode}`);
+      await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     } else {
       const b = viewportBox(0.6);
       await kernel.runKernel(viewCmd(bboxOf(b)));
@@ -1273,7 +1314,7 @@ async function timeMatch(pts, stream) {
   const spec = pts.map(([a, b]) => `${a},${b}`).join(';');
   const t0 = performance.now();
   const text = stream ? await streamedMatch(spec)
-                      : await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${window.__readMode}`);
+                      : await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n${spec}\n${PROFILE}\n${READ_MODE()}`);
   const t1 = performance.now();
   map.loadMatch(text);
   const t2 = performance.now();

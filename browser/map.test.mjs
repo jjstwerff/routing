@@ -8,7 +8,7 @@
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
-import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor } from './coverage.mjs';
+import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
 const DOUBLE_TAP_MOVED_PX = HIT_POINT_PX;   // "the point moved further than a hit radius" — see E4
@@ -1163,10 +1163,10 @@ console.log('\nC1a · a view reads the viewport, not the store');
 console.log('\nS7 · coverage index → block');
 {
   const bbox = (mnla, mnlo, mxla, mxlo) => ({ mnla, mnlo, mxla, mxlo });
-  const blk = (id, box) => ({ id, readMode: 'whole', roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
+  const blk = (id, box, readMode = 'whole') => ({ id, readMode, roads: { url: `${id}.roads`, bbox: box }, base: { url: `${id}.base`, bbox: box } });
   // NL-ish and BE-ish, plus a small city block INSIDE the NL one — the overlap case a country plus a
   // detailed city creates, and the reason "smallest area wins" is a rule rather than an accident.
-  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000));
+  const nl = blk('nl', bbox(508000000, 33000000, 537000000, 72000000), 'paged');   // a country block is paged
   const be = blk('be', bbox(494000000, 25000000, 516000000, 64000000));
   const ens = blk('enschede', bbox(521477887, 67600000, 523292661, 69998845));
   const index = { version: 'v-test', unit: 'fixed-1e-7', blocks: [nl, be, ens] };
@@ -1218,6 +1218,20 @@ console.log('\nS7 · coverage index → block');
   const noBase = { version: 'v-test', unit: 'fixed-1e-7',
                    blocks: [{ id: 'x', readMode: 'paged', roads: { url: 'x.roads', bbox: nl.roads.bbox }, base: null }] };
   ok(baseUrlsFor(noBase, IDX, 52.2, 5.0, 52.3, 5.1) === '', 'a region with base: null contributes no base URL');
+
+  // ⚠ THE ONE THAT BROKE THE LIVE MAP (2026-08-02). Read mode is a property of the STORE, and the block a
+  // VIEWPORT needs is not always the block the CAMERA sits in: a camera over the small `enschede` block
+  // at z13.68 has a viewport that escapes it, so selection picks the big country block — and a mode taken
+  // from the camera's block said `whole`, so the app asked for a 774 MB store as a single download.
+  // It never finished, which looks exactly like "the base map is missing".
+  const cam = blocksChosenFor(index, 52.20, 6.85, 52.23, 6.90, 'roads');
+  ok(cam.length === 1 && cam[0].id === 'enschede', `a box inside the city block chooses it (${cam.map((b)=>b.id)})`);
+  const wide = blocksChosenFor(index, 52.17, 6.79, 52.28, 7.02, 'roads');
+  ok(wide.some((b) => b.id === 'nl'), `a box ESCAPING the city block chooses the country one (${wide.map((b)=>b.id)})`);
+  // …so a mode derived from the chosen blocks is `paged`, where one derived from the camera would not be.
+  const mode = (bs, k) => bs.some((b) => (b[k] && b[k].readMode) === 'paged' || b.readMode === 'paged') ? 'paged' : 'whole';
+  ok(mode(cam, 'roads') === 'whole', 'the city block alone reads whole');
+  ok(mode(wide, 'roads') === 'paged', 'a set containing the paged country block reads PAGED, not whole');
 
   // ⚠ THE CASE THAT DROPPED ROADS. `nl` and `be` PARTIALLY overlap — neither contains the other — so a
   // box inside the shared band is "covered" by both and the smaller AREA used to win outright, silently
