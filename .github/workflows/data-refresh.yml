@@ -32,10 +32,11 @@ name: data-refresh
 #
 # ⚠ THE CRON STAYS OFF, and now for MEASURED reasons rather than an unfinished pipeline:
 #
-#   * THE BASE MAP DOES NOT FIT A RUNNER. Measured on the Netherlands: ~28 min, ~6 GB RSS and ~11.7 GB
-#     of intermediates (1.8 GB areas + 4.1 GB buildings + 1.0 GB streets geojsonseq, then a 2.0 GB
-#     store). A GitHub-hosted runner has ~14 GB of disk before a checkout and a Rust toolchain. So this
-#     job runs `--no-base`: roads and names only, ~6 min and ~3 GB, which fits comfortably.
+#   * ~~THE BASE MAP DOES NOT FIT A RUNNER.~~ ✅ It does now, in CHUNKS — see the `base-chunks` matrix
+#     below. One region did need ~28 min, ~6 GB RSS and ~11.7 GB of intermediates against a runner's
+#     ~14 GB; four bands need roughly a quarter of that each and build in parallel on four runners.
+#     Proven lossless on the Netherlands: 185 559 tiles / 17 290 483 features from four chunks against
+#     185 564 / 17 290 495 whole, with the chunks a disjoint partition (`tools/base_chunk_gate.sh`).
 #   * PUBLISHING REPLACES DATA SOMEONE MAY BE READING. `fetch-site-blocks.sh` verifies every download
 #     against the sha256 in the committed index, so a republish that nobody expected turns every Pages
 #     deploy red until the index is regenerated and committed. That is a decision, not a schedule.
@@ -77,6 +78,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.v }}
     steps:
       - uses: actions/checkout@v4
 
@@ -115,10 +118,14 @@ jobs:
       # ⚠ It will publish only the stores present in blocks/. With --no-base that is roads + names; the
       # base map keeps whatever the previous release carried, which is correct — it is a separate store
       # with its own extent, and a road with no landcover around it renders fine.
-      - name: Publish
+      - name: Publish roads + names
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./tools/publish-release.sh "data-$DATASET_VERSION"
+
+      - name: Hand the version to the base jobs
+        id: ver
+        run: echo "v=$DATASET_VERSION" >> "$GITHUB_OUTPUT"
 
       # The index's sha256s changed, so the committed copy is now stale — and index_fresh_gate will say
       # so on the next run. Opened as a PR rather than pushed: main is protected, and a data refresh that
@@ -138,3 +145,102 @@ jobs:
           # One line, deliberately: a multi-line body inside a YAML block scalar has to be indented
           # to stay inside it, and those leading spaces reach GitHub as a markdown code block.
           gh pr create --title "Data refresh $DATASET_VERSION" --body "Automated OSM refresh. Blocks published as \`data-$DATASET_VERSION\`; this updates the index that names them. The BASE MAP was NOT refreshed — it needs ~11.7 GB of intermediates and ~6 GB RSS, which does not fit a GitHub-hosted runner (see the workflow header); rebuild it locally with \`tools/refresh-region.sh netherlands europe/netherlands --split 5.40\`."
+
+  # --- the BASE MAP, one band per runner (PLAN-SCALE §6e) -------------------------------------------
+  #
+  # The bands are a pure function of (bbox, edges), so runner k computes exactly the band it would in a
+  # serial run — no coordination and no shared state. `CHUNK_ONLY=k` builds that one and stops.
+  #
+  # ⚠ THE EDGES INCLUDE 5.40, and that is not cosmetic. The coverage manifest names nl-west/nl-east cut
+  # there, so the chunk boundaries must be a SUPERSET of the region boundaries or no grouping of chunks
+  # is a half. Four EQUAL bands of 2.38–7.32 would put an edge at 4.850 and 6.085, straddling 5.40, and
+  # nothing downstream could reassemble them.
+  #
+  # Unequal by design: chunk 1 (the Randstad) holds ~8.6 M features against chunk 0's ~162 k. Equal
+  # LONGITUDE is not equal WORK, and pretending otherwise would just make one runner the critical path
+  # while three idle.
+  base-chunks:
+    needs: refresh
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false        # one bad band should not hide whether the others build
+      matrix:
+        chunk: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (osmium, mold, loft)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool mold
+          git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
+          (cd /tmp/loft && cargo build --release --bin loft)
+          echo "LOFT_BIN=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+      - name: Disk before
+        run: df -h / | tail -1
+      - name: Build base chunk ${{ matrix.chunk }}
+        env:
+          CHUNK_ONLY: ${{ matrix.chunk }}
+          CHUNK_EDGES: "2.38,4.00,5.40,6.30,7.32"
+        run: |
+          ./tools/build-base-chunked.sh netherlands europe/netherlands 2.38,50.65,7.32,54.23 4
+      - name: Disk after
+        run: df -h / | tail -1
+      # The chunk, not the whole map: ~500 MB per artifact, and only the assemble job ever reads them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-chunk-${{ matrix.chunk }}
+          path: blocks/netherlands-c0${{ matrix.chunk }}.base.store*
+          retention-days: 1
+          if-no-files-found: error
+
+  # --- put the bands back into the regions the manifest names --------------------------------------
+  #
+  # `merge_base.loft` is the inverse of split_base and REFUSES overlapping chunks: two chunks sharing a
+  # cell would silently double that tile's features, which is the defect block_overlap_gate exists to
+  # catch arriving by the back door. Merging holds only the OUTPUT block (~1 GB per half), not the
+  # country, which is the whole reason the chunks were built separately.
+  base-assemble:
+    needs: [refresh, base-chunks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (loft)
+        run: |
+          sudo apt-get update && sudo apt-get install -y mold
+          git clone --depth=1 https://github.com/loft-lang/loft /tmp/loft
+          (cd /tmp/loft && cargo build --release --bin loft)
+          echo "LOFT_BIN=/tmp/loft/target/release/loft" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: base-chunk-*
+          path: blocks
+          merge-multiple: true
+      # ⚠ publish-release.sh rebuilds the RELEASE INDEX at the end, and an index names every store in the
+      # manifest — roads and names included. This runner has only the base chunks, so without these the
+      # index build fails with "manifest names a missing block" AFTER a 2 GB upload has already happened.
+      # Fetching them from the release the `refresh` job just made doubles as proof those assets landed.
+      - name: Fetch the roads + names published by the refresh job
+        run: |
+          set -e
+          base="https://github.com/${{ github.repository }}/releases/download/data-${{ needs.refresh.outputs.version }}"
+          for f in nl-west.roads.store nl-east.roads.store nl.names.store; do
+            curl -fsSL --retry 3 -o "blocks/$f" "$base/$f"
+            curl -fsSL --retry 3 -o "blocks/$f.dschema" "$base/$f.dschema" || true
+            echo "  fetched $f ($(stat -c%s "blocks/$f") bytes)"
+          done
+
+      - name: Merge chunks into nl-west / nl-east
+        run: |
+          set -e
+          # 2.38..5.40 is west, 5.40..7.32 is east — the same meridian data/coverage.toml names.
+          "$LOFT_BIN" --native --lib lib tools/merge_base.loft blocks/nl-west.base.store \
+            blocks/netherlands-c00.base.store blocks/netherlands-c01.base.store | grep '^#M'
+          "$LOFT_BIN" --native --lib lib tools/merge_base.loft blocks/nl-east.base.store \
+            blocks/netherlands-c02.base.store blocks/netherlands-c03.base.store | grep '^#M'
+          # The chunk files are a build intermediate; publish-release.sh only uploads what the manifest
+          # names, but leaving 2 GB of them around invites someone to point an index at one.
+          rm -f blocks/netherlands-c0*.base.store*
+      - name: Publish the base map
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/publish-release.sh "data-${{ needs.refresh.outputs.version }}"

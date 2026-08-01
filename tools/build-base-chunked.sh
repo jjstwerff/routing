@@ -35,6 +35,10 @@ loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 out="${BLOCKS_OUT:-$here/blocks}"
 
 id="${1:-}"; src="${2:-}"; bbox="${3:-}"; n="${4:-4}"
+# ONE CHUNK, for a CI matrix: each runner builds its own index and nothing else. The bands are a pure
+# function of (bbox, n), so runner k computes exactly the same band as it would in a serial run — no
+# coordination, no shared state, and the chunk is identical either way.
+only="${CHUNK_ONLY:-}"
 # CHUNKS ARE INDEPENDENT, so they can run at once — and until this existed they did not, which threw away
 # the other half of chunking's value. Every loft generator here is SINGLE-THREADED (measured: NL's base
 # build is `real 26m25s / user 26m10s`, i.e. 0.99 cores of the 24 on this box), so the parallelism has to
@@ -53,10 +57,26 @@ IFS=, read -r bw bs be bn <<<"$bbox"
 # geometry to survive. 0.15° is comfortably over the ~0.09° overhang §7g measured, and costs only extract
 # time — the trim removes whatever the margin dragged in.
 MARGIN=0.15
+# EXPLICIT EDGES, when equal division is the wrong cut.
+#
+# Chunk boundaries have to be a SUPERSET of the region boundaries the coverage manifest names, or the
+# chunks cannot be merged back into them. NL ships as nl-west/nl-east cut at 5.40°E; four equal chunks of
+# 2.38–7.32 put edges at 3.615/4.850/6.085, and chunk 2 straddles 5.40 — so no grouping of those chunks
+# is a half. Passing edges that INCLUDE 5.40 fixes it, and costs only that the chunks are unequal, which
+# they were going to be anyway (the Randstad band holds 8.6 M features against chunk 0's 162 k).
 edges=()
-for ((i = 0; i <= n; i++)); do
-  edges+=("$(python3 -c "print(f'{$bw + ($be - $bw) * $i / $n:.6f}')")")
-done
+if [ -n "${CHUNK_EDGES:-}" ]; then
+  IFS=, read -r -a edges <<<"$CHUNK_EDGES"
+  n=$(( ${#edges[@]} - 1 ))
+  [ "$n" -ge 1 ] || { echo "FAIL: CHUNK_EDGES needs at least two values"; exit 2; }
+  # The outer edges ARE the region: a mismatch would silently build a different map than the bbox says.
+  [ "${edges[0]}" = "$bw" ] && [ "${edges[$n]}" = "$be" ] \
+    || { echo "FAIL: CHUNK_EDGES must start at $bw and end at $be (got ${edges[0]}..${edges[$n]})"; exit 2; }
+else
+  for ((i = 0; i <= n; i++)); do
+    edges+=("$(python3 -c "print(f'{$bw + ($be - $bw) * $i / $n:.6f}')")")
+  done
+fi
 
 echo "== base map for $id in $n chunk(s), $bw..$be, $jobs at a time =="
 
@@ -131,6 +151,7 @@ running=0
 stat="$(mktemp -d)"
 trap 'rm -rf "$stat"' EXIT
 for ((i = 0; i < n; i++)); do
+  [ -n "$only" ] && [ "$i" != "$only" ] && continue
   cid="$(printf '%s-c%02d' "$id" "$i")"
   built+=("$out/$cid.base.store")
   if [ "$jobs" -le 1 ] || { [ "$i" = "0" ] && [ ! -s "$pbf" ]; }; then
@@ -144,6 +165,7 @@ done
 wait
 bad=0
 for ((i = 0; i < n; i++)); do
+  [ -n "$only" ] && [ "$i" != "$only" ] && continue
   [ "$(cat "$stat/$i" 2>/dev/null || echo 1)" = "0" ] || { echo "  chunk $i FAILED"; bad=1; }
 done
 [ "$bad" = "0" ] || { echo "FAIL — $n chunk(s) requested, at least one did not build"; exit 1; }
