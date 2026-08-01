@@ -4,14 +4,54 @@
 // gen-tiles — build a PLAN-TILES data block (hash<TTile[tkey]>) from OpenStreetMap.
 // Input: Overpass-JSON (elements[].{type:"way", tags, geometry:[{lat,lon},…]}), which you produce
 // from a Geofabrik .osm.pbf via osmium + tools/geojson2overpass.py (see HANDOFF.md / PLAN-APP §11).
-//   loft --native-release --lib lib tools/gen-tiles.loft <out.tiles> <overpass.json>
+//   loft --native-release --lib lib tools/gen-tiles.loft <out.tiles> <overpass.json> [networks]
+// The optional third argument is `tools/route_networks.py`'s way→network sidecar; omit it and the block
+// carries no RF_NET_* bits, which is exactly the pre-R3 behaviour.
 // NOTE: writes an mmap store via store_persist_bind — native only; wasm loads via a codec (PLAN-APP §3).
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
 use routing_kernel::(GeoPoint, Way, Barrier, parse_ways, parse_way_feature, parse_barrier_feature,
                      TStep, TRoad, TTile, TBarrier, cell_ix, tile_cell_key,
-                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL,
+                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+
+// One way that carries at least one signposted route, from `tools/route_networks.py`'s sidecar.
+// A struct because loft keys a hash by a FIELD; the mask uses the sidecar's own bits (1/2/4), which
+// `net_flags` maps to the RF_NET_* the store uses — the two numberings are kept apart on purpose so a
+// change to the stored flag layout cannot silently reinterpret an already-generated sidecar.
+struct NetWay { const wid: integer, const mask: integer }
+NET_WALK = 1; NET_CYCLE = 2; NET_MTB = 4;
+
+fn net_flags(mask: integer) -> integer {
+  f = 0;
+  if (mask & NET_WALK) == NET_WALK { f = f + RF_NET_WALK; }
+  if (mask & NET_CYCLE) == NET_CYCLE { f = f + RF_NET_CYCLE; }
+  if (mask & NET_MTB) == NET_MTB { f = f + RF_NET_MTB; }
+  f
+}
+
+// `<wayid> <mask>` per line. An ABSENT file is not an error: a block generated without one simply has no
+// network bits, and every route it produces is exactly what it was before R3. That is what makes this
+// step safe to land ahead of the regeneration — the pipeline passes the path, and old callers do not.
+fn load_networks(path: text) -> hash<NetWay[wid]> {
+  nets: hash<NetWay[wid]> = [];
+  if path == "" { return nets; }
+  f = file(path);
+  if !f.exists() { println("networks: no sidecar at {path} — block will carry no network bits"); return nets; }
+  n = 0;
+  for ln in f.content()?.split('\n') {
+    if ln == "" { continue; }
+    sp = 0 - 1;
+    for ch in ln { if ch == ' ' { sp = ch#index; break; } }
+    if sp <= 0 { continue; }
+    wid = ln[0..sp] as integer ?? 0;
+    mask = ln[(sp + 1)..ln.size()] as integer ?? 0;
+    if wid > 0 && mask > 0 { nets += NetWay { wid: wid, mask: mask }; n += 1; }
+  }
+  println("networks: {n} ways from {path}");
+  nets
+}
 
 fn class_of(hw: text) -> integer {
   if hw == "motorway" || hw == "motorway_link" { return 0; }
@@ -63,7 +103,7 @@ CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_
 // By VALUE, not `&`: a heap collection passed by value still aliases, so the append lands in the
 // caller's index (verified). `&hash` + `+=` does not compile — the checker reads the append as a
 // reassignment of the reference itself.
-fn add_way(idx: hash<TTile[tkey]>, w: Way) {
+fn add_way(idx: hash<TTile[tkey]>, w: Way, net: integer) {
   if len(w.coords) < 2 { return; }
   gx0 = round(w.coords[0].lon * 10000000.0) as integer;
   gy0 = round(w.coords[0].lat * 10000000.0) as integer;
@@ -83,7 +123,7 @@ fn add_way(idx: hash<TTile[tkey]>, w: Way) {
     gy = round(w.coords[i].lat * 10000000.0) as integer;
     t.steps += [TStep { x: (gx - t.ox) as i32? ?? (0 as i32), y: (gy - t.oy) as i32? ?? (0 as i32), h: 0 as i32 }];
   }
-  t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: (flags_of(w) & 255) as u8, steps: (n & 255) as u8 }];
+  t.roads += [TRoad { tp: (class_of(w.highway) & 255) as u8, flags: ((flags_of(w) + net) & 65535) as u16, steps: (n & 255) as u8 }];
 }
 
 // Bin ONE barrier node into the tile that CONTAINS it. Unlike a way — keyed by its first vertex and free
@@ -118,7 +158,9 @@ fn add_barrier(idx: hash<TTile[tkey]>, b: Barrier) {
 // arrives as a single `text` value and `parse_ways` materialises every way before the first is binned.
 fn build(osm: text) -> hash<TTile[tkey]> {
   idx: hash<TTile[tkey]> = [];
-  for w in parse_ways(file(osm).content()) { add_way(idx, w); }
+  // No network join on this path: Overpass JSON carries no stable way id here, and the whole-file reader
+  // is the city-sized legacy path. It stays byte-identical to what it produced before R3.
+  for w in parse_ways(file(osm).content()) { add_way(idx, w, 0); }
   idx
 }
 
@@ -131,14 +173,23 @@ fn build(osm: text) -> hash<TTile[tkey]> {
 // One `geojsonseq` record, whichever kind it is. osmium writes linestrings and points into ONE file, and
 // each parser returns its own "not mine" answer cheaply (a Way with <2 coords, a Barrier at 0,0), so the
 // dispatch needs no separate type sniff.
-fn feed(idx: hash<TTile[tkey]>, line: text) {
+fn feed(idx: hash<TTile[tkey]>, line: text, nets: hash<NetWay[wid]>, hits: &integer) {
   w = parse_way_feature(line);
-  if len(w.coords) >= 2 { add_way(idx, w); return; }
+  if len(w.coords) >= 2 {
+    net = 0;
+    // `w.wid` is 0 unless the export was run with `-u type_id`, and the lookup then simply misses.
+    nw = nets[w.wid];
+    if nw != null { net = net_flags(nw.mask); if net != 0 { hits = hits + 1; } }
+    add_way(idx, w, net);
+    return;
+  }
   add_barrier(idx, parse_barrier_feature(line));
 }
 
-fn build_stream(path: text) -> hash<TTile[tkey]> {
+fn build_stream(path: text, netpath: text) -> hash<TTile[tkey]> {
   idx: hash<TTile[tkey]> = [];
+  nets = load_networks(netpath);
+  hits = 0;
   f = file(path);
   total = f.size;
   pos = 0;
@@ -153,7 +204,7 @@ fn build_stream(path: text) -> hash<TTile[tkey]> {
     for ch in chunk { if ch == '\n' { last_nl = ch#index; } }
     if last_nl < 0 {
       if pos + want >= total {
-        if chunk != "" { feed(idx, chunk); nlines += 1; }
+        if chunk != "" { feed(idx, chunk, nets, hits); nlines += 1; }
         pos = total;
       } else {
         chunk_size = chunk_size * 2;      // one line is longer than the chunk — grow and re-read
@@ -161,12 +212,16 @@ fn build_stream(path: text) -> hash<TTile[tkey]> {
     } else {
       part = chunk[0..last_nl];
       for ln in part.split('\n') {
-        if ln != "" { feed(idx, ln); nlines += 1; }
+        if ln != "" { feed(idx, ln, nets, hits); nlines += 1; }
       }
       pos = pos + last_nl + 1;
     }
   }
   println("streamed: {nlines} features from {total} bytes in {chunk_size}-byte chunks");
+  // Reported, because the join is silent when it fails: a sidecar for the wrong region, or an export
+  // built without `-u type_id`, both produce a perfectly valid block with every network bit clear.
+  // `networks: N ways` followed by `matched: 0` is the signature of that, and the gate asserts on it.
+  println("networks matched: {hits} ways in this block");
   idx
 }
 fn main() {
@@ -176,7 +231,7 @@ fn main() {
   // is the whole-document Overpass path. PLAN-TILES' recipe already ends in `osmium export -f geojsonseq`
   // and then converts; streaming reads that file directly, which removes the conversion step entirely.
   idx: hash<TTile[tkey]> = [];
-  if src.ends_with(".geojsonseq") || src.ends_with(".jsonl") { idx = build_stream(src); }
+  if src.ends_with(".geojsonseq") || src.ends_with(".jsonl") { idx = build_stream(src, a[2] ?? ""); }
   else { idx = build(src); }
   nt = 0; nr = 0; nb = 0;
   for t in idx { nt = nt + 1; nr = nr + len(t.roads); nb = nb + len(t.barriers); }

@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-RESTORE R4's gate — a fixture query set against the name store we actually ship.
+//
+// R4 asks for two things and they pull opposite ways: every fixture name must resolve NEAR where it
+// really is, and an unknown name must return NOTHING rather than a wrong answer. A search that answers
+// everything passes the first and fails the second; one that answers nothing does the reverse.
+//
+// The fixtures are places and streets a person here would type, with coordinates taken from OSM. The
+// tolerance is deliberately loose (2 km): a street is a LINE and the store keeps one representative
+// point per ~5.5 km cell, so "within 2 km of the middle of it" is the honest claim. Precision beyond
+// that would be testing the fixture, not the search.
+//
+//   loft --native --lib lib tools/name_probe.loft <names.store>
+#cwd
+
+use basemap::(NameRec, fold_name);
+use map_kernel::(name_score, do_find);
+use routing_kernel::(GeoPoint, geodesic_m);
+
+// query · expected lat · expected lon · must the top hit be a PLACE?
+struct Fix { const q: text, const lat: float, const lon: float, const place: boolean }
+
+// Searched FROM Enschede, so proximity ranking is exercised: "kerkstraat" exists in hundreds of towns
+// and the right answer is the near one, while "amsterdam" must still win from 150 km away because a city
+// outranks a hamlet next door.
+CAM_LAT = 52.2215;
+CAM_LON = 6.8937;
+TOL_M = 2000.0;
+
+fn main() {
+  a = arguments();
+  names: hash<NameRec[id]> = [];
+  if !store_load(names, a[0] ?? "") { println("#R FAIL store_load"); return; }
+  n = 0;
+  for r in names { n += 1; }
+  println("#R store {n} names");
+  if n < 100 { println("#R FAIL vacuous — {n} names is not a store anyone could search"); return; }
+
+  fixes: vector<Fix> = [
+    Fix { q: "lonneker",      lat: 52.2506, lon: 6.9117, place: true },
+    Fix { q: "enschede",      lat: 52.2215, lon: 6.8937, place: true },
+    Fix { q: "vliegveldweg",  lat: 52.2519, lon: 6.9080, place: false },
+    Fix { q: "Lonnekerbrugstraat", lat: 52.2233, lon: 6.8598, place: false },
+  ];
+
+  bad = 0;
+  for f in fixes {
+    // `name_score`/`fold_name` directly rather than through `do_find`'s printed output: the gate is
+    // about WHICH record wins and how far off it is, and re-parsing our own stdout to find out would
+    // test the formatter too.
+    fq = fold_name(f.q);
+    best_sc = 0 - 1; best_d = 0.0; best_name = ""; best_kind = 0; found = false;
+    for r in names {
+      sc = name_score(r.fold, fq);
+      if sc < 0 { continue; }
+      d = geodesic_m(GeoPoint { lat: (r.lat as integer) as float / 10000000.0,
+                                lon: (r.lon as integer) as float / 10000000.0 },
+                     GeoPoint { lat: CAM_LAT, lon: CAM_LON });
+      rk = r.rank as integer;
+      // The same order `do_find` uses: match quality, then significance, then proximity.
+      better = false;
+      if !found { better = true; }
+      else if sc > best_sc { better = true; }
+      else if sc == best_sc && rk > best_kind { better = true; }
+      else if sc == best_sc && rk == best_kind && d < best_d { better = true; }
+      if better {
+        found = true; best_sc = sc; best_d = d; best_name = r.name; best_kind = rk;
+        best_lat = (r.lat as integer) as float / 10000000.0;
+        best_lon = (r.lon as integer) as float / 10000000.0;
+      }
+    }
+    if !found {
+      println("#R FAIL \"{f.q}\" found nothing");
+      bad += 1;
+      continue;
+    }
+    off = geodesic_m(GeoPoint { lat: best_lat, lon: best_lon }, GeoPoint { lat: f.lat, lon: f.lon });
+    isplace = best_kind > 0;
+    if off > TOL_M {
+      println("#R FAIL \"{f.q}\" -> {best_name} at {best_lat:1.4},{best_lon:1.4}, {off:1.0} m from the fixture");
+      bad += 1;
+    } else if f.place && !isplace {
+      println("#R FAIL \"{f.q}\" -> {best_name}, a street; the fixture is a PLACE");
+      bad += 1;
+    } else {
+      println("#R ok \"{f.q}\" -> {best_name} ({off:1.0} m off)");
+    }
+  }
+
+  // …and the half that matters more, because everything above is satisfied by a search that answers
+  // generously. A name that is not in the data must produce NO answer: a geocoder that always returns
+  // its nearest guess is worse than one that says it does not know, since the map moves and the user
+  // believes it.
+  misses: vector<text> = ["zzzznotathing", "qqxwvz", "notarealstreetname12345"];
+  for mq in misses {
+    fm = fold_name(mq);
+    hits = 0;
+    for r in names { if name_score(r.fold, fm) >= 0 { hits += 1; } }
+    if hits > 0 { println("#R FAIL \"{mq}\" matched {hits} name(s) — an unknown name must find nothing"); bad += 1; }
+    else { println("#R ok \"{mq}\" -> nothing, correctly"); }
+  }
+
+  if bad == 0 { println("#R ALL PASS"); } else { println("#R FAILED {bad}"); }
+}

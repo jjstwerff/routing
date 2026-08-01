@@ -1,0 +1,168 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// gen-names — build the searchable NAME store (PLAN-RESTORE R4) from the exports the pipeline already
+// produces: the roads `geojsonseq` (street names) and the places one (cities, towns, villages).
+//
+// It exists because R4's original plan does not survive N3. That plan searched the BASE map's labels at
+// load, which was right while the only region was a 20 MB city; the NL base map is 2.87 GB and stays on
+// the release, so outside Enschede there would be nothing to search. A dedicated store is a few tens of
+// MB and ships beside the roads.
+//
+//   loft --native-release --lib lib tools/gen-names.loft <out.names.store> <roads.geojsonseq> [places.geojsonseq]
+//
+// Both inputs are optional in the sense that either may be absent; a store built from one of them is
+// still useful and the counts printed at the end say which half it has.
+#cwd
+
+use basemap::(NameRec, NK_STREET, NK_PLACE, NAME_CELL, fold_name, place_rank);
+
+// A name already taken for a cell, so the same street is not stored once per way. Keyed by TEXT — the
+// composite "fold|cell" — because loft keys a hash on one field and a numeric hash of the pair would
+// trade a real collision risk for bytes this structure never persists. It is scratch: only `out` below
+// is written to disk.
+struct Seen { const k: text }
+
+fn cell_of(gx: integer, gy: integer) -> integer {
+  tx = gx / NAME_CELL; if gx < 0 && gx % NAME_CELL != 0 { tx = tx - 1; }
+  ty = gy / NAME_CELL; if gy < 0 && gy % NAME_CELL != 0 { ty = ty - 1; }
+  ty * 1000000 + tx
+}
+
+// The value of a JSON string member, or "" — a scan rather than a parse.
+//
+// `json_parse` on 3.5 million features is the obvious way and it is not affordable here: this reads the
+// SAME 1 GB export the generator streams, and needs three members out of a feature that carries dozens.
+// The scan is exact for the shapes osmium emits (no escaped quotes inside these values in practice, and
+// a name containing one degrades to a truncated name, never to a wrong coordinate).
+fn member(line: text, key: text) -> text {
+  pat = "\"{key}\":\"";
+  at = line.find(pat);
+  if at < 0 { return ""; }
+  start = at + pat.size();
+  // `find` takes no start offset, so search the REMAINDER and shift the answer back.
+  rest = line[start..line.size()];
+  end = rest.find("\"");
+  if end < 0 { return ""; }
+  line[start..(start + end)]
+}
+
+// The FIRST coordinate pair of the geometry, as fixed-point. Good enough to locate a name: a street's
+// first vertex is on the street, and a place is a point.
+fn first_coord(line: text) -> vector<integer> {
+  res: vector<integer> = [];
+  at = line.find("\"coordinates\":");
+  if at < 0 { return res; }
+  // Step past the brackets to the first number, whether the geometry is a Point ([lon,lat]) or a
+  // LineString ([[lon,lat],…]).
+  i = at + 14;
+  while i < line.size() && (line[i..(i + 1)] == "[" || line[i..(i + 1)] == " ") { i = i + 1; }
+  tail = line[i..line.size()];
+  rel = tail.find(",");
+  if rel < 0 { return res; }
+  comma = i + rel;
+  lon = line[i..comma] as float?;
+  j = comma + 1;
+  end = j;
+  while end < line.size() {
+    c = line[end..(end + 1)];
+    if c == "]" || c == "," { break; }
+    end = end + 1;
+  }
+  lat = line[j..end] as float?;
+  if lon == null || lat == null { return res; }
+  // Discharged AFTER the null test: the checker types `round(float?)` as nullable regardless of the
+  // guard above, so the cast has to say what it does with a null it can prove will not arrive.
+  res += [round((lon ?? 0.0) * 10000000.0) as integer];
+  res += [round((lat ?? 0.0) * 10000000.0) as integer];
+  res
+}
+
+fn add_name(out: hash<NameRec[id]>, seen: hash<Seen[k]>, next: &integer,
+            name: text, kind: integer, rank: integer, gx: integer, gy: integer) {
+  if name == "" { return; }
+  f = fold_name(name);
+  if f == "" { return; }
+  k = "{f}|{cell_of(gx, gy)}|{kind}";
+  if seen[k] != null { return; }
+  seen += Seen { k: k };
+  out += NameRec { id: next, name: name, fold: f, kind: (kind & 255) as u8, rank: (rank & 255) as u8,
+                   lat: (gy & 4294967295) as i32? ?? (0 as i32), lon: (gx & 4294967295) as i32? ?? (0 as i32) };
+  next = next + 1;
+}
+
+// The same chunked reader `gen-tiles` uses: `lines()` is built on `content()`, so both hold the whole
+// file, and these inputs are a gigabyte. Each pass uses only up to its LAST newline and seeks back, so a
+// chunk boundary can never split a line.
+fn scan(path: text, out: hash<NameRec[id]>, seen: hash<Seen[k]>, next: &integer,
+        kind: integer, counted: &integer) {
+  f = file(path);
+  if !f.exists() { println("names: no input at {path}"); return; }
+  total = f.size;
+  pos = 0;
+  chunk_size = 1048576;
+  while pos < total {
+    f#next = pos;
+    want = chunk_size;
+    if pos + want > total { want = total - pos; }
+    chunk = f#read(want) as text;
+    last_nl = 0 - 1;
+    for ch in chunk { if ch == '\n' { last_nl = ch#index; } }
+    if last_nl < 0 {
+      if pos + want >= total {
+        if chunk != "" { feed(chunk, out, seen, next, kind, counted); }
+        pos = total;
+      } else {
+        chunk_size = chunk_size * 2;
+      }
+    } else {
+      part = chunk[0..last_nl];
+      for ln in part.split('\n') { if ln != "" { feed(ln, out, seen, next, kind, counted); } }
+      pos = pos + last_nl + 1;
+    }
+  }
+}
+
+fn feed(line: text, out: hash<NameRec[id]>, seen: hash<Seen[k]>, next: &integer,
+        kind: integer, counted: &integer) {
+  name = member(line, "name");
+  if name == "" { return; }
+  rank = 0;
+  if kind == NK_PLACE {
+    rank = place_rank(member(line, "place"));
+    // A `place` node with no recognised value is not a place — it is a name on something else that
+    // happened to be in the places export. Storing it at rank 0 would put it above nothing and below
+    // nothing, which is the wrong kind of answer.
+    if rank <= 0 { return; }
+  } else {
+    // Only NAMED WAYS are streets. The roads export also carries barrier POINTS (a gate can be named),
+    // and a named parking amenity — neither is somewhere you navigate to by street name.
+    if line.find("\"LineString\"") < 0 { return; }
+    if member(line, "highway") == "" { return; }
+  }
+  c = first_coord(line);
+  if len(c) < 2 { return; }
+  counted = counted + 1;
+  add_name(out, seen, next, name, kind, rank, c[0] ?? 0, c[1] ?? 0);
+}
+
+fn main() {
+  a = arguments();
+  outpath = a[0] ?? "";
+  roads = a[1] ?? "";
+  places = a[2] ?? "";
+  if outpath == "" { println("usage: gen-names <out.names.store> <roads.geojsonseq> [places.geojsonseq]"); return; }
+
+  out: hash<NameRec[id]> = [];
+  seen: hash<Seen[k]> = [];
+  next = 0;
+  nstreet = 0; nplace = 0;
+
+  if roads != "" { scan(roads, out, seen, next, NK_STREET, nstreet); }
+  streets_kept = next;
+  if places != "" { scan(places, out, seen, next, NK_PLACE, nplace); }
+
+  println("names: streets {streets_kept} of {nstreet} named features · places {next - streets_kept} of {nplace}");
+  ok = store_persist_bind(out, outpath);
+  println("persist {ok} records {next}");
+}

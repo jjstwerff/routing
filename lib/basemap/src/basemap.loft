@@ -73,6 +73,68 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
                       fcount: integer = 0,
                       fmnla: integer = 0, fmnlo: integer = 0, fmxla: integer = 0, fmxlo: integer = 0 }
 
+// ===================================================================================================
+// SEARCHABLE NAMES (PLAN-RESTORE R4) — a store of its own, not a view of the base map.
+//
+// R4 was written to search the base store's labels at load, and that was right when the only region was
+// a 20 MB city. It does not survive PLAN-SCALE N3: the NL base map is 2.87 GB and stays on the release,
+// so outside Enschede there are no labels to search. Names therefore get their own store, small enough
+// to ship beside the roads and load whole.
+//
+// Measured on the Netherlands (2026-08-01): 1 223 091 named road features collapse to 172 450 DISTINCT
+// names — 2.6 MB of text — and there are 12 890 named places. Deduped by name AND locality (below) the
+// store is a few tens of MB against a 950 MB site budget already at 55%.
+//
+// ⚠ DEDUPED BY NAME *AND CELL*, not by name alone. "Kerkstraat" exists in hundreds of Dutch towns and
+// they are different answers; collapsing them would make search confidently wrong, which is worse than
+// finding nothing. The cell is coarse (NAME_CELL below) so one long street yields a handful of entries
+// rather than one per way — a search offers you the nearest, and the others are still reachable.
+pub struct NameRec {
+  const id: integer,       // insertion order — the store's key; nothing outside reads it
+  const name: text,        // exactly as OSM spells it, including diacritics
+  const fold: text,        // `name` case- and diacritic-folded: what a query is matched against, so the
+                           // match does not have to fold 400k names on every keystroke (see `fold_name`)
+  const kind: u8,          // NK_* below
+  const rank: u8,          // place_rank for a place (6 city … 1 locality); 0 for a street
+  const lat: i32,          // a representative point, fixed-point 1e-7 — the store's own unit
+  const lon: i32,
+}
+
+pub const NK_STREET = 0;
+pub const NK_PLACE  = 1;
+
+// ~5.5 km. Coarser than the roads grid (0.02°) on purpose: this bins NAMES, and a street is a thing a
+// person locates by town, not by 2 km cell. At 0.02° a single ring road becomes a dozen answers.
+pub const NAME_CELL = 500000;
+
+// Case- and diacritic-folded, so `enschede`, `Enschede` and a typed `Enschede` with a combining accent
+// all meet. Deliberately NOT a general Unicode fold — this is the Dutch/German/French band the data
+// actually covers, and a table that pretends to more than it does is harder to reason about than one
+// that states its scope.
+pub fn fold_name(s: text) -> text {
+  out = "";
+  for ch in s {
+    c = ch as integer;
+    if c >= 65 && c <= 90 { out += "{(c + 32) as character}"; continue; }   // ASCII upper → lower
+    if c >= 192 && c <= 197 { out += "a"; continue; }                        // À..Å
+    if c == 199 { out += "c"; continue; }                                    // Ç
+    if c >= 200 && c <= 203 { out += "e"; continue; }                        // È..Ë
+    if c >= 204 && c <= 207 { out += "i"; continue; }                        // Ì..Ï
+    if c == 209 { out += "n"; continue; }                                    // Ñ
+    if c >= 210 && c <= 214 { out += "o"; continue; }                        // Ò..Ö
+    if c >= 217 && c <= 220 { out += "u"; continue; }                        // Ù..Ü
+    if c >= 224 && c <= 229 { out += "a"; continue; }                        // à..å
+    if c == 231 { out += "c"; continue; }                                    // ç
+    if c >= 232 && c <= 235 { out += "e"; continue; }                        // è..ë
+    if c >= 236 && c <= 239 { out += "i"; continue; }                        // ì..ï
+    if c == 241 { out += "n"; continue; }                                    // ñ
+    if c >= 242 && c <= 246 { out += "o"; continue; }                        // ò..ö
+    if c >= 249 && c <= 252 { out += "u"; continue; }                        // ù..ü
+    out += "{ch}";
+  }
+  out
+}
+
 // Many OSM landuse/natural/leisure tags → a compact landcover palette (one fill each). `natural` is most
 // specific, then `landuse`, then `leisure` (parks/greens); unmapped tags fall to "other".
 // The label KIND for a named landcover area, or "" for one that should carry no name.
@@ -188,7 +250,15 @@ pub fn road_class(highway: text) -> text {
 }
 
 // waterway / railway / barrier way → a compact Line kind (stroke style per kind). "" = not a line we draw.
-pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "") -> text {
+pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "",
+                 boundary: text = "", admin_level: text = "", power: text = "") -> text {
+  // A national border is the one boundary worth drawing: it tells you which country's rules you are
+  // under, which on a bike near Glanerbrug changes every few hundred metres. The municipal levels (8, 10)
+  // are far denser and mean nothing to a walker, so only level 2 is taken.
+  if boundary == "administrative" && admin_level == "2" { return "border"; }
+  // Transmission lines are a navigation landmark in open country — visible for kilometres, and the one
+  // feature that makes an otherwise featureless polder legible.
+  if power == "line" { return "powerline"; }
   // A runway is a landmark you navigate by even when you cannot walk on it — visible from every road
   // around the field, and the one thing that says "this is an airport" at a glance.
   if aeroway == "runway" { return "runway"; }
@@ -208,7 +278,11 @@ pub fn line_kind(waterway: text, railway: text, barrier: text, aeroway: text = "
 }
 
 // A POI node's tags → a compact Poi kind (one glyph per kind). "" = not a POI we draw. First match wins.
-pub fn poi_kind(natural: text, amenity: text, tourism: text, man_made: text, historic: text, leisure: text, highway: text) -> text {
+pub fn poi_kind(natural: text, amenity: text, tourism: text, man_made: text, historic: text, leisure: text,
+                highway: text, power: text = "") -> text {
+  // A PYLON, not a "tower". `man_made=tower` already claims that kind and draws as a landmark triangle at
+  // z12 — right for a watertower you navigate by, wrong for 248 pylons that would then out-shout the map.
+  if power == "tower" { return "pylon"; }
   if natural == "tree" { return "tree"; }
   if natural == "peak" { return "peak"; }
   if natural == "spring" { return "spring"; }

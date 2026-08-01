@@ -33,7 +33,10 @@ emit="$("$loft" --native --lib "$here/lib" "$here/tools/tiles_to_geojsonseq.loft
   || { echo "$emit"; echo "FAIL — could not emit geojsonseq"; exit 1; }
 echo "  $(echo "$emit" | grep '^wrote' || true) ($(stat -c%s "$work/rt.geojsonseq") bytes)"
 
-gen="$("$loft" --native --lib "$here/lib" "$here/tools/gen-tiles.loft" "$work/rt.store" "$work/rt.geojsonseq" 2>&1)" \
+# The sidecar the emitter just wrote alongside the geojsonseq: network membership is not a tag, so it
+# cannot ride in the properties, and dropping it here would regenerate a block that routes differently
+# from the one it came from (PLAN-RESTORE R3).
+gen="$("$loft" --native --lib "$here/lib" "$here/tools/gen-tiles.loft" "$work/rt.store" "$work/rt.geojsonseq" "$work/rt.geojsonseq.networks" 2>&1)" \
   || { echo "$gen"; echo "FAIL — the streaming generator did not run"; exit 1; }
 echo "$gen" | grep -E '^streamed|^built' | sed 's/^/  /'
 echo "$gen" | grep -q '^streamed' || { echo "FAIL — the .geojsonseq input did not take the STREAMING path"; exit 1; }

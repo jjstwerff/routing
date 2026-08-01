@@ -36,6 +36,7 @@ id        = "enschede"
 name      = "Enschede / south Overijssel"
 roads     = "stores/enschede.roads.store"
 base      = "stores/enschede.layout.store"
+names     = "stores/enschede.names.store"
 read_mode = "whole"
 
 # ⚠ ROAD BLOCKS MUST NOT OVERLAP. The Enschede roads block was removed here when the Netherlands block
@@ -55,28 +56,42 @@ read_mode = "whole"
 # are what a per-region generation would have produced directly — and S8's gate proves a route crossing
 # the seam is the route the whole region gives.
 #
-# `url_base` publishes them from the release rather than beside the app: 1.4 GB of base map is not
-# something a site build should copy. ⚠ Release assets serve Range but send NO CORS header (measured
-# 2026-07-30), so a BROWSER on another origin cannot read these — they serve downloads, the native server
-# and offline use.
+# HOSTING IS PER STORE, and the Netherlands is why (PLAN-SCALE N3, 2026-08-01). Measured:
+#
+#   NL roads, both halves    497.2 MB   +  26.6 MB site  =  523.8 MB   → fits the ~1 GB Pages cap
+#   NL base map, both halves 2874.0 MB                                 → 3x over it
+#
+# So the ROADS ship beside the app, same-origin and site-relative — which is what makes routing live for
+# the whole country — and only the BASE MAP keeps a `base_url_base` pointing at the release. A site index
+# then names no base for these regions at all, and the app renders roads and a route on a plain
+# background outside Enschede (store-app.mjs handles `base: null`; it is a product, not a fallback).
+#
+# ⚠ Release assets serve Range but send NO CORS header (measured 2026-07-30), so a BROWSER on another
+# origin cannot read the base map there — it serves downloads, the native server and offline use. That is
+# also why the base cannot simply be named here: the page would resolve a URL it can never fetch.
 #
 # ⚠ This does NOT mean the browser needs a third-party CORS host. GitHub Pages serves real byte ranges
 # (re-measured against the live site 2026-07-30 — the earlier "Pages answers 200 with the whole file"
-# claim was measured against `python3 -m http.server` and is wrong). What stops NL shipping on Pages is
-# SIZE: ~1 GB per site, and roads+base is 3.2 GB. Roads alone are 504 MB and would fit. PLAN-SCALE D2.
+# claim was measured against `python3 -m http.server` and is wrong). What stopped NL shipping on Pages
+# was SIZE, and splitting the two stores is what gets under it. PLAN-SCALE D2.
+#
+# ⚠ The blocks are NOT committed: nl-east.roads.store is 263.9 MB and GitHub hard-rejects any file over
+# 100 MB. The Pages job downloads them from the release into blocks/ before the site build.
 
 [[region]]
 id        = "nl-west"
 name      = "Netherlands (west of 5.40°E)"
 roads     = "stores/nl-west.roads.store"
 base      = "stores/nl-west.base.store"
+names     = "stores/nl.names.store"
 read_mode = "paged"
-url_base  = "https://github.com/jjstwerff/routing/releases/download/data-v2026-07-30"
+base_url_base = "https://github.com/jjstwerff/routing/releases/download/data-v2026-08-01"
 
 [[region]]
 id        = "nl-east"
 name      = "Netherlands (east of 5.40°E)"
 roads     = "stores/nl-east.roads.store"
 base      = "stores/nl-east.base.store"
+names     = "stores/nl.names.store"
 read_mode = "paged"
-url_base  = "https://github.com/jjstwerff/routing/releases/download/data-v2026-07-30"
+base_url_base = "https://github.com/jjstwerff/routing/releases/download/data-v2026-08-01"

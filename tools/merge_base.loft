@@ -1,0 +1,71 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Merge disjoint BASE MAP chunks back into one block — the inverse of `tools/split_base.loft`, and what
+// lets a chunked CI build produce the blocks `data/coverage.toml` actually names (PLAN-SCALE §6e).
+//
+// WHY IT IS NEEDED. Chunking exists because `build_store.loft` accumulates its whole store in memory, so
+// a region that will not fit is built in bands on separate runners. But the coverage model is regions,
+// not build chunks: NL ships as `nl-west`/`nl-east`, and an index naming four chunk files would be a
+// product change, not a build change. So the chunks are assembled here, where the memory cost is only
+// the OUTPUT block rather than the whole country.
+//
+// ⚠ IT REFUSES TO MERGE OVERLAPPING CHUNKS. Two chunks sharing a cell would silently double that tile's
+// features — the same defect `block_overlap_gate` exists to catch, arriving through the back door. The
+// inputs are a partition by construction (`trim_base.loft` cuts each to its own band), so a shared key
+// means something upstream is wrong and merging would hide it.
+//
+//   loft --native --lib lib tools/merge_base.loft <out.store> <in1.store> <in2.store> [more…]
+#cwd
+
+use basemap::(PTile, Area, Building, Line, Poi, Label, Coord);
+
+fn copy_ring(ring: vector<Coord>) -> vector<Coord> {
+  r: vector<Coord> = [];
+  for c in ring { r += [Coord { x: c.x, y: c.y }]; }
+  r
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 3 { println("usage: merge_base <out.store> <in1.store> <in2.store> [more…]"); return; }
+
+  out: hash<PTile[tkey]> = [];
+  total = 0; tiles = 0; clashes = 0;
+
+  for i in 1..len(a) {
+    src: hash<PTile[tkey]> = [];
+    p = a[i] ?? "";
+    if !store_load(src, p) { println("#M FAIL store_load {p}"); return; }
+    n = 0; f = 0;
+    for t in src {
+      // The disjointness check, done HERE rather than trusted: a chunk that overlaps its neighbour would
+      // otherwise merge into doubled geometry that reads perfectly and renders twice.
+      if out[t.tkey] != null { clashes += 1; continue; }
+      out += PTile { tkey: t.tkey, ox: t.ox, oy: t.oy, areas: [], buildings: [], lines: [], labels: [], pois: [],
+                     fcount: t.fcount, fmnla: t.fmnla, fmnlo: t.fmnlo, fmxla: t.fmxla, fmxlo: t.fmxlo };
+      d = out[t.tkey];
+      if d != null {
+        for ar in t.areas { d.areas += [Area { cover: ar.cover, ring: copy_ring(ar.ring) }]; f += 1; }
+        for bu in t.buildings { d.buildings += [Building { name: bu.name, ring: copy_ring(bu.ring) }]; f += 1; }
+        for ln in t.lines { d.lines += [Line { kind: ln.kind, name: ln.name, geom: copy_ring(ln.geom) }]; f += 1; }
+        for lb in t.labels { d.labels += [Label { name: lb.name, kind: lb.kind, rank: lb.rank, line: copy_ring(lb.line) }]; f += 1; }
+        for po in t.pois { d.pois += [Poi { kind: po.kind, name: po.name, at: Coord { x: po.at.x, y: po.at.y } }]; f += 1; }
+      }
+      n += 1;
+    }
+    println("#M in {p}: tiles={n} features={f}");
+    tiles += n; total += f;
+  }
+
+  // The extents come across UNCHANGED (fcount/fmnla/…): each was sealed against that tile's own geometry
+  // when its chunk was built, and a tile belongs to exactly one chunk, so there is nothing to re-seal.
+  // Recomputing here would cost a full coordinate walk to arrive at the same numbers.
+  if clashes > 0 {
+    println("#M FAIL — {clashes} tile(s) appeared in more than one chunk; the inputs are not a partition");
+    return;
+  }
+  ok = store_persist_bind(out, a[0] ?? "");
+  println("#M merged tiles={tiles} features={total} persist {ok}");
+}

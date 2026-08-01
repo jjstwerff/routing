@@ -7,7 +7,7 @@
 //   4. orientation: east → +x, north → −y
 
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
-         cameraFromHash, hashForCamera, parseBarriers, orientBarriers } from './map.mjs';
+         cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 import { RoughLayer, KernelQueue, pointToSegment, PAN_SLOP_PX, HIT_POINT_PX, HIT_SEGMENT_PX,
          DOUBLE_CLICK_MS, BOX_MIN_PX } from './rough.mjs';
@@ -1204,6 +1204,24 @@ console.log('\nS7 · coverage index → block');
   ok(two.split(',').length === 2 && two.includes('nl.roads') && two.includes('be.roads'),
      `a box no single block contains names BOTH (${two})`);
   ok(roadsUrlsFor(index, IDX, 50.5, 4.2, 53.0, 4.6) === two, 'the same box always yields the same string, in index order');
+
+  // ⚠ THE CASE THAT DROPPED ROADS. `nl` and `be` PARTIALLY overlap — neither contains the other — so a
+  // box inside the shared band is "covered" by both and the smaller AREA used to win outright, silently
+  // discarding every road the other block held there.
+  //
+  // This is not hypothetical: the real NL halves are cut on a CELL boundary at 5.40°E, yet their bboxes
+  // run 3.3400..5.4680 and 5.3001..7.2430, because a way is kept whole and overhangs the cut. Measured
+  // 2026-08-01, a box at lon 5.35..5.45 named nl-west alone — losing the far side of the seam, which is
+  // the Amersfoort→Apeldoorn route PLAN-SCALE §810 calls out by name.
+  //
+  // NESTING is what separates the safe case from this one, and the two tests below are a pair: a city
+  // fully inside a country really does hold every cell of the box (so the country adds only duplicates),
+  // while two partially-overlapping blocks may each hold cells the other lacks.
+  const band = roadsUrlsFor(index, IDX, 51.0, 4.0, 51.2, 4.5);
+  ok(band.split(',').length === 2 && band.includes('nl.roads') && band.includes('be.roads'),
+     `a box in the band two PARTIALLY overlapping blocks share names BOTH (${band})`);
+  ok(one === 'https://example.test/enschede.roads',
+     'while a box in a block NESTED inside another still names only the finer one — nesting is not a seam');
   const none = roadsUrlsFor(index, IDX, 40.0, 10.0, 40.1, 10.1, nl);
   ok(none === 'https://example.test/nl.roads', 'a box covering nothing falls back to the resolved block, never to an empty command');
 }
@@ -1220,7 +1238,21 @@ console.log('\ncamera in the URL fragment:');
   ok(cameraFromHash('#') === null, 'a bare # → null');
   ok(cameraFromHash('#nonsense') === null, 'junk → null, not NaN');
   ok(cameraFromHash('#16/52.2215') === null, 'a truncated fragment → null');
-  ok(cameraFromHash('#16/52.2215/6.8937/extra') === null, 'a trailing field → null (no silent prefix match)');
+  ok(cameraFromHash('#16/52.2215/6.8937/extra') === null, 'an unknown trailing field → null (no silent prefix match)');
+  // The profile rides the fragment rather than localStorage, so a bare URL is deterministic for the
+  // headless gates and a shared link carries what you were planning as well as where you were.
+  const wp = cameraFromHash('#16/52.2215/6.8937/walking_trail');
+  ok(wp && wp.profile === 'walking_trail', 'a known profile in the 4th field parses');
+  ok(cameraFromHash('#16/52.2215/6.8937').profile === undefined, 'no 4th field → no profile, caller defaults');
+  ok(cameraFromHash('#16/52.2215/6.8937/cycling_moon') === null, 'a profile the kernel cannot weigh → null');
+  ok(PROFILES.length === 9 && PROFILES.includes('cycling_mtb') && PROFILES.includes('driving_avoid'),
+     'PROFILES lists the nine way_penalty implements');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, PROFILES[0]) === '#16/52.22150/6.89370',
+     'the default profile is not written into the fragment');
+  ok(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, 'cycling_mtb') === '#16/52.22150/6.89370/cycling_mtb',
+     'a non-default profile is');
+  const rtp = cameraFromHash(hashForCamera({ lat: 52.2215, lon: 6.8937, zoom: 16 }, 'running_trail'));
+  ok(rtp && rtp.profile === 'running_trail', 'camera+profile round-trips through the fragment');
   ok(cameraFromHash('#16/999/6.8937') === null, 'an out-of-range latitude → null');
   ok(cameraFromHash('#16/52.2/999') === null, 'an out-of-range longitude → null');
   ok(cameraFromHash('#99/52.2/6.9') === null, 'an absurd zoom → null');

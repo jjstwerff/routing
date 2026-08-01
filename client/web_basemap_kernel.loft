@@ -24,8 +24,8 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys);
-use basemap::(PTile);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys, do_find);
+use basemap::(PTile, NameRec);
 use routing_kernel::(TTile, GeoPoint, corridor_cell_keys, corridor_margin);
 use web::frame_yield;
 
@@ -98,6 +98,12 @@ fn main() {
   // pan was ~341 ms of the 1121 ms pan (PLAN-PERF §2).
   roads_at  = "";
   layout_at = "";
+  // PLAN-RESTORE R4 — the searchable names, held like the other stores: loaded on first `find` and
+  // reused. 34.4 MB for the whole Netherlands (296 457 street names + 12 700 places), so it is read
+  // WHOLE rather than paged: a substring search touches every record by definition, and paging a store
+  // you are about to scan end to end is strictly worse than fetching it once.
+  names: hash<NameRec[id]> = [];
+  names_at  = "";
   // The corridor ways + the graph built from them, held across commands: identical for every click that
   // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
   // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
@@ -132,6 +138,11 @@ fn main() {
       // trips against one. So the strategy belongs to the DATA, not to the code — at C2 the top index
       // carries it per block, and paging wins as soon as a viewport is a small fraction of a block.
       readmode   = lines[5] ?? "whole";
+      // Line 7, appended rather than folded into an existing slot: this protocol is POSITIONAL, so
+      // reusing the layout or profile line would have made every existing command's meaning depend on
+      // which command it was. Absent for every command except `find`, and empty is a valid answer there
+      // (a region with no name store simply finds nothing).
+      names_url  = lines[6] ?? "";
       roads_urls: vector<text> = [];
       for u in roads_url.split(',') { if u != "" { roads_urls += [u]; } }
       // More than one block can only be PAGED. A whole-file load adopts an image — the second would
@@ -162,7 +173,34 @@ fn main() {
         }
       }
       if ok {
-        if cmd == "reset" {
+        if cmd == "find" {
+          // PLAN-RESTORE R4. Needs neither the layout nor the roads: it reads its own store, so it is
+          // handled before either is touched — a search must work in a region that has no base map at
+          // all, which after N3 is most of the country.
+          //
+          // arg3 is "<lat>,<lon>,<query>": the camera first so results can be ordered by proximity, and
+          // the query LAST so a name containing a comma survives (everything after the second one).
+          if names_url != "" && names_url != names_at {
+            if store_load_url_trusted(names, names_url) {
+              names_at = names_url;
+            } else {
+              println("ERR names store_load_url failed: {names_url}");
+              names_at = "";
+            }
+          }
+          fla = 0.0; flo = 0.0; fq = arg3;
+          c1 = arg3.find(",");
+          if c1 > 0 {
+            rest1 = arg3[(c1 + 1)..arg3.size()];
+            c2 = rest1.find(",");
+            if c2 > 0 {
+              fla = arg3[0..c1] as float ?? 0.0;
+              flo = rest1[0..c2] as float ?? 0.0;
+              fq = rest1[(c2 + 1)..rest1.size()];
+            }
+          }
+          do_find(names, fq, fla, flo, 8);
+        } else if cmd == "reset" {
           // Profiler hook (PLAN-PERF §7e). The session is what makes a warm edit cheap — and it is also
           // what makes a "cold" measurement impossible once it exists: re-sending the same sketch into a
           // live session measures the nothing-changed case, not a cold match. Dropping the session is the

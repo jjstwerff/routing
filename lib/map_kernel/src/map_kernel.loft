@@ -12,7 +12,7 @@
 //                                   requests the visible bbox — the emit volume, not the store, is the cost.
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
-use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed);
+use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
                      RF_ACCESS_NO, RF_FOOT_YES, BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
@@ -353,4 +353,106 @@ pub fn do_match_session_streamed(s: MatchSession, roads: hash<TTile[tkey]>, trac
     }
   }
   emit_route(match_state_result(s.cg, s.mstate).pts, len(s.cways), profile);
+}
+
+// ===================================================================================================
+// SEARCH — "where is Lonneker", answered from our own files (PLAN-RESTORE R4).
+//
+// The old client sent this to Nominatim. Nothing here leaves the machine: the names come from the same
+// OSM extract the roads do, in a store of their own (`tools/gen-names.loft`), and the whole Netherlands
+// is 34.4 MB of it.
+//
+// A LINEAR SCAN, deliberately. A B-tree `index<NameRec[fold]>` would answer a prefix faster, but the
+// query people actually type is a SUBSTRING ("kerk" for Kerkstraat, "lonn" for Lonneker) and no ordered
+// index helps with that.
+//
+// ⚠ IT IS WALKED BY KEY, NOT WITH `for r in names`. Hash iteration yields COPIES (loft C86), and a copy
+// of a NameRec copies its two `text` fields — so the obvious loop duplicated 618 000 strings per
+// keystroke and took **5.4 s natively** on the country store. `names[i]` is a live view instead, and the
+// ids are dense 0..n-1 by construction (`gen-names` assigns them in insertion order), so the walk is a
+// plain counted loop that ends at the first missing id. Same answers, no copies.
+
+// How well `q` matches `fold`, or -1 for no match. Higher is better, and the tiers are the distinctions a
+// person would make: what they typed IS the name, the name STARTS with it, a WORD in the name starts
+// with it, or it merely appears somewhere.
+pub fn name_score(fold: text, q: text) -> integer {
+  if q == "" { return 0 - 1; }
+  at = fold.find(q);
+  if at < 0 { return 0 - 1; }
+  if fold.size() == q.size() { return 3; }
+  if at == 0 { return 2; }
+  // A word boundary — "straat" should rank higher in "Kerk Straat" than inside "Verstraatweg".
+  before = fold[(at - 1)..at];
+  if before == " " || before == "-" || before == "'" { return 1; }
+  0
+}
+
+// One search result, ordered by what a person means: the best MATCH first, then the most significant
+// PLACE, then the nearest. Distance last on purpose — a city 40 km away is a better answer for "Amster"
+// than a hamlet 2 km away, and only ties should be broken by proximity.
+pub struct NameHit { const score: integer, const rank: integer, const dist2: integer, const rec: integer }
+
+// Squared distance in fixed-point degrees, longitude scaled for latitude. Squared and integer because it
+// is only ever COMPARED — a metric that never has to be reported does not need a square root or a
+// geodesic, and this one has to run 309 157 times.
+fn near2(alat: integer, alon: integer, blat: integer, blon: integer) -> integer {
+  dla = alat - blat;
+  dlo = ((alon - blon) * 6) / 10;      // cos(52 deg) ~ 0.6 — the band this data covers
+  (dla * dla) + (dlo * dlo)
+}
+
+// `find`: emit at most `limit` matches for `q`, nearest-and-best first, as
+//   FOUND <lat>,<lon> <kind> <rank> <name>
+// Coordinates in degrees, so the caller can centre the map on one without knowing the store's unit.
+pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limit: integer) {
+  fq = fold_name(q);
+  if fq == "" { println("FOUNDCOUNT 0"); return; }
+  cla = round(clat * 10000000.0) as integer;
+  clo = round(clon * 10000000.0) as integer;
+
+  // Keep only the best `limit` as we go: a full sort of 309k records to show 8 answers would be the
+  // expensive half of this operation, and an insertion into a short list is not.
+  best: vector<NameHit> = [];
+  i = 0;
+  while true {
+    r = names[i];
+    if r == null { break; }
+    i = i + 1;
+    sc = name_score(r.fold, fq);
+    if sc < 0 { continue; }
+    d = near2(r.lat as integer, r.lon as integer, cla, clo);
+    rk = r.rank as integer;
+    // Worse than everything already held, and the list is full — the common case, so it is first.
+    if len(best) >= limit {
+      w = best[len(best) - 1] ?? NameHit { score: 9, rank: 9, dist2: 0, rec: 0 };
+      if sc < w.score { continue; }
+      if sc == w.score && rk < w.rank { continue; }
+      if sc == w.score && rk == w.rank && d >= w.dist2 { continue; }
+    }
+    // Insertion sort into a list that is at most `limit` long. Built fresh rather than shuffled in
+    // place: swapping struct elements through a temp is the #338 trap (`tmp = v[j]` is a VIEW of the
+    // slot, `v[j] = v[k]` is a COPY into it), and a list this short makes the safe form free.
+    next: vector<NameHit> = [];
+    placed = false;
+    for h in best {
+      if !placed && (sc > h.score
+                     || (sc == h.score && rk > h.rank)
+                     || (sc == h.score && rk == h.rank && d < h.dist2)) {
+        next += [NameHit { score: sc, rank: rk, dist2: d, rec: r.id }];
+        placed = true;
+      }
+      if len(next) < limit { next += [h]; }
+    }
+    if !placed && len(next) < limit { next += [NameHit { score: sc, rank: rk, dist2: d, rec: r.id }]; }
+    best = next;
+  }
+
+  println("FOUNDCOUNT {len(best)}");
+  for h in best {
+    rec = names[h.rec];
+    if rec == null { continue; }
+    la = (rec.lat as integer) as float / 10000000.0;
+    lo = (rec.lon as integer) as float / 10000000.0;
+    println("FOUND {la:1.7},{lo:1.7} {rec.kind as integer} {rec.rank as integer} {rec.name}");
+  }
 }

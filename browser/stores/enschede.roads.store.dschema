@@ -1,15 +1,16 @@
 LOFT-DSCHEMA v1
-hash=16449857762506849540
+hash=17343933091654743605
 --
 @endian	little
 TBarrier	size=9	struct{x@0:int<-2147483647,false>, y@4:int<-2147483647,false>, flags@8:byte}
-TRoad	size=3	struct{tp@0:byte, flags@1:byte, steps@2:byte}
+TRoad	size=4	struct{tp@2:byte, flags@0:short_raw<0,false>, steps@3:byte}
 TStep	size=12	struct{x@0:int<-2147483647,false>, y@4:int<-2147483647,false>, h@8:int<-2147483647,false>}
 TTile	size=44	struct{tkey@0:integer, ox@8:integer, oy@16:integer, oh@24:integer, roads@32:vector<TRoad>, steps@36:vector<TStep>, barriers@40:vector<TBarrier>}
 byte	size=1	byte(start=0,null=false)
 hash<TTile[tkey]>	size=4	hash<TTile>(keys=[0],elem_size=44)
 int<-2147483647,false>	size=4	int4(start=-2147483647,null=false)
 integer	size=8	base
+short_raw<0,false>	size=2	shortraw(start=0,null=false)
 vector<TBarrier>	size=4	vector<TBarrier>(elem_size=9)
-vector<TRoad>	size=4	vector<TRoad>(elem_size=3)
+vector<TRoad>	size=4	vector<TRoad>(elem_size=4)
 vector<TStep>	size=4	vector<TStep>(elem_size=12)

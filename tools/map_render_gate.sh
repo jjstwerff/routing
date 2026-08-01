@@ -28,28 +28,45 @@ node "$here/browser/map.test.mjs" || exit 1
 echo "== PLAN-EDIT E0: the chokepoints are singular =="
 e0rc=0
 ptr=$(grep -cE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" "$here/browser/rough.mjs")
+# ⚠ THE RULE IS ABOUT MAP INPUT, and grep cannot tell a canvas from a dropdown. What must stay singular
+# is the road from a gesture ON THE MAP to a sketch edit — that is what P1 (a pan appending a point) and
+# P4 (a dropped match) came from. A listener on a named piece of CHROME is not on that road: the search
+# results list is a menu, and routing its clicks through the map's pointer dispatcher would be worse, not
+# better.
+#
+# So chrome receivers are exempt BY NAME, and the exemptions are printed. That keeps the property the
+# rule is really asserting ("no second road into the sketch") while making each exception a deliberate
+# line in this file rather than something a grep happened not to see.
+chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel)\\."
 stray=$(grep -nE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" \
-        "$here/browser/store-app.mjs" "$here/browser/map.mjs" || true)
+        "$here/browser/store-app.mjs" "$here/browser/map.mjs" 2>/dev/null \
+        | grep -vE ":[[:space:]]*$chrome_rx" || true)
+exempt=$(grep -cE "addEventListener\('(click|mousedown|mouseup)'" "$here/browser/store-app.mjs" 2>/dev/null || echo 0)
 if [ -n "$stray" ]; then
   echo "  FAIL: a pointer/click listener lives outside rough.mjs — input dispatch is no longer a chokepoint:"; echo "$stray"; e0rc=1
 elif [ "$ptr" -lt 4 ]; then
   echo "  FAIL: rough.mjs binds $ptr pointer listeners (expected the 4 of the one dispatcher)"; e0rc=1
 else
-  echo "  ✓ every pointer/click listener is in rough.mjs ($ptr of them, one dispatcher)"
+  echo "  ✓ every MAP pointer listener is in rough.mjs ($ptr of them, one dispatcher); $exempt chrome listener(s) exempt"
 fi
 # Reaching the kernel outside the queue re-opens P4 — and `runKernel` keeps ONE resolve slot, so a second
 # road to it does not merely race, it orphans a promise. The APP section (everything above the test-only
-# __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly two calls: the
-# `view` inside ensureViewNow and the `match` inside streamedMatch, both bodies of a queued job.
+# __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly three calls:
+# the `view` inside ensureViewNow, the `match` inside streamedMatch, and the `find` inside initSearch's
+# `run` — each the body of a queued job.
+#
+# The COUNT is a proxy for the real rule, which is "every one of them is inside jobs.post". Raising it is
+# therefore allowed, and adding a call outside the queue is not; if you raise it, name the third here so
+# the next reader can tell an intended road from a smuggled one.
 app_end=$(grep -n 'window.__perfHooks = {' "$here/browser/store-app.mjs" | head -1 | cut -d: -f1)
 app_calls=$(head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -c 'kernel.runKernel')
-if [ "$app_calls" -ne 2 ]; then
-  echo "  FAIL: the app reaches the kernel from $app_calls places (expected 2 — ensureViewNow + streamedMatch);"
+if [ "$app_calls" -ne 3 ]; then
+  echo "  FAIL: the app reaches the kernel from $app_calls places (expected 3 — ensureViewNow + streamedMatch + initSearch);"
   echo "        a third is a road around the queue, which is how a match gets dropped (P4)."
   head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -n 'kernel.runKernel'
   e0rc=1
 else
-  echo "  ✓ the app reaches the kernel from exactly 2 places, both inside queued jobs"
+  echo "  ✓ the app reaches the kernel from exactly 3 places (view, match, find), each inside a queued job"
 fi
 [ $e0rc -eq 0 ] || exit 1
 

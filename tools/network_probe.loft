@@ -1,0 +1,218 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// PLAN-RESTORE R3 — does preferring a SIGNPOSTED network change routes, and does it only ever change
+// them for the better?
+//
+// The A/B runs on ONE block, stripping the RF_NET_* bits out of the corridor's ways in memory for the
+// control. That is deliberate: a second, separately-generated control block would differ by whatever
+// else drifted between the two generator runs, and this question is about the BONUS alone. Same store,
+// same corridor, same graph shape — the only difference is `Way.net`.
+//
+// Two things it must show, and they pull in opposite directions:
+//   1. the bonus DOES something — a run where nothing changed proves the wiring, not the feature;
+//   2. it never makes a route WORSE — it is a tie-break among ways already near your line (see
+//      NETWORK_BONUS), so it must not buy deviation or open a gap.
+//
+//   loft --native --lib lib tools/network_probe.loft <roads.store>
+#cwd
+use routing_kernel::(GeoPoint, Way, TTile, MatchQuality,
+                     tiles_corridor_ways, build_graph, corridor_margin,
+                     match_state_new, match_incremental, match_state_result, match_quality, geodesic_m,
+                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+
+// The same deterministic lattice `corpus_tube.loft` sweeps, including i=25, the app's own sketch. Kept
+// identical on purpose: two gates disagreeing about what "the corpus" is would make both unreadable.
+fn sketch_at(i: integer) -> vector<GeoPoint> {
+  if i == 25 {
+    return [GeoPoint { lat: 52.2412299, lon: 6.8834496 },
+            GeoPoint { lat: 52.2694705, lon: 6.9164085 },
+            GeoPoint { lat: 52.3116272, lon: 6.9088554 }];
+  }
+  la0 = 52.190 + ((i % 5) as float) * 0.030;
+  lo0 = 6.800  + (((i / 5) % 5) as float) * 0.040;
+  dla = 0.020 + ((i % 3) as float) * 0.020;
+  dlo = 0.030 + ((i % 4) as float) * 0.015;
+  bend = (i % 2) == 1;
+  n = 3 + (i % 4) * 6;
+  pts: vector<GeoPoint> = [];
+  for k in 0..n {
+    f = (k as float) / ((n - 1) as float);
+    if bend {
+      if f < 0.5 { pts += [GeoPoint { lat: la0, lon: lo0 + dlo * (f * 2.0) }]; }
+      else { pts += [GeoPoint { lat: la0 + dla * ((f - 0.5) * 2.0), lon: lo0 + dlo }]; }
+    } else {
+      pts += [GeoPoint { lat: la0 + dla * f, lon: lo0 + dlo * f }];
+    }
+  }
+  pts
+}
+
+fn fx(v: float) -> integer { round(v * 1000000.0) as integer }
+
+fn route_fp(pts: vector<GeoPoint>) -> integer {
+  acc = 0;
+  for i in 0..len(pts) {
+    p = pts[i] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    acc = acc + (i + 1) * (fx(p.lat) + fx(p.lon));
+  }
+  acc
+}
+
+// The CONTROL corridor: the same ways with their network membership erased. Everything else — geometry,
+// tags, order — is copied through, so the graph the router builds is structurally identical.
+fn strip_networks(ways: vector<Way>) -> vector<Way> {
+  out: vector<Way> = [];
+  for w in ways {
+    out += [Way { highway: w.highway, surface: w.surface, tracktype: w.tracktype, bicycle: w.bicycle,
+                  access: w.access, foot: w.foot, oneway: w.oneway, onewaybike: w.onewaybike,
+                  svc: w.svc, cycleway: w.cycleway, cyclestreet: w.cyclestreet, name: w.name,
+                  net: 0, coords: w.coords }];
+  }
+  out
+}
+
+struct Run { const fp: integer, const q: MatchQuality, const on_net_m: float }
+
+// `net_ways` is passed the UNSTRIPPED corridor in both runs — the control's route has to be measured
+// against the same network the treatment saw, or "metres on the network" would read 0 for the control
+// by definition and the comparison would say nothing.
+fn run_one(ways: vector<Way>, netways: vector<Way>, pts: vector<GeoPoint>, profile: text, bit: integer) -> Run {
+  g = build_graph(ways);
+  st = match_incremental(match_state_new(), g, pts, profile);
+  mr = match_state_result(g, st);
+  Run { fp: route_fp(mr.pts), q: match_quality(st, pts, mr), on_net_m: net_share_m(netways, bit, mr.pts) }
+}
+
+// How much of the route runs on the network the profile follows — the number that says the preference
+// LANDED, rather than merely that some byte moved. Counted in ways, not metres: the quality record does
+// not carry a per-network length and inventing one for a probe would be a second implementation of the
+// cost model.
+fn net_ways(ways: vector<Way>, bit: integer) -> integer {
+  n = 0;
+  for w in ways { if bit != 0 && (w.net & bit) == bit { n += 1; } }
+  n
+}
+
+// How many metres of the route run ON the network the profile follows.
+//
+// This exists because the obvious number is a TAUTOLOGY: `MatchQuality.pen_m` is Σ length × `ec.pen`,
+// and `ec.pen` is where NETWORK_BONUS is subtracted — so every route that moves onto the network shows
+// a better pen/m by construction, whether or not it is a better route. Membership is the independent
+// number, and it is the one the feature is actually about.
+//
+// A segment counts when BOTH its endpoints are vertices of a network way. Vertices are matched on the
+// same 1e-6 quantisation the fingerprint uses; the route's points come from graph nodes built out of
+// these very coordinates, so this is an identity test, not a proximity one.
+struct Vtx { const k: integer }
+
+fn vkey(p: GeoPoint) -> integer { fx(p.lat) * 1000000000 + fx(p.lon) + 200000000 }
+
+fn net_share_m(ways: vector<Way>, bit: integer, route: vector<GeoPoint>) -> float {
+  if bit == 0 { return 0.0; }
+  vs: hash<Vtx[k]> = [];
+  for w in ways {
+    if (w.net & bit) != bit { continue; }
+    for c in w.coords { k = vkey(c); if vs[k] == null { vs += Vtx { k: k }; } }
+  }
+  m = 0.0;
+  for i in 1..len(route) {
+    a = route[i - 1] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    b = route[i] ?? GeoPoint { lat: 0.0, lon: 0.0 };
+    if vs[vkey(a)] != null && vs[vkey(b)] != null { m = m + geodesic_m(a, b); }
+  }
+  m
+}
+
+fn bit_for(profile: text) -> integer {
+  if profile.starts_with("walking") || profile.starts_with("running") { return RF_NET_WALK; }
+  if profile == "cycling_mtb" { return RF_NET_MTB; }
+  if profile.starts_with("cycling") { return RF_NET_CYCLE; }
+  0
+}
+
+fn main() {
+  a = arguments();
+  roads: hash<TTile[tkey]> = [];
+  if !store_load(roads, a[0] ?? "") { println("ERR store_load"); return; }
+  // ONE profile per process, and the shell gate loops. Not a style choice: this probe holds two full
+  // corridors of Ways per sketch (each Way owns its coords vector = one store), and running all five
+  // profiles in one process reliably hit loft's "store table exhausted: 65535 stores live at once" part
+  // way through the fourth. A fresh process per profile is the cheap fix and keeps the output readable.
+  profile = a[1] ?? "";
+
+  // --- 1 · the block actually carries the bits ---------------------------------------------------
+  // A block generated before R3, or with a sidecar for the wrong region, reads perfectly and routes
+  // exactly as it always did. Only a count can tell those apart from a working one.
+  nw = 0; nc = 0; nm = 0; nr = 0;
+  for t in roads {
+    for r in t.roads {
+      nr += 1;
+      fl = r.flags as integer;
+      if (fl & RF_NET_WALK) == RF_NET_WALK { nw += 1; }
+      if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { nc += 1; }
+      if (fl & RF_NET_MTB) == RF_NET_MTB { nm += 1; }
+    }
+  }
+  println("#N bits roads={nr} walk={nw} cycle={nc} mtb={nm}");
+  if profile == "" { return; }
+
+  bit = bit_for(profile);
+  changed = 0; worse = 0; n = 0; gained = 0; healed = 0;
+  onm_tot = 0.0; offm_tot = 0.0;
+  for i in 0..26 {
+    pts = sketch_at(i);
+    ways = tiles_corridor_ways(roads, pts, corridor_margin(pts));
+    if len(ways) == 0 { continue; }
+    n += 1;
+    on = run_one(ways, ways, pts, profile, bit);
+    off = run_one(strip_networks(ways), ways, pts, profile, bit);
+    if on.fp != off.fp { changed += 1; }
+    // WHAT COUNTS AS WORSE. Length is deliberately not a criterion — a nicer path that is 30 m longer is
+    // the whole point (DESIGN §5), and PLAN-PERF §7 bars length for exactly that reason. That leaves two
+    // things the bonus must not buy, and the first draft of this test got BOTH of them wrong by treating
+    // them as independent. Both corrections are measurements, not opinions:
+    //
+    // 1. A GAP is never acceptable, and closing one is never worse. Sketch 13 (walking) went
+    //    `bridged 1536→0, dev_max 399→1122`: the bonus found a real path across a 1.5 km hole the control
+    //    had to JUMP. dev_max rose only because there is finally a route there to measure — a straight
+    //    bridge deviates from nothing. A plain OR called that a regression.
+    //
+    // 2. DEVIATION may grow, but only PAID FOR. `cycling_road` sketch 5 grew dev_max 418→461 m and length
+    //    13119→13391 m — and gained 274 m on the signposted network. It swapped ordinary road for curated
+    //    route metre for metre, which is the feature, not a detour. So growth is a finding only when the
+    //    route did NOT gain network metres, and is capped in absolute terms regardless: the corridor is
+    //    what bounds this mechanism (CORRIDOR_MAX_M = 200 m), so a swing wider than one corridor width is
+    //    something other than a way-choice and must fail whatever it gained.
+    gap_closed = on.q.bridged_m < off.q.bridged_m - 1.0;
+    gap_opened = on.q.bridged_m > off.q.bridged_m + 1.0;
+    dev_grew = on.q.dev_max > off.q.dev_max * 1.10 + 1.0;
+    paid = on.on_net_m > off.on_net_m + 1.0;
+    runaway = on.q.dev_max > off.q.dev_max + 200.0;
+    if gap_opened || (!gap_closed && dev_grew && (!paid || runaway)) {
+      worse += 1;
+      println("#N WORSE i={i} bridged {off.q.bridged_m:1.0}→{on.q.bridged_m:1.0} dev_max {off.q.dev_max:1.0}→{on.q.dev_max:1.0} len {off.q.len_m:1.0}→{on.q.len_m:1.0} on_network {off.on_net_m:1.0}→{on.on_net_m:1.0}m");
+    }
+    if gap_closed { healed += 1; }
+    onm_tot += on.on_net_m; offm_tot += off.on_net_m;
+    if on.fp != off.fp {
+      println("#N moved i={i} dev_max {off.q.dev_max:1.0}→{on.q.dev_max:1.0} bridged {off.q.bridged_m:1.0}→{on.q.bridged_m:1.0} len {off.q.len_m:1.0}→{on.q.len_m:1.0} on_network {off.on_net_m:1.0}→{on.on_net_m:1.0}m");
+    }
+    if bit != 0 && net_ways(ways, bit) > 0 { gained += 1; }
+  }
+  println("#N profile={profile} bit={bit} sketches={n} corridors_with_network={gained} routes_changed={changed} gaps_closed={healed} worse={worse} on_network {offm_tot:1.0}→{onm_tot:1.0}m");
+  bad = 0;
+  if worse > 0 { bad = 1; }
+  // Driving follows no network, so its every route must be bit-for-bit what it was. This is the control
+  // that proves the A/B measures the BONUS and not some other difference between the two runs.
+  if bit == 0 && changed > 0 { println("#N FAIL {profile} has no network and must not move"); bad = 1; }
+  // …and the other half, which matters more, because everything above can be satisfied by doing NOTHING.
+  // A block generated without the sidecar, a mask that never reaches the flags, a bonus subtracted from
+  // the wrong column — every one of those produces zero worse cases and a clean run. The feature is only
+  // present if routes moved AND they moved ONTO the network.
+  if bit != 0 && gained > 0 {
+    if changed == 0 { println("#N FAIL {profile}: the network is in the corridor and no route moved"); bad = 1; }
+    if onm_tot <= offm_tot { println("#N FAIL {profile}: routes moved but gained no network metres ({offm_tot:1.0}→{onm_tot:1.0})"); bad = 1; }
+  }
+  if bad == 0 { println("#N PASS {profile}"); } else { println("#N FAILED {profile}"); }
+}

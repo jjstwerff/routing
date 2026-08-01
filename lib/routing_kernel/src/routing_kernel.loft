@@ -119,6 +119,15 @@ pub struct Way {
   const cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
   const cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
   const name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
+  const wid:       integer = 0,  // the OSM way id, or 0 when the source did not carry one.
+                           // Only the geojsonseq path knows it (osmium's `-u type_id`), and only the
+                           // generator uses it: it is the join key against the route-relation sidecar
+                           // that says whether this way carries a signposted network (PLAN-RESTORE R3).
+                           // Defaulted like `foot` above, so the 40-odd existing Way{} sites need no edit.
+  const net:       integer = 0,  // signposted-network membership: RF_NET_WALK|CYCLE|MTB, or 0.
+                           // Not a tag — OSM keeps it in route RELATIONS, which are memberships and not
+                           // geometry, so no per-way export can carry it. It is joined in by the
+                           // generator and rides in the stored flags from there.
   const coords:    vector<GeoPoint>,
 }
 
@@ -257,8 +266,19 @@ pub fn parse_way_feature(line: text) -> Way {
     cycleway:  tag(props, "cycleway"),
     cyclestreet:tag(props, "cyclestreet"),
     name:      tag(props, "name"),
+    // `"id":"w4415388"` — a TOP-LEVEL member (not a property), and only present when osmium was run
+    // with `-u type_id`. Absent → 0, which the generator reads as "no network", so a block built from
+    // an older export is merely un-preferred, never mis-routed.
+    wid:       way_id_of(tag(root, "id")),
     coords:    fcoords,
   }
+}
+
+// `"w4415388"` → 4415388. The type letter is dropped rather than checked: `osmium export` only emits
+// LineStrings for ways, and we are already inside the LineString branch.
+fn way_id_of(id: text) -> integer {
+  if id.size() < 2 { return 0; }
+  id[1..id.size()] as integer ?? 0
 }
 
 // The same, for a barrier NODE: one `geojsonseq` Point feature → a `Barrier`, or lat/lon 0 when the line
@@ -343,7 +363,12 @@ TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
 pub struct TStep { const x: i32, const y: i32, const h: i32 }
-pub struct TRoad { const tp: u8, const flags: u8, const steps: u8 }
+// `flags` is u16, not u8, and the extra byte is spent deliberately. The low 8 bits are the RF_* way tags
+// that have always been there; the high bits carry curated-network membership (RF_NET_*), and there is
+// room left for `oneway=`, which the store still drops for exactly this reason (PLAN-SCALE §9).
+// One byte per way is ~2.8 MB across the Netherlands' 2.78M ways against a 264 MB block — and a schema
+// change costs a regeneration of every block (loft#700), so the three wants are taken together.
+pub struct TRoad { const tp: u8, const flags: u16, const steps: u8 }
 
 // --- barriers ---------------------------------------------------------------------------------
 // A gate across a path is a NODE, not a tag on the way, so nothing in a way-only pipeline can see it:
@@ -416,6 +441,16 @@ pub const RF_BIKE_YES  = 16;   // bicycle=yes|designated|permissive
 pub const RF_FOOT_NO   = 32;   // foot=no|private
 pub const RF_FOOT_YES  = 64;   // foot=yes|designated|permissive
 pub const RF_SVC_LOCAL = 128;  // service=driveway|alley|parking_aisle — not a through-route
+
+// --- curated recreational networks (PLAN-TILES §Future, PLAN-RESTORE R3) ------------------------------
+// Membership of a signposted walking / cycling / MTB network, resolved at ingest from the OSM route
+// RELATIONS the Waymarkedtrails overlay is rendered from — so the map and the router read one source
+// instead of the router reading none. Spent as a bounded preference matched to the active activity, the
+// same prefer-when-near shape as RF_CYCLEWAY: it picks the nice way among candidates already beside your
+// line, and never detours out of the corridor to reach one.
+pub const RF_NET_WALK  = 256;   // route=hiking|foot  (rwn/lwn/nwn/iwn)
+pub const RF_NET_CYCLE = 512;   // route=bicycle      (rcn/lcn/ncn/icn)
+pub const RF_NET_MTB   = 1024;  // route=mtb
 
 // What does this barrier node stop? Lives HERE, next to the bits, because the generator writes the flags
 // and the router reads them — the access byte already taught us what happens when those two agree only
@@ -670,8 +705,12 @@ fn append_tile_ways(t: TTile, out: &vector<Way>) {
     }
     o = o + cnt;
     if hw != "" && len(coords) >= 2 {
+      // The network bits pass through UNDECODED — unlike the access bits above, they stand for no tag,
+      // so there is nothing to turn them back into. `net` is the one member of a reconstructed Way that
+      // is a value rather than a tag string.
       out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: bike, access: acc, foot: ft,
-                    oneway: "", onewaybike: "", svc: sv, cycleway: cw, cyclestreet: "", name: "", coords: coords }];
+                    oneway: "", onewaybike: "", svc: sv, cycleway: cw, cyclestreet: "", name: "",
+                    net: fl & (RF_NET_WALK + RF_NET_CYCLE + RF_NET_MTB), coords: coords }];
     }
   }
 }
@@ -693,6 +732,25 @@ LOOSE_FRAC = 0.15;    // deviation is free within 15% of a stretch's length, the
                       // "looseness" ratio (relative, not absolute metres); higher = looser hugging.
 CYCLE_INFRA_BONUS = 0.5;  // flat per-metre discount for cycle infrastructure (cycling): makes it
                       // PREFERRED even at equal deviation, on top of the deviation-tolerance below.
+NETWORK_BONUS = 0.35; // flat per-metre discount for a way carrying a SIGNPOSTED route of the activity
+                      // you picked (RF_NET_*, PLAN-RESTORE R3). Deliberately SMALLER than the cycle-infra
+                      // bonus above, and applied by the same prefer-when-near mechanism: a curated
+                      // network says which of the ways ALREADY NEAR YOUR LINE is the nice one.
+                      //
+                      // ⚠ It is NOT a pure tie-break, and an earlier version of this comment claimed it
+                      // was. The discount lands in the same sum as the deviation term
+                      // (`1 + dev_weight·dev + pen`), so it can pay for roughly BONUS/dev_weight metres
+                      // of deviation per metre travelled. What bounds it is the CORRIDOR, which this
+                      // does not widen — a way outside the corridor is not in the graph at any price.
+                      //
+                      // Measured on the 26-sketch corpus (tools/network_probe.loft, enschede):
+                      // walking moved 15 routes with dev_max IDENTICAL on 14 of them and one 1536 m gap
+                      // closed, for +17% metres on the network. Cycling moved 4; its one deviating case
+                      // grew dev_max 418→461 m and length 13119→13391 m while gaining 274 m of network —
+                      // i.e. it swapped ordinary road for signposted route metre for metre. A sweep put
+                      // that flip between 0.10 and 0.15 and it is the SAME flip at 0.35, so the size of
+                      // the constant is not what admits it; 0.35 is chosen for effect on walking, where
+                      // the networks are dense.
 CYCLE_INFRA_DEV_FACTOR = 0.4; // cyclists go out of their way for a cycle route: cycle infrastructure
                       // (cycleway, on-road cycle lane/track, fietsstraat) counts its distance-from-
                       // line at 40%, so a nearby cycle route can win over a marginally-closer plain
@@ -812,6 +870,7 @@ struct WayTags {
   const access: text, const oneway: text, const onewaybike: text, const svc: text,
   const cycleway: text, const cyclestreet: text, const name: text,
   const foot: text = "",   // as on `Way`: defaulted, so the empty-tags and test sites need no edit
+  const net: integer = 0,  // RF_NET_* — see `Way.net`. The only non-tag member of this struct.
 }
 
 // A FUNCTION, not a constant: loft rejects struct-valued constants (they cannot be materialised at each
@@ -923,7 +982,7 @@ fn build_graph_impl(ways: vector<Way>, on_tick: fn(integer)) -> Graph {
     g.wtags += [WayTags { highway: w.highway, surface: w.surface, tracktype: w.tracktype,
                           bicycle: w.bicycle, access: w.access, foot: w.foot, oneway: w.oneway,
                           onewaybike: w.onewaybike, svc: w.svc, cycleway: w.cycleway,
-                          cyclestreet: w.cyclestreet, name: w.name }];
+                          cyclestreet: w.cyclestreet, name: w.name, net: w.net }];
     nw += 1;
     if nw % TICK_EVERY == 0 { on_tick(nw); }
     prev = -1;
@@ -1484,9 +1543,25 @@ struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur:
                    // property of any way, so it cannot ride on the four above.
                    const nsur: vector<float> }
 
+// Which signposted network THIS activity follows. Once per match, not per way.
+//
+// `running_*` reads the walking networks: a marked hiking route is the same physical ground and OSM has
+// no running networks worth the name (`route=running` relations are events, not signposts, and the
+// generator's sidecar excludes them). `cycling_mtb` reads the MTB networks ONLY — deliberately, even
+// though they are sparse (621 ways here against 5231 cycle ones). Falling back to the cycle networks
+// would nudge a mountain-bike route onto paved commuter routes, which is the opposite of the ask; no
+// bonus at all is the honest answer where no MTB network exists. Driving follows no network.
+fn network_bit(profile: text) -> integer {
+  if profile.starts_with("walking") || profile.starts_with("running") { return RF_NET_WALK; }
+  if profile == "cycling_mtb" { return RF_NET_MTB; }
+  if profile.starts_with("cycling") { return RF_NET_CYCLE; }
+  0
+}
+
 fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
   ec = EdgeCosts { pen: [], dw: [], sur: [], afwd: [], abwd: [], nsur: [] };
   cyc = profile.starts_with("cycling");
+  nbit = network_bit(profile);
   // One entry PER WAY. `way_penalty` alone is ~40 string comparisons, and a corridor has ~7.1k ways
   // behind ~37.6k edges — so this used to do the same string work five times over and then materialise
   // the answer five times as well. Callers index by `GEdge.w`.
@@ -1494,6 +1569,7 @@ fn precompute_edges(g: Graph, profile: text) -> EdgeCosts {
     t = g.wtags[wi] ?? empty_tags();
     p = way_penalty(profile, t.highway, t.surface, t.tracktype);
     if cyc && is_cycle_infra(t.highway, t.cycleway, t.cyclestreet) { p = p - CYCLE_INFRA_BONUS; }
+    if nbit != 0 && (t.net & nbit) == nbit { p = p - NETWORK_BONUS; }
     ec.pen += [p];
     ec.dw += [dev_weight(profile, t)];
     ec.sur += [edge_surcharge(profile, t)];
@@ -2055,6 +2131,10 @@ pub fn match_cost_report(g: Graph, trace: vector<GeoPoint>, profile: text) -> te
         et = etags(g, e);
         pen = way_penalty(profile, et.highway, et.surface, et.tracktype);
         if profile.starts_with("cycling") && is_cycle_infra(et.highway, et.cycleway, et.cyclestreet) { pen = pen - CYCLE_INFRA_BONUS; }
+        // Mirrors precompute_edges — this report exists to EXPLAIN a route, so a discount the router
+        // applied and the report omitted would show a cheaper edge losing to a dearer one.
+        nb = network_bit(profile);
+        if nb != 0 && (et.net & nb) == nb { pen = pen - NETWORK_BONUS; }
         sur = edge_surcharge(profile, et);
         cpm = 1.0 + dev_weight(profile, et) * dev + pen;
         if cpm < 0.1 { cpm = 0.1; }

@@ -110,8 +110,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # PLAN-SCALE N3 — the NL road blocks (497 MB) ship BESIDE the app, because they fit the ~1 GB Pages
+      # cap while the 2.87 GB base map does not. They cannot be committed: nl-east.roads.store is
+      # 263.9 MB and GitHub hard-rejects any file over 100 MB. So the publishing build fetches them, and
+      # verifies each against the sha256 the index already records — a truncated block would leave the
+      # index naming a file the site cannot serve, and every match in that region would return no route
+      # from a 404 that nothing surfaces.
+      #
+      # Only on the publishing run: a PR neither uploads an artifact nor needs half a gigabyte, and the
+      # size check below is computed from the index rather than from `du`, so it is exact either way.
+      - name: Fetch the blocks the index names
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: ./tools/fetch-site-blocks.sh
       - name: Build the site (bake tiles + inline → _site)
         run: node browser/build-site.mjs
+      # MEASURED, not assumed — N3's own words. A Pages deploy over the cap is rejected after the push,
+      # so the budget has to fail here instead.
+      - name: Check the deployed site fits the Pages budget
+        run: ./tools/site_size_gate.sh
       # Publish the artifact only from main; PRs just prove the build above succeeds.
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -82,12 +82,18 @@ fi
 must=(roads.ways roads.barriers
       class.motorway class.trunk_primary class.secondary class.tertiary_unclassified class.residential
       class.service class.cycleway class.path class.footway class.track class.steps
+      # Signposted route networks (PLAN-RESTORE R3). These come from a JOIN against route relations, not
+      # from a way's own tags, so they have a failure mode none of the classes above has: the join can
+      # silently match nothing — a sidecar built for another region, or an export run without
+      # `-u type_id` — and every one of these goes to zero while the block stays perfectly valid.
+      network.walk network.cycle network.mtb
       )
 if [ "$base_ok" = 1 ]; then
   must+=(base.areas base.buildings base.lines base.labels base.pois
          cover.water cover.forest cover.grass cover.heath cover.scrub cover.park cover.farmland
          cover.residential cover.industrial cover.reserve cover.site
          line.stream line.ditch line.railway line.hedge line.fence line.runway line.taxiway
+         line.border line.powerline poi.tree poi.pylon
          label.street label.park label.sports label.cemetery label.site)
 else
   echo "  · no base map at $base_store — roads only (a country's roads land a rung before its base map)"

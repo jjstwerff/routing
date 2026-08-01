@@ -94,11 +94,31 @@ block_json() {  # $1 = path relative to root, $2 = roads|base, $3 = per-region u
     "$url" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)" "$5" "$6" "$1" "$2" "$3" "$4"
 }
 
+# A store with no geographic extent — the name index. Same locate-and-hash treatment as `block_json`,
+# without the `store_extent` call, which only understands map layers.
+names_json() {  # $1 = path relative to root
+  local rel="$1" abs=""
+  # Same hosting rule as `block_json`: a RELEASE index must name it absolutely, or a consumer resolving
+  # against the tag turns "stores/nl.names.store" into a 404. Missed on the first pass because the name
+  # store is the one store with no extent, so it took a different code path.
+  local r; local IFS='|'
+  for r in $roots; do
+    if [ -f "$r/$rel" ]; then abs="$r/$rel"; break; fi
+    if [ -f "$r/$(basename "$rel")" ]; then abs="$r/$(basename "$rel")"; break; fi
+  done
+  unset IFS
+  [ -f "$abs" ] || { echo "FAIL: manifest names a missing name store: $rel" >&2; return 1; }
+  local url="$rel"
+  [ -n "${RELEASE_BASE:-}" ] && url="$RELEASE_BASE/$(basename "$rel")"
+  printf '{"url":"%s","bytes":%s,"sha256":"%s"}' \
+    "$url" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)"
+}
+
 echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; mode=""; ubase=""
+id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
 flush() {
   [ -n "$id" ] || return 0
   # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
@@ -117,32 +137,69 @@ flush() {
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
   if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
     echo "  $id: published at $ubase — not in the site index"
-    id=""; name=""; roads=""; base=""; mode=""; ubase=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
     return 0
   fi
-  # …and the mirror of it: a site-only region has a RELATIVE url, which a consumer resolving against the
-  # release index would turn into a 404. Each index names only what it can actually serve.
-  if [ -z "$ubase" ] && [ "${RELEASE_INDEX:-0}" = "1" ]; then
+  # …and the mirror of it: each index names only what it can actually serve.
+  #
+  # ⚠ THE TEST IS "IS IT BEING PUBLISHED", NOT "DOES IT HAVE A url_base". It used to be the latter, which
+  # meant the same thing while hosting was per REGION — a region was either site-local or released. Since
+  # NL split its stores across both (roads beside the app, base map on the release, PLAN-SCALE N3) no
+  # region carries a plain `url_base` any more, and that rule excluded EVERY region: the release index
+  # came out empty, and `publish-release.sh` refused to publish it. Which is the ordering working — an
+  # empty index would have been a release nobody could resolve.
+  #
+  # A block is being published exactly when it sits in `blocks/`, the generated-output directory
+  # `publish-release.sh` uploads. Enschede's blocks are committed under `browser/stores/` and ship with
+  # the app, so they are correctly absent from a release index.
+  if [ "${RELEASE_INDEX:-0}" = "1" ] && [ ! -f "$here/blocks/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
-    id=""; name=""; roads=""; base=""; mode=""; ubase=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
     return 0
   fi
   local rj bj
   rj="$(block_json "$roads" roads "$ubase")" || exit 1
-  bj="$(block_json "$base" base "$ubase")" || exit 1
+  # HOSTING IS PER STORE, not per region. The Netherlands is the case that forces it: its ROADS (497 MB
+  # both halves) fit beside the app on Pages, and its BASE MAP (2.87 GB) does not — so one region has one
+  # store the site can serve and one it cannot. `base_url_base` says where the base lives when that is
+  # somewhere else, and a SITE index then names no base at all rather than a URL the page cannot fetch.
+  #
+  # `base: null` is a real state the app handles (store-app.mjs: LAYOUT becomes ""), not a degraded one:
+  # roads and a route on a plain background is the product outside Enschede until N4/N5 land.
+  bj=null
+  if [ -n "$bubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
+    echo "  $id: base map published at $bubase — the site index names roads only"
+  elif [ -n "$base" ]; then
+    bj="$(block_json "$base" base "${bubase:-$ubase}")" || exit 1
+  fi
+  # PLAN-RESTORE R4 — the searchable names. A store of its own, always site-relative: 34.4 MB for the
+  # whole country against a 950 MB budget, and a search that needs a network request is the thing R4
+  # exists to remove. No extent: it is not a map layer, so there is no bbox to measure — just where the
+  # bytes are and whether they are the ones this index describes.
+  local nj=null
+  if [ -n "$names" ]; then nj="$(names_json "$names")" || exit 1; fi
   local entry
-  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","roads":%s,"base":%s}' "$id" "$name" "$mode" "$rj" "$bj")"
+  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$rj" "$bj" "$nj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
-  echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+') tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+') tiles · read=$mode"
-  id=""; name=""; roads=""; base=""; mode=""; ubase=""
+  echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+') tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode"
+  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""
 }
 while IFS= read -r line; do
   case "$line" in
     '[[region]]'*) flush ;;
     id*=*)         id="$(echo "$line"   | cut -d'"' -f2)" ;;
+    # ⚠ `names` BEFORE `name` — see the ordering note below. `name*=*` matches `names = "..."` too, and
+    # putting it first silently read the name store as the region's display name and left `names` unset,
+    # so every block came out `names=NONE` with no error anywhere.
+    names*=*)      names="$(echo "$line" | cut -d'"' -f2)" ;;
     name*=*)       name="$(echo "$line" | cut -d'"' -f2)" ;;
     roads*=*)      roads="$(echo "$line"| cut -d'"' -f2)" ;;
+    # ⚠ ORDER MATTERS — these are globs, first match wins. `base_url_base` must be tested BEFORE `base`,
+    # or `base*=*` swallows it and the key silently reads as the base STORE path. Same reason
+    # `read_mode` sits above nothing that could shadow it. Adding a key here means checking what
+    # already-listed prefix could match it.
+    base_url_base*=*) bubase="$(echo "$line" | cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;
     url_base*=*)   ubase="$(echo "$line" | cut -d'"' -f2)" ;;

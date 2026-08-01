@@ -5,7 +5,7 @@
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
-         cameraFromHash, hashForCamera } from './map.mjs';
+         cameraFromHash, hashForCamera, PROFILES } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -17,7 +17,20 @@ import { resolveCoverage, roadsUrlsFor } from './coverage.mjs';
 // it is 3.5 MB ≈ 56 pages, so a session that pans the region touches 80% of them anyway and pays 46
 // round trips to do it (+~200 ms on a localhost cold start, worse over a real RTT). The switch exists
 // because the answer flips with block SIZE, not with code — at C2 the top index carries it per block.
-const PROFILE = 'cycling_road';
+// ACTIVITY x SUB-MODE (DESIGN §6, PLAN.md step 8, restored per PLAN-RESTORE R1).
+//
+// The nine profiles have been in the kernel and under test the whole time — `way_penalty` weighs
+// highway/surface/tracktype per profile and `tests/profiles.loft` asserts a footpath beside a road flips
+// with the sub-mode. Only the SELECTOR was lost in the serverless rewrite, so this is plumbing: one
+// mutable profile, two dropdowns, and a re-match through the existing chokepoint.
+const ACT = {
+  Walking: [['Paved', 'paved'], ['Trail', 'trail']],
+  Running: [['Fast', 'fast'], ['Trail', 'trail']],
+  Cycling: [['Road', 'road'], ['Gravel', 'gravel'], ['MTB', 'mtb']],
+  Driving: [['Fastest', 'fastest'], ['Avoid motorways', 'avoid']],
+};
+const ACT_KEY = { Walking: 'walking', Running: 'running', Cycling: 'cycling', Driving: 'driving' };
+let PROFILE = PROFILES[0];                       // walking_paved; the fragment may override at boot
 
 const canvas = document.getElementById('map');
 const hud = document.getElementById('hud');
@@ -34,12 +47,14 @@ const hud = document.getElementById('hud');
 // Everything is validated: a hand-edited or stale fragment must degrade to the default, never boot the
 // app to a blank map at NaN.
 const DEFAULT_CAM = { lat: 52.2215, lon: 6.8937, zoom: 16 };
-const map = new RouteMap(canvas, cameraFromHash(location.hash) || DEFAULT_CAM);
+const bootCam = cameraFromHash(location.hash);
+if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
+const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
 
 // `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
 // button into a rewind of every camera nudge.
 function rememberCamera() {
-  const next = hashForCamera(map.camera);
+  const next = hashForCamera(map.camera, PROFILE);
   if (next !== location.hash) history.replaceState(null, '', next);
 }
 
@@ -55,7 +70,18 @@ if (!coverage.block) {
   hud.textContent = 'no coverage index — the app has no data to show';
   throw new Error('no coverage index at ' + INDEX_URL);
 }
-const LAYOUT = new URL(coverage.block.base.url, INDEX_URL).href;
+// A region may have NO base map, and that is a supported product rather than a broken one: the NL road
+// blocks are 497 MB and fit GitHub Pages' ~1 GB cap, while the NL base map is 2.87 GB and does not. So
+// outside Enschede you get roads and a route on a plain background (PLAN-SCALE N3).
+//
+// The empty string is the kernel's own "no layout": line 1 is compared against `layout_at`, which starts
+// empty, so an empty URL loads nothing and the exposed layout store stays empty. No kernel branch needed
+// — but do NOT "simplify" this to a missing line, because line 1 is positional.
+const LAYOUT = coverage.block.base ? new URL(coverage.block.base.url, INDEX_URL).href : '';
+// PLAN-RESTORE R4 — the searchable names, a store of its own. Separate from the base map on purpose:
+// after N3 most of the country HAS no base map, and "where is Lonneker" must still answer. Empty when a
+// region ships none, which the kernel reads as "find nothing" rather than as an error.
+const NAMES = coverage.block.names ? new URL(coverage.block.names.url, INDEX_URL).href : '';
 // The single-block default. Every command below re-derives the covering SET for the box it is about to
 // read (PLAN-SCALE C2) — this is what it collapses to when one block covers everything, and the fallback
 // when a box covers none.
@@ -109,6 +135,118 @@ let loadedBox = null, loadedBbox = null, lastViewText = null;
 // boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
 // flight made a click return without matching and the route silently went stale (PLAN-EDIT §2 P4).
 const jobs = new KernelQueue();
+
+// The two dropdowns. Options are built from ACT so the markup carries no profile knowledge, and the
+// value is validated against PROFILES — the kernel's own list — so a profile it cannot weigh never
+// reaches a match request.
+function initActivityControls() {
+  const aSel = document.getElementById('activity'), sSel = document.getElementById('submode');
+  if (!aSel || !sSel) return;
+  const [act0, sub0] = (() => {
+    const us = PROFILE.indexOf('_');
+    const key = PROFILE.slice(0, us), sub = PROFILE.slice(us + 1);
+    const name = Object.keys(ACT_KEY).find((k) => ACT_KEY[k] === key) || 'Walking';
+    return [name, sub];
+  })();
+  aSel.innerHTML = Object.keys(ACT).map((a) => `<option${a === act0 ? ' selected' : ''}>${a}</option>`).join('');
+  const fillSubs = (act, want) => {
+    const subs = ACT[act];
+    const pick = subs.some(([, id]) => id === want) ? want : subs[0][1];
+    sSel.innerHTML = subs.map(([label, id]) => `<option value="${id}"${id === pick ? ' selected' : ''}>${label}</option>`).join('');
+    return pick;
+  };
+  fillSubs(act0, sub0);
+
+  // Changing either re-matches IMMEDIATELY — DESIGN §6's "lock in fast" win: a good first match from the
+  // activity choice, with no point edits. It goes through `requestMatch`, the same chokepoint a gesture
+  // uses, so there is still exactly one road to the kernel (PLAN-EDIT E0) and the queue still coalesces.
+  const apply = () => {
+    const act = aSel.value;
+    const sub = sSel.value;
+    const next = `${ACT_KEY[act]}_${sub}`;
+    if (!PROFILES.includes(next) || next === PROFILE) return;
+    PROFILE = next;
+    rememberCamera();                       // the fragment carries the profile, so a reload keeps it
+    // `rough.coords()`, not `map.points` — the layer's array holds point OBJECTS while `requestMatch`
+    // destructures [lat, lon] pairs, which is the shape `onCommit` passes. Getting that wrong re-matched
+    // with a malformed sketch and left the old route on screen, so the gate saw two identical summaries.
+    if (rough.coords().length >= 2) requestMatch(rough.coords());
+    window.__storeApp = { ...(window.__storeApp || {}), profile: PROFILE };
+  };
+  aSel.addEventListener('change', () => { fillSubs(aSel.value, sSel.value); apply(); });
+  sSel.addEventListener('change', apply);
+  window.__storeApp = { ...(window.__storeApp || {}), profile: PROFILE };
+}
+initActivityControls();
+
+// --- search (PLAN-RESTORE R4) ------------------------------------------------------------------------
+// Types a name, gets our own answers. The old client asked Nominatim; this asks a 36 MB store that ships
+// with the map, so it works with the network off — which is the point, since the same is true of routing.
+//
+// It goes through `jobs.post` like every other kernel call (PLAN-EDIT E0): `runKernel` keeps ONE resolve
+// slot, so a second road to it does not merely race, it orphans a promise. A search typed during a match
+// therefore waits its turn instead of eating the match's reply.
+function initSearch() {
+  const box = document.getElementById('search-input');
+  const list = document.getElementById('search-results');
+  if (!box || !list) return;
+  let hits = [], timer = 0, seq = 0;
+
+  const hide = () => { list.classList.add('hidden'); list.innerHTML = ''; hits = []; };
+  const show = () => {
+    if (!hits.length) { hide(); return; }
+    list.innerHTML = hits.map((h, i) =>
+      `<li role="option" data-i="${i}">${h.name.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}` +
+      `<span class="kind">${h.kind === 1 ? 'place' : 'street'}</span></li>`).join('');
+    list.classList.remove('hidden');
+  };
+
+  // A place gets a closer camera than a street only because a street is a line and you want its
+  // surroundings; both keep the current zoom when it is already tighter, so searching does not throw
+  // away a view you deliberately zoomed in.
+  const goTo = (h) => {
+    map.camera.lat = h.lat; map.camera.lon = h.lon;
+    const want = h.kind === 1 ? 13 : 16;
+    if (map.camera.zoom < want) map.camera.zoom = want;
+    hide(); box.blur();
+    rememberCamera(); ensureView();
+  };
+
+  const run = async (q) => {
+    const mine = ++seq;
+    const text = await jobs.post('find', () =>
+      kernel.runKernel(`${LAYOUT}\n${ROADS}\nfind\n${map.camera.lat.toFixed(6)},${map.camera.lon.toFixed(6)},${q}\n\n${window.__readMode}\n${NAMES}`));
+    // A slower earlier query must not overwrite a newer one's results.
+    if (mine !== seq) return;
+    hits = [];
+    for (const line of String(text || '').split('\n')) {
+      if (!line.startsWith('FOUND ')) continue;
+      // FOUND <lat>,<lon> <kind> <rank> <name>  — the name may contain spaces, so split only 3 times.
+      const m = /^FOUND (-?[\d.]+),(-?[\d.]+) (\d+) (\d+) (.*)$/.exec(line);
+      if (m) hits.push({ lat: +m[1], lon: +m[2], kind: +m[3], rank: +m[4], name: m[5] });
+    }
+    show();
+  };
+
+  box.addEventListener('input', () => {
+    const q = box.value.trim();
+    clearTimeout(timer);
+    // Two characters is where the answers start being about what you typed; below it every street in the
+    // country matches and the list is noise.
+    if (q.length < 2) { hide(); return; }
+    timer = setTimeout(() => run(q), 160);
+  });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { hide(); box.blur(); }
+    else if (e.key === 'Enter' && hits.length) goTo(hits[0]);
+  });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (li && hits[+li.dataset.i]) goTo(hits[+li.dataset.i]);
+  });
+  window.__searchHooks = { run, results: () => hits, goTo };
+}
+initSearch();
 
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.

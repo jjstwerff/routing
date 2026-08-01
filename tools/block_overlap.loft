@@ -17,39 +17,66 @@
 // from per-country extracts are NOT — Geofabrik deliberately includes cross-border data — which is the
 // case this gate exists to catch before a continent is generated on top of it.
 //
+// ⚠ NESTING IS NOT AN OVERLAP, and treating it as one made this gate reject a shipping configuration.
+// A city block wholly inside a country block shares every one of its cells with the country — by design,
+// and it is the whole point of "the finer data is the one someone bothered to make". `roadsUrlsFor`
+// never names both: it takes the smallest block CONTAINING the box, and adds another only when that
+// block does not contain it (browser/coverage.mjs). So a block whose cells are a SUBSET of another's is
+// safe, and the defect is a PARTIAL overlap — two blocks that each hold cells the other lacks, where a
+// corridor over the shared part reads those roads twice.
+//
+// The verdict is therefore per PAIR, not per cell: Enschede (125 cells, all of them inside nl-east) is
+// nesting and passes; two half-country blocks that bleed into each other do not.
+//
 //   loft --native --lib lib tools/block_overlap.loft <a.roads.store> <b.roads.store> [more…]
 #cwd
 
 use routing_kernel::TTile;
+use basemap::PTile;
 
-// One cell, and which block claimed it first. `dups` counts later claims so the report can say how bad it
-// is rather than only that it happened.
-struct Owner { const k: integer, first: integer, dups: integer }
+// One cell and every block holding it, as a bitmask — the pair-wise question needs the whole owner set,
+// not just the first claimant. One bit per block caps this at 62 blocks per index, far above the
+// per-index counts C2 contemplates (a continent is many indexes, not many blocks in one).
+struct Owner { const k: integer, mask: integer }
 
 fn main() {
   paths: vector<text> = [];
-  for x in arguments() { paths += [x]; }
-  if len(paths) < 2 { println("usage: block_overlap <a.store> <b.store> [more…]"); return; }
+  base_mode = false;
+  // `--base` reads the stores as PTile (the presentation tiling) instead of TTile (roads). Without it a
+  // base store loads as ZERO cells and every check below passes VACUOUSLY — which is exactly what
+  // `base_chunk_gate.sh` was doing to four Netherlands chunks before this existed. A tool that silently
+  // answers about the wrong type is worse than one that refuses.
+  for x in arguments() {
+    if x == "--base" { base_mode = true; } else { paths += [x]; }
+  }
+  if len(paths) < 2 { println("usage: block_overlap [--base] <a.store> <b.store> [more…]"); return; }
+  if len(paths) > 62 { println("#O FAIL — {len(paths)} blocks exceeds the 62 this bitmask holds"); return; }
 
   seen: hash<Owner[k]> = [];
   counts: vector<integer> = [];
-  overlaps = 0;
-  worst_a = 0 - 1; worst_b = 0 - 1;
 
   bi = 0;
   for p in paths {
-    tiles: hash<TTile[tkey]> = [];
-    store_load(tiles, p);
     n = 0;
-    for t in tiles {
-      n += 1;
-      o = seen[t.tkey];
-      if o == null {
-        seen += Owner { k: t.tkey, first: bi, dups: 0 };
-      } else {
-        o.dups += 1;
-        overlaps += 1;
-        if worst_a < 0 { worst_a = o.first; worst_b = bi; }
+    bit = 1;
+    for sh in 0..bi { bit = bit * 2; }
+    if base_mode {
+      ptiles: hash<PTile[tkey]> = [];
+      store_load(ptiles, p);
+      for pt in ptiles {
+        n += 1;
+        po = seen[pt.tkey];
+        if po == null { seen += Owner { k: pt.tkey, mask: bit }; }
+        else { po.mask = po.mask | bit; }
+      }
+    } else {
+      tiles: hash<TTile[tkey]> = [];
+      store_load(tiles, p);
+      for t in tiles {
+        n += 1;
+        o = seen[t.tkey];
+        if o == null { seen += Owner { k: t.tkey, mask: bit }; }
+        else { o.mask = o.mask | bit; }
       }
     }
     counts += [n];
@@ -63,12 +90,47 @@ fn main() {
     println("#O FAIL vacuous — fewer than two cells in total, so nothing was compared");
     return;
   }
-  if overlaps > 0 {
-    println("#O FAIL — {overlaps} cell(s) held by more than one block (first clash: block {worst_a} and block {worst_b})");
-    println("     A corridor over a shared cell reads those roads TWICE and matches a different route.");
-    println("     Cut the regions on cell boundaries from one extract (tools/split_block.loft), rather");
-    println("     than taking them from per-country extracts, which overlap at every border.");
-    return;
+
+  // Shared-cell count for every pair. Counted in ONE walk of the cell table rather than a walk per pair:
+  // a country index is ~12k cells and this stays linear in it.
+  nb = len(paths);
+  shared: vector<integer> = [];
+  for i in 0..(nb * nb) { shared += [0]; }
+  // `ow`, not `o`: loft does not block-scope loop variables, and `o` is the hash lookup above.
+  for ow in seen {
+    for i in 0..nb {
+      ibit = 1; for sh in 0..i { ibit = ibit * 2; }
+      if (ow.mask & ibit) == 0 { continue; }
+      for j in (i + 1)..nb {
+        jbit = 1; for sh in 0..j { jbit = jbit * 2; }
+        if (ow.mask & jbit) != 0 {
+          idx = i * nb + j;
+          shared[idx] = (shared[idx] ?? 0) + 1;
+        }
+      }
+    }
   }
-  println("#O ALL PASS — {len(paths)} blocks, {total} cells, no cell held by two blocks");
+
+  bad = 0; nests = 0;
+  for i in 0..nb {
+    for j in (i + 1)..nb {
+      sh = shared[i * nb + j] ?? 0;
+      if sh == 0 { continue; }
+      ci = counts[i] ?? 0; cj = counts[j] ?? 0;
+      // A SUBSET is nesting: every cell of the smaller block is in the larger, so the resolver's
+      // "smallest block containing the box" can never need both.
+      if sh == ci || sh == cj {
+        nests += 1;
+        println("  nested: block {i} and block {j} share {sh} cells — one is contained in the other, which is allowed");
+      } else {
+        bad += 1;
+        println("#O FAIL — blocks {i} and {j} PARTIALLY overlap: {sh} shared cells, but neither is a subset ({ci} and {cj} cells)");
+        println("     A corridor over the shared part reads those roads TWICE and matches a different route.");
+        println("     Cut the regions on cell boundaries from one extract (tools/split_block.loft), rather");
+        println("     than taking them from per-country extracts, which overlap at every border.");
+      }
+    }
+  }
+  if bad > 0 { return; }
+  println("#O ALL PASS — {nb} blocks, {total} cells, {nests} nested pair(s), no PARTIAL overlap");
 }

@@ -5,12 +5,38 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-07-31) — everything is merged and deployed
+## 0. START HERE (2026-08-01) — the Netherlands is live; one branch is waiting for a PR
 
 | | |
 |---|---|
-| `main` | `4e693a3` — protected (PR + green `build-test`, never a direct push) |
-| in flight | **nothing.** PR #30 merged 2026-07-31 06:03Z; `fix-access-tags` deleted |
+| `main` | protected (PR + green `build-test`, never a direct push) |
+| in flight | **`r3-networks`** — pushed, gates green, NOT yet PR'd. Carries R3, N3a/b/c, R4, the data refresh and the refresh automation |
+| data | release **`data-v2026-08-01`** published and verified (2.6 GB); site index `v2026-08-01` committed |
+
+**What that branch does, in one line each:**
+
+| | |
+|---|---|
+| **R3** | signposted walk/cycle/MTB networks ingested from OSM route RELATIONS and *preferred by the router* — `TRoad.flags` widened u8→u16, so **every block had to be regenerated** (loft#700) |
+| **N3** | NL roads live on Pages, same-origin and paged; hosting became per-STORE so the 2 GB base map could stay on the release while the 497 MB roads ship |
+| **R4** | offline search over 296 474 street names + 12 700 places (36 MB), replacing the old client's Nominatim call |
+| **refresh** | the whole country rebuilt from fresh OSM, and `tools/refresh-region.sh` + a fixed `data-refresh.yml` so it is one command next time |
+
+⚠ **The one thing to know before touching data:** `tools/fetch-site-blocks.sh` verifies every download
+against the sha256 in the committed index. That is deliberate — a truncated block otherwise shows up as
+"routing is broken" rather than as a missing file — but it means **a republish without regenerating and
+committing the index turns every Pages deploy red.** Regenerate the index in the same change.
+
+**Where to look next:** `PLAN-SCALE.md` §6e is the Western Europe design, written from NL's measurements.
+Its short version: the client already streams (a viewport is 75–190 kB whatever the store's size), the
+GENERATOR does not (~350 bytes RSS per feature ⇒ 130–270 GB for WE), and the answer is to never build a
+store that big — one region per run, fed by a single `osmium extract --config` pass. The three things it
+says to do first are the chunked base build, raising the 62-block cap in `block_overlap.loft`, and pricing
+D2.
+
+---
+
+### The previous rung (2026-07-31) — PR #30, for context
 
 PR #30 carried five fixes and their gates. `main`'s tree is byte-identical to the commit the full local
 matrix ran on, and the **Pages deploy is live**: the site serves `features: 49613` roads (was 25 971) at
@@ -532,13 +558,38 @@ w/highway n/barrier` and `osmium export --geometry-types=linestring,point`, beca
 path is a NODE. `tools/build-blocks.sh` now invalidates its cached intermediates when that recipe
 changes; `tools/split_block.loft` asserts that no barriers are lost across a split.
 
-Current blocks (all carry `barriers@` in their `.dschema`):
+Current blocks — **all regenerated 2026-08-01** from a freshly fetched, md5-verified Geofabrik extract
+(1 395 092 512 bytes). Two things forced a full regeneration rather than a re-clip, and both mean an
+OLDER block reads as GARBAGE rather than as missing data (loft#700):
 
-| block | ways | barriers |
-|---|---|---|
-| `browser/stores/enschede.roads.store` (ships with the app) | 49 613 | 989 |
-| `blocks/nl-west.roads.store` | 1 388 733 | 17 581 |
-| `blocks/nl-east.roads.store` | 1 395 633 | 17 929 |
+* `TRoad.flags` widened **u8 → u16** to carry the signposted-network bits (`RF_NET_*`, PLAN-RESTORE R3);
+* the base map gained heath/scrub, nature reserves, amenity sites, borders, power lines and
+  cemetery/reserve/site labels, none of which the 2026-07-30 blocks contain.
+
+| block | ways / features | barriers | on a network (walk / cycle / mtb) | size |
+|---|---|---|---|---|
+| `browser/stores/enschede.roads.store` (ships with the app) | 49 890 | 4 048 | 4 543 / 2 832 / 671 | 4.2 MB |
+| `blocks/nl-west.roads.store` | 1 388 996 | 114 329 | 121 572 / 74 726 / 5 104 | 233.4 MB |
+| `blocks/nl-east.roads.store` | 1 396 480 | 119 924 | 191 046 / 108 300 / 19 096 | 263.9 MB |
+| `blocks/nl.names.store` (R4 search) | 296 474 streets + 12 700 places | — | — | 36.1 MB |
+| `browser/stores/enschede.names.store` | 4 502 + 85 | — | — | 0.5 MB |
+| `blocks/nl-west.base.store` | 8 721 396 features / 69 003 tiles | — | — | 999.3 MB |
+| `blocks/nl-east.base.store` | 8 569 099 features / 116 561 tiles | — | — | 1 058.3 MB |
+
+Conservation, checked rather than assumed: the road split is exact (1 388 996 + 1 396 480 = 2 785 476,
+the whole-country count) and so is the base split (69 003 + 116 561 = 185 564 tiles; 8 721 396 +
+8 569 099 = 17 290 495 features). OSM drift over the two days since the previous build was **+0.040%**
+on ways, and every category moved by a comparable fraction in the same direction — which is what a data
+refresh looks like, as against a pipeline change, which moves one category and leaves the rest.
+
+⚠ **The base halves got SMALLER while carrying MORE** — 999 + 1058 MB against 1370 MB each before,
+2 057 MB against 2 740 MB. That is loft#710 (a persisted store's size is a function of insert order, not
+of content) working in our favour, not data loss; the feature counts above are the check, and they rose.
+
+⚠ **The RELEASE still holds the 2026-07-30 assets.** Everything above is local. `tools/fetch-site-blocks.sh`
+verifies each download against the sha256 in the index and will correctly REFUSE the old assets, so a
+Pages deploy from `main` cannot succeed until ~3.4 GB is re-uploaded under the tag `data-v2026-08-01`
+(the tag `data/coverage.toml` and `browser/coverage.json` now both name).
 
 
 - The block **`soverijssel.tiles`** (21 MB, southern-Overijssel, 1215 tiles) is **gitignored** (`*.tiles`)

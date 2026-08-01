@@ -40,6 +40,7 @@ pbf="$work/$(basename "$src")-latest.osm.pbf"
 clip="$work/$id.clip.osm.pbf"
 roads="$work/$id.roads.osm.pbf"
 seq="$work/$id.geojsonseq"
+nets="$work/$id.networks"
 store="$out/$id.roads.store"
 newer() { [ -s "$1" ] && [ "$1" -nt "$2" ]; }   # $1 exists and is newer than $2
 
@@ -118,15 +119,23 @@ fi
 # ⚠ RESUMABILITY IS KEYED ON THE RECIPE TOO, not just on mtimes. These steps skip when their output is
 # newer than their input — which silently reused a way-only `geojsonseq` the day `n/barrier` and
 # `--geometry-types=…,point` were added here, and produced a "successfully regenerated" country block
-# with zero barriers in it. The fingerprint below is the filter+export recipe; change either and the
-# cached intermediates are stale by definition.
-recipe="w/highway n/barrier | linestring,point"
-rfp="$work/$id.recipe"
-if [ ! -f "$rfp" ] || [ "$(cat "$rfp" 2>/dev/null)" != "$recipe" ]; then
-  echo "  recipe changed — discarding cached filter/export intermediates"
-  rm -f "$roads" "$seq"
-  printf '%s' "$recipe" > "$rfp"
-fi
+# with zero barriers in it. So each recipe is fingerprinted and a change discards what it produced.
+#
+# ONE FINGERPRINT PER STEP, not one for the pair. They were briefly merged, and on a country extract that
+# is expensive in the wrong direction: the filter pass over a 1.3 GB extract is the long one, and adding
+# `-u type_id` to the EXPORT would have thrown it away for a change it does not depend on. A step's
+# fingerprint names only its own inputs.
+fp_of() {  # $1 = stamp file, $2 = recipe, $3.. = outputs to discard when it changed
+  local stamp="$1" recipe="$2"; shift 2
+  if [ ! -f "$stamp" ] || [ "$(cat "$stamp" 2>/dev/null)" != "$recipe" ]; then
+    [ -s "${1:-}" ] && echo "  recipe changed — discarding $(basename "${1:-}")"
+    rm -f "$@"
+    printf '%s' "$recipe" > "$stamp"
+  fi
+}
+fp_of "$work/$id.recipe"     "w/highway n/barrier"                 "$roads"
+fp_of "$work/$id.exportrecipe" "linestring,point | -u type_id"     "$seq"
+fp_of "$work/$id.netrecipe"  "r/route=hiking,foot,bicycle,mtb"     "$nets"
 if newer "$roads" "$base_pbf"; then echo "  roads filter up to date"; else
   echo "  osmium tags-filter w/highway n/barrier"
   # BOTH ways and barrier NODES. A gate across a path is a node, so a way-only filter cannot see one —
@@ -143,16 +152,29 @@ echo "  roads pbf: $(du -h "$roads" | cut -f1)"
 echo "== R2b export geojsonseq =="
 if newer "$seq" "$roads"; then echo "  geojsonseq up to date"; else
   # …and export points alongside linestrings, or the barrier nodes just filtered in are dropped here.
-  osmium export "$roads" -f geojsonseq --geometry-types=linestring,point --overwrite -o "$seq" \
+  # `-u type_id` puts `"id":"w4415388"` on every feature. It costs ~7% on this intermediate (which is
+  # never shipped) and is the ONLY way the block can be joined to the route relations: OSM keeps network
+  # membership in relations, which are memberships and not geometry, so no per-way export can carry it.
+  osmium export "$roads" -f geojsonseq --geometry-types=linestring,point -u type_id --overwrite -o "$seq" \
     || { echo "FAIL: osmium export"; exit 1; }
 fi
 echo "  geojsonseq: $(du -h "$seq" | cut -f1), $(wc -l < "$seq") features"
 
+# --- R3b · the way→network sidecar ------------------------------------------------------------------
+# Signposted walking / cycling / MTB routes (PLAN-RESTORE R3). Read from the CLIPPED source, not from
+# `$roads`: the way-and-barrier filter above drops relations entirely, so running this after it finds
+# nothing. The join is by way id against the export's `-u type_id`.
+echo "== R3b route networks =="
+if newer "$nets" "$base_pbf"; then echo "  networks up to date"; else
+  python3 "$here/tools/route_networks.py" "$base_pbf" "$nets" || { echo "FAIL: route_networks.py"; exit 1; }
+fi
+echo "  networks: $(wc -l < "$nets") ways"
+
 # --- R4 · generate ---------------------------------------------------------------------------------
 echo "== R4 generate =="
-if newer "$store" "$seq"; then echo "  block up to date"; else
+if newer "$store" "$seq" && newer "$store" "$nets"; then echo "  block up to date"; else
   rm -f "$store" "$store.dschema"
-  time "$loft" --native-release --lib "$here/lib" "$here/tools/gen-tiles.loft" "$store" "$seq" \
+  time "$loft" --native-release --lib "$here/lib" "$here/tools/gen-tiles.loft" "$store" "$seq" "$nets" \
     || { echo "FAIL: gen-tiles"; exit 1; }
 fi
 echo "  block: $(du -h "$store" | cut -f1)"
@@ -163,7 +185,12 @@ ext="$("$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$stor
 [ -n "$ext" ] || { echo "FAIL: the block does not open"; exit 1; }
 set -- $ext
 echo "  extent lat $(python3 -c "print(f'{$1/1e7:.4f}..{$3/1e7:.4f}')") lon $(python3 -c "print(f'{$2/1e7:.4f}..{$4/1e7:.4f}')") · tiles=$5 roads=$6"
-[ "$5" -ge 100 ] || { echo "FAIL: only $5 tiles — the block is empty or the filter dropped everything"; exit 1; }
+# A non-vacuity floor: a block that came out empty because the filter dropped everything looks exactly
+# like a successful build until something tries to route on it. 100 tiles is right for a city or a
+# country — and WRONG for a CHUNK, which is legitimately a slice of one (PLAN-SCALE §6e). An Enschede
+# half is 87 tiles and perfectly valid. So the floor is overridable, and the override is the caller
+# saying "I know how small this is meant to be" rather than the check being deleted.
+[ "$5" -ge "${MIN_TILES:-100}" ] || { echo "FAIL: only $5 tiles (floor ${MIN_TILES:-100}) — the block is empty or the filter dropped everything"; exit 1; }
 # A paged spot check: the read path the client uses, on the block it will actually read.
 LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" 2>&1 \
   | grep -E '^store_load_keys|^asked' | sed 's/^/  /'

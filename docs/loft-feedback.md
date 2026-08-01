@@ -1932,3 +1932,26 @@ The osmium clip and export are byte-identical across runs, so the input is not i
 Filed as [loft#710](https://github.com/loft-lang/loft/issues/710) (`sev:medium`, `area:store-lifetime`),
 with the framing that interleaved growth is what every streaming generator does, not a contrived shape —
 plausibly the arena's worst case, but one a consumer cannot see or ask to avoid.
+
+### Follow-up: the `reserve` fix works, and not for us (2026-07-31, evening)
+
+loft shipped `reserve(v, n)` for loft#710 (`d8eb7746`, installed binary `ace72d6d` 22:43). It reproduces
+its documented win on the documented shape and does nothing for `gen-tiles`:
+
+| | plain | reserved | |
+|---|---|---|---|
+| synthetic, grown round-robin (125 × 2312) | 3,816,152 | 2,609,808 | **−31.6%** |
+| `gen-tiles` over the real `.geojsonseq` (n=4, median) | 2,734,420 | 2,753,928 | **+0.7%** |
+
+**The win tracks INTERLEAVING, not "many vectors".** Consecutive features in a real OSM export land in a
+different tile only **3.8%** of the time (1556 switches / 41104 features) — osmium emits ways in roughly
+spatial order, so each tile's vectors grow in long runs and rarely reallocate against a neighbour. The
+synthetic switches on every element. Reverted from `gen-tiles`: it costs a second full parse of the input
+for +0.7%.
+
+The new binary is worth having anyway — the construction-order penalty fell from 1.84× to 1.17×, and a
+real block is **−14.1% per unit of content** (16.61 → 14.27 bytes/step).
+
+⚠ Two traps paid for here: `reserve` through `for t in idx` reserves COPIES (C86) and silently does
+nothing; and block size is still non-deterministic run to run (spread 1.007–1.021×), so a single-run
+before/after is noise — read as signal twice before measuring with n=4.

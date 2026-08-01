@@ -29,9 +29,22 @@ blocks="${BLOCKS_OUT:-$here/blocks}"
 command -v gh >/dev/null || { echo "FAIL: gh not found"; exit 1; }
 [ -d "$blocks" ] || { echo "FAIL: no blocks/ — run tools/build-blocks.sh first"; exit 1; }
 
+# WHAT THE MANIFEST NAMES, not whatever is in the directory.
+#
+# `blocks/` also holds the un-split whole-country intermediates a split was made FROM —
+# netherlands.roads.store (227 MB) and netherlands.base.store (1948 MB) on the 2026-08-01 build. Nothing
+# references them: `data/coverage.toml` names the halves, so an index can never resolve to them, and
+# uploading them would have added 2.2 GB of dead weight to a 2.6 GB release and invited a consumer to
+# read a block the index does not describe.
+manifest_names="$(grep -oP '^\s*(roads|base|names)\s*=\s*"\K[^"]+' "$here/data/coverage.toml" | xargs -n1 basename | sort -u)"
 assets=()
-for f in "$blocks"/*.store "$blocks"/*.dschema; do [ -e "$f" ] && assets+=("$f"); done
-[ ${#assets[@]} -gt 0 ] || { echo "FAIL: blocks/ holds no stores"; exit 1; }
+for f in "$blocks"/*.store "$blocks"/*.dschema; do
+  [ -e "$f" ] || continue
+  b="$(basename "$f")"
+  # A `.dschema` rides along with the store it belongs to — the gates read it beside the block.
+  echo "$manifest_names" | grep -qxF "${b%.dschema}" && assets+=("$f")
+done
+[ ${#assets[@]} -gt 0 ] || { echo "FAIL: blocks/ holds none of the stores data/coverage.toml names"; exit 1; }
 
 echo "== R6 publish: $tag → $repo =="
 total=0

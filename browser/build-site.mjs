@@ -5,7 +5,7 @@
 // surprises), and copies the store-app kernel wasm + the two loft stores. At runtime the app fetches the
 // stores + the wasm by relative URL and reads them with loft-wasm: `view <bbox>` → base map, `match` →
 // route, on a 2D canvas — no server.
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, cpSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, cpSync, readdirSync, statSync, linkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -64,13 +64,41 @@ else console.log('build-site: WARNING — no browser/coverage.json; the app will
 // is ~300 MB and is rebuilt from OSM, so it is output, not source.
 const blocks = join(here, '..', 'blocks');
 if (existsSync(blocks)) {
-  // Only SMALL blocks ship beside the app. A country block is published as a release asset and named by
-  // an absolute URL in the index (PLAN-SCALE §7 R6), so copying it here would add gigabytes to every
-  // site build and every gate run for a file the page never fetches from this origin.
-  const LIMIT = 64 * 1024 * 1024;
-  for (const f of readdirSync(blocks)) {
-    const p = join(blocks, f);
-    if (statSync(p).size <= LIMIT) cpSync(p, join(site, 'stores', f));
+  // WHAT SHIPS IS WHATEVER THE INDEX NAMES RELATIVELY — not whatever is under a size limit.
+  //
+  // This used to copy blocks below 64 MB, on the reasoning that a country block is published as a release
+  // asset and named by an absolute URL, so copying it would add gigabytes for a file the page never
+  // fetches from this origin. PLAN-SCALE N3 ends that: the NL ROADS (497 MB for both halves) now ship
+  // beside the app, because they fit the ~1 GB Pages cap and only the 2.87 GB base map does not.
+  //
+  // A size limit could not express that, and got it exactly backwards — the index named nl-east with a
+  // relative URL while the builder refused to copy it, so every match outside the small block resolved to
+  // a 404 and returned no route. The index is the authority on what this origin must serve, so read it:
+  // a relative URL means "serve this", an absolute one means "someone else serves it".
+  let wanted = null;
+  const idx = join(here, 'coverage.json');
+  if (existsSync(idx)) {
+    try {
+      wanted = new Set();
+      for (const b of JSON.parse(readFileSync(idx, 'utf8')).blocks ?? []) {
+        for (const st of [b.roads, b.base, b.names]) {
+          if (st && st.url && !/^[a-z]+:\/\//i.test(st.url)) wanted.add(st.url.split('/').pop());
+        }
+      }
+    } catch { wanted = null; }   // an unreadable index must not silently ship nothing
   }
+  let n = 0, bytes = 0;
+  for (const f of readdirSync(blocks)) {
+    // A `.dschema`/`.bbox`/`.srccount` sidecar rides along with the store it belongs to: they are small,
+    // and the gates read them beside the block.
+    const base = f.replace(/\.(dschema|bbox|srccount)$/, '');
+    if (wanted && !wanted.has(f) && !wanted.has(base)) continue;
+    const p = join(blocks, f), dst = join(site, 'stores', f);
+    // Hard-link rather than copy: half a gigabyte per site build is real time and real disk, and nothing
+    // ever writes into a store in place. Falls back to a copy across filesystems.
+    try { linkSync(p, dst); } catch { cpSync(p, dst); }
+    n += 1; bytes += statSync(p).size;
+  }
+  if (n) console.log(`build-site: ${n} generated block file(s), ${(bytes / 1e6).toFixed(1)} MB (linked)`);
 }
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);
