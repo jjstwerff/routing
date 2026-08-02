@@ -37,10 +37,10 @@ warns about: one mechanism forced over two families that assert their difference
 | 2 | **Collect the network before the class gate** (`map.mjs:1836` moves above `:1820`) | z14.6: **137/241 → 241/241** |
 | 3 | **Clamp the class ladder to the band floor** — one place, in the flat builder, not in `render()` | z14.6 draws `path`+`foot`+`service`; screenshot beside z15.05 |
 | 4 | **Delete the class ladder's dead rungs** (every debut < 14 is unreachable, §4) or record why each stays | `ROAD_STYLES` rows carry a band, not a guess |
-| 5 | **`network` level + type in the sidecar** — `route_networks.py` reads `network=`/`route=` into type × level | `networks: N ways`, per-type and per-level counts, none zero |
-| 6 | **Carry them in `flags`** (bits 11–14, §3) through `gen-tiles` → `emit_roads` marks → `parseStreetsFlat` | `match_parity.sh` **byte-identical** (the cost table does not read the new bits) |
-| 7 | **Draw by level** — width/opacity from the level, colour from the type | the national LF route reads heavier than a local loop |
-| 8 | **Generalise the overview by level** — `build_overview.loft`'s `net_classes` selects on level × `zmax` | country zoom stops being a red blanket; overview size reported |
+| 5 | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | `networks: N relations → M ways`, per-type **and per-level** counts, none zero |
+| 6 | **The block carries them** — `TRoad.nets: u16` + `rids`, a per-block `TRoute` table (§3). **Regenerate every block, every copier, conservation asserted** | `match_parity.sh` **byte-identical** (the cost table reads none of it) |
+| 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
+| 8 | **Generalise the overview by level, and chain by route id** — `build_overview.loft` selects on level × `zmax` and merges runs per `rid` | country zoom stops being a red blanket; an LF route is ONE polyline; overview size reported |
 | 9 | **The floor, resident** — read `nl-overview` once into a JS-side index, keep it, draw it under everything | retained bytes reported; z15 in Münster is no longer blank |
 | 10 | **Clip the floor to the complement of held ground** | z16 shows **no** ghost lines beside real ones (§5) |
 | 11 | **Retire `holdFrame`** (`map.mjs:1479`) — the floor supersedes stretched stale pixels | band-crossing gate green with it removed |
@@ -132,31 +132,71 @@ writes `<wayid> <mask>`, mask = 1 walk | 2 cycle | 4 MTB.
 a walker actually navigates by). The level is the expensive omission: it is what makes a country-zoom
 network legible instead of a red blanket, and it is the parameter Waymarkedtrails draws by.
 
-**The representation — spare bits, not a new field.**
+**The representation — and the trap of trying to make bits carry it.**
+
+The obvious move is to spend the spare bits and call it done:
 
 ```
 routing_kernel.loft:366   flags: u16
   bits 0–7    RF_CYCLEWAY … RF_SVC_LOCAL      the way tags (8, all used)
   bits 8–10   RF_NET_WALK | CYCLE | MTB       the three network bits
-  bits 11–15  FREE  ← 5 bits, the whole budget for this design
+  bits 11–15  FREE  ← 5 bits, and that is the WHOLE budget
 ```
 
-Proposed: `RF_NET_HORSE = 2048`, `RF_NET_SKATE = 4096`, and **two bits of level**
-(`8192`/`16384`, 0 = unknown/local … 3 = international, the **maximum** over the way's memberships,
-which is what Waymarkedtrails renders by). Four of five bits; one spare, left spare.
+⚠ **Five bits is not "space for more types", and it can never hold a colour or a name.** Two facts kill
+it. **(1) A colour, a `ref` and a name are properties of the ROUTE, not of the way** — the Pieterpad has
+one name along all 500 km of it — so putting them on the way stores the same string thousands of times
+and still cannot answer "which route is this". **(2) A way carries SEVERAL routes**: a lane in the
+Achterhoek is routinely on a cycle *knooppunt* route, an LF route and a local walk at once. A per-way
+summary can say *that* a way is in a walking network; it can never say *which*, and "which" is exactly
+what a colour and a name are.
 
-⚠ **Bits, not a field, for a specific reason.** Adding a field to a stored struct makes **older blocks
-read garbage, not empty** (loft#700) — every block must then be regenerated before anything is correct.
-An unused bit reads **0**, and 0 is defined here as *"level unknown"*, which is truthful for a block
-built before this step. A stale block degrades to today's picture instead of to nonsense. It still has
-to be regenerated to *carry* the new parameters — and when it is, **every copier must carry `flags`
-through**: `split_block.loft:28` does today (`flags: r.flags`); `build_overview.loft`, `rekey_tiles`,
-`reorder_tiles` and `merge_base` each need the same check, with a conservation assert (per-bit counts
-in == counts out), because a silently-zeroed bit looks exactly like "there are no MTB routes here".
+So the design splits by **who is asking**, because the two questions have different shapes:
 
-**The wire format already has room.** `emit_roads` sends `class|marks`, and `x` = router-refused,
-`w`/`c`/`m` = the three networks. Add `h`, `s` and a level digit `0`–`3`; an old kernel emits no digit
-and the parser reads "unknown", which is the same graceful degradation as the bits.
+| asks | question | representation |
+|---|---|---|
+| **the router**, per edge, in the hot loop | *"is this way in the network I am costing?"* | a **set** — one bit per type |
+| **the renderer / the label / the GPX name** | *"which routes is this way on, and what are they called and coloured?"* | an **identity** — a table, and a membership list |
+
+**(a) The set moves out of `flags` into its own field, so it can grow.**
+`TRoad.nets: u16` — 16 route types, of which 5 are spoken for (walk, cycle, MTB, horse, skate) and
+**eleven are free** for the ones that come next (piste, canoe, via-ferrata, whatever the data grows).
+`flags` then keeps its 8 tag bits and gains back the 3 it lent, and the router's test stays one `&`.
+
+**(b) The identity is a per-block ROUTE TABLE, and the way points into it.**
+
+```
+TRoute { rid: u16, kind: u8, level: u8, ref: text, name: text, colour: u32 }   // one per relation
+TRoad  { …, nets: u16, rids: vector<u16> }                                     // usually empty, often 1
+```
+
+`colour` comes from `osmc:symbol`'s waycolour when the relation carries one (that *is* the paint on the
+tree that you follow), and falls back to the type's colour. `level` (`iwn`/`nwn`/`rwn`/`lwn`, `icn`…)
+lives on the **route**, where it is not a lossy summary — the per-way `nets` bits are the summary, and
+the table is the truth.
+
+**Size, and why it is affordable.** A route table is per RELATION: the whole Netherlands is thousands of
+them, each a few dozen bytes of text — **hundreds of KB against an 81 MB block**. The per-way cost is a
+`vector<u16>` that is empty for most ways. ⚠ **Both are estimates.** `route_networks.py` already prints
+its relation count (`networks: N relations …`), so step 5's observable is the real number, and the
+`rids` cost is measured on the first rebuilt block — not assumed here.
+
+⚠ **This IS a schema change, and the rule that goes with it is absolute.** Adding a field to a stored
+struct makes **older blocks read garbage, not empty** (loft#700) — not a degraded picture, a wrong one.
+So: **regenerate every block, update every copier, assert conservation.** `split_block.loft:28` copies
+`flags` today and must copy `nets` and `rids`; `build_overview`, `rekey_tiles`, `reorder_tiles` and
+`merge_base` each need the same, with per-type counts in == counts out, because a silently dropped field
+looks exactly like *"there are no MTB routes here"*. Nothing may read a block older than the change —
+the `dschema` is what says so, and `store_load` is gated on the layout it was written with.
+
+**The wire grows a table, not more letters.** `emit_roads` sends `class|marks` today (`x` = router
+refuses it, `w`/`c`/`m` = the networks). Marks stay, as the fast path — plus `h`, `s` for the new types.
+The identity travels as **one `ROUTE` table per view**, emitted once, with `class|marks#rid,rid` on the
+ways: N route records instead of N×(name+colour) copies, which is the same reason the store splits them.
+
+⚠ **A view emits the routes it TOUCHES, not the block's whole table** — that is what keeps a country-zoom
+view from serialising every relation in the Netherlands, and it is the same rule the viewport filter
+already lives by.
 
 ⚠ **The marks are parsed at TWO sites and they do not agree today.** `parseStreetsFlat` (`map.mjs:751`)
 reads the network letters; the object path (`map.mjs:538`) reads only `x` and **discards the network
@@ -164,9 +204,11 @@ bits entirely**. That is why the store-vs-object pixel parity gate — the instr
 mark bug — is *blind* to a network bug: neither side draws one. Step 6 makes the two parsers read the
 same vocabulary, or the gate is decoration.
 
-**What draws.** Type → colour (the existing walk-red / cycle-blue / MTB-purple, plus riding and
-skating); **level → weight and debut**. The level is the layer's own generalisation knob, and it is what
-makes §4's "draw everything in the band" affordable at the country zoom:
+**What draws.** **Route colour first** (`osmc:symbol` — the paint on the tree you are actually
+following), the type's colour as the fallback (walk-red / cycle-blue / MTB-purple, plus riding and
+skating); **level → weight and debut**; **`ref`/`name` → the label**, which is what turns a red band into
+*"LAW 9 Pieterpad"* and a knooppunt leg into its number. The level is the layer's own generalisation
+knob, and it is what makes §4's "draw everything in the band" affordable at the country zoom:
 
 | zoom band | network levels drawn |
 |---|---|
@@ -265,14 +307,68 @@ writes a feature in a 0.10° margin twice), so the real figure is higher by an u
 
 ---
 
+## §5b — L4: the route as an object you can read and take away
+
+Two asks, one theme, and both are **smaller than they look because the work is already done** — which is
+the finding, and the reason this § is short rather than protocol-heavy.
+
+**The distance already exists and is already on screen — as kernel debug text.** `emit_route`
+(`map_kernel.loft:312`) prints `SUMMARY ways=N route_pts=M len=X.Xm profile=P` for *every* match,
+including the streamed session path, and `len` is `path_length_m` — loft's geodesic length over the
+matched geometry, not a browser approximation of it. The app then does `hud.textContent = sum`
+(`store-app.mjs:555`), so the user is shown the raw line. Nothing needs computing; the distance needs
+**presenting**: metres → `8.2 km`, in its own element, cleared when the route is.
+
+⚠ **Do not recompute it in JS.** A haversine over `map.route` would be a second answer to a question
+loft already answers, and the two would drift the moment either changes — the shape this repo has paid
+for repeatedly (six copies of one ladder). The kernel's number is the number; JS parses and formats it.
+
+**GPX is already written — in loft, for the client that had a server.** `routing_kernel.loft:2185`
+`gpx_export(points, elevs, name)` is the format of record, and `server/server.loft:329` serves it over
+the websocket. The deployed app has **no server**, so the old path (`gpx.js` → `ws.requestExport`) cannot
+be reached at all. The route is already in the browser (`map.route`), so the export is a **document, not
+a request**: build the same GPX 1.1 document JS-side and hand it to a `Blob` download.
+
+* **No `<ele>`.** `gpx_export` omits the element when the elevation is `ELEV_NONE`, and the serverless app
+  has no elevation source — so it takes that branch for every point, which is a *shape the format already
+  defines* rather than a variant of it.
+* **The two writers must agree**, and the gate is a comparison, not a promise: same points in → same
+  document out as `gpx_export`, modulo the elevation branch.
+* **Import is not in this step.** `gpx.js`'s reader needs `clean_track`/`retrace_m` from the kernel
+  (`server.loft:332`), which is a kernel command, not a DOM change. Named here so it is a decision, not an
+  omission.
+
+**Where the code goes** — the pure half in `map.mjs` (`formatDistance`, `routeDistanceM`, `routeGpx`),
+unit-tested in `map.test.mjs`; the DOM half in `store-app.mjs`. The browser assert belongs in
+`cdp_verify_store.mjs`, beside the match it already drives: **after a match, the bar reads a distance and
+the GPX document holds one `<trkpt>` per route point.**
+
+---
+
 ## §6 — what the newly installed loft changes
 
 ⚠ **Anchored to the binary, per CLAUDE.md.** `/usr/local/bin/loft` is **2026.8.0**, md5
 `ea0486770b1ed2d703f4a5187d3b1b0f`, dated **2026-08-02 12:50** — and it is **byte-identical** to
 `../loft/target/release/loft`, whose log carries loft#729 (three commits), #730 and #731, landed
 10:10–12:36 the same day. It is **not** the binary HANDOFF describes (md5 `13311104…`): that one moved
-under us. Everything below is upstream's measurement **on our own `nl-east.roads.store`**, and every
-number must be **re-measured here** before it is written into any status doc.
+under us.
+
+> **INHERITED AND RE-MEASURED HERE, 2026-08-02.** The kernel was rebuilt on this binary
+> (`browser/store-kernel.wasm`, sources hash unchanged at `221ac6fbd28d…` — the toolchain is the only
+> variable) and two of upstream's claims were re-run on this box, on our own data:
+>
+> | claim | measured here |
+> |---|---|
+> | run coalescing removes round-trips, byte-neutral | the app's paged roads read: **33 → 29 range reads for the same 2.0 MB** (`map_render_gate`, old wasm vs new, same store) |
+> | binding a block compacts it, content unchanged | `nl-east.roads.store` **161 793 096 → 81 271 776 (1.99×)**, 5 008 tiles / 822 452 roads read back, and a full `census` of **all 23 categories is identical** (`tools/store_compact_probe.loft`) |
+> | the upgrade changes no route | `match_parity.sh` **byte-identical on all 5 cases, 3 distinct routes**; the browser gate's route is unchanged (`len=12428.0m`, 199 pts) on both wasms |
+>
+> ⚠ **Anything that binds a block now rewrites it, smaller.** That is the fix working, not a hazard — but
+> it means the next generator run over `blocks/` silently halves those files, and a *published* block
+> only shrinks when it is re-bound and re-uploaded. The blocks in this tree are **not** re-bound yet.
+
+Everything below is upstream's own measurement **on our own `nl-east.roads.store`**; the rows not marked
+above still need re-measuring here before they are written into any status doc.
 
 | upstream change | measured on our block |
 |---|---|
