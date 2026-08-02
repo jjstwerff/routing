@@ -264,12 +264,15 @@ fn spine_kind(cls: integer) -> text {
 // What it does at the OVERVIEW's zoom is decisive — national + international is 850 relations against
 // 83 762, which is the difference between a country you can read and a red blanket.
 //
-//   zmax <= 10 (the overview)   national and international only
-//   zmax <= 12 (middle zooms)   + regional
-//   above                       everything (and the detailed blocks answer there anyway)
+// ⚠ ONLY THE OUTER ZOOM SELECTS. The middle-zoom block includes every signposted route, whatever its
+// level: by z12 you are looking at a region rather than a country, and a regional or unnamed local route
+// is exactly what you are there to find. Filtering it there would hide the ordinary walking network at
+// the zoom people plan at — the outer zoom is the one that cannot afford them.
+//
+//   zmax <= 10 (the overview)   national and international only — 850 relations, not 83 762
+//   above                       everything the block carries
 fn level_floor(zmax: integer) -> integer {
   if zmax <= 10 { return 2; }
-  if zmax <= 12 { return 1; }
   0
 }
 

@@ -40,7 +40,7 @@ warns about: one mechanism forced over two families that assert their difference
 | 5 ✅ | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | **83 762 relations → 484 252 ways**, per-type and per-level counts in §3; the legacy line format is byte-preserved and an old reader is *proven* to read the new file as the old one |
 | 6 ✅ *(code + fixture)* | **The block carries them** — `TRoad.nets: u16`, a per-tile `TRoute` table + sparse `TRLink`s (§3). Every copier carries them; conservation asserted | `match_parity.sh` **byte-identical**; the router A/B unchanged profile for profile; the fixture's walk/cycle/mtb counts **identical** (4543/2832/671) with horse 260 new. ⚠ **The country blocks are NOT regenerated** — see below |
 | 7 ✅ | **Draw by route** — colour from `osmc`, weight from level; the wire gains one `ROUTE` table per view and route ids per road | at the reported camera: **107 routes, 87 coloured**, 453 of 1 316 roads on one — *Varsselroute* red, *Vorden Graafschaproute* blue, an MTB link purple |
-| 8 ✅ *(code; data not republished)* | **Generalise the overview by level, and chain by route id** | country zoom: **42 549 net lines → 1 550**, chains 56 323 → 15 324, coords 266 465 → 57 405, block 33.7 → **26.3 MB** |
+| 8 ✅ | **Generalise the OUTER zoom by level, and chain by route id** — z12 and up keep every route | outer zoom **42 549 net lines → 1 550**, block 33.7 → **26.3 MB**; z12–13 keeps all 80 792 across five modes. Published as `data-v2026-08-02c` |
 | 9 ✅ | **The floor, resident** — materialised from the country view the app already performs; the 33.7 MB fetch is the fallback, not the path | `how: "free"`, 149 113 areas · 56 859 lines · 1 230 843 coords, no extra request |
 | 10 ✅ | **Clip the floor to the complement of held ground** | inside NL at z15 it reports `covered by the fine layer, drawn 0` — no ghosting, by suppression |
 | 11 ⏸ | **Retire `holdFrame`** — deferred, with the reason written down (§5): the floor is resident only after a country view, so the held frame is still the only cover for a session that never sees one | — |
@@ -337,6 +337,16 @@ go through the same 0.55 alpha `NET_STYLE` uses, because the band is an *annotat
 thinning rule — 92% of relations are `regional`, so "drop below regional" moves nothing at z12. At the
 **overview's** zoom it is decisive: national + international is 850 relations against 83 762.
 
+⚠ **ONLY THE OUTER ZOOM SELECTS**, and the first version got this wrong by filtering the middle level
+too. By z12 you are looking at a region rather than a country, and a regional or unnamed local route is
+exactly what you are there to find — filtering there hid the ordinary walking network at the zoom people
+plan at, and took horse, MTB and skating with it. The floor now applies at `zmax <= 10` and nowhere else:
+
+| block | net lines | what it holds |
+|---|---|---|
+| overview (z < 12) | **1 550** | national + international only |
+| middle zooms (z12–13) | **80 792** | every level, all five modes — walk 56 164 · cycle 21 335 · horse 2 236 · MTB 993 · skating 64 |
+
 | | before | after |
 |---|---|---|
 | `net_*` lines in the country block | 42 549 | **1 550** (walk 27 749 → 968, cycle 12 978 → 581) |
@@ -349,8 +359,8 @@ That is a defensible cut and a real one: the two modes step 6 added are visible 
 
 ⚠ **Chaining per route costs at the middle level.** One polyline per route is what makes a long-distance
 path *one* line, but a way carrying three regional routes now yields three runs that cannot merge into
-each other's neighbours: `nl-mid` goes 69 631 → 101 907 chains and 277.5 → 280.4 MB (+1%). The overview
-pays −22% for the same change. Net accepted, and written down rather than discovered later.
+each other's neighbours: `nl-mid` goes 69 631 → 107 874 chains and 277.5 → 281.7 MB (+1.5%). The overview
+pays **−22%** for the same change. Net accepted, and written down rather than discovered later.
 
 **What draws.** **Route colour first** (`osmc:symbol` — the paint on the tree you are actually
 following), the type's colour as the fallback (walk-red / cycle-blue / MTB-purple, plus riding and
