@@ -1,0 +1,42 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Does BINDING a block compact it — here, on this box, with the loft that is installed?
+//
+// loft#730 reports that a store carries the 7/4 slack its vectors grew to, that compaction could not see
+// it (the slack is INSIDE records, and the gate measured the space BETWEEN them), and that binding a
+// store now sheds it: `nl-east.roads.store` 161 793 096 -> 81 271 776, content digest unchanged. That
+// number was measured upstream, on this repo's own block — which is exactly why it must be re-measured
+// HERE before anything in this tree is planned around it (CLAUDE.md: anchor a finding to the binary).
+//
+// So this does the smallest thing that can answer it: bind the store, read its record count back so the
+// bind is not optimised into nothing, and report the file size on both sides of the bind.
+//
+//   loft --native --lib lib tools/store_compact_probe.loft <block.store>
+//
+// ⚠ IT REWRITES THE FILE IT IS GIVEN. Point it at a COPY. `store_persist_bind` adopts the image, and an
+// adopted image that compacts is the whole point of the measurement — there is no read-only form of it.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+struct Block { roads: hash<TTile[tkey]> }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  path = a[0] ?? "";
+  if path == "" { println("usage: store_compact_probe <block.store>  (rewrites it — use a copy)"); return; }
+
+  before = file(path).size;
+  b = Block { roads: [] };
+  ok = store_persist_bind(b.roads, path);
+  // Read something real back: a bind whose result is never used is a bind a compiler may skip, and a
+  // "compaction" measured on a store nobody opened is not a measurement.
+  tiles = 0;
+  roads = 0;
+  for t in b.roads { tiles += 1; roads += len(t.roads); }
+  after = file(path).size;
+  println("#C bind={ok} tiles={tiles} roads={roads}");
+  println("#C bytes before={before} after={after}");
+}
