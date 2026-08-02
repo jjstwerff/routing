@@ -5,7 +5,8 @@
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
-         cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES } from './map.mjs';
+         cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES,
+         routeDistanceM, formatDistance, routeGpx } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -508,6 +509,46 @@ const rough = new RoughLayer(map, {
   boxElement: document.getElementById('select-box'),
 });
 
+// PLAN-LAYERS §5b — the route bar: how long this route is, and a way to take it with you.
+//
+// ONE function owns both, called from every path that lands a route (the sketch, and the `__match` test
+// hook), because a bar updated at two sites is a bar that eventually disagrees with the map. The length
+// is loft's — `routeDistanceM` parses it, nothing here measures geometry.
+const routeBar = document.getElementById('route-bar');
+const routeDistEl = document.getElementById('route-dist');
+const routeGpxBtn = document.getElementById('route-gpx');
+let routeSummary = '';
+function showRoute(summary) {
+  routeSummary = summary || '';
+  const m = routeDistanceM(routeSummary);
+  const show = m !== null && map.route.length >= 2;
+  if (routeDistEl) routeDistEl.textContent = show ? formatDistance(m) : '';
+  if (routeBar) routeBar.classList.toggle('hidden', !show);
+  window.__storeApp = { ...(window.__storeApp || {}), routeDistM: show ? m : null,
+                        routeDistText: show ? formatDistance(m) : '' };
+}
+
+// The document is built from `map.route` — the route on screen, not the one a summary describes — so a
+// download can never disagree with what is drawn. `<a download>` + an object URL is the whole mechanism;
+// revoked on the next tick, because a blob held for the session is a leak the size of the route.
+if (routeGpxBtn) {
+  routeGpxBtn.addEventListener('click', () => {
+    if (map.route.length < 2) return;
+    const dist = formatDistance(routeDistanceM(routeSummary));
+    const doc = routeGpx(map.route, `routing ${PROFILE}${dist ? ` · ${dist}` : ''}`);
+    const url = URL.createObjectURL(new Blob([doc], { type: 'application/gpx+xml' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = 'route.gpx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    // Counted so the browser gate can assert the REAL button did the work — a hook that builds the
+    // document by a private road would prove the format and nothing about the wiring.
+    window.__storeApp = { ...(window.__storeApp || {}), gpxBytes: doc.length,
+                          gpxPts: (doc.match(/<trkpt /g) || []).length,
+                          gpxDownloads: (window.__storeApp?.gpxDownloads || 0) + 1 };
+  });
+}
+
 // Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen
 // is what makes a delete-down-to-one-point degrade instead of lying (PLAN-EDIT failure path 8).
 function requestMatch(pts) {
@@ -515,6 +556,7 @@ function requestMatch(pts) {
     map.setRoute([]); map.render();
     hud.textContent = `sketch ${pts.length} pt — add ≥2 to route`;
     window.__storeApp = { ...(window.__storeApp || {}), routePts: 0, summary: '' };
+    showRoute('');
     return Promise.resolve();
   }
   hud.textContent = 'matching…';
@@ -552,7 +594,11 @@ function requestMatch(pts) {
       }
     }
     map.render();
-    hud.textContent = sum || '(no route)';
+    showRoute(sum);
+    // The distance leads, because it is the thing being asked; the kernel's own line stays behind it
+    // rather than being replaced, since it is what every gate and every bug report quotes.
+    const d = formatDistance(routeDistanceM(sum));
+    hud.textContent = sum ? (d ? `${d} · ${sum}` : sum) : '(no route)';
     window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum,
                           routePts: map.route.length, matchRuns: (window.__storeApp?.matchRuns || 0) + 1 };
   });
@@ -1452,6 +1498,7 @@ async function timeMatch(pts, stream) {
 window.__match = (pts) => jobs.post('match', async (isCurrent) => {
   const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'), isCurrent);
   const sum = map.loadMatch(text); map.render();
+  showRoute(sum);                        // the same bar the sketch path fills — one owner, one truth
   const f = map.route;
   window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: f.length,
                         routeEnds: f.length ? [f[0], f[f.length - 1]] : null,

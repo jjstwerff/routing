@@ -602,6 +602,53 @@ export function orientBarriers(barriers, F) {
 // emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
 // including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
 // re-match redraw correctly rather than concatenate onto the previous route.
+// PLAN-LAYERS §5b — the matched route's length, as LOFT measured it.
+//
+// Parsed out of the summary, never recomputed. `emit_route` (map_kernel.loft) prints
+// `len=<metres>m` from `path_length_m` — a geodesic length over the matched geometry — for every match,
+// including the streamed session path. A haversine over `map.route` here would be a SECOND answer to a
+// question the kernel already answers, and two answers to one question is how this repo ended up with
+// six copies of one zoom ladder (HANDOFF §0). Returns null when the line carries no length, which is
+// what an error summary (`SUMMARY error=need>=2pts`) looks like.
+export function routeDistanceM(summary) {
+  const m = /(?:^|\s)len=([0-9]+(?:\.[0-9]+)?)m(?:\s|$)/.exec(summary || '');
+  return m ? +m[1] : null;
+}
+
+// Metres → what a person reads off a route: `840 m` below a kilometre, `8.2 km` above it. ONE decimal is
+// the honest resolution — a second one claims a precision the drawn sketch never had.
+export function formatDistance(m) {
+  if (!(typeof m === 'number' && isFinite(m) && m >= 0)) return '';
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+
+const xmlEscape = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+// PLAN-LAYERS §5b — the matched route as a GPX 1.1 document.
+//
+// The SAME document `routing_kernel::gpx_export` writes, so a file from this app and a file from the
+// server client are the same format rather than two dialects of it. The one difference is `<ele>`, and
+// it is the format's own branch rather than a variant: `gpx_export` omits the element for any point
+// whose elevation is ELEV_NONE, and the serverless app has no elevation source at all — so every point
+// takes that branch.
+//
+// Built here rather than asked of the kernel because the route is ALREADY in the browser (`map.route`).
+// The old client had to ask (`gpx.js` → `ws.requestExport` → `server.loft`); there is no server now, and
+// a round-trip to wasm to re-serialise points JS is holding would be work for its own sake.
+export function routeGpx(points, name = 'route') {
+  let s = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  s += '<gpx version="1.1" creator="routing" xmlns="http://www.topografix.com/GPX/1/1">\n';
+  s += `  <trk><name>${xmlEscape(name)}</name><trkseg>\n`;
+  for (const p of points || []) {
+    const lat = Array.isArray(p) ? p[0] : p?.lat, lon = Array.isArray(p) ? p[1] : p?.lon;
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    s += `    <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`;
+  }
+  s += '  </trkseg></trk>\n</gpx>\n';
+  return s;
+}
+
 // PLAN-SCALE §6i O2 — SPLIT A SKETCH'S LONG SEGMENTS BEFORE MATCHING.
 //
 // This is a MATCHER, not an A-to-B router: the corridor is a tube around the drawn line, so two points

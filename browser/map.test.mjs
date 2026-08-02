@@ -7,7 +7,8 @@
 //   4. orientation: east → +x, north → −y
 
 import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
-         parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB } from './map.mjs';
+         parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB,
+         routeDistanceM, formatDistance, routeGpx } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1437,6 +1438,39 @@ console.log('\nbarrier marks:');
      'cycling road/gravel show the cycling network');
   ok(netForProfile('cycling_mtb') === NET_MTB, 'MTB shows the mtb network, not the cycling one');
   ok(netForProfile('driving_fastest') === 0 && netForProfile('') === 0, 'driving asks for no network');
+}
+
+// --- PLAN-LAYERS §5b — the route as an object: its length, and its GPX ------------------------------
+console.log('L4 · the matched route reports its distance and exports as GPX');
+{
+  // The length is LOFT's, taken off the summary line `emit_route` prints. Parsing is the whole of it —
+  // the moment this file computes a length instead, there are two answers to one question.
+  const SUM = 'SUMMARY ways=1523 route_pts=213 len=8234.7m profile=walking_paved';
+  ok(routeDistanceM(SUM) === 8234.7, `the summary's own length is read back exactly (${routeDistanceM(SUM)})`);
+  ok(routeDistanceM('SUMMARY error=need>=2pts') === null, 'an error summary has no distance, and says so');
+  ok(routeDistanceM('') === null && routeDistanceM(undefined) === null, 'no summary → no distance');
+  // `route_pts=213` also ends in a number and `len=` must not match inside another token.
+  ok(routeDistanceM('SUMMARY ways=2 xlen=99m len=12.5m profile=p') === 12.5, 'len= is matched as a whole token');
+
+  ok(formatDistance(840) === '840 m', 'under a kilometre reads in metres');
+  ok(formatDistance(999.6) === '1000 m', 'and rounds rather than jumping units early');
+  ok(formatDistance(8234.7) === '8.2 km', 'over a kilometre reads in km, one decimal');
+  ok(formatDistance(123456) === '123.5 km', 'a long route keeps the same shape');
+  ok(formatDistance(null) === '' && formatDistance(NaN) === '' && formatDistance(-1) === '',
+     'no distance formats to nothing, never to "NaN km"');
+
+  // The document must be the one `routing_kernel::gpx_export` writes — same header, same nesting, same
+  // trkpt shape — minus the <ele> the serverless app has no source for (gpx_export's ELEV_NONE branch).
+  const gpx = routeGpx([[52.2412299, 6.8834496], [52.2694705, 6.9164085]], 'routing walking_paved · 8.2 km');
+  ok(gpx.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="routing" '
+                  + 'xmlns="http://www.topografix.com/GPX/1/1">\n'), 'the GPX 1.1 header matches gpx_export');
+  ok((gpx.match(/<trkpt /g) || []).length === 2, 'one trkpt per route point');
+  ok(gpx.includes('<trkpt lat="52.2412299" lon="6.8834496"></trkpt>'), 'a point keeps the digits it was matched at');
+  ok(!gpx.includes('<ele>'), 'no elevation element — the app has no elevation source, which is the format\'s own branch');
+  ok(gpx.trimEnd().endsWith('</trkseg></trk>\n</gpx>'), 'and it closes the way gpx_export closes it');
+  ok(routeGpx([], 'x').includes('<trkseg>\n  </trkseg>'), 'no points is still a well-formed document');
+  ok(routeGpx([[1, 2]], 'a & b <c>').includes('<name>a &amp; b &lt;c&gt;</name>'), 'the name is XML-escaped');
+  ok(!routeGpx([[1, 2], [NaN, 3], [4, undefined]], 'x').includes('NaN'), 'a broken point is dropped, not written');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

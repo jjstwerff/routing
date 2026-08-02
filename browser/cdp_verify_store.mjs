@@ -75,6 +75,29 @@ else if (!(s2.streamedPts >= s2.routePts)) { console.log(`  FAIL: streamed ${s2.
 else if (JSON.stringify(s2.streamedEnds) !== JSON.stringify(s2.routeEnds)) { console.log(`  FAIL: the growing line ended somewhere else than the route — ${JSON.stringify(s2.streamedEnds)} vs ${JSON.stringify(s2.routeEnds)}`); ok = false; }
 else console.log(`  ✓ the line grew as it matched (${s2.growSteps} steps, ${s2.streamedPts} pts → ${s2.routePts} after spur removal, same endpoints)`);
 
+// 2c. PLAN-LAYERS §5b — the route says how long it is, and you can take it away.
+//
+// Driven through the REAL button (`#route-gpx`.click()), not a hook that builds the document by a private
+// road: the format is proved by map.test.mjs, and what can only be proved here is the WIRING — the bar is
+// visible, it carries a distance, and the click produces a document with one trkpt per route point. That
+// is the same rule map_render_gate states for the kernel calls: a listener on named chrome is not the road
+// the user takes.
+const bar = JSON.parse((await ev(`(() => JSON.stringify({
+  hidden: document.getElementById('route-bar')?.classList.contains('hidden'),
+  text:   document.getElementById('route-dist')?.textContent || '',
+  distM:  window.__storeApp?.routeDistM ?? null }))()`)) || '{}');
+if (bar.hidden !== false || !/^\d/.test(bar.text) || !(bar.distM > 0)) {
+  console.log(`  FAIL: the route bar does not report a distance — ${JSON.stringify(bar)}`); ok = false;
+} else {
+  await ev(`document.getElementById('route-gpx').click(), 1`);
+  const g = JSON.parse((await ev('JSON.stringify(window.__storeApp||{})')) || '{}');
+  if (!(g.gpxDownloads === 1 && g.gpxPts === s2.routePts && g.gpxBytes > 0)) {
+    console.log(`  FAIL: the GPX button produced ${g.gpxPts} trkpts for a ${s2.routePts}-point route (${g.gpxDownloads} downloads, ${g.gpxBytes} bytes)`); ok = false;
+  } else {
+    console.log(`  ✓ the route reports ${bar.text} (${bar.distM} m, loft's own length) and exports ${g.gpxPts} trkpts / ${g.gpxBytes} bytes of GPX`);
+  }
+}
+
 // 3. PLAN-PERF §6b(2) — the route ARRIVES progressively, not in one burst at #EOR.
 //
 // A count, not a timing, so it holds on a loaded machine: `deliveries` is the number of yield points at
