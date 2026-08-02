@@ -785,6 +785,13 @@ const LINE_STYLES = {                               // waterway = blue; railway 
   // which is what stops them drawing on top of the detailed roads once the regions take over.
   motorway: { color: '#e892a2', width: 2.2, minZoom: 8 },
   primary: { color: '#f9b29c', width: 1.6, minZoom: 9 },
+  // PLAN.md step 8 — the SIGNPOSTED networks as the overview block carries them (`net_*` kinds from
+  // tools/build_overview.loft). Same colours and the same translucent band as the detailed overlay at
+  // z14+, so crossing the handover changes the source and not the picture. Gated on the ACTIVITY, not
+  // only on zoom: `net` names the network each belongs to and the draw path skips the others.
+  net_walk: { color: 'rgba(214,64,64,0.55)', width: 3, minZoom: 7, net: 1 },
+  net_cycle: { color: 'rgba(40,110,200,0.55)', width: 3, minZoom: 7, net: 2 },
+  net_mtb: { color: 'rgba(150,60,170,0.55)', width: 3, minZoom: 7, net: 4 },
 };
 const POI_STYLES = {                                // color · minZoom · glyph shape (circle/square/triangle)
   // Small, grey and late: a pylon marks where the line it carries actually stands, and there are hundreds.
@@ -1683,6 +1690,7 @@ export class RouteMap {
 
   // Streams / rails / barriers from the store — same zoom gate, same style table, same `_inView` drop.
   _drawLinesFromStore(z) {
+    const want = netForProfile(this.profile);
     const col = this._sidx.lines, mem = this._smem();
     const i32 = new Int32Array(mem.buffer);
     const K = this._flatK(), win = this._screenFixed(), sb = this._sb, ctx = this.ctx;
@@ -1695,6 +1703,8 @@ export class RouteMap {
        || col.bb[o4 + 3] < win.mnlo || col.bb[o4 + 2] > win.mxlo) continue;
       const st = LINE_STYLES[decodeText(mem, sb, col.sRec[i], cache)];
       if (!st || z < st.minZoom) continue;
+      // A `net_*` line belongs to ONE signposted network; draw only the one the activity asks for.
+      if (st.net && st.net !== want) continue;
       const len = col.len[i];
       if (len < 2) continue;
       const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
@@ -1871,6 +1881,7 @@ export class RouteMap {
       if (!this._onScreen(lbb, i, win)) continue;         // step 14: reject before projecting, not after
       const ln = this.lines[i];
       const st = LINE_STYLES[ln.kind]; if (!st || z < st.minZoom) continue;
+      if (st.net && st.net !== netForProfile(this.profile)) continue;   // a network the activity is not asking for
       const px = this._projLine(ln.geom); if (px.length < 2 || !this._inView(px)) continue;
       ctx.strokeStyle = st.color; ctx.lineWidth = st.width; ctx.setLineDash(st.dash || []);
       this._strokePx(px); n++;

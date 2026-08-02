@@ -41,7 +41,7 @@
 use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
               cell_ix, origin, layout_tier, tier_cell, tier_key, dp_mask,
               area_debut, line_debut, label_debut, poi_debut, DEBUT_NEVER);
-use routing_kernel::(TTile, TRoad, TStep);
+use routing_kernel::(TTile, TRoad, TStep, RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
 
 // Metres per pixel at zoom 0 (256-px tiles) and the latitude factor for the Netherlands. A single cos(lat)
 // for one country is right for a generalisation tolerance and wrong by a few percent at its ends.
@@ -221,10 +221,14 @@ struct Run { cls: integer, xs: vector<integer>, ys: vector<integer>, used: boole
 // generator: 183k lookups cost nothing.
 struct EndPt { k: text, a: integer, b: integer }
 
-fn end_key(x: integer, y: integer) -> text { "{x},{y}" }
+// ⚠ KEYED BY CLASS TOO. The endpoint table holds two runs per point, and a way that is both a road and a
+// signposted route now yields a run in each class — so a class-agnostic key let a motorway's run occupy
+// the slot a cycle route needed and chaining stalled at 2.35 ways per chain against the spine's 6.2.
+// Each class gets its own endpoint graph.
+fn end_key(cls: integer, x: integer, y: integer) -> text { "{cls}:{x},{y}" }
 
-fn note_end(ends: hash<EndPt[k]>, x: integer, y: integer, ri: integer) {
-  ek = end_key(x, y);
+fn note_end(ends: hash<EndPt[k]>, cls: integer, x: integer, y: integer, ri: integer) {
+  ek = end_key(cls, x, y);
   e = ends[ek];
   if e == null { ends += [EndPt { k: ek, a: ri, b: 0 - 1 }]; }
   else if e.b < 0 { e.b = ri; }
@@ -240,7 +244,22 @@ fn spine_class(tp: integer, zmax: integer) -> integer {
 }
 
 fn spine_kind(cls: integer) -> text {
-  if cls == 0 { "motorway" } else if cls == 1 { "primary" } else { "secondary" }
+  if cls == 0 { "motorway" } else if cls == 1 { "primary" } else if cls == 2 { "secondary" }
+  else if cls == 3 { "net_walk" } else if cls == 4 { "net_cycle" } else { "net_mtb" }
+}
+
+// The SIGNPOSTED networks are a layer of their own here, not a mark on the road spine, and the reason is
+// what the data says: a national hiking or cycle route runs on paths and cycleways, which the spine's
+// classes (motorway/trunk/secondary) never include. Marking the spine would annotate the few motorways
+// that happen to carry a route and miss the network entirely.
+//
+// A way can be in several, so this yields a class per membership and the caller emits a run for each —
+// the same chaining then merges each network into its own long-distance runs, which is exactly what makes
+// a country-scale view of it affordable.
+fn net_classes(flags: integer, out: vector<integer>) {
+  if (flags & RF_NET_WALK) != 0 { out += [3]; }
+  if (flags & RF_NET_CYCLE) != 0 { out += [4]; }
+  if (flags & RF_NET_MTB) != 0 { out += [5]; }
 }
 
 fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends: hash<EndPt[k]>) {
@@ -248,8 +267,12 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
     cur = 0;
     for r in t.roads {
       ns = r.steps;
-      cls = spine_class(r.tp, zmax);
-      if cls >= 0 && ns >= 2 && cur + ns - 1 < len(t.steps) {
+      classes: vector<integer> = [];
+      rcls = spine_class(r.tp, zmax);
+      if rcls >= 0 { classes += [rcls]; }
+      net_classes(r.flags as integer, classes);
+      for cls in classes {
+      if ns >= 2 && cur + ns - 1 < len(t.steps) {
         xs: vector<integer> = []; ys: vector<integer> = [];
         si = 0;
         while si < ns {
@@ -259,8 +282,9 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
         }
         runs += [Run { cls: cls, xs: xs, ys: ys, used: false }];
         ri = len(runs) - 1;
-        note_end(ends, xs[0] ?? 0, ys[0] ?? 0, ri);
-        note_end(ends, xs[ns - 1] ?? 0, ys[ns - 1] ?? 0, ri);
+        note_end(ends, cls, xs[0] ?? 0, ys[0] ?? 0, ri);
+        note_end(ends, cls, xs[ns - 1] ?? 0, ys[ns - 1] ?? 0, ri);
+      }
       }
       cur += ns;
     }
@@ -277,7 +301,7 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
 // 814 pieces (1.85 ways each) instead of the 200 they should make. Used-ness alone excludes the run we
 // came from, so no self-index is needed.
 fn other_at(ends: hash<EndPt[k]>, runs: vector<Run>, x: integer, y: integer, cls: integer) -> integer {
-  e = ends[end_key(x, y)];
+  e = ends[end_key(cls, x, y)];
   if e == null { return 0 - 1; }
   if e.a >= 0 {
     oa = runs[e.a];
