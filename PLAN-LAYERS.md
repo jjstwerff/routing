@@ -33,10 +33,10 @@ warns about: one mechanism forced over two families that assert their difference
 
 | # | step | observable |
 |---|---|---|
-| 1 | **Probe harness in a gate.** `tools/network_zoom_gate.sh` + `browser/cdp_zoom_drop.mjs`: at a fixed camera, assert every signposted way in view keeps its band at z14.0, z14.6, z15.0, z16.0 | 4 asserts, **red before step 2** |
-| 2 | **Collect the network before the class gate** (`map.mjs:1836` moves above `:1820`) | z14.6: **137/241 → 241/241** |
-| 3 | **Clamp the class ladder to the band floor** — one place, in the flat builder, not in `render()` | z14.6 draws `path`+`foot`+`service`; screenshot beside z15.05 |
-| 4 | **Delete the class ladder's dead rungs** (every debut < 14 is unreachable, §4) or record why each stays | `ROAD_STYLES` rows carry a band, not a guess |
+| 1 ✅ | **Probe harness in a gate.** `tools/network_zoom_gate.sh` + `browser/cdp_zoom_drop.mjs`: at a fixed camera, assert every signposted way in view keeps its band at z14.0, z14.6, z15.0, z16.0 | **was red**: `67 of 206 signposted ways in view are neither drawn nor skipped` at z14.6 and z14.0, on the shipped fixture |
+| 2 ✅ | **Collect the network before the class gate** — a signposted way is projected even when its own class is not shown yet | z14.6: **139/206 → 206/206**. Re-coupling it by hand puts the gate back to `67 of 206`, so the gate is proven non-vacuous |
+| 3 ✅ | **Clamp the class ladder to the band floor** — `roadDebut(cls, floor)`, one function, both draw paths; the floor is the index's own `zoom[0]` and rides with the DATA | z14.6 draws `path`/`foot`/`service` again — the network sits ON its paths instead of floating over blank ground (A/B screenshots at one settled camera) |
+| 4 ✅ | **The dead rungs are KEPT, deliberately** — with the clamp they are inert, not wrong, and the ladder is the right rule for a block whose band starts lower | unit tests assert the clamp's four cases and that the ladder stays well-formed |
 | 5 | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | `networks: N relations → M ways`, per-type **and per-level** counts, none zero |
 | 6 | **The block carries them** — `TRoad.nets: u16` + `rids`, a per-block `TRoute` table (§3). **Regenerate every block, every copier, conservation asserted** | `match_parity.sh` **byte-identical** (the cost table reads none of it) |
 | 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
@@ -255,6 +255,36 @@ too dense, the lever is **§3's level parameter** (keep every signposted way, de
 
 **Left alone deliberately:** `SHUT_STYLE` (z14, a *mark on* a way that is drawn anyway) and the POI
 ladder. Both decide the visibility of their own layer, which is what **R** asks for.
+
+### What landed (2026-08-02), and the two instruments that lied on the way
+
+Steps 1–4 are in. On the shipped Enschede fixture — which carries the same class mixture as the report
+(12 960 footways, 4 118 paths, 4 274 cycleways, 1 548 tracks; 4 543 ways on the walking network):
+
+| | before | after |
+|---|---|---|
+| z14.6, signposted ways drawn | **139 of 206** | **206 of 206** |
+| z14.0 | 139 of 206 | 206 of 206 |
+| the ways they run on | `path`/`foot`/`service` absent | drawn — the band sits on its paths |
+
+**The gate asserts an IDENTITY, not a counter.** `drawn + skipped == inView`, all three derived by the
+draw loop itself. The first version counted "dropped by class" — which the fix would have driven to a
+constant zero, and *a gate that asserts a constant has stopped asking*. The identity breaks if a route is
+ever re-coupled to its substrate, because the ways are then neither drawn nor accounted for. Proven by
+re-coupling it by hand: `67 of 206`, then green again on revert.
+
+⚠ **Two instrument bugs, both in the A/B that was supposed to show step 3.** Neither was a bug in the map.
+
+1. **Sampling mid-reload.** Setting the camera fires a view load; screenshotting before it settles compares
+   two DATASETS while claiming to compare two rules. The numbers moved 330 → 206 → 41 between runs. Fixed
+   by waiting for `viewSeq` to stop moving, and asserting it is unchanged after both frames.
+2. **The block cache repainted stale tiles.** With the view settled, the two frames came out **byte-identical
+   md5** — because `render()` reuses cached blocks and `roadsBandFloor` is not a data load. `invalidateBlocks()`
+   between them is what makes the comparison real. (The app itself is safe: the floor only ever changes
+   through `loadRoadsFlat`, which already invalidates.)
+
+   The identical md5 is the useful part: **an A/B whose two sides agree exactly is a broken instrument until
+   proven otherwise** — a real rule change cannot leave a frame bit-for-bit identical.
 
 ---
 

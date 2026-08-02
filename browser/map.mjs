@@ -185,6 +185,28 @@ export const ROAD_STYLES = {
   busway:      { core: '#f2dede', casing: '#c9b4b4', w: 1.4, minZoom: 14 },
   platform:    { core: '#e4e2df', casing: '#c2bdb6', w: 1.0, minZoom: 16 },
 };
+// PLAN-LAYERS §4 — THE ZOOM A CLASS ACTUALLY DEBUTS AT, given the band its block serves.
+//
+// `minZoom` above was written when detailed roads existed at every zoom. They do not: since PLAN-SCALE
+// §6i the roads blocks declare `zoom: [14, 99]`, so at z13.99 there are no roads at all and at z14 there
+// are all of them. Inside that band ten of the fourteen rungs can no longer exclude anything, and the
+// only remaining effect of the ladder is to delete `path`/`foot`/`service` for ONE zoom step — which is
+// the reported bug: at z14.6 a forest keeps its tracks and cycleways and loses its footpaths, and the
+// network on them goes with it.
+//
+// So a class debuts at its own zoom, or at the floor of the band it is served in, whichever is EARLIER: a
+// block draws what it holds for every zoom it claims to serve. The ladder is kept, not deleted — it is
+// the right rule for a block whose band starts lower (a generalised roads level would carry fewer classes
+// and want them ordered), and deleting rungs that are currently inert would leave nothing to restore.
+//
+// ⚠ ONE FUNCTION, both draw paths. The flat path and the object path each had their own copy of the
+// `z < style.minZoom` test, and a rule in two copies is a rule until someone edits one of them.
+export function roadDebut(cls, bandFloor = 0) {
+  const st = ROAD_STYLES[cls];
+  if (!st) return Infinity;                       // no style row ⇒ never drawn (see ROAD_ORDER's warning)
+  return bandFloor > 0 && st.minZoom > bandFloor ? bandFloor : st.minZoom;
+}
+
 // Draw order (back → front): minor/paths first, motorways on top.
 // ⚠ THIS LIST IS WHAT DRAWS. `_drawStreetsFlat` buckets by class and then strokes `for (const cls of
 // ROAD_ORDER)`, so a class with a perfect ROAD_STYLES row and no entry here is collected and silently
@@ -965,7 +987,11 @@ export class RouteMap {
   // and for the parity probe, which needs the boxed form to compare against.
   // Roads AND the barrier nodes ride the same `view` output, so they land through one door — a second
   // entry point is how one of them ends up a frame behind the other.
-  loadRoadsFlat(text) {
+  // `bandFloor` is the lowest zoom the blocks these roads came from claim to serve (the index's `zoom[0]`,
+  // PLAN-SCALE §6i O2). It rides with the DATA rather than being read from the camera, because it is a
+  // property of the block, and the camera can be anywhere inside its band — see `roadDebut`.
+  loadRoadsFlat(text, bandFloor = 0) {
+    this.roadsBandFloor = bandFloor;
     this.streetsFlat = parseStreetsFlat(text);
     this.barriers = orientBarriers(
       parseBarriers((text || '').split('\n').filter((l) => l[0] === 'G' && l[1] === ' ').map((l) => l.slice(2))),
@@ -1896,6 +1922,7 @@ export class RouteMap {
   _drawStreetsFlat() {
     const F = this.streetsFlat, ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     const K = this._flatK(), win = this._screen();
+    const floor = this.roadsBandFloor || 0;             // the band the blocks behind these roads serve
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     let s = this._streetScratch;
     if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
@@ -1903,15 +1930,39 @@ export class RouteMap {
     // The signposted network for the CURRENT activity, collected in the same pass — one bitmask test per
     // way, and nothing at all when the activity asks for no network (driving).
     const wantNet = netForProfile(this.profile), netRuns = [];
+    // PLAN-LAYERS §4 — the instrument the network gate reads, and it is STRUCTURAL on purpose.
+    //
+    // Three counts, each derived independently by the loop below: how many signposted ways this viewport
+    // holds, how many could not be drawn for a reason that is not the class (degenerate geometry, or no
+    // vertex near the screen), and how many were actually stroked as network. The gate asserts
+    // `drawn + skipped == inView`, so re-coupling the route to the road class breaks the identity — the
+    // ways would be neither drawn nor skipped. A plain "dropped by class" counter would have gone to a
+    // constant zero the moment it was fixed, and a gate that asserts a constant is a gate that has stopped
+    // asking. Read off the code that DRAWS, never off the style table: a table can be right while the draw
+    // path asks a stale copy (HANDOFF §0 — that ladder lived in six copies, every test green).
+    let netInView = 0, netSkipped = 0;
     let w = 0, vis = 0;
     for (let i = 0; i < F.n; i++) {
       const o4 = i * 4;
       if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
        || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
       const cls = F.clsNames[F.cls[i]], style = ROAD_STYLES[cls];
-      if (!style || z < style.minZoom) continue;
+      const signposted = !!(wantNet && F.net && (F.net[i] & wantNet));
+      if (signposted) netInView++;
+      const debut = roadDebut(cls, floor);
+      // PLAN-LAYERS §4, invariant R — A MARK DRAWS WHEN ITS OWN LAYER SAYS SO.
+      //
+      // The class gate decides whether the ROAD is stroked. It used to decide the ROUTE too, because the
+      // network was collected after this `continue` — so a hiking route was drawn where it followed a
+      // `track` (debut z14) and dropped forty metres later where it followed a `path` (debut z15). What
+      // you saw at z14.6 was a scatter of disconnected stubs; the route had not changed, the substrate had.
+      //
+      // A signposted way is therefore projected even when its own class is not shown yet: it contributes
+      // its network band and no road stroke.
+      const classShown = z >= debut;
+      if (!classShown && !signposted) continue;
       const a = F.off[i], len = F.off[i + 1] - a;
-      if (len < 2) continue;
+      if (len < 2) { if (signposted) netSkipped++; continue; }
       const at = w;
       let on = false;
       for (let k = 0; k < len; k++) {
@@ -1922,12 +1973,19 @@ export class RouteMap {
         s[w * 2] = x; s[w * 2 + 1] = y; w++;
         if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
       }
-      if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
-      const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
-      (bucket[cls] || (bucket[cls] = [])).push(at, len);
-      if (wantNet && F.net && (F.net[i] & wantNet)) netRuns.push(at, len);
-      vis++;
+      // `_inView` — rewind the scratch, draw nothing. Not a class decision, so a signposted way that lands
+      // here is SKIPPED rather than missing: the gate's identity has to distinguish the two.
+      if (!on && !this._noVertexCull) { w = at; if (signposted) netSkipped++; continue; }
+      if (classShown) {                                      // the ROAD stroke, which the class does own
+        const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
+        (bucket[cls] || (bucket[cls] = [])).push(at, len);
+        vis++;
+      }
+      if (signposted) netRuns.push(at, len);
     }
+    // Three integers per render, so the gate can assert an IDENTITY on the drawing rather than read a
+    // style table: drawn + skipped == inView, or the network is being cut by something that is not its own.
+    this._netStats = { zoom: z, want: wantNet, inView: netInView, skipped: netSkipped, drawn: netRuns.length / 2 };
     const strokeRun = (at, len) => {
       ctx.beginPath();
       ctx.moveTo(s[at * 2], s[at * 2 + 1]);
@@ -1982,7 +2040,7 @@ export class RouteMap {
     for (let i = 0; i < this.streets.length; i++) {
       if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
       const st = this.streets[i];
-      const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
+      const style = ROAD_STYLES[st.cls]; if (!style || z < roadDebut(st.cls, this.roadsBandFloor || 0)) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
       const entry = { st, px };
       const bucket = st.shut ? byShut : byClass;

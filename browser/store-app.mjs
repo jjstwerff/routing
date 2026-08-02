@@ -115,6 +115,17 @@ const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_UR
 // the case this exists to prevent, and it downloaded a 123 MB roads store whole at z8.
 const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z)
   || (inBandOf(coverage.block, z) ? ROADS : '');
+// PLAN-LAYERS §4 — the lowest zoom the blocks answering this viewport's ROADS claim to serve.
+//
+// The renderer needs it because a class ladder written for continuous data now lives inside a band: below
+// the floor there are no roads at all, so a class debut ABOVE the floor deletes content for part of a band
+// the block says it serves. `roadDebut` applies it; this is where the index's own `zoom[0]` is read.
+// 0 when the index declares no band, which means "no floor" and leaves the ladder exactly as it was.
+const roadsFloorFor = (b, z) => {
+  const chosen = blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z);
+  const floors = chosen.map((x) => (Array.isArray(x.zoom) ? x.zoom[0] : 0));
+  return floors.length ? Math.min(...floors) : 0;
+};
 // PLAN-SCALE §6f F3 — the BASE map is a covering set too, now that a country is three base regions. A
 // viewport on a cut needs both sides: one region answers a straddling z16 viewport with 13 946 of its
 // 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
@@ -380,7 +391,7 @@ async function ensureViewNow() {
   const t0 = performance.now();
   const zoom = zoom0;
   const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
-  map.loadRoadsFlat(text);
+  map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
   // because loft no longer walks it either, the `expose` pin survives the whole session (§7f).
@@ -851,7 +862,7 @@ window.__perfHooks = {
     const zoom = map.camera.zoom;
     const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
     const t1 = performance.now();
-    map.loadRoadsFlat(text);
+    map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
     const t2 = performance.now();
     // PLAN-PERF §0 step 13 — the layout layers come from the EXPOSED STORE, not from `text`. `ensureView`
     // does this on every view, so this probe must too: leaving it out would report a view the app never
@@ -1104,10 +1115,11 @@ window.__perfHooks = {
     // vacuous gate is worse than none.) So: bake, then load an EMPTY road set, then compare a cached
     // frame against a forced-cold one. Without invalidation the cached frame still shows the old roads.
     M.blocked = true; M.render();                          // populate the cache
+    const bandFloor = M.roadsBandFloor || 0;                // restored below — see PLAN-LAYERS §4
     M.loadRoadsFlat('');                                    // a real data change — must invalidate
     const staleness = this.renderDiff(() => { M.blocked = true; M.render(); },
                                       () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); }).diff;
-    M.loadRoadsFlat(lastViewText || '');                    // restore the real roads
+    M.loadRoadsFlat(lastViewText || '', bandFloor);         // restore the real roads, and their band
     return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip, staleness,
              settleFrames, worstFrameMs: +worstMs.toFixed(1),
              vsSnapped: vsSnapped.diff, vsSnappedMaxDelta: vsSnapped.maxDelta,

@@ -228,6 +228,7 @@ test-wasm: check
 # NOTE these are local-only — CI has no chromium, so it runs neither this target nor the bridge gates.
 test-map:
 	@./tools/map_render_gate.sh
+	@./tools/network_zoom_gate.sh
 	@./tools/expose_probe.sh
 	@./tools/deliver_probe.sh
 	@./tools/paged_http_gate.sh

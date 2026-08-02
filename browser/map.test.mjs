@@ -9,7 +9,8 @@
 import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
          parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB,
          routeDistanceM, formatDistance, routeGpx,
-         sketchToJson, sketchFromJson, SKETCH_MAX_PTS } from './map.mjs';
+         sketchToJson, sketchFromJson, SKETCH_MAX_PTS,
+         roadDebut, ROAD_STYLES, ROAD_ORDER } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1472,6 +1473,32 @@ console.log('L4 · the matched route reports its distance and exports as GPX');
   ok(routeGpx([], 'x').includes('<trkseg>\n  </trkseg>'), 'no points is still a well-formed document');
   ok(routeGpx([[1, 2]], 'a & b <c>').includes('<name>a &amp; b &lt;c&gt;</name>'), 'the name is XML-escaped');
   ok(!routeGpx([[1, 2], [NaN, 3], [4, undefined]], 'x').includes('NaN'), 'a broken point is dropped, not written');
+}
+
+// --- PLAN-LAYERS §4 — a class debuts at its own zoom, or at its band's floor, whichever is earlier ---
+console.log('L2 · the road-class ladder is clamped to the band the block serves');
+{
+  // No band declared ⇒ the ladder is exactly what it always was. This is what keeps a block with no
+  // `zoom` in the index behaving as it did.
+  ok(roadDebut('path', 0) === 15 && roadDebut('motorway', 0) === 8, 'with no band floor, a class keeps its own debut');
+  // The roads blocks declare [14, 99]: below 14 there are no roads at all, so a class that debuts at 15
+  // deletes content for part of a band its own block says it serves — the reported bug.
+  ok(roadDebut('path', 14) === 14 && roadDebut('foot', 14) === 14 && roadDebut('service', 14) === 14,
+     'inside a band starting at 14, the classes that debut later are pulled down to it');
+  ok(roadDebut('motorway', 14) === 8 && roadDebut('residential', 14) === 13,
+     'a class that already debuts BELOW the floor is untouched — the floor is a ceiling on the debut, not a reset');
+  ok(roadDebut('platform', 14) === 14, 'and the last rung comes down too — a band draws what its block holds');
+  ok(roadDebut('nosuchclass', 14) === Infinity, 'a class with no style row never draws, band or no band');
+
+  // ⚠ THE LADDER IS KEPT, NOT DELETED. Ten of its rungs cannot fire while the only roads band starts at
+  // 14 — but the rule is right for a block whose band starts lower, and rows deleted now would have to be
+  // guessed again. This asserts the ladder is still WELL-FORMED so it stays usable: every drawn class has
+  // a debut, and every debut is inside the zoom range the app can show.
+  for (const cls of ROAD_ORDER) {
+    const st = ROAD_STYLES[cls];
+    if (!st || !(st.minZoom >= 1 && st.minZoom <= 22)) { ok(false, `${cls} has no usable debut`); break; }
+  }
+  ok(ROAD_ORDER.every((c) => ROAD_STYLES[c]), 'every class in the draw order still has a style row');
 }
 
 // --- PLAN-LAYERS §5c — the sketch autosave record --------------------------------------------------
