@@ -58,6 +58,7 @@ const DEFAULT_CAM = { lat: 52.15, lon: 5.30, zoom: 8 };
 const bootCam = cameraFromHash(location.hash);
 if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
 const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
+map.profile = PROFILE;   // the signposted-network overlay follows it (§6/PLAN step 8)
 
 // `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
 // button into a rewind of every camera nudge.
@@ -107,7 +108,6 @@ const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_UR
 //
 // The fallback follows the same rule as the set: the camera's block is only a sensible default while it
 // serves this zoom. Out of band it would drag a detailed store back in through the side door.
-const inBandOf = (b, z) => !b || !Array.isArray(b.zoom) || z === undefined || (z >= b.zoom[0] && z < b.zoom[1]);
 // ⚠ The fallback is applied HERE, not inside `chooseBlocks`. Passing `coverage.block` as the chooser's
 // fallback puts the camera's block back whenever the band excluded every candidate — which is exactly
 // the case this exists to prevent, and it downloaded a 123 MB roads store whole at z8.
@@ -121,7 +121,13 @@ const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnl
 // overview alone answers (one 19.6 MB whole file); above it the detailed regions alone do. Passing the
 // camera's zoom is the whole of the client's side of that: `blocksForBox` filters on the band the index
 // declares, and a block that declares none is unaffected.
-const baseFor = (b, z) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z) || LAYOUT;
+const inBandOf = (b, z) => !b || !Array.isArray(b.zoom) || z === undefined || (z >= b.zoom[0] && z < b.zoom[1]);
+// ⚠ The fallback honours the BAND, like `roadsFor`'s does. Falling back to the camera's block when no
+// block serves this zoom hands the view a store that has explicitly declared it does not serve it — and
+// it hides a missing level: with the middle-zoom block absent, a z12 view silently drew the city block's
+// base instead of nothing, which is a wrong map rather than an empty one.
+const baseFor = (b, z) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z)
+  || (inBandOf(coverage.block, z) ? LAYOUT : '');
 // ⚠ A SESSION-WIDE READ MODE IS WRONG, AND IT BROKE THE LIVE MAP (2026-08-02). It is resolved from the
 // CAMERA's block, and the blocks a VIEWPORT needs are not always that block: at z13.68 over Enschede the
 // viewport escapes the little city block, selection correctly picks `nl-east` — and the mode said
@@ -150,8 +156,21 @@ const modeOf = (blocks, kind) => {
 const READ_MODE = () => window.__readMode || coverage.block.readMode || 'whole';
 const roadsModeFor = (b, z) => window.__readMode
   || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z), 'roads');
-const baseModeFor = (b, z) => window.__baseReadMode
-  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base', z), 'base');
+// The base mode, with the block's TIER FLOOR appended as `paged:N` when it has one (§6i O3b). The floor
+// is the finest tier that store holds; keys below it are provably absent and an absent key still costs
+// pages — 2469 asks and 169.6 MB against 82 and 43.7 on one z13 viewport of the middle-zoom block.
+//
+// The MINIMUM across the chosen set, because the floor must be low enough for every block being read: a
+// set mixing a floored block with an unfloored one has to ask from 0 or the unfloored one loses its fine
+// tiles. In practice the zoom bands make the set homogeneous.
+const baseModeFor = (b, z) => {
+  if (window.__baseReadMode) return window.__baseReadMode;
+  const chosen = blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base', z);
+  const mode = modeOf(chosen, 'base');
+  if (mode !== 'paged' || !chosen.length) return mode;
+  const floor = Math.min(...chosen.map((x) => (typeof x.tierFloor === 'number' ? x.tierFloor : 0)));
+  return floor > 0 ? `${mode}:${floor}` : mode;
+};
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 
@@ -240,6 +259,14 @@ function initActivityControls() {
     const next = `${ACT_KEY[act]}_${sub}`;
     if (!PROFILES.includes(next) || next === PROFILE) return;
     PROFILE = next;
+    // The overlay follows the activity, so the map has to be told and redrawn even when the sketch is
+    // empty — changing the dropdown with no route on screen must still swap walk/cycle/mtb network.
+    map.profile = PROFILE;
+    // ⚠ The block raster cache holds the roads, so a re-render alone BLITS the old picture and the
+    // overlay never changes (§6d: anything replacing layer data must invalidate). Measured: the canvas
+    // hash was identical across all five activities until this line existed.
+    map.invalidateBlocks();
+    map.render();
     rememberCamera();                       // the fragment carries the profile, so a reload keeps it
     // `rough.coords()`, not `map.points` — the layer's array holds point OBJECTS while `requestMatch`
     // destructures [lat, lon] pairs, which is the shape `onCommit` passes. Getting that wrong re-matched
@@ -992,6 +1019,12 @@ window.__perfHooks = {
     // against itself. Blocking is restored at the end.
     const wasBlocked = map.blocked;
     map.blocked = false;
+    // ⚠ And the NETWORK OVERLAY off, because only the flat street path draws it. This gate compares the
+    // store-backed geometry against the object path for buildings/areas/lines/pois; an annotation that
+    // exists in one render and not the other is a guaranteed mismatch that says nothing about the bridge.
+    // `netForProfile('')` is 0, which is how the overlay is switched off without a second flag.
+    const wasProfile = map.profile;
+    map.profile = '';
     const fp = () => { map.render(); const c = document.getElementById('map');
                        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
                        let hh = 0x811c9dc5;
@@ -1014,6 +1047,7 @@ window.__perfHooks = {
     map._sidx = idx;
     const store = fp();
     const kinds = Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined);
+    map.profile = wasProfile;
     map.blocked = wasBlocked; map.invalidateBlocks();
     return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
              objectCounts: objects.counts, storeCounts: store.counts, kinds,

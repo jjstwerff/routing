@@ -6,7 +6,8 @@
 //   3. a resize keeps the centre centred
 //   4. orientation: east → +x, north → −y
 
-import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList } from './map.mjs';
+import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
+         parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1407,6 +1408,35 @@ console.log('\nbarrier marks:');
   // Roads are unaffected — the city block still routes over its own ground.
   ok(roadsUrlsFor(idx, 'https://x/i.json', 52.2489, 6.7458, 52.2811, 6.8402) === 'https://x/c.roads',
      'and ROADS still come from the city block, whose roads extent does cover it');
+}
+
+{
+  // --- the signposted-network overlay (PLAN.md step 8 / DESIGN §6) ----------------------------------
+  // `class|<marks>`: x = the router refuses it, w/c/m = walk/cycle/mtb network, and they accumulate.
+  const F = parseStreetsFlat([
+    'R path;52.0,6.0;52.001,6.001',            // no marks
+    'R path|x;52.0,6.0;52.001,6.001',          // closed, no network
+    'R foot|w;52.0,6.0;52.001,6.001',
+    'R cycle|c;52.0,6.0;52.001,6.001',
+    'R track|wcm;52.0,6.0;52.001,6.001',       // all three at once
+    'R path|xw;52.0,6.0;52.001,6.001',         // closed AND signposted
+  ].join('\n'));
+  ok(F.n === 6, `six ways parsed (${F.n})`);
+  ok(F.clsNames.join(',') === 'path,foot,cycle,track', `the class vocabulary is unchanged: ${F.clsNames}`);
+  ok(Array.from(F.shut).join('') === '010001', `shut is the x mark alone: ${Array.from(F.shut).join('')}`);
+  ok(F.net[0] === 0 && F.net[1] === 0, 'no marks and x-only carry no network');
+  ok(F.net[2] === NET_WALK && F.net[3] === NET_CYCLE, 'w and c map to their networks');
+  ok(F.net[4] === (NET_WALK | NET_CYCLE | NET_MTB), 'wcm accumulates — a towpath is walk AND cycle');
+  ok(F.net[5] === NET_WALK, 'a way can be closed to the router and still be signposted');
+
+  // The activity decides which network is drawn. Running follows walking; cycling splits at the sub-mode,
+  // because an MTB route and a road route are signed for different bicycles.
+  ok(netForProfile('walking_paved') === NET_WALK && netForProfile('running_trail') === NET_WALK,
+     'walking and running both show the walking network');
+  ok(netForProfile('cycling_road') === NET_CYCLE && netForProfile('cycling_gravel') === NET_CYCLE,
+     'cycling road/gravel show the cycling network');
+  ok(netForProfile('cycling_mtb') === NET_MTB, 'MTB shows the mtb network, not the cycling one');
+  ok(netForProfile('driving_fastest') === 0 && netForProfile('') === 0, 'driving asks for no network');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

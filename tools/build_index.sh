@@ -123,7 +123,7 @@ echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
+id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
 flush() {
   [ -n "$id" ] || return 0
   # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
@@ -142,7 +142,7 @@ flush() {
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
   if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
     echo "  $id: published at $ubase — not in the site index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
     return 0
   fi
   # …and the mirror of it: each index names only what it can actually serve.
@@ -165,7 +165,7 @@ flush() {
   # `url_base` one). The rule is unchanged; what was hard-coded is the place it looks.
   if [ "${RELEASE_INDEX:-0}" = "1" ] && [ -n "$roads" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
     return 0
   fi
   local rj bj
@@ -207,11 +207,14 @@ flush() {
   # with a `paged` one.
   local zj=null
   if [ -n "$zmin" ] || [ -n "$zmax" ]; then zj="[${zmin:-0},${zmax:-99}]"; fi
-  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "$rj" "$bj" "$nj")"
+  # THE TIER FLOOR (§6i O3b) — the finest tier the BASE store holds. A generalised block is binned with
+  # one, and every key below it is provably absent; the client sends it to the kernel so those keys are
+  # never asked for. Absent means 0, which is every detailed block.
+  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"tierFloor":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "${tfloor:-0}" "$rj" "$bj" "$nj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
   echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode${zj:+ zoom=$zj}"
-  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""
+  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -233,6 +236,7 @@ while IFS= read -r line; do
     base_cors*=*)  bcors="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     base_url_base*=*) bubase="$(echo "$line" | cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
+    tier_floor*=*) tfloor="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     zoom_min*=*)   zmin="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     zoom_max*=*)   zmax="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;

@@ -41,6 +41,17 @@ SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" >/dev/null || { echo "  FA
 grep -q nl-overview "$site/coverage.json" || {
   echo "  FAIL: the local site index does not name the overview — build-site dropped it"; exit 1; }
 
+# STAGE THE MIDDLE-ZOOM BLOCK LOCALLY. It is hosted on its own Pages data repo, so `SITE_LOCAL_ONLY`
+# correctly drops it — a local gate must not reach the internet. But then the z12–13 band has no data and
+# the middle level goes ungated, which is one of the bands this gate exists to check. So: link the block
+# in and point the index at it with a relative URL — the same block, served from this origin.
+if [ -f "$here/blocks/nl-mid.base.store" ]; then
+  ln -sf "$here/blocks/nl-mid.base.store" "$site/stores/nl-mid.base.store"
+  ln -sf "$here/blocks/nl-mid.base.store.dschema" "$site/stores/nl-mid.base.store.dschema" 2>/dev/null || true
+  python3 "$here/tools/stage_mid_local.py" "$site/coverage.json" "$here/browser/coverage.json" || {
+    echo "  FAIL: could not stage nl-mid into the local index"; exit 1; }
+fi
+
 rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
 # Range, because the detailed side of the handover is read paged; python's own http.server answers every
 # range request with the whole file and the gate would be grading something else.

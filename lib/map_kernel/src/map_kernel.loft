@@ -15,7 +15,8 @@
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
               cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
-                     RF_ACCESS_NO, RF_FOOT_YES, BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
+                     RF_ACCESS_NO, RF_FOOT_YES, RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB,
+                     BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
                      tiles_corridor_barriers, build_graph, build_graph_streamed, build_graph_barriers,
                      build_graph_barriers_streamed, match_route, corridor_margin, path_length_m,
@@ -154,7 +155,23 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
         // disagreeing with its own router is worse than one that says nothing.
         fl = r.flags as integer;
         shut = (fl & RF_ACCESS_NO) != 0 && (fl & RF_FOOT_YES) == 0;
-        line = "R {class_name(r.tp as integer)}{if shut { "|x" } else { "" }}";
+        // SIGNPOSTED-NETWORK MEMBERSHIP rides the same suffix, for the same reason `|x` does: the class
+        // field is already a token the reader splits on `|`, so `path|xw` costs no new column and no
+        // second array. A way can be in several networks at once (a canal towpath is walk AND cycle), so
+        // the letters accumulate — w = hiking/foot, c = bicycle, m = mtb, matching RF_NET_*.
+        //
+        // The bits are already in every shipped block: nl-east alone carries 121 185 walk, 67 938 cycle
+        // and 12 158 mtb ways. Only the wire was missing them.
+        marks = if shut { "x" } else { "" };
+        if (fl & RF_NET_WALK) != 0 { marks += "w"; }
+        if (fl & RF_NET_CYCLE) != 0 { marks += "c"; }
+        if (fl & RF_NET_MTB) != 0 { marks += "m"; }
+        // ⚠ Built OUTSIDE the interpolation. `"{if c { "|{marks}" } else { "" }}"` does not expand the
+        // inner one — it puts the literal `|{marks}` on the wire, and the reader then matched the `m` in
+        // "marks" and reported an mtb network that did not exist.
+        sfx = "";
+        if marks != "" { sfx = "|{marks}"; }
+        line = "R {class_name(r.tp as integer)}{sfx}";
         for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
         println(line); n += 1;
       }
@@ -223,14 +240,23 @@ pub fn view_cell_keys(bbox: text) -> vector<integer> {
 // a feature that did not fit a fine cell is on a coarse one.
 pub const LAYOUT_PAD = 1;
 
-pub fn layout_cell_keys(bbox: text, pad: integer) -> vector<integer> {
+// `tier_lo` is the FLOOR: the finest tier the store being read actually holds. A generalised block is
+// binned with a floor (tools/build_overview.loft's `mintier`), so every key below it is guaranteed absent
+// — and an absent key is not free. Measured on the 213 MB middle-zoom block, one z13 viewport:
+//
+//     tiers 0..3   asked 2469, loaded 81, 169.6 MB     <- 2388 asks for keys that cannot exist
+//     tiers 1..3   asked   82, loaded 81,  43.7 MB
+//
+// so the floor is worth 3.9x, and it is the difference between a middle level being affordable and not.
+// 0 keeps the old behaviour exactly, which is what every detailed block passes.
+pub fn layout_cell_keys(bbox: text, pad: integer, tier_lo: integer) -> vector<integer> {
   lkeys: vector<integer> = [];
   // A paged store has no "whole region" view: an empty spec parses to the WORLD box, and enumerating the
   // world at 500 m cells is 2.6 billion keys. The app always sends a viewport; anything else asks for
   // nothing rather than for everything.
   if len(bbox.split(',')) != 4 { return lkeys; }
   lb = parse_fbox(bbox);
-  ltier = 0;
+  ltier = if tier_lo > 0 { tier_lo } else { 0 };
   while ltier < LAYOUT_TIERS {
     lc = tier_cell(ltier);
     // Low side only — a feature keyed at cell c is drawn in c..c+1, so it is visible here iff
