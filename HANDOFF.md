@@ -5,56 +5,98 @@ Single entry point for picking this up on another machine. **Plan of record:** `
 
 ---
 
-## 0. START HERE (2026-08-02) — THE WHOLE-COUNTRY BASE MAP IS LIVE; ONE FIX IS WAITING TO MERGE
+## 0. START HERE (2026-08-02, late) — THE APP OPENS ON THE NETHERLANDS, AND IT IS LIVE
 
-**https://jjstwerff.github.io/routing/** — routing, offline search and now a BASE MAP over the whole
-Netherlands. The blank background outside Enschede is gone: §6f F1–F4 are done and deployed.
+**https://jjstwerff.github.io/routing/** — a bare visit now draws the whole country in **one 19.6 MB
+request, 132 094 features, ~0.6 s**, and every zoom below 14 is answered by that one file. Nothing is in
+flight: PRs #41–#44 are merged, `main` is `0a399e4`, and the deploy is green.
 
-> ### ⚠ THE BRANCH NOW CARRIES THE WHOLE OVERVIEW LADDER — merge it (2026-08-02, later)
->
-> `we-scale-evaluation` has grown well past the one-commit fix below. **The app now OPENS ON THE
-> NETHERLANDS**: `PLAN-SCALE` §6i designs and builds an *overview block* — the whole country generalised
-> to what a low zoom can show, **17 290 495 features → 132 094, 19.6 MB** — and every zoom below 14 is
-> answered by that one file in **0.6 s**, where z11 used to name 40 554 cell keys (~8 GB) and z12 10 314.
-> The block is **published on `data-v2026-08-02`** and the deploy's own fetcher verifies it, so the branch
-> is deployable. Also on it: sketch densification (a country-zoom drag returned NO route; it now returns
-> one), zoom bands in the index, and three keyed-read probes.
->
-> ⚠ **Two findings on the branch matter beyond this work.** (1) **The paged base map works only because
-> the data repos share the app's origin** — served cross-origin with `ACAO` but no
-> `Access-Control-Expose-Headers` (what GitHub Pages sends) the same code reads 2 requests, 0 bytes, blank
-> map, no error; `cors_host_gate` is green because our test server models a *correct* CORS host, which
-> Pages is not. That undercuts D2's off-origin plan. (2) **The unit of read cost is the KEY, not the
-> feature** — ~3 × 64 kB pages each, no batch amortisation, so an empty window costs MORE than a dense one.
-> That is `loft-lang/loft` material and it gates the remaining detail work (§6i O5).
->
-> ⚠ **The installed loft moved mid-session: 2026.7.2 → 2026.8.0** (2026-08-02 19:59, md5 `13311104…`).
-> Everything was re-verified on it, including a wasm rebuild.
+| zoom | before tonight | now |
+|---|---|---|
+| bare visit | Enschede z16 | **the country, 1 request** |
+| z11 / z12 / z13 | 40 554 / 10 314 / 2 694 cell keys (~8 GB / 2 GB / 539 MB) | **the same file, 0.5 s** |
+| z14+ | detailed regions, paged | unchanged, byte for byte |
 
-> ### ⚠ DO THIS FIRST — a one-commit fix is on a branch and the live map needs it
->
-> Branch **`we-scale-evaluation`** holds `85f174d` and `f3481d2`. **Open a PR and merge them.** Until
-> then the deployed app is only usable zoomed IN, and the reason is a regression F4 exposed:
->
-> **Read mode was resolved once at startup from the CAMERA's block.** A camera over the small Enschede
-> block at z13.68 has a viewport WIDER than that block, so selection correctly picks a country region —
-> and the mode still said `whole`, so the app asked for a **774 MB base store as one download**. It never
-> finishes, which looks exactly like "the base map is still missing". Reproduced on the live site:
-> `base-store requests: 1 — nl-east.base.store:200` (a 200, not a 206) with `range reads: 0`.
->
-> Fixed by deriving the mode per command from the blocks that command actually named
-> (`blocksChosenFor`); a set is PAGED if any block in it is. Verified at that exact camera against the
-> real four regions: **175 423 features drawn, 8331 range requests**, where before it was one 200 and
-> nothing. `browser/cdp_live_render.mjs <dt> <url>` re-checks any deployed URL in one run.
+**The design is `PLAN-SCALE` §6i** — the overview ladder, written against measurements, with the three
+designs its probes killed recorded beside it. Read that before touching any of this.
+
+### What shipped tonight
+
+| | |
+|---|---|
+| **overview block** | the country generalised to what a low zoom shows: **17 290 495 features → 132 094, 159 Mcoords → 774 431, 19.6 MB**, built in 11 s by `tools/build_overview.loft`. Published on `data-v2026-08-02` |
+| **zoom bands** | `zoom_min`/`zoom_max` per block in the index; JS selects on them. Below the handover the overview alone, above it the regions alone |
+| **sketch densification** | a country-zoom drag returned NO route (the matcher echoes the trace). Retries densified **only on the echo**, so every already-working match stays byte-identical |
+| **the debut ladder** | `areaMinZoom` stopped at 0.008° and sent everything larger to z0. Continued now — the z8 view draws **2 838 areas instead of 103 262** |
+| **Enschede** | **no longer a coverage region** — a gate FIXTURE (`data/coverage-fixture.toml`) |
+| **gates** | `tools/overview_gate.sh`, 14 checks, in `make test-map` |
+
+### Four bugs reported from the live site, all fixed and verified there
+
+1. **Zoom in from the country never switched to detail** — `ensureViewNow` skips the kernel when the new
+   viewport is inside `loadedBox`, and the country box CONTAINS every later viewport. A box test cannot
+   see a change of SOURCE, and crossing the handover is exactly that.
+2. **Enschede drew nothing, inside NL** — the city block is chosen by its ROADS extent (6.74–7.01°E) while
+   its BASE was clipped to 6.761–7.027. In the gap: **Hengelo 3 802 buildings, now 41 643**. Verified the
+   country data loses nothing — same viewport, city block 189 tiles / 99 175 features, `nl-east` **207 /
+   99 928**.
+3. **The debut ladder shipped as a NO-OP** and everything passed. Areas draw from the store index through
+   `_drawAreasFromStore`, which carried a **sixth inline copy** of the thresholds. See the warning below.
+4. **A roads-less block as the boot FALLBACK crashed the app** — `resolveCoverage` fell back to
+   `blocks[0]`, the overview, and `coverage.block.roads.url` threw, so `window.__map0` never existed.
+
+### ⚠ Three traps this session paid for — read these before trusting a green run
+
+* **A rule is not in force until the code that DRAWS asks it.** The ladder was extended, six unit tests
+  passed, a browser gate passed, CI passed, the site redeployed — and the map was identical, because the
+  tests exercised the parity path and the drawing path had its own copy. **Consolidating five copies while
+  leaving a sixth is worse than leaving five**, because the survivor then looks authoritative.
+* **Two instruments lied, in opposite directions.** `cdp_live_render.mjs` does NOT reload when only the
+  URL fragment changes, so two different cities returned identical numbers; and a 6-second wait read a
+  working transition as broken (a cold paged view takes ~18 s). Both times the probe was the defect.
+* **A gate must not write the tree it checks.** `cross_block_browser_gate` called `build_index.sh` with no
+  output argument — the default is the COMMITTED index. That is `8c47628` returning; it writes to `_site`
+  now.
+
+### Where to go next, in the order the evidence favours
+
+1. **[loft#729](https://github.com/loft-lang/loft/issues/729) — `store_load_keys` fetches ~4× the bytes of
+   the records asked for.** Filed with a self-contained repro. This is the floor under everything that
+   still costs: a z16 view pays 14.2 MB for ~4 MB of content, and it is why Enschede's first paint went
+   from ~1.6 s (whole file) to ~6.3 s (paged). **⚠ Four hypotheses about its cause were falsified by
+   measurement** — descent-sharing, batch amortisation, miss cost and tile LOCALITY (a Hilbert reorder is
+   marginally *worse* than a plain rewrite). Only the 4× itself survived every control.
+2. **⚠ `data-refresh.yml` still cannot run**, and it is older than tonight: it merges chunks into TWO
+   halves while `data/coverage.toml` has named FOUR regions since §6f F3, so `publish-release.sh` fails
+   building the release index AFTER uploading gigabytes. The recipe is noted beside the step. It DOES
+   rebuild the overview now, so that gap is closed.
+3. **The z11–z13 DETAIL gap** — instant but coarse (z≤10 content at ~8 px error). §6i O3b is the fix and
+   is bounded by loft#729: every cell size costed lands at 22–54 MB per viewport while a key costs this.
+4. **⚠ The paged base map works only because the data repos share the app's origin.** Cross-origin with
+   `ACAO` but no `Access-Control-Expose-Headers` — what GitHub Pages sends — the same code reads 2
+   requests, 0 bytes, a blank map and NO error. `cors_host_gate` is green because `range_server.py` models
+   a *correct* CORS host, which Pages is not. **This undercuts D2's off-origin plan for Western Europe.**
+
+⚠ **The installed loft moved mid-session, 2026.7.2 → 2026.8.0** (2026-08-02 19:59, md5 `13311104…`,
+byte-identical to `../loft`'s build). Everything above was re-verified on it, including a wasm rebuild
+(identical sources, 1 408 411 → 1 404 720 bytes — the drift the sources sidecar deliberately does not
+hash). Anchor any toolchain claim to mtime + md5, never `--version`.
+
+---
+
+## 0a. The previous rung (2026-08-02, earlier) — the country BASE MAP going live
 
 ### What is live (dataset `v2026-08-02`)
+
+⚠ Superseded in one respect by §0: `enschede` is no longer among the blocks a visitor can resolve to, and
+the index leads with `nl-overview`. The rest stands.
 
 | | |
 |---|---|
 | roads | four blocks, 502 MB, same-origin on Pages, paged |
 | names | `nl.names.store` 36 MB, searched offline |
 | **base map** | **2.75 GB across FOUR Pages data repos** — `routing-data-nl-{west,midwest,mideast,east}`, read cross-origin by byte range (206 + `access-control-allow-origin`, verified per repo) |
-| site total | 565 MB of a 950 MB budget (59%) |
+| site total | 585.7 MB of a 950 MB budget (62%) — the overview added 20.6 MB |
 | release | `data-v2026-08-02`, 3.1 GB, every asset re-read for a 206 and its exact size |
 
 ### The three rules F3/F4 added, each of which cost something to learn
