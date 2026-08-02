@@ -87,6 +87,12 @@ must=(roads.ways roads.barriers
       # silently match nothing — a sidecar built for another region, or an export run without
       # `-u type_id` — and every one of these goes to zero while the block stays perfectly valid.
       network.walk network.cycle network.mtb
+      # PLAN-LAYERS §3 added horse (2 166 relations nationally, 260 ways in this block). It is asserted
+      # here because this list is the pair to the pipeline — a category nobody asserts is one that can
+      # vanish. `network.skate` is deliberately NOT here: the Netherlands has 60 such relations and this
+      # region has none, so requiring it would assert a category the ground does not have, which is the
+      # opposite failure and would train someone to delete the check.
+      network.horse
       )
 if [ "$base_ok" = 1 ]; then
   must+=(base.areas base.buildings base.lines base.labels base.pois

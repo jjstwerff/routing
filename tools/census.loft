@@ -16,7 +16,7 @@
 #cwd
 
 use routing_kernel::(TTile, TRoad, GeoPoint, Way, tiles_corridor_ways_tube,
-                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+                     NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE);
 use basemap::(Coord, Area, Building, Line, Label, Poi, PTile);
 
 struct Tally { key: text, n: integer }
@@ -65,10 +65,12 @@ fn main() {
         // Signposted-route membership (PLAN-RESTORE R3). Counted HERE, beside the classes, because the
         // failure it guards is the same one this whole tool exists for: a pipeline step that quietly
         // stops contributing produces a block that opens, routes and looks entirely normal.
-        fl = r.flags as integer;
-        if (fl & RF_NET_WALK) == RF_NET_WALK { bump(nt, "walk"); }
-        if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { bump(nt, "cycle"); }
-        if (fl & RF_NET_MTB) == RF_NET_MTB { bump(nt, "mtb"); }
+        fl = r.nets as integer;
+        if (fl & NET_WALK) == NET_WALK { bump(nt, "walk"); }
+        if (fl & NET_CYCLE) == NET_CYCLE { bump(nt, "cycle"); }
+        if (fl & NET_MTB) == NET_MTB { bump(nt, "mtb"); }
+        if (fl & NET_HORSE) == NET_HORSE { bump(nt, "horse"); }
+        if (fl & NET_SKATE) == NET_SKATE { bump(nt, "skate"); }
       }
       for b in t.barriers { bars += 1; }
       for st in t.steps { steps += 1; }   // the coordinates — where a roads block's bytes actually go
@@ -80,7 +82,12 @@ fn main() {
     emit(rc, ["motorway","trunk_primary","secondary","tertiary_unclassified","residential","living_street",
               "service","cycleway","path","footway","pedestrian","steps","track","busway","platform","other"],
          "class");
-    emit(nt, ["walk","cycle","mtb"], "network");
+    // ⚠ THE LIST IS THE REPORT. `emit` prints a named category even at zero — which is the whole point,
+    // a silent zero is the failure this tool exists to make visible — but it can only print what is named
+    // HERE. The horse and skate bits were counted by the loop above and invisible in the output for
+    // exactly one commit, because this list was not extended with them (PLAN-LAYERS §3). A per-bit report
+    // cannot see a bit nobody listed; `tools/nets_probe.loft` reads the raw VALUES for that reason.
+    emit(nt, ["walk","cycle","mtb","horse","skate"], "network");
     return;
   }
 

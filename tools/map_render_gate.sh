@@ -137,7 +137,14 @@ echo "== every road class is named, and every name is drawable =="
 node - "$here" <<'NODE' || exit 1
 const fs = require('fs'), path = require('path'), here = process.argv[2];
 const read = (p) => fs.readFileSync(path.join(here, p), 'utf8');
-const emitted = new Set([...read('tools/gen-tiles.loft').matchAll(/return\s+(\d+)\s*;/g)].map(m => +m[1]));
+// ⚠ SCOPED TO `class_of`, not to the file. It used to scan all of gen-tiles.loft for `return <n>;`, which
+// works only while that file contains exactly one function shaped like a lookup table. PLAN-LAYERS §3 added
+// `kind_bit` (returning the NET_* bits 1/2/4/8/16) and the gate promptly reported class 16 as an unnamed
+// ROAD CLASS — 1/2/4/8 having been absorbed silently, because they collide with real class numbers. So the
+// failure was in the instrument, and the dangerous half is the four it did NOT report. The `class_name`
+// side was already scoped this way; this is the same slice on the other end.
+const classOfFn = read('tools/gen-tiles.loft').split('fn class_of')[1].split('\n}')[0];
+const emitted = new Set([...classOfFn.matchAll(/return\s+(\d+)\s*;/g)].map(m => +m[1]));
 const nameFn = read('lib/map_kernel/src/map_kernel.loft').split('fn class_name')[1].split('\n}')[0];
 const named = new Map([...nameFn.matchAll(/tp\s*==\s*(\d+)\s*\{\s*"([a-z_]+)"/g)].map(m => [+m[1], m[2]]));
 import('file://' + path.join(here, 'browser/map.mjs')).then((M) => {

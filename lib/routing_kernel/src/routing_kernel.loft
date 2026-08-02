@@ -363,12 +363,48 @@ TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
 pub struct TStep { const x: i32, const y: i32, const h: i32 }
-// `flags` is u16, not u8, and the extra byte is spent deliberately. The low 8 bits are the RF_* way tags
-// that have always been there; the high bits carry curated-network membership (RF_NET_*), and there is
-// room left for `oneway=`, which the store still drops for exactly this reason (PLAN-SCALE §9).
-// One byte per way is ~2.8 MB across the Netherlands' 2.78M ways against a 264 MB block — and a schema
-// change costs a regeneration of every block (loft#700), so the three wants are taken together.
-pub struct TRoad { const tp: u8, const flags: u16, const steps: u8 }
+
+// PLAN-LAYERS §3 (L1) — WHICH ROUTE, not just whether there is one.
+//
+// A signposted route's colour, `ref` and name belong to the ROUTE, not to the way: the Pieterpad has one
+// name along all 500 km of it, and — measured on the Netherlands — a way carries **1.95 routes on
+// average and up to 18**. A per-way bitmask can say THAT a way is in a walking network; it can never say
+// WHICH, and "which" is exactly what a colour and a name are.
+//
+// So a route is a record, stored PER TILE. Per tile rather than per block because the block is read by
+// TILE: a viewport fetches cells, and a route table living somewhere else would need a second read of a
+// region the reader never asked for. A route crossing many tiles is written into each of them — measured
+// duplication is small (a route record is a few dozen bytes, and the country holds 83 762 of them), and
+// it buys a reader that never leaves the tile it already has.
+pub struct TRoute { const rid: integer, const kind: u8, const level: u8, const flags: u8,
+                    const colour: text, const rref: text, const name: text }
+pub const NET_WALK  = 1;    // route=hiking|foot   (iwn/nwn/rwn/lwn)
+pub const NET_CYCLE = 2;    // route=bicycle       (icn/ncn/rcn/lcn)
+pub const NET_MTB   = 4;    // route=mtb
+pub const NET_HORSE = 8;    // route=horse         — 2 166 relations in the Netherlands
+pub const NET_SKATE = 16;   // route=inline_skates
+// `TRoute.flags` bit 1 — a Dutch *knooppunt* segment, whose identity is the junction NUMBER in `rref`
+// rather than a name. 91% of the country's route relations are these.
+pub const RT_NODE_NETWORK = 1;
+
+// Which road is on which route, SPARSELY. `road` and `route` are indices into the tile's own vectors, so
+// both fit in 16 bits and nothing global is needed.
+//
+// ⚠ Sparse, rather than a `rids: vector<u16>` field on TRoad, and the density is why: only 484 252 of the
+// country's 2.78M ways are on any route at all (17%), so a nested vector per road would be 2.78M little
+// heap records to express 945 000 memberships — and loft#730 has just finished teaching this repo that a
+// record costs about twice its modelled contents. One entry per membership is ~3.8 MB nationally.
+pub struct TRLink { const road: u16, const route: u16 }
+
+// `flags` is u16, not u8, and the extra byte is spent deliberately: the low 8 bits are the RF_* way tags,
+// and there is room left for `oneway=`, which the store still drops for exactly this reason (§9).
+//
+// ⚠ `nets` USED TO LIVE IN `flags`' high bits, and moving it out is the point of this schema change. Five
+// spare bits could hold five route types and never a sixth — and the country turns out to carry horse
+// (2 166 relations) and inline-skating routes as well as walk/cycle/MTB. A u16 of its own holds sixteen,
+// eleven of them free, and the numbering is now the SAME on the wire, in the sidecar and here (NET_*),
+// which removes the deliberate two-numbering dance the generator used to perform.
+pub struct TRoad { const tp: u8, const flags: u16, const nets: u16, const steps: u8 }
 
 // --- barriers ---------------------------------------------------------------------------------
 // A gate across a path is a NODE, not a tag on the way, so nothing in a way-only pipeline can see it:
@@ -398,7 +434,7 @@ pub const BF_BIKE_DISMOUNT = 4;   // passable, but you are getting off (cycle ba
 // (`t.roads += […]` in tools/gen-tiles.loft), never rebound — an append is a contents mutation, which
 // const permits on a collection field.
 pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, const roads: vector<TRoad>, const steps: vector<TStep>,
-                   const barriers: vector<TBarrier> }
+                   const barriers: vector<TBarrier>, const routes: vector<TRoute>, const rlinks: vector<TRLink> }
 
 // RoadType code → a representative OSM highway value, so the existing tag-based cost model works
 // unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
@@ -442,15 +478,17 @@ pub const RF_FOOT_NO   = 32;   // foot=no|private
 pub const RF_FOOT_YES  = 64;   // foot=yes|designated|permissive
 pub const RF_SVC_LOCAL = 128;  // service=driveway|alley|parking_aisle — not a through-route
 
-// --- curated recreational networks (PLAN-TILES §Future, PLAN-RESTORE R3) ------------------------------
-// Membership of a signposted walking / cycling / MTB network, resolved at ingest from the OSM route
-// RELATIONS the Waymarkedtrails overlay is rendered from — so the map and the router read one source
-// instead of the router reading none. Spent as a bounded preference matched to the active activity, the
-// same prefer-when-near shape as RF_CYCLEWAY: it picks the nice way among candidates already beside your
-// line, and never detours out of the corridor to reach one.
-pub const RF_NET_WALK  = 256;   // route=hiking|foot  (rwn/lwn/nwn/iwn)
-pub const RF_NET_CYCLE = 512;   // route=bicycle      (rcn/lcn/ncn/icn)
-pub const RF_NET_MTB   = 1024;  // route=mtb
+// --- curated recreational networks (PLAN-TILES §Future, PLAN-RESTORE R3, PLAN-LAYERS §3) --------------
+// Membership of a signposted network, resolved at ingest from the OSM route RELATIONS the Waymarkedtrails
+// overlay is rendered from — so the map and the router read one source instead of the router reading
+// none. Spent as a bounded preference matched to the active activity, the same prefer-when-near shape as
+// RF_CYCLEWAY: it picks the nice way among candidates already beside your line, and never detours out of
+// the corridor to reach one.
+//
+// ⚠ THE BITS LIVE IN `TRoad.nets` NOW, NOT IN `flags`, and they are the NET_* values declared beside
+// TRoute — 1/2/4/8/16, the same numbering the sidecar writes and the wire carries. The old RF_NET_*
+// (256/512/1024) are gone rather than kept as aliases: a stale alias is how a store written with one
+// numbering gets read with another, and this is the one moment where changing it is free.
 
 // What does this barrier node stop? Lives HERE, next to the bits, because the generator writes the flags
 // and the router reads them — the access byte already taught us what happens when those two agree only
@@ -707,10 +745,11 @@ fn append_tile_ways(t: TTile, out: &vector<Way>) {
     if hw != "" && len(coords) >= 2 {
       // The network bits pass through UNDECODED — unlike the access bits above, they stand for no tag,
       // so there is nothing to turn them back into. `net` is the one member of a reconstructed Way that
-      // is a value rather than a tag string.
+      // is a value rather than a tag string. Read from `nets` since PLAN-LAYERS §3; the numbering is the
+      // NET_* one end to end, so nothing is translated on the way through.
       out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: bike, access: acc, foot: ft,
                     oneway: "", onewaybike: "", svc: sv, cycleway: cw, cyclestreet: "", name: "",
-                    net: fl & (RF_NET_WALK + RF_NET_CYCLE + RF_NET_MTB), coords: coords }];
+                    net: r.nets as integer, coords: coords }];
     }
   }
 }
@@ -1552,9 +1591,9 @@ struct EdgeCosts { const pen: vector<float>, const dw: vector<float>, const sur:
 // would nudge a mountain-bike route onto paved commuter routes, which is the opposite of the ask; no
 // bonus at all is the honest answer where no MTB network exists. Driving follows no network.
 fn network_bit(profile: text) -> integer {
-  if profile.starts_with("walking") || profile.starts_with("running") { return RF_NET_WALK; }
-  if profile == "cycling_mtb" { return RF_NET_MTB; }
-  if profile.starts_with("cycling") { return RF_NET_CYCLE; }
+  if profile.starts_with("walking") || profile.starts_with("running") { return NET_WALK; }
+  if profile == "cycling_mtb" { return NET_MTB; }
+  if profile.starts_with("cycling") { return NET_CYCLE; }
   0
 }
 

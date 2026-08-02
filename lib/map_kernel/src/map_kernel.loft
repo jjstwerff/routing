@@ -15,7 +15,7 @@
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
               cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
 use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
-                     RF_ACCESS_NO, RF_FOOT_YES, RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB,
+                     RF_ACCESS_NO, RF_FOOT_YES, NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE,
                      BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
                      tiles_corridor_barriers, build_graph, build_graph_streamed, build_graph_barriers,
@@ -158,14 +158,18 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
         // SIGNPOSTED-NETWORK MEMBERSHIP rides the same suffix, for the same reason `|x` does: the class
         // field is already a token the reader splits on `|`, so `path|xw` costs no new column and no
         // second array. A way can be in several networks at once (a canal towpath is walk AND cycle), so
-        // the letters accumulate — w = hiking/foot, c = bicycle, m = mtb, matching RF_NET_*.
+        // the letters accumulate — w = hiking/foot, c = bicycle, m = mtb, h = horse, s = inline skates,
+        // matching NET_* in `TRoad.nets` (PLAN-LAYERS §3 moved them out of `flags`).
         //
         // The bits are already in every shipped block: nl-east alone carries 121 185 walk, 67 938 cycle
         // and 12 158 mtb ways. Only the wire was missing them.
         marks = if shut { "x" } else { "" };
-        if (fl & RF_NET_WALK) != 0 { marks += "w"; }
-        if (fl & RF_NET_CYCLE) != 0 { marks += "c"; }
-        if (fl & RF_NET_MTB) != 0 { marks += "m"; }
+        nt = r.nets as integer;
+        if (nt & NET_WALK) != 0 { marks += "w"; }
+        if (nt & NET_CYCLE) != 0 { marks += "c"; }
+        if (nt & NET_MTB) != 0 { marks += "m"; }
+        if (nt & NET_HORSE) != 0 { marks += "h"; }
+        if (nt & NET_SKATE) != 0 { marks += "s"; }
         // ⚠ Built OUTSIDE the interpolation. `"{if c { "|{marks}" } else { "" }}"` does not expand the
         // inner one — it puts the literal `|{marks}` on the wire, and the reader then matched the `m` in
         // "marks" and reported an mtb network that did not exist.

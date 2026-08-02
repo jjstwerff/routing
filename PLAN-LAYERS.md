@@ -38,7 +38,7 @@ warns about: one mechanism forced over two families that assert their difference
 | 3 ✅ | **Clamp the class ladder to the band floor** — `roadDebut(cls, floor)`, one function, both draw paths; the floor is the index's own `zoom[0]` and rides with the DATA | z14.6 draws `path`/`foot`/`service` again — the network sits ON its paths instead of floating over blank ground (A/B screenshots at one settled camera) |
 | 4 ✅ | **The dead rungs are KEPT, deliberately** — with the clamp they are inert, not wrong, and the ladder is the right rule for a block whose band starts lower | unit tests assert the clamp's four cases and that the ladder stays well-formed |
 | 5 ✅ | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | **83 762 relations → 484 252 ways**, per-type and per-level counts in §3; the legacy line format is byte-preserved and an old reader is *proven* to read the new file as the old one |
-| 6 | **The block carries them** — `TRoad.nets: u16` + `rids`, a per-block `TRoute` table (§3). **Regenerate every block, every copier, conservation asserted** | `match_parity.sh` **byte-identical** (the cost table reads none of it) |
+| 6 ✅ *(code + fixture)* | **The block carries them** — `TRoad.nets: u16`, a per-tile `TRoute` table + sparse `TRLink`s (§3). Every copier carries them; conservation asserted | `match_parity.sh` **byte-identical**; the router A/B unchanged profile for profile; the fixture's walk/cycle/mtb counts **identical** (4543/2832/671) with horse 260 new. ⚠ **The country blocks are NOT regenerated** — see below |
 | 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
 | 8 | **Generalise the overview by level, and chain by route id** — `build_overview.loft` selects on level × `zmax` and merges runs per `rid` | country zoom stops being a red blanket; an LF route is ONE polyline; overview size reported |
 | 9 | **The floor, resident** — read `nl-overview` once into a JS-side index, keep it, draw it under everything | retained bytes reported; z15 in Münster is no longer blank |
@@ -205,6 +205,47 @@ members:  944 967 over 484 252 ways — mean 1.95, widest 18
 **The per-way cost is now a number too:** 944 967 memberships ≈ 1.9 MB of `u16` across the country, mean
 **1.95 routes per way** and one way on **18**. That mean is the strongest evidence for the split: a
 per-way bitmask cannot name a route when the average way carries two of them.
+
+### What the block actually holds (step 6, measured on the fixture)
+
+The design above says `TRoad { …, rids: vector<u16> }`. **It is not built that way, and the density is
+why.** Only 484 252 of the country's 2.78M ways are on any route (17%), so a nested vector per road is
+2.78M little heap records to express 945 000 memberships — and loft#730 has just finished teaching this
+repo that a record costs about twice its modelled contents. So the links are **sparse and per tile**:
+
+```
+TRoute { rid, kind, level, flags, colour, rref, name }   one per relation, per TILE that touches it
+TRLink { road: u16, route: u16 }                          one per membership; both are per-tile indices
+TRoad  { tp, flags, nets: u16, steps }                    `nets` moved OUT of `flags` — 16 types, 11 free
+```
+
+Per TILE rather than per block because the block is read by tile: a viewport fetches cells, and a table
+living elsewhere would need a read of ground the reader never asked for. The duplication that buys is
+now a measured number, not a hope — on the Enschede fixture, **1 405 distinct routes become 2 654 route
+records across 125 tiles (1.9×)**, with 21 104 links, for **+10.5% on the block** (4 188 888 → 4 627 448
+bytes).
+
+**Conservation, which is the whole point of a schema change:** every road class count identical, 49 890
+roads, and **walk 4543 / cycle 2832 / mtb 671 exactly as the v1 block reported** — with horse 260 newly
+visible and skate **0, printed rather than absent**. `match_parity.sh` is byte-identical and the router's
+network A/B is unchanged profile for profile.
+
+⚠ **`TRLink.road` is an index into ITS OWN tile's `roads`**, so a copier may carry links verbatim only
+while it copies every road in order. Every copier does today, and each says so where it copies. A copier
+that ever FILTERS roads must remap them — that is the one way this representation can be silently wrong.
+
+> ### ⚠ THE PUBLISHED DATA IS NOW OLDER THAN THE CODE — read this before merging
+>
+> The committed fixture is regenerated and every local gate is green. **The country blocks are not**, and
+> neither is what the live site serves. loft#705 gates `store_load` on the layout a store was written
+> with, so a v2 kernel meeting a v1 block **fails** rather than reading garbage — the honest failure, and
+> still a broken site.
+>
+> Order, therefore: **code (done) → regenerate the four region roads blocks + the overview and mid blocks
+> → republish → merge.** Merging this to `main` before the data is republished takes the live site down.
+> The regeneration is `tools/build-blocks.sh` over the cached country extract; the intermediates it needs
+> (`netherlands.geojsonseq`, 1.05 GB) are already on this machine, and the sidecar recipe string was
+> changed so the cached v1 sidecars invalidate themselves rather than being reused.
 
 ⚠ **This IS a schema change, and the rule that goes with it is absolute.** Adding a field to a stored
 struct makes **older blocks read garbage, not empty** (loft#700) — not a degraded picture, a wrong one.

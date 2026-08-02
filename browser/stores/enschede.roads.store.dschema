@@ -1,16 +1,21 @@
 LOFT-DSCHEMA v1
-hash=17343933091654743605
+hash=8543353460638373429
 --
 @endian	little
 TBarrier	size=9	struct{x@0:int<-2147483647,false>, y@4:int<-2147483647,false>, flags@8:byte}
-TRoad	size=4	struct{tp@2:byte, flags@0:short_raw<0,false>, steps@3:byte}
+TRLink	size=4	struct{road@0:short_raw<0,false>, route@2:short_raw<0,false>}
+TRoad	size=6	struct{tp@4:byte, flags@0:short_raw<0,false>, nets@2:short_raw<0,false>, steps@5:byte}
+TRoute	size=23	struct{rid@0:integer, kind@20:byte, level@21:byte, flags@22:byte, colour@8:text, rref@12:text, name@16:text}
 TStep	size=12	struct{x@0:int<-2147483647,false>, y@4:int<-2147483647,false>, h@8:int<-2147483647,false>}
-TTile	size=44	struct{tkey@0:integer, ox@8:integer, oy@16:integer, oh@24:integer, roads@32:vector<TRoad>, steps@36:vector<TStep>, barriers@40:vector<TBarrier>}
+TTile	size=52	struct{tkey@0:integer, ox@8:integer, oy@16:integer, oh@24:integer, roads@32:vector<TRoad>, steps@36:vector<TStep>, barriers@40:vector<TBarrier>, routes@44:vector<TRoute>, rlinks@48:vector<TRLink>}
 byte	size=1	byte(start=0,null=false)
-hash<TTile[tkey]>	size=4	hash<TTile>(keys=[0],elem_size=44)
+hash<TTile[tkey]>	size=4	hash<TTile>(keys=[0],elem_size=52)
 int<-2147483647,false>	size=4	int4(start=-2147483647,null=false)
 integer	size=8	base
 short_raw<0,false>	size=2	shortraw(start=0,null=false)
+text	size=4	base
 vector<TBarrier>	size=4	vector<TBarrier>(elem_size=9)
-vector<TRoad>	size=4	vector<TRoad>(elem_size=4)
+vector<TRLink>	size=4	vector<TRLink>(elem_size=4)
+vector<TRoad>	size=4	vector<TRoad>(elem_size=6)
+vector<TRoute>	size=4	vector<TRoute>(elem_size=23)
 vector<TStep>	size=4	vector<TStep>(elem_size=12)

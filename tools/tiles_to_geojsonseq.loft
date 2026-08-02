@@ -27,7 +27,7 @@
 
 use routing_kernel::(TTile, TRoad, TStep,
                      RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL,
-                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+                     NET_WALK, NET_CYCLE, NET_MTB);
 
 // The inverse of `class_of` — one representative highway value per class, chosen so `class_of` maps it
 // straight back. Class 12 is `track`, which used to share class 8 with `path` (see gen-tiles).
@@ -86,13 +86,10 @@ fn main() {
       // RFC 8142 record separator (0x1E), because that is what `osmium export -f geojsonseq` writes —
       // and a round trip through a writer that omits it proves the reader against the wrong format. The
       // first real 884 MB input binned ZERO tiles for exactly that reason.
-      // The sidecar's mask uses ITS numbering (1 walk / 2 cycle / 4 mtb), not the store's RF_NET_*.
-      // `route_networks.py` writes that form and `gen-tiles` maps it, so emitting the store's bits here
-      // would round-trip through the wrong end of the mapping.
-      mask = 0;
-      if (fl & RF_NET_WALK) == RF_NET_WALK { mask += 1; }
-      if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { mask += 2; }
-      if (fl & RF_NET_MTB) == RF_NET_MTB { mask += 4; }
+      // ONE NUMBERING NOW (PLAN-LAYERS §3): the sidecar, `TRoad.nets` and the wire all use NET_*, so
+      // this is a copy rather than a translation. It used to be a mapping between two numberings, which
+      // is exactly the kind of seam a round-trip can pass through backwards without anyone noticing.
+      mask = r.nets as integer;
       wid = nways + 1;
       if mask > 0 { netbody += "{wid} {mask}\n"; nnet += 1; }
       line = "{RS}{{\"type\":\"Feature\",\"id\":\"w{wid}\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";

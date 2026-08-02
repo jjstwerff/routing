@@ -41,7 +41,7 @@
 use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
               cell_ix, origin, layout_tier, tier_cell, tier_key, dp_mask,
               area_debut, line_debut, label_debut, poi_debut, DEBUT_NEVER);
-use routing_kernel::(TTile, TRoad, TStep, RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+use routing_kernel::(TTile, TRoad, TStep, NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE);
 
 // Metres per pixel at zoom 0 (256-px tiles) and the latitude factor for the Netherlands. A single cos(lat)
 // for one country is right for a generalisation tolerance and wrong by a few percent at its ends.
@@ -245,7 +245,8 @@ fn spine_class(tp: integer, zmax: integer) -> integer {
 
 fn spine_kind(cls: integer) -> text {
   if cls == 0 { "motorway" } else if cls == 1 { "primary" } else if cls == 2 { "secondary" }
-  else if cls == 3 { "net_walk" } else if cls == 4 { "net_cycle" } else { "net_mtb" }
+  else if cls == 3 { "net_walk" } else if cls == 4 { "net_cycle" } else if cls == 5 { "net_mtb" }
+  else if cls == 6 { "net_horse" } else { "net_skate" }
 }
 
 // The SIGNPOSTED networks are a layer of their own here, not a mark on the road spine, and the reason is
@@ -256,10 +257,12 @@ fn spine_kind(cls: integer) -> text {
 // A way can be in several, so this yields a class per membership and the caller emits a run for each —
 // the same chaining then merges each network into its own long-distance runs, which is exactly what makes
 // a country-scale view of it affordable.
-fn net_classes(flags: integer, out: vector<integer>) {
-  if (flags & RF_NET_WALK) != 0 { out += [3]; }
-  if (flags & RF_NET_CYCLE) != 0 { out += [4]; }
-  if (flags & RF_NET_MTB) != 0 { out += [5]; }
+fn net_classes(nets: integer, out: vector<integer>) {
+  if (nets & NET_WALK) != 0 { out += [3]; }
+  if (nets & NET_CYCLE) != 0 { out += [4]; }
+  if (nets & NET_MTB) != 0 { out += [5]; }
+  if (nets & NET_HORSE) != 0 { out += [6]; }
+  if (nets & NET_SKATE) != 0 { out += [7]; }
 }
 
 fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends: hash<EndPt[k]>) {
@@ -270,7 +273,7 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
       classes: vector<integer> = [];
       rcls = spine_class(r.tp, zmax);
       if rcls >= 0 { classes += [rcls]; }
-      net_classes(r.flags as integer, classes);
+      net_classes(r.nets as integer, classes);
       for cls in classes {
       if ns >= 2 && cur + ns - 1 < len(t.steps) {
         xs: vector<integer> = []; ys: vector<integer> = [];

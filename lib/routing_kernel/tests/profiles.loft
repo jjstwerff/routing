@@ -1,7 +1,7 @@
 // Tests for activity × sub-mode profiles (PLAN step 8, DESIGN §6). Synthetic, deterministic.
 //   loft --tests lib/routing_kernel/tests/profiles.loft --lib lib
 use routing_kernel::(GeoPoint, Way, build_graph, match_route, way_penalty,
-                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+                     NET_WALK, NET_CYCLE, NET_MTB);
 
 fn has_lat(route: vector<GeoPoint>, lat: float) -> boolean {
   found = false;
@@ -176,7 +176,7 @@ fn test_walking_prefers_signposted_network() {
   plain = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
   marked = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
-    net: RF_NET_WALK,
+    net: NET_WALK,
     coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0003, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
   g = build_graph([plain, marked]);
   hike = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "walking_paved");
@@ -191,7 +191,7 @@ fn test_network_preference_is_per_activity() {
   plain = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
     coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0002, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
   cycled = Way { highway: "path", surface: "ground", tracktype: "", bicycle: "", access: "", oneway: "", onewaybike: "", svc: "", cycleway: "", cyclestreet: "", name: "",
-    net: RF_NET_CYCLE,
+    net: NET_CYCLE,
     coords: [ GeoPoint { lat: 52.0, lon: 5.000 }, GeoPoint { lat: 52.0003, lon: 5.002 }, GeoPoint { lat: 52.0, lon: 5.004 } ] };
   g = build_graph([plain, cycled]);
   hike = match_route(g, [ GeoPoint { lat: 52.0, lon: 5.0005 }, GeoPoint { lat: 52.0, lon: 5.0035 } ], "walking_paved");
