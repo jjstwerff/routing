@@ -39,8 +39,8 @@ warns about: one mechanism forced over two families that assert their difference
 | 4 ✅ | **The dead rungs are KEPT, deliberately** — with the clamp they are inert, not wrong, and the ladder is the right rule for a block whose band starts lower | unit tests assert the clamp's four cases and that the ladder stays well-formed |
 | 5 ✅ | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | **83 762 relations → 484 252 ways**, per-type and per-level counts in §3; the legacy line format is byte-preserved and an old reader is *proven* to read the new file as the old one |
 | 6 ✅ *(code + fixture)* | **The block carries them** — `TRoad.nets: u16`, a per-tile `TRoute` table + sparse `TRLink`s (§3). Every copier carries them; conservation asserted | `match_parity.sh` **byte-identical**; the router A/B unchanged profile for profile; the fixture's walk/cycle/mtb counts **identical** (4543/2832/671) with horse 260 new. ⚠ **The country blocks are NOT regenerated** — see below |
-| 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
-| 8 | **Generalise the overview by level, and chain by route id** — `build_overview.loft` selects on level × `zmax` and merges runs per `rid` | country zoom stops being a red blanket; an LF route is ONE polyline; overview size reported |
+| 7 ✅ | **Draw by route** — colour from `osmc`, weight from level; the wire gains one `ROUTE` table per view and route ids per road | at the reported camera: **107 routes, 87 coloured**, 453 of 1 316 roads on one — *Varsselroute* red, *Vorden Graafschaproute* blue, an MTB link purple |
+| 8 ✅ *(code; data not republished)* | **Generalise the overview by level, and chain by route id** | country zoom: **42 549 net lines → 1 550**, chains 56 323 → 15 324, coords 266 465 → 57 405, block 33.7 → **26.3 MB** |
 | 9 ✅ | **The floor, resident** — materialised from the country view the app already performs; the 33.7 MB fetch is the fallback, not the path | `how: "free"`, 149 113 areas · 56 859 lines · 1 230 843 coords, no extra request |
 | 10 ✅ | **Clip the floor to the complement of held ground** | inside NL at z15 it reports `covered by the fine layer, drawn 0` — no ghosting, by suppression |
 | 11 ⏸ | **Retire `holdFrame`** — deferred, with the reason written down (§5): the floor is resident only after a country view, so the held frame is still the only cover for a session that never sees one | — |
@@ -316,6 +316,41 @@ reads the network letters; the object path (`map.mjs:538`) reads only `x` and **
 bits entirely**. That is why the store-vs-object pixel parity gate — the instrument that caught the last
 mark bug — is *blind* to a network bug: neither side draws one. Step 6 makes the two parsers read the
 same vocabulary, or the gate is decoration.
+
+### Steps 7–8 as built (2026-08-02)
+
+**The wire carries identity once per view.** `emit_roads` gains `#i,j` on a road — indices into a
+**`ROUTE` table emitted after the roads**, one row per route the *viewport touches* (`T=107` at the
+reported camera, against 83 762 in the country). Tab-separated, so a name holding a `;` or a `|` cannot
+break the R line's grammar. Roads that are on no route carry nothing, and a road whose ids fail to parse
+still draws.
+
+**A band takes its route's colour and its level's weight.** `osmc:symbol`'s waycolour where the route
+names one (87 of 107 here), the activity's colour where it does not; width from the level, strongest
+route winning where a way carries several — two bands on one line is a smear, not information.
+
+⚠ **Translucent, and the first version was not.** Solid hex drew the country in ribbons: the paths a route
+follows vanished under their own marking, which is exactly what the overlay exists to show. Route colours
+go through the same 0.55 alpha `NET_STYLE` uses, because the band is an *annotation over* the map.
+
+**§3's warning about the level ladder held, and it is why step 8 works at all.** Level is *not* a general
+thinning rule — 92% of relations are `regional`, so "drop below regional" moves nothing at z12. At the
+**overview's** zoom it is decisive: national + international is 850 relations against 83 762.
+
+| | before | after |
+|---|---|---|
+| `net_*` lines in the country block | 42 549 | **1 550** (walk 27 749 → 968, cycle 12 978 → 581) |
+| chains / coords | 56 323 / 266 465 | **15 324 / 57 405** |
+| block | 33.7 MB | **26.3 MB** |
+
+The road spine is untouched (motorway 3 489, primary 10 285). ⚠ **Horse and skating fall to zero at
+country zoom** — both are regional infrastructure, so the level floor removes them entirely below z12.
+That is a defensible cut and a real one: the two modes step 6 added are visible only from z12 up.
+
+⚠ **Chaining per route costs at the middle level.** One polyline per route is what makes a long-distance
+path *one* line, but a way carrying three regional routes now yields three runs that cannot merge into
+each other's neighbours: `nl-mid` goes 69 631 → 101 907 chains and 277.5 → 280.4 MB (+1%). The overview
+pays −22% for the same change. Net accepted, and written down rather than discovered later.
 
 **What draws.** **Route colour first** (`osmc:symbol` — the paint on the tree you are actually
 following), the type's colour as the fallback (walk-red / cycle-blue / MTB-purple, plus riding and

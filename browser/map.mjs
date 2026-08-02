@@ -812,7 +812,68 @@ function joinStretches(slots) {
 // are route relations someone maintains and signs on the ground (rwn/lwn/nwn/iwn, rcn/lcn/ncn/icn,
 // route=mtb), which is a different claim from "this way is walkable": the first is a recommendation, the
 // second a permission.
-export const NET_WALK = 1, NET_CYCLE = 2, NET_MTB = 4;
+export const NET_WALK = 1, NET_CYCLE = 2, NET_MTB = 4, NET_HORSE = 8, NET_SKATE = 16;
+
+// PLAN-LAYERS §3 step 7 — WHICH route, drawn as itself.
+//
+// `osmc:symbol`'s waycolour is the paint on the tree you are actually following, and 58% of the country's
+// relations carry one. Where a route names a colour, the band IS that colour; where it does not, the
+// activity's own colour stands in. The vocabulary is OSM's own — small, and closed enough to map.
+// ⚠ TRANSLUCENT, like NET_STYLE's own colours and for the same reason: the band is an ANNOTATION over
+// the map, not a recolouring of it. The first version used solid hex and the result was a country drawn
+// in ribbons — the paths the route follows disappeared under their own marking, which is precisely what
+// the network overlay exists to show you.
+const NET_ALPHA = 0.55;
+const OSMC_COLOURS = {
+  red: '214,64,64', blue: '40,110,200', green: '47,158,68', yellow: '229,184,0', black: '43,43,43',
+  white: '232,232,232', orange: '232,121,12', purple: '150,60,170', violet: '150,60,170',
+  brown: '138,90,43', gray: '122,122,122', grey: '122,122,122',
+};
+const hexRgb = (h) => {
+  const t = h.length === 4 ? h.slice(1).split('').map((c) => c + c).join('') : h.slice(1, 7);
+  return `${parseInt(t.slice(0, 2), 16)},${parseInt(t.slice(2, 4), 16)},${parseInt(t.slice(4, 6), 16)}`;
+};
+// ⚠ THE LEVEL LADDER IS NOT A THINNING RULE, and §3 measured why: 92% of the country's relations are
+// `regional`, so selecting on level alone moves nothing at the country zoom. What level IS good for is
+// WEIGHT — an international route is a thicker band than a local loop, which is the Waymarkedtrails
+// convention and reads correctly even when almost everything is one level.
+const LEVEL_WIDTH = [1.0, 1.15, 1.45, 1.8];         // local/unknown · regional · national · international
+
+// A route's own colour, or null to fall back to the activity's.
+export function routeColour(rt) {
+  if (!rt) return null;
+  const c = String(rt.colour || '').toLowerCase().trim();
+  if (!c) return null;
+  if (OSMC_COLOURS[c]) return `rgba(${OSMC_COLOURS[c]},${NET_ALPHA})`;
+  // an explicit `colour=#rrggbb` passes through — through the same alpha, not around it
+  return /^#[0-9a-f]{3}([0-9a-f]{3})?$/.test(c) ? `rgba(${hexRgb(c)},${NET_ALPHA})` : null;
+}
+
+// What a route is CALLED, as a person would read it: its ref where it has one (97% do — the knooppunt
+// number or `LF13`), its name where it has that instead, and nothing when it has neither. §3's measurement
+// is what puts ref first: names are the rare case here, not the common one.
+export function routeLabel(rt) {
+  if (!rt) return '';
+  const ref = String(rt.ref || '').trim(), name = String(rt.name || '').trim();
+  if (ref && name) return ref.length <= 8 ? ref : name;
+  return ref || name;
+}
+
+// `ROUTE<TAB>idx<TAB>kind<TAB>level<TAB>flags<TAB>colour<TAB>ref<TAB>name` — one per route the view
+// touches, emitted after the roads. Returns an array indexed by the id the R lines carry.
+export function parseRouteTable(txt) {
+  const out = [];
+  for (const line of (txt || '').split('\n')) {
+    if (!line.startsWith('ROUTE\t')) continue;
+    const f = line.split('\t');
+    if (f.length < 8) continue;
+    const idx = +f[1];
+    if (!Number.isInteger(idx) || idx < 0 || idx > 100000) continue;
+    out[idx] = { kind: +f[2] || 0, level: +f[3] || 0, flags: +f[4] || 0,
+                 colour: f[5] || '', ref: f[6] || '', name: f[7] || '' };
+  }
+  return out;
+}
 
 // Which network the ACTIVITY asks to see. Walking and running both follow the walking network; cycling's
 // sub-modes split, because an MTB route and a road-cycling route are signed for different bicycles and
@@ -837,7 +898,7 @@ export const NET_STYLE = {
 export function parseStreetsFlat(txt) {
   const lines = (txt || '').split('\n');
   let cap = 4096, xy = new Float64Array(cap * 2), nv = 0;
-  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map(), shut = [], net = [];
+  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map(), shut = [], net = [], rids = [];
   const bb = [];
   for (const raw of lines) {
     if (raw[0] !== 'R' || raw[1] !== ' ') continue;
@@ -862,19 +923,29 @@ export function parseStreetsFlat(txt) {
     // `class|<marks>` — `x` the router refuses it, `w`/`c`/`m` signposted walk/cycle/mtb network.
     // Splitting here keeps the class vocabulary the styles are keyed on unchanged and costs two bytes per
     // road rather than a parallel table for every class crossed with every network.
-    const bar = p[0].indexOf('|');
-    const name = bar < 0 ? p[0] : p[0].slice(0, bar);
-    const marks = bar < 0 ? '' : p[0].slice(bar + 1);
+    // `class|marks#rid,rid` — the marks say WHETHER (a bit per mode, the router's fast path), the ids say
+    // WHICH (indices into this view's ROUTE table). Split ids off first: a `#` cannot appear in a class.
+    const hash = p[0].indexOf('#');
+    const head = hash < 0 ? p[0] : p[0].slice(0, hash);
+    const ids = hash < 0 ? '' : p[0].slice(hash + 1);
+    const bar = head.indexOf('|');
+    const name = bar < 0 ? head : head.slice(0, bar);
+    const marks = bar < 0 ? '' : head.slice(bar + 1);
     shut.push(marks.includes('x') ? 1 : 0);
     net.push((marks.includes('w') ? NET_WALK : 0) | (marks.includes('c') ? NET_CYCLE : 0)
-           | (marks.includes('m') ? NET_MTB : 0));
+           | (marks.includes('m') ? NET_MTB : 0) | (marks.includes('h') ? NET_HORSE : 0)
+           | (marks.includes('s') ? NET_SKATE : 0));
+    // One entry per road, null where it is on none — a flat array of small arrays rather than a Map,
+    // because the draw loop indexes it per road and most entries are null.
+    rids.push(ids ? ids.split(',').map(Number).filter(Number.isInteger) : null);
     let ci = clsOf.get(name);
     if (ci === undefined) { ci = clsNames.length; clsNames.push(name); clsOf.set(name, ci); }
     clsIdx.push(ci); off.push(nv);
     bb.push(mnla, mxla, mnlo, mxlo);
   }
   return { n: clsIdx.length, xy, off: Int32Array.from(off), cls: Uint8Array.from(clsIdx), clsNames,
-           shut: Uint8Array.from(shut), net: Uint8Array.from(net), bb: Float64Array.from(bb), verts: nv };
+           shut: Uint8Array.from(shut), net: Uint8Array.from(net), bb: Float64Array.from(bb), verts: nv,
+           rids, routes: parseRouteTable(txt) };
 }
 
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
@@ -2072,11 +2143,14 @@ export class RouteMap {
         (bucket[cls] || (bucket[cls] = [])).push(at, len);
         vis++;
       }
-      if (signposted) netRuns.push(at, len);
+      if (signposted) netRuns.push(at, len, i);       // the road index too — its routes decide its colour
     }
     // Three integers per render, so the gate can assert an IDENTITY on the drawing rather than read a
     // style table: drawn + skipped == inView, or the network is being cut by something that is not its own.
-    this._netStats = { zoom: z, want: wantNet, inView: netInView, skipped: netSkipped, drawn: netRuns.length / 2 };
+    // ⚠ /3, not /2 — `netRuns` carries (at, len, road) since step 7 taught the band to take its colour
+    // from the road's routes. It was /2 for one commit and the gate said so in the words it was written
+    // in: "the counts do not close (309 drawn > 206 in view) — the instrument is wrong, not the map".
+    this._netStats = { zoom: z, want: wantNet, inView: netInView, skipped: netSkipped, drawn: netRuns.length / 3 };
     const strokeRun = (at, len) => {
       ctx.beginPath();
       ctx.moveTo(s[at * 2], s[at * 2 + 1]);
@@ -2110,9 +2184,30 @@ export class RouteMap {
       const ns = NET_STYLE[wantNet];
       if (ns) {
         ctx.setLineDash([]);
-        ctx.strokeStyle = ns.color;
-        ctx.lineWidth = Math.max(2, ns.width * scale);
-        for (let j = 0; j < netRuns.length; j += 2) strokeRun(netRuns[j], netRuns[j + 1]);
+        // PLAN-LAYERS §3 step 7 — EACH ROUTE IN ITS OWN COLOUR AND WEIGHT.
+        //
+        // A way carries its routes' identity, not the activity's: the band takes the `osmc:symbol`
+        // waycolour where the route names one (58% of the country's do) and the activity's colour where
+        // it does not, and its width comes from the route's LEVEL — an international path reads heavier
+        // than a local loop. Where a way is on several routes of the asked-for network, the strongest
+        // (highest level) decides, because two bands on one line is a smear rather than information.
+        const tab = F.routes || [];
+        const base = Math.max(2, ns.width * scale);
+        for (let j = 0; j < netRuns.length; j += 3) {
+          const at = netRuns[j], len = netRuns[j + 1], road = netRuns[j + 2];
+          let colour = ns.color, level = -1;
+          const ids = F.rids && F.rids[road];
+          if (ids) {
+            for (const id of ids) {
+              const rt = tab[id];
+              if (!rt || !(rt.kind & wantNet)) continue;    // a route of another mode is not this band
+              if (rt.level > level) { level = rt.level; colour = routeColour(rt) || ns.color; }
+            }
+          }
+          ctx.strokeStyle = colour;
+          ctx.lineWidth = base * (LEVEL_WIDTH[Math.max(0, level)] || 1);
+          strokeRun(at, len);
+        }
       }
     }
     ctx.setLineDash([]);
