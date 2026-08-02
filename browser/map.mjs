@@ -1242,9 +1242,19 @@ export class RouteMap {
     const clk = this._timeLayers && typeof performance !== 'undefined' ? () => performance.now() : null;
     const t = clk ? { at: clk(), ms: {} } : null;
     const mark = (k) => { if (t) { const n = clk(); t.ms[k] = n - t.at; t.at = n; } };
+    this._drawnCam = { ...this.camera };       // what the pixels about to be painted describe
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#f2efe9';                 // Carto land background
     ctx.fillRect(0, 0, W, H);
+    // THE LAST GOOD FRAME, held while a view whose SOURCE changed is in flight (PLAN-SCALE §6i).
+    //
+    // Crossing a zoom band swaps the store the kernel holds, so the map it was showing is discarded the
+    // instant the new load starts — and a paged view is 277–583 range requests, which is seconds. The
+    // screen went blank for all of it, which reads as "the app is broken" rather than "the app is
+    // loading". §6i's design says the overview should stay drawn underneath; this is that promise kept
+    // without a second store in the kernel: keep the pixels, stretched to the new camera, until real data
+    // replaces them. It is deliberately BELOW everything, so anything already loaded draws over it.
+    this._drawHeldFrame();
     mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     // The base map is either blitted from cached blocks (step 15) or drawn directly; the route and the
@@ -1464,6 +1474,43 @@ export class RouteMap {
   // index is built for ONE viewport window — so a block baked before a data load can be missing features
   // that window did not include. Anything that replaces layer data must call this, or the map shows a
   // stale tile that no amount of panning repairs.
+  // Capture what is on screen now, with the camera it was drawn at. Cheap — one canvas blit — and only
+  // ever called when a view is about to change SOURCE, which is a handful of times in a session.
+  holdFrame() {
+    if (!this.canvas || !this.canvas.width || typeof document === 'undefined') return;
+    const c = this._heldCanvas || (this._heldCanvas = document.createElement('canvas'));
+    if (c.width !== this.canvas.width || c.height !== this.canvas.height) {
+      c.width = this.canvas.width; c.height = this.canvas.height;
+    }
+    const cx = c.getContext('2d');
+    cx.clearRect(0, 0, c.width, c.height);
+    cx.drawImage(this.canvas, 0, 0);
+    // ⚠ The camera the PIXELS were drawn at, not the one the camera object holds now. They are usually
+    // the same — a wheel zoom renders every step, so by the time a view is requested the canvas already
+    // matches — but a caller that moves the camera and asks for a view without rendering between would
+    // otherwise pin the old picture to the new camera and blit it unscaled.
+    this._held = { cam: { ...(this._drawnCam || this.camera) }, w: this.width, h: this.height };
+  }
+
+  releaseFrame() { this._held = null; }
+
+  // Blit the held frame where it belongs under the CURRENT camera: same ground, so it slides and scales
+  // with a pan or a zoom exactly as the map does. Wrong in detail after a big move — it is stretched
+  // pixels, not data — and right in the only way that matters, which is that the country stays under you
+  // while the detail arrives.
+  _drawHeldFrame() {
+    const hf = this._held;
+    if (!hf || !this._heldCanvas) return false;
+    const k = Math.pow(2, this.camera.zoom - hf.cam.zoom);
+    const a = projectWorld(hf.cam.lon, hf.cam.lat, this.camera.zoom);
+    const b = projectWorld(this.camera.lon, this.camera.lat, this.camera.zoom);
+    const w = hf.w * k, h = hf.h * k;
+    const x = (a.x - b.x) + this.width / 2 - w / 2;
+    const y = (a.y - b.y) + this.height / 2 - h / 2;
+    try { this.ctx.drawImage(this._heldCanvas, x, y, w, h); } catch { return false; }
+    return true;
+  }
+
   invalidateBlocks() { this._blocks = new Map(); this._blockZoom = null; return this; }
 
   // The projection constants for this frame, hoisted so the per-vertex loop is pure arithmetic.

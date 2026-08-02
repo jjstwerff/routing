@@ -368,6 +368,11 @@ async function ensureViewNow() {
   // crossing the handover is exactly that.
   const src = `${baseFor(box, zoom0)}|${roadsFor(box, zoom0)}|${baseModeFor(box, zoom0)}|${roadsModeFor(box, zoom0)}`;
   if (loadedSrc === src && covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
+  // A view whose SOURCE changed discards the store the map is drawn from, and a paged one takes hundreds
+  // of range requests to replace it — so hold the last good frame and keep painting it, stretched to the
+  // camera, until real data lands. Only on a source change: a plain pan already has its data and holding
+  // a frame there would put stale pixels under a live map for no reason.
+  if (loadedSrc !== null && loadedSrc !== src) map.holdFrame();
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
@@ -400,6 +405,7 @@ async function ensureViewNow() {
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
   loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
+  map.releaseFrame();                    // real data is in — the held pixels have done their job
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
