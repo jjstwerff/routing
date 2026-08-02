@@ -37,7 +37,7 @@ warns about: one mechanism forced over two families that assert their difference
 | 2 ✅ | **Collect the network before the class gate** — a signposted way is projected even when its own class is not shown yet | z14.6: **139/206 → 206/206**. Re-coupling it by hand puts the gate back to `67 of 206`, so the gate is proven non-vacuous |
 | 3 ✅ | **Clamp the class ladder to the band floor** — `roadDebut(cls, floor)`, one function, both draw paths; the floor is the index's own `zoom[0]` and rides with the DATA | z14.6 draws `path`/`foot`/`service` again — the network sits ON its paths instead of floating over blank ground (A/B screenshots at one settled camera) |
 | 4 ✅ | **The dead rungs are KEPT, deliberately** — with the clamp they are inert, not wrong, and the ladder is the right rule for a block whose band starts lower | unit tests assert the clamp's four cases and that the ladder stays well-formed |
-| 5 | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | `networks: N relations → M ways`, per-type **and per-level** counts, none zero |
+| 5 ✅ | **The sidecar carries ROUTES, not a mask** — `route_networks.py` emits a relation table (type, level, `ref`, name, `osmc` colour) + way→rids | **83 762 relations → 484 252 ways**, per-type and per-level counts in §3; the legacy line format is byte-preserved and an old reader is *proven* to read the new file as the old one |
 | 6 | **The block carries them** — `TRoad.nets: u16` + `rids`, a per-block `TRoute` table (§3). **Regenerate every block, every copier, conservation asserted** | `match_parity.sh` **byte-identical** (the cost table reads none of it) |
 | 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
 | 8 | **Generalise the overview by level, and chain by route id** — `build_overview.loft` selects on level × `zmax` and merges runs per `rid` | country zoom stops being a red blanket; an LF route is ONE polyline; overview size reported |
@@ -175,11 +175,36 @@ tree that you follow), and falls back to the type's colour. `level` (`iwn`/`nwn`
 lives on the **route**, where it is not a lossy summary — the per-way `nets` bits are the summary, and
 the table is the truth.
 
-**Size, and why it is affordable.** A route table is per RELATION: the whole Netherlands is thousands of
-them, each a few dozen bytes of text — **hundreds of KB against an 81 MB block**. The per-way cost is a
-`vector<u16>` that is empty for most ways. ⚠ **Both are estimates.** `route_networks.py` already prints
-its relation count (`networks: N relations …`), so step 5's observable is the real number, and the
-`rids` cost is measured on the first rebuilt block — not assumed here.
+**Size, and why it is affordable — MEASURED (2026-08-02, `netherlands-latest.osm.pbf`, 11 s):**
+
+```
+networks: 83 762 relations (walk 63 513, cycle 17 537, horse 2 166, mtb 486, skate 60)
+          → 484 252 ways (walk 346 036, cycle 218 308, mtb 25 086, horse 12 157, skate 545)
+levels:   regional 77 370 · local/unknown 5 542 · national 741 · international 109
+identity: ref 81 580 (97%) · name 7 116 (8.5%) · colour 48 777 (58%) · node_network 76 596 (91%)
+members:  944 967 over 484 252 ways — mean 1.95, widest 18
+```
+
+⚠ **Four of this section's assumptions were wrong, and the measurement is why they are not in the code.**
+
+1. **"Thousands of relations" — it is 83 762**, twenty times the guess. The table is still small (a few
+   MB of text against an 81 MB block), but it is not a rounding error, and a *view* that emitted the
+   whole table would be emitting a country.
+2. **Names are the RARE case, not the common one.** 8.5% have a name; **97% have a `ref`** and **91% are
+   node-network segments**. This § was written around "the Pieterpad has one name along 500 km" — true,
+   and unrepresentative. In the Netherlands the identity a walker actually reads is the **knooppunt
+   number**, so `ref` is the label and `name` is the exception.
+3. **Horse and skating are real**: 2 166 horse relations over 12 157 ways, and 60 skating ones. Reading
+   them was worth a bit each; leaving them out would have been leaving out a mode, not a curiosity.
+4. **The level ladder above is uneven to the point of being wrong.** 92% of relations are *regional* —
+   because that is how Dutch node networks are tagged — so "+ regional at z12" means +77 370 routes in
+   one step while the two bands below it share 850. The ladder needs a rule that is not the OSM level
+   alone (length? node-network segments merged into their network? that is what §3's chain-by-`rid` in
+   step 8 is for), and step 7 must not be built on the assumption that level alone thins the country view.
+
+**The per-way cost is now a number too:** 944 967 memberships ≈ 1.9 MB of `u16` across the country, mean
+**1.95 routes per way** and one way on **18**. That mean is the strongest evidence for the split: a
+per-way bitmask cannot name a route when the average way carries two of them.
 
 ⚠ **This IS a schema change, and the rule that goes with it is absolute.** Adding a field to a stored
 struct makes **older blocks read garbage, not empty** (loft#700) — not a degraded picture, a wrong one.

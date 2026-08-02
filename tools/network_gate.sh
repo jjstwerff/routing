@@ -28,6 +28,12 @@ loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 src="$here/browser/stores/enschede.roads.store"
 [ -f "$src" ] || { echo "SKIP: no roads store at $src"; exit 2; }
 
+# PLAN-LAYERS §3 (L1) — the SIDECAR half, which runs before any block exists. It is checked from a small
+# OPL fixture rather than from a PBF: the country extract is 1.4 GB and lives in nobody's checkout, and a
+# gate that can only run where the data happens to be is a gate that does not run.
+echo "== L1: the route sidecar carries routes, and the old reader is unharmed =="
+python3 "$here/tools/route_sidecar_check.py" || exit 1
+
 echo "== R3: curated networks in the block, and preferred by the router =="
 
 bits="$("$loft" --native --lib "$here/lib" "$here/tools/network_probe.loft" "$src" 2>&1 | grep '^#N bits')" \
