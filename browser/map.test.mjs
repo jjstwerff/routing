@@ -8,7 +8,8 @@
 
 import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
          parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB,
-         routeDistanceM, formatDistance, routeGpx } from './map.mjs';
+         routeDistanceM, formatDistance, routeGpx,
+         sketchToJson, sketchFromJson, SKETCH_MAX_PTS } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1471,6 +1472,32 @@ console.log('L4 · the matched route reports its distance and exports as GPX');
   ok(routeGpx([], 'x').includes('<trkseg>\n  </trkseg>'), 'no points is still a well-formed document');
   ok(routeGpx([[1, 2]], 'a & b <c>').includes('<name>a &amp; b &lt;c&gt;</name>'), 'the name is XML-escaped');
   ok(!routeGpx([[1, 2], [NaN, 3], [4, undefined]], 'x').includes('NaN'), 'a broken point is dropped, not written');
+}
+
+// --- PLAN-LAYERS §5c — the sketch autosave record --------------------------------------------------
+console.log('L5 · the sketch the user placed round-trips, and a bad record degrades to nothing');
+{
+  const pts = [[52.2412299, 6.8834496], [52.2694705, 6.9164085]];
+  const back = sketchFromJson(sketchToJson(pts, 1754000000000));
+  ok(back.length === 2 && back[0][0] === pts[0][0] && back[1][1] === pts[1][1],
+     'the points the user placed round-trip exactly, in order');
+  ok(sketchFromJson(sketchToJson([{ lat: 1.5, lon: 2.5 }])).length === 1, 'a {lat,lon} point saves too — the layer\'s own shape');
+  ok(sketchFromJson(sketchToJson([])).length === 0, 'an empty sketch is a valid record, not an absent one');
+
+  // A reader of persisted state must treat it as hostile — the same rule cameraFromHash is written under.
+  ok(sketchFromJson('') .length === 0 && sketchFromJson(null).length === 0, 'no record → no sketch');
+  ok(sketchFromJson('not json').length === 0, 'a corrupt record → no sketch, not a throw');
+  ok(sketchFromJson('{"v":2,"pts":[[1,2]]}').length === 0, 'a FUTURE version is refused, not guessed at');
+  ok(sketchFromJson('{"v":1,"pts":[[1,2],[3]]}').length === 0, 'a malformed entry condemns the record — half a sketch is a different sketch');
+  ok(sketchFromJson('{"v":1,"pts":[[1,"x"]]}').length === 0, 'a non-numeric coordinate is refused');
+  ok(sketchFromJson('{"v":1,"pts":[[91,2]]}').length === 0, 'an out-of-range latitude is refused (never boot at NaN)');
+  ok(sketchFromJson('{"v":1,"pts":[[1,181]]}').length === 0, 'and an out-of-range longitude');
+  ok(sketchFromJson('{"v":1}').length === 0 && sketchFromJson('null').length === 0, 'a record with no points → no sketch');
+
+  // The cap refuses rather than truncates: half a sketch restored as if it were whole is worse than none.
+  const many = Array.from({ length: SKETCH_MAX_PTS + 1 }, (_, i) => [52 + i * 1e-6, 6]);
+  ok(sketchToJson(many) === null, `over ${SKETCH_MAX_PTS} points the save is refused, not truncated`);
+  ok(sketchToJson(many.slice(0, SKETCH_MAX_PTS)) !== null, 'and exactly at the cap it still saves');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

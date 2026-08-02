@@ -6,7 +6,8 @@
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
          cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES,
-         routeDistanceM, formatDistance, routeGpx } from './map.mjs';
+         routeDistanceM, formatDistance, routeGpx,
+         SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -500,8 +501,47 @@ async function streamedMatch(spec, isCurrent) {
 // The rough sketch (PLAN-EDIT E0). The layer owns the points and ALL pointer input; this wiring is the
 // whole of the app's side of editing, and every later gesture rides it unchanged — which is the point of
 // the chokepoints: a new gesture mutates the point list and calls commitEdit, and nothing else.
+// PLAN-LAYERS §5c — AUTOSAVE THE SKETCH, because a session can end without being finished.
+//
+// Reported from the live site: a route was drawn, the page was reloaded, and the sketch was gone — and
+// the kernel had stopped answering in the same session, so there was no way to redraw it either. The
+// second half is a bug to find; the first half is a promise the app was not making, and this makes it.
+//
+// ⚠ ONE WRITE PER 10 s, LEADING AND TRAILING. Leading, so the first point is protected the instant it
+// exists rather than 10 s later — the reported case is a session that ends unexpectedly, and a window
+// where the work is not yet saved is exactly the window that loses it. Trailing, so the LAST state of a
+// burst is what ends up stored. A drag emits ~33 commits a second and each one would otherwise be a
+// synchronous JSON serialise + storage write on the gesture's own frame.
+const SKETCH_SAVE_MS = 10000;
+let sketchTimer = null, sketchPending = null;
+function saveSketchNow() {
+  if (!sketchPending) return;
+  const text = sketchToJson(sketchPending, 0);
+  sketchPending = null;
+  try {
+    if (text === null) localStorage.removeItem(SKETCH_KEY);   // over the cap — see SKETCH_MAX_PTS
+    else localStorage.setItem(SKETCH_KEY, text);
+    window.__storeApp = { ...(window.__storeApp || {}), sketchSaves: (window.__storeApp?.sketchSaves || 0) + 1 };
+  } catch (e) {
+    // A full or disabled storage must not take the app down with it: the sketch on screen is still the
+    // truth, and this is a safety net, not the thing being edited.
+    console.warn('sketch autosave failed:', e);
+  }
+}
+function saveSketchSoon(pts) {
+  sketchPending = pts.map(([a, b]) => [a, b]);
+  if (sketchTimer) return;                       // a write is already scheduled — it will take the latest
+  saveSketchNow();                               // …but protect what exists NOW, before the window opens
+  sketchTimer = setTimeout(() => { sketchTimer = null; saveSketchNow(); }, SKETCH_SAVE_MS);
+}
+// The tab going away is the case the throttle would otherwise lose. `pagehide` covers reload, navigation
+// and close; `visibilitychange` covers a phone being switched away from, which on iOS is where a tab is
+// most likely to be discarded without ever firing anything else.
+window.addEventListener('pagehide', saveSketchNow);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveSketchNow(); });
+
 const rough = new RoughLayer(map, {
-  onCommit: (pts) => requestMatch(pts),
+  onCommit: (pts) => { saveSketchSoon(pts); return requestMatch(pts); },
   deleteButton: document.getElementById('rough-delete'),   // bound BY the layer — see rough.mjs bind()
   snackbar: { el: document.getElementById('undo-snackbar'),
               label: document.getElementById('undo-snack-label'),
@@ -607,6 +647,24 @@ function requestMatch(pts) {
 map.onMove(ensureView);        // re-view when the camera settles outside the loaded area
 map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
 await ensureView();       // initial load
+
+// PLAN-LAYERS §5c — and the sketch comes back with it.
+//
+// AFTER the first view, not before: `setPoints` commits, which posts a match, and a match queued ahead of
+// the initial view would make the app's first act a corridor read for a route nobody is looking at yet.
+// The points are drawn either way — the sketch layer does not need the kernel to show them, which is the
+// whole point of restoring on the session where the kernel is what broke.
+//
+// Ids are minted fresh (1..n) rather than stored: they are session-local handles for the double-click
+// detector and the selection anchors, and a restored sketch is a new session's starting point.
+{
+  let saved = [];
+  try { saved = sketchFromJson(localStorage.getItem(SKETCH_KEY)); } catch { saved = []; }
+  if (saved.length) {
+    rough.setPoints(saved.map(([lat, lon], i) => ({ id: i + 1, lat, lon })));
+    window.__storeApp = { ...(window.__storeApp || {}), sketchRestored: saved.length };
+  }
+}
 window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 
 // Perf hook (headless profiler, browser/cdp_profile.mjs): run a view/match with each phase timed

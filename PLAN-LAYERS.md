@@ -345,6 +345,47 @@ the GPX document holds one `<trkpt>` per route point.**
 
 ---
 
+## §5c — L5: the sketch survives, because the session does not always
+
+**Reported from the live site:** a route was drawn, the page was reloaded, and the points were gone — and
+the kernel had stopped answering in that same session, so there was no way to draw them again either.
+Two faults, and they compose into "no way to progress": one destroyed the work, the other removed the
+means to redo it.
+
+**What is saved is the points the USER PLACED, not the matched route.** The sketch is the work; the route
+is derived from it. Restoring the sketch re-matches and gives back an editable sketch; restoring the
+route would give back a line you can look at and cannot edit — and if the two ever disagreed, the derived
+one would be the lie. (Being able to export a route the kernel can no longer produce is a *separate*
+want; it is not this one, and conflating them is how the wrong thing gets stored.)
+
+| | |
+|---|---|
+| **key** | `routing.sketch.v1` — one record, overwritten. A recovery net, not a document store |
+| **cadence** | one write per **10 s**, **leading and trailing** — leading so the first point is protected the instant it exists, trailing so the last state of a burst is what lands |
+| **also flushed on** | `pagehide` (reload, navigation, close) and `visibilitychange`→hidden (a phone switching away, where a tab is discarded without another event) |
+| **restored** | after the first view, before `ready` — `setPoints` commits, which posts a match, and a match queued *ahead* of the first view would make the app's first act a corridor read for a route nobody is looking at yet |
+| **cap** | 5 000 points (~150 kB); beyond it the save is **refused, not truncated** — half a sketch restored as if whole is worse than none |
+
+⚠ **A reader of persisted state must treat it as hostile**, the same rule `cameraFromHash` is written
+under: a corrupt, truncated, hand-edited or future-version record degrades to *no sketch*, never to a
+boot at NaN. A malformed *entry* condemns the whole record, because a sketch missing its 4th point is a
+**different sketch**, silently.
+
+⚠ **This re-opens the trap the camera comment closed, and it is closed differently.** `store-app.mjs`
+says the camera rides the URL rather than localStorage partly because every gate's chromium reuses a
+persistent `--user-data-dir`, so saved state leaks from one run into the next — and it names the cure's
+weak point: *"staying deterministic would have meant clearing storage in all seven, with the eighth
+forgetting to."* A leaked sketch is not cosmetic here: it re-matches at boot, which moves the range-read
+and match counters other gates assert on. So every CDP driver clears local storage before it navigates,
+and **`map_render_gate` fails if one does not** — the eighth-forgetting case is closed by a check rather
+than by discipline. That check is the load-bearing part of this section.
+
+**What this does NOT do.** The kernel dying mid-session is a real fault and is *not* fixed here — this
+makes it **survivable** (reload, and your points are back), not absent. Chasing it needs what the session
+that hit it saw: a `kernel job "…" failed` line, a wasm trap, or a stalled range fetch.
+
+---
+
 ## §6 — what the newly installed loft changes
 
 ⚠ **Anchored to the binary, per CLAUDE.md.** `/usr/local/bin/loft` is **2026.8.0**, md5

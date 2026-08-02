@@ -602,6 +602,51 @@ export function orientBarriers(barriers, F) {
 // emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
 // including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
 // re-match redraw correctly rather than concatenate onto the previous route.
+// PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD, because the kernel does not always survive one.
+//
+// What is saved is the POINTS THE USER PLACED, not the matched route: the sketch is the work, the route
+// is derived from it. Restoring the sketch re-matches; restoring a route would give you a line you can
+// look at and cannot edit, and if the two ever disagreed the derived one would be the lie.
+//
+// ⚠ It is a RECOVERY record, not a document store. There is one, it is overwritten, and a reader must
+// treat it as hostile: a hand-edited, truncated or older-version record has to degrade to "no sketch",
+// never to a boot at NaN. That is the same rule `cameraFromHash` is written under, for the same reason —
+// state that survives a reload is state a user can edit by hand.
+export const SKETCH_KEY = 'routing.sketch.v1';
+// A cap, so a pathological sketch cannot fill the origin's storage quota and take the feature down for
+// every later save. 5 000 points is ~150 kB — far past any hand-drawn sketch, and past a cleaned GPX
+// import too; beyond it the save is refused rather than truncated, because half a sketch restored as if
+// it were whole is worse than none.
+export const SKETCH_MAX_PTS = 5000;
+
+export function sketchToJson(points, at = 0) {
+  const pts = [];
+  for (const p of points || []) {
+    const lat = Array.isArray(p) ? p[0] : p?.lat, lon = Array.isArray(p) ? p[1] : p?.lon;
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    pts.push([+lat, +lon]);
+  }
+  if (pts.length > SKETCH_MAX_PTS) return null;             // refused, not truncated — see the cap note
+  return JSON.stringify({ v: 1, t: at, pts });
+}
+
+// The saved points as `[[lat, lon], …]`, or `[]` for anything this version cannot vouch for.
+export function sketchFromJson(text) {
+  let rec = null;
+  try { rec = JSON.parse(text || ''); } catch { return []; }
+  if (!rec || rec.v !== 1 || !Array.isArray(rec.pts) || rec.pts.length > SKETCH_MAX_PTS) return [];
+  const out = [];
+  for (const p of rec.pts) {
+    if (!Array.isArray(p) || p.length !== 2) return [];      // a malformed ENTRY condemns the record:
+    const [lat, lon] = p;                                    // a sketch missing its 4th point is a
+    if (typeof lat !== 'number' || typeof lon !== 'number'   // DIFFERENT sketch, silently
+     || !isFinite(lat) || !isFinite(lon)
+     || lat < -85 || lat > 85 || lon < -180 || lon > 180) return [];
+    out.push([lat, lon]);
+  }
+  return out;
+}
+
 // PLAN-LAYERS §5b — the matched route's length, as LOFT measured it.
 //
 // Parsed out of the summary, never recomputed. `emit_route` (map_kernel.loft) prints

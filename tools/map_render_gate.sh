@@ -51,6 +51,27 @@ elif [ "$ptr" -lt 4 ]; then
 else
   echo "  ✓ every MAP pointer listener is in rough.mjs ($ptr of them, one dispatcher); $exempt chrome listener(s) exempt"
 fi
+# PLAN-LAYERS §5c — EVERY CDP DRIVER MUST CLEAR local storage before it navigates.
+#
+# The app autosaves the sketch there, and every gate launches chromium with a PERSISTENT
+# `--user-data-dir`, so one run's sketch restores into the next run's assertions — a restored sketch
+# re-matches at boot, which moves the range-read and match counters other gates assert on. store-app.mjs's
+# camera comment named this exact failure as the reason the camera is NOT in localStorage, and named its
+# cure's weak point too: "staying deterministic would have meant clearing storage in all seven, with the
+# eighth forgetting to". This is the eighth-forgetting check. A new driver fails here until it clears.
+missing=""
+for drv in "$here"/browser/cdp_*.mjs; do
+  grep -q "Page.navigate" "$drv" || continue                  # not a driver that boots a page
+  grep -q "clearDataForOrigin" "$drv" || missing="$missing $(basename "$drv")"
+done
+if [ -n "$missing" ]; then
+  echo "  FAIL: CDP driver(s) navigate without clearing local storage —$missing"
+  echo "        add: await call('Storage.clearDataForOrigin', { origin: new URL(<url>).origin, storageTypes: 'local_storage' });"
+  e0rc=1
+else
+  echo "  ✓ every CDP driver clears local storage before navigating (the sketch autosave cannot leak between runs)"
+fi
+
 # Reaching the kernel outside the queue re-opens P4 — and `runKernel` keeps ONE resolve slot, so a second
 # road to it does not merely race, it orphans a promise. The APP section (everything above the test-only
 # __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly three calls:

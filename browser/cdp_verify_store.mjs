@@ -23,6 +23,11 @@ ws.addEventListener('message', (e) => {
 });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
+// PLAN-LAYERS §5c — the sketch autosave lives in localStorage, and every gate reuses its chromium
+// --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
+// EVERY driver, and map_render_gate checks the line is present: the app's camera comment predicted
+// the "eighth one forgets" case exactly, so it is closed by a check rather than by discipline.
+await call('Storage.clearDataForOrigin', { origin: new URL(app).origin, storageTypes: 'local_storage' });
 const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true })).result?.result?.value;
 
 // ⚠ THE CAMERA IS PINNED, not inherited. `DEFAULT_CAM` opens on the whole country (PLAN-SCALE §6i O1),
@@ -624,6 +629,46 @@ else if (!(ks.rangeReads > 0)) {
   // most of them however little data it needs. The fraction becomes an assertion at C2, where a block is
   // ~2 GB and a viewport is a rounding error in it. What IS asserted here is the mechanism: range reads
   // happen, the whole-file load is gone, and the route is unchanged.
+}
+
+// 9. PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD.
+//
+// The reported failure was a session that ended with the work in it: a route drawn, the page reloaded, the
+// points gone — and the kernel had stopped answering, so there was no way to draw them again. This is the
+// only assertion that can speak to it, because it is the only one that RELOADS: everything else about the
+// autosave (the throttle, the record format) is a unit test, and none of it proves the app comes back.
+//
+// Left last on purpose — it navigates, which resets every hook above it.
+{
+  const want = [[52.2412299, 6.8834496], [52.2694705, 6.9164085], [52.3116272, 6.9088554]];
+  await ev(`window.__rough.setPoints(${JSON.stringify(want.map(([lat, lon], i) => ({ id: i + 1, lat, lon })))}), 1`);
+  // THE PROMISE IS "the record matches the sketch within 10 s of the last change", and that is what is
+  // asserted — not the mechanism. The first version of this check asserted the LEADING edge and failed at
+  // 5 points for a 3-point sketch, correctly: the previous test had armed the window seconds earlier, so
+  // this edit was the one that waits for the trailing write. Asserting the edge instead of the promise
+  // would have made the gate demand a design nobody chose.
+  const count = async () => {
+    const s = await ev(`localStorage.getItem('routing.sketch.v1')`);
+    try { return JSON.parse(s).pts.length; } catch { return -1; }
+  };
+  let n = await count(), edge = 'leading';
+  if (n !== want.length) { await new Promise((r) => setTimeout(r, 11000)); n = await count(); edge = 'trailing'; }
+  if (n !== want.length) {
+    console.log(`  FAIL: 10 s after the edit the record holds ${n} points, not ${want.length}`); ok = false;
+  } else {
+    console.log(`  ✓ the sketch is stored within its window (${n} points, ${edge} edge)`);
+    await call('Page.navigate', { url: app + GATE_CAM });
+    let back = null;
+    for (let i = 0; i < 160; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const s = await ev('window.__storeApp?JSON.stringify(window.__storeApp):""');
+      if (s && JSON.parse(s).ready) { back = JSON.parse(await ev('JSON.stringify(window.__rough.points)') || '[]'); break; }
+    }
+    const same = back && back.length === want.length
+      && back.every((p, i) => Math.abs(p.lat - want[i][0]) < 1e-9 && Math.abs(p.lon - want[i][1]) < 1e-9);
+    if (!same) { console.log(`  FAIL: the sketch did not survive the reload — ${JSON.stringify(back)}`); ok = false; }
+    else console.log(`  ✓ the sketch survives a reload: ${back.length} points restored, in order, at their own coordinates`);
+  }
 }
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');
