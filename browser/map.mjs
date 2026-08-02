@@ -185,6 +185,28 @@ export const ROAD_STYLES = {
   busway:      { core: '#f2dede', casing: '#c9b4b4', w: 1.4, minZoom: 14 },
   platform:    { core: '#e4e2df', casing: '#c2bdb6', w: 1.0, minZoom: 16 },
 };
+// PLAN-LAYERS §4 — THE ZOOM A CLASS ACTUALLY DEBUTS AT, given the band its block serves.
+//
+// `minZoom` above was written when detailed roads existed at every zoom. They do not: since PLAN-SCALE
+// §6i the roads blocks declare `zoom: [14, 99]`, so at z13.99 there are no roads at all and at z14 there
+// are all of them. Inside that band ten of the fourteen rungs can no longer exclude anything, and the
+// only remaining effect of the ladder is to delete `path`/`foot`/`service` for ONE zoom step — which is
+// the reported bug: at z14.6 a forest keeps its tracks and cycleways and loses its footpaths, and the
+// network on them goes with it.
+//
+// So a class debuts at its own zoom, or at the floor of the band it is served in, whichever is EARLIER: a
+// block draws what it holds for every zoom it claims to serve. The ladder is kept, not deleted — it is
+// the right rule for a block whose band starts lower (a generalised roads level would carry fewer classes
+// and want them ordered), and deleting rungs that are currently inert would leave nothing to restore.
+//
+// ⚠ ONE FUNCTION, both draw paths. The flat path and the object path each had their own copy of the
+// `z < style.minZoom` test, and a rule in two copies is a rule until someone edits one of them.
+export function roadDebut(cls, bandFloor = 0) {
+  const st = ROAD_STYLES[cls];
+  if (!st) return Infinity;                       // no style row ⇒ never drawn (see ROAD_ORDER's warning)
+  return bandFloor > 0 && st.minZoom > bandFloor ? bandFloor : st.minZoom;
+}
+
 // Draw order (back → front): minor/paths first, motorways on top.
 // ⚠ THIS LIST IS WHAT DRAWS. `_drawStreetsFlat` buckets by class and then strokes `for (const cls of
 // ROAD_ORDER)`, so a class with a perfect ROAD_STYLES row and no entry here is collected and silently
@@ -602,6 +624,98 @@ export function orientBarriers(barriers, F) {
 // emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
 // including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
 // re-match redraw correctly rather than concatenate onto the previous route.
+// PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD, because the kernel does not always survive one.
+//
+// What is saved is the POINTS THE USER PLACED, not the matched route: the sketch is the work, the route
+// is derived from it. Restoring the sketch re-matches; restoring a route would give you a line you can
+// look at and cannot edit, and if the two ever disagreed the derived one would be the lie.
+//
+// ⚠ It is a RECOVERY record, not a document store. There is one, it is overwritten, and a reader must
+// treat it as hostile: a hand-edited, truncated or older-version record has to degrade to "no sketch",
+// never to a boot at NaN. That is the same rule `cameraFromHash` is written under, for the same reason —
+// state that survives a reload is state a user can edit by hand.
+export const SKETCH_KEY = 'routing.sketch.v1';
+// A cap, so a pathological sketch cannot fill the origin's storage quota and take the feature down for
+// every later save. 5 000 points is ~150 kB — far past any hand-drawn sketch, and past a cleaned GPX
+// import too; beyond it the save is refused rather than truncated, because half a sketch restored as if
+// it were whole is worse than none.
+export const SKETCH_MAX_PTS = 5000;
+
+export function sketchToJson(points, at = 0) {
+  const pts = [];
+  for (const p of points || []) {
+    const lat = Array.isArray(p) ? p[0] : p?.lat, lon = Array.isArray(p) ? p[1] : p?.lon;
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    pts.push([+lat, +lon]);
+  }
+  if (pts.length > SKETCH_MAX_PTS) return null;             // refused, not truncated — see the cap note
+  return JSON.stringify({ v: 1, t: at, pts });
+}
+
+// The saved points as `[[lat, lon], …]`, or `[]` for anything this version cannot vouch for.
+export function sketchFromJson(text) {
+  let rec = null;
+  try { rec = JSON.parse(text || ''); } catch { return []; }
+  if (!rec || rec.v !== 1 || !Array.isArray(rec.pts) || rec.pts.length > SKETCH_MAX_PTS) return [];
+  const out = [];
+  for (const p of rec.pts) {
+    if (!Array.isArray(p) || p.length !== 2) return [];      // a malformed ENTRY condemns the record:
+    const [lat, lon] = p;                                    // a sketch missing its 4th point is a
+    if (typeof lat !== 'number' || typeof lon !== 'number'   // DIFFERENT sketch, silently
+     || !isFinite(lat) || !isFinite(lon)
+     || lat < -85 || lat > 85 || lon < -180 || lon > 180) return [];
+    out.push([lat, lon]);
+  }
+  return out;
+}
+
+// PLAN-LAYERS §5b — the matched route's length, as LOFT measured it.
+//
+// Parsed out of the summary, never recomputed. `emit_route` (map_kernel.loft) prints
+// `len=<metres>m` from `path_length_m` — a geodesic length over the matched geometry — for every match,
+// including the streamed session path. A haversine over `map.route` here would be a SECOND answer to a
+// question the kernel already answers, and two answers to one question is how this repo ended up with
+// six copies of one zoom ladder (HANDOFF §0). Returns null when the line carries no length, which is
+// what an error summary (`SUMMARY error=need>=2pts`) looks like.
+export function routeDistanceM(summary) {
+  const m = /(?:^|\s)len=([0-9]+(?:\.[0-9]+)?)m(?:\s|$)/.exec(summary || '');
+  return m ? +m[1] : null;
+}
+
+// Metres → what a person reads off a route: `840 m` below a kilometre, `8.2 km` above it. ONE decimal is
+// the honest resolution — a second one claims a precision the drawn sketch never had.
+export function formatDistance(m) {
+  if (!(typeof m === 'number' && isFinite(m) && m >= 0)) return '';
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+
+const xmlEscape = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+// PLAN-LAYERS §5b — the matched route as a GPX 1.1 document.
+//
+// The SAME document `routing_kernel::gpx_export` writes, so a file from this app and a file from the
+// server client are the same format rather than two dialects of it. The one difference is `<ele>`, and
+// it is the format's own branch rather than a variant: `gpx_export` omits the element for any point
+// whose elevation is ELEV_NONE, and the serverless app has no elevation source at all — so every point
+// takes that branch.
+//
+// Built here rather than asked of the kernel because the route is ALREADY in the browser (`map.route`).
+// The old client had to ask (`gpx.js` → `ws.requestExport` → `server.loft`); there is no server now, and
+// a round-trip to wasm to re-serialise points JS is holding would be work for its own sake.
+export function routeGpx(points, name = 'route') {
+  let s = '<?xml version="1.0" encoding="UTF-8"?>\n';
+  s += '<gpx version="1.1" creator="routing" xmlns="http://www.topografix.com/GPX/1/1">\n';
+  s += `  <trk><name>${xmlEscape(name)}</name><trkseg>\n`;
+  for (const p of points || []) {
+    const lat = Array.isArray(p) ? p[0] : p?.lat, lon = Array.isArray(p) ? p[1] : p?.lon;
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    s += `    <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`;
+  }
+  s += '  </trkseg></trk>\n</gpx>\n';
+  return s;
+}
+
 // PLAN-SCALE §6i O2 — SPLIT A SKETCH'S LONG SEGMENTS BEFORE MATCHING.
 //
 // This is a MATCHER, not an A-to-B router: the corridor is a tube around the drawn line, so two points
@@ -873,7 +987,11 @@ export class RouteMap {
   // and for the parity probe, which needs the boxed form to compare against.
   // Roads AND the barrier nodes ride the same `view` output, so they land through one door — a second
   // entry point is how one of them ends up a frame behind the other.
-  loadRoadsFlat(text) {
+  // `bandFloor` is the lowest zoom the blocks these roads came from claim to serve (the index's `zoom[0]`,
+  // PLAN-SCALE §6i O2). It rides with the DATA rather than being read from the camera, because it is a
+  // property of the block, and the camera can be anywhere inside its band — see `roadDebut`.
+  loadRoadsFlat(text, bandFloor = 0) {
+    this.roadsBandFloor = bandFloor;
     this.streetsFlat = parseStreetsFlat(text);
     this.barriers = orientBarriers(
       parseBarriers((text || '').split('\n').filter((l) => l[0] === 'G' && l[1] === ' ').map((l) => l.slice(2))),
@@ -1242,9 +1360,19 @@ export class RouteMap {
     const clk = this._timeLayers && typeof performance !== 'undefined' ? () => performance.now() : null;
     const t = clk ? { at: clk(), ms: {} } : null;
     const mark = (k) => { if (t) { const n = clk(); t.ms[k] = n - t.at; t.at = n; } };
+    this._drawnCam = { ...this.camera };       // what the pixels about to be painted describe
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#f2efe9';                 // Carto land background
     ctx.fillRect(0, 0, W, H);
+    // THE LAST GOOD FRAME, held while a view whose SOURCE changed is in flight (PLAN-SCALE §6i).
+    //
+    // Crossing a zoom band swaps the store the kernel holds, so the map it was showing is discarded the
+    // instant the new load starts — and a paged view is 277–583 range requests, which is seconds. The
+    // screen went blank for all of it, which reads as "the app is broken" rather than "the app is
+    // loading". §6i's design says the overview should stay drawn underneath; this is that promise kept
+    // without a second store in the kernel: keep the pixels, stretched to the new camera, until real data
+    // replaces them. It is deliberately BELOW everything, so anything already loaded draws over it.
+    this._drawHeldFrame();
     mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     // The base map is either blitted from cached blocks (step 15) or drawn directly; the route and the
@@ -1464,6 +1592,43 @@ export class RouteMap {
   // index is built for ONE viewport window — so a block baked before a data load can be missing features
   // that window did not include. Anything that replaces layer data must call this, or the map shows a
   // stale tile that no amount of panning repairs.
+  // Capture what is on screen now, with the camera it was drawn at. Cheap — one canvas blit — and only
+  // ever called when a view is about to change SOURCE, which is a handful of times in a session.
+  holdFrame() {
+    if (!this.canvas || !this.canvas.width || typeof document === 'undefined') return;
+    const c = this._heldCanvas || (this._heldCanvas = document.createElement('canvas'));
+    if (c.width !== this.canvas.width || c.height !== this.canvas.height) {
+      c.width = this.canvas.width; c.height = this.canvas.height;
+    }
+    const cx = c.getContext('2d');
+    cx.clearRect(0, 0, c.width, c.height);
+    cx.drawImage(this.canvas, 0, 0);
+    // ⚠ The camera the PIXELS were drawn at, not the one the camera object holds now. They are usually
+    // the same — a wheel zoom renders every step, so by the time a view is requested the canvas already
+    // matches — but a caller that moves the camera and asks for a view without rendering between would
+    // otherwise pin the old picture to the new camera and blit it unscaled.
+    this._held = { cam: { ...(this._drawnCam || this.camera) }, w: this.width, h: this.height };
+  }
+
+  releaseFrame() { this._held = null; }
+
+  // Blit the held frame where it belongs under the CURRENT camera: same ground, so it slides and scales
+  // with a pan or a zoom exactly as the map does. Wrong in detail after a big move — it is stretched
+  // pixels, not data — and right in the only way that matters, which is that the country stays under you
+  // while the detail arrives.
+  _drawHeldFrame() {
+    const hf = this._held;
+    if (!hf || !this._heldCanvas) return false;
+    const k = Math.pow(2, this.camera.zoom - hf.cam.zoom);
+    const a = projectWorld(hf.cam.lon, hf.cam.lat, this.camera.zoom);
+    const b = projectWorld(this.camera.lon, this.camera.lat, this.camera.zoom);
+    const w = hf.w * k, h = hf.h * k;
+    const x = (a.x - b.x) + this.width / 2 - w / 2;
+    const y = (a.y - b.y) + this.height / 2 - h / 2;
+    try { this.ctx.drawImage(this._heldCanvas, x, y, w, h); } catch { return false; }
+    return true;
+  }
+
   invalidateBlocks() { this._blocks = new Map(); this._blockZoom = null; return this; }
 
   // The projection constants for this frame, hoisted so the per-vertex loop is pure arithmetic.
@@ -1757,6 +1922,7 @@ export class RouteMap {
   _drawStreetsFlat() {
     const F = this.streetsFlat, ctx = this.ctx, z = this.camera.zoom, scale = roadScale(z);
     const K = this._flatK(), win = this._screen();
+    const floor = this.roadsBandFloor || 0;             // the band the blocks behind these roads serve
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     let s = this._streetScratch;
     if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
@@ -1764,15 +1930,39 @@ export class RouteMap {
     // The signposted network for the CURRENT activity, collected in the same pass — one bitmask test per
     // way, and nothing at all when the activity asks for no network (driving).
     const wantNet = netForProfile(this.profile), netRuns = [];
+    // PLAN-LAYERS §4 — the instrument the network gate reads, and it is STRUCTURAL on purpose.
+    //
+    // Three counts, each derived independently by the loop below: how many signposted ways this viewport
+    // holds, how many could not be drawn for a reason that is not the class (degenerate geometry, or no
+    // vertex near the screen), and how many were actually stroked as network. The gate asserts
+    // `drawn + skipped == inView`, so re-coupling the route to the road class breaks the identity — the
+    // ways would be neither drawn nor skipped. A plain "dropped by class" counter would have gone to a
+    // constant zero the moment it was fixed, and a gate that asserts a constant is a gate that has stopped
+    // asking. Read off the code that DRAWS, never off the style table: a table can be right while the draw
+    // path asks a stale copy (HANDOFF §0 — that ladder lived in six copies, every test green).
+    let netInView = 0, netSkipped = 0;
     let w = 0, vis = 0;
     for (let i = 0; i < F.n; i++) {
       const o4 = i * 4;
       if (F.bb[o4 + 1] < win.mnla || F.bb[o4] > win.mxla
        || F.bb[o4 + 3] < win.mnlo || F.bb[o4 + 2] > win.mxlo) continue;
       const cls = F.clsNames[F.cls[i]], style = ROAD_STYLES[cls];
-      if (!style || z < style.minZoom) continue;
+      const signposted = !!(wantNet && F.net && (F.net[i] & wantNet));
+      if (signposted) netInView++;
+      const debut = roadDebut(cls, floor);
+      // PLAN-LAYERS §4, invariant R — A MARK DRAWS WHEN ITS OWN LAYER SAYS SO.
+      //
+      // The class gate decides whether the ROAD is stroked. It used to decide the ROUTE too, because the
+      // network was collected after this `continue` — so a hiking route was drawn where it followed a
+      // `track` (debut z14) and dropped forty metres later where it followed a `path` (debut z15). What
+      // you saw at z14.6 was a scatter of disconnected stubs; the route had not changed, the substrate had.
+      //
+      // A signposted way is therefore projected even when its own class is not shown yet: it contributes
+      // its network band and no road stroke.
+      const classShown = z >= debut;
+      if (!classShown && !signposted) continue;
       const a = F.off[i], len = F.off[i + 1] - a;
-      if (len < 2) continue;
+      if (len < 2) { if (signposted) netSkipped++; continue; }
       const at = w;
       let on = false;
       for (let k = 0; k < len; k++) {
@@ -1783,12 +1973,19 @@ export class RouteMap {
         s[w * 2] = x; s[w * 2 + 1] = y; w++;
         if (!on && x >= -60 && x <= this.width + 60 && y >= -60 && y <= this.height + 60) on = true;
       }
-      if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
-      const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
-      (bucket[cls] || (bucket[cls] = [])).push(at, len);
-      if (wantNet && F.net && (F.net[i] & wantNet)) netRuns.push(at, len);
-      vis++;
+      // `_inView` — rewind the scratch, draw nothing. Not a class decision, so a signposted way that lands
+      // here is SKIPPED rather than missing: the gate's identity has to distinguish the two.
+      if (!on && !this._noVertexCull) { w = at; if (signposted) netSkipped++; continue; }
+      if (classShown) {                                      // the ROAD stroke, which the class does own
+        const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
+        (bucket[cls] || (bucket[cls] = [])).push(at, len);
+        vis++;
+      }
+      if (signposted) netRuns.push(at, len);
     }
+    // Three integers per render, so the gate can assert an IDENTITY on the drawing rather than read a
+    // style table: drawn + skipped == inView, or the network is being cut by something that is not its own.
+    this._netStats = { zoom: z, want: wantNet, inView: netInView, skipped: netSkipped, drawn: netRuns.length / 2 };
     const strokeRun = (at, len) => {
       ctx.beginPath();
       ctx.moveTo(s[at * 2], s[at * 2 + 1]);
@@ -1843,7 +2040,7 @@ export class RouteMap {
     for (let i = 0; i < this.streets.length; i++) {
       if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
       const st = this.streets[i];
-      const style = ROAD_STYLES[st.cls]; if (!style || z < style.minZoom) continue;
+      const style = ROAD_STYLES[st.cls]; if (!style || z < roadDebut(st.cls, this.roadsBandFloor || 0)) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
       const entry = { st, px };
       const bucket = st.shut ? byShut : byClass;

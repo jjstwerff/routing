@@ -37,7 +37,9 @@ ptr=$(grep -cE "addEventListener\('(pointerdown|pointerup|pointermove|pointercan
 # So chrome receivers are exempt BY NAME, and the exemptions are printed. That keeps the property the
 # rule is really asserting ("no second road into the sketch") while making each exception a deliberate
 # line in this file rather than something a grep happened not to see.
-chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel)\\."
+# `routeGpxBtn` is the GPX download button in the route bar (PLAN-LAYERS §5b) — named chrome that turns
+# the route already on screen into a file, and touches the sketch not at all.
+chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel|routeGpxBtn)\\."
 stray=$(grep -nE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" \
         "$here/browser/store-app.mjs" "$here/browser/map.mjs" 2>/dev/null \
         | grep -vE ":[[:space:]]*$chrome_rx" || true)
@@ -49,6 +51,27 @@ elif [ "$ptr" -lt 4 ]; then
 else
   echo "  ✓ every MAP pointer listener is in rough.mjs ($ptr of them, one dispatcher); $exempt chrome listener(s) exempt"
 fi
+# PLAN-LAYERS §5c — EVERY CDP DRIVER MUST CLEAR local storage before it navigates.
+#
+# The app autosaves the sketch there, and every gate launches chromium with a PERSISTENT
+# `--user-data-dir`, so one run's sketch restores into the next run's assertions — a restored sketch
+# re-matches at boot, which moves the range-read and match counters other gates assert on. store-app.mjs's
+# camera comment named this exact failure as the reason the camera is NOT in localStorage, and named its
+# cure's weak point too: "staying deterministic would have meant clearing storage in all seven, with the
+# eighth forgetting to". This is the eighth-forgetting check. A new driver fails here until it clears.
+missing=""
+for drv in "$here"/browser/cdp_*.mjs; do
+  grep -q "Page.navigate" "$drv" || continue                  # not a driver that boots a page
+  grep -q "clearDataForOrigin" "$drv" || missing="$missing $(basename "$drv")"
+done
+if [ -n "$missing" ]; then
+  echo "  FAIL: CDP driver(s) navigate without clearing local storage —$missing"
+  echo "        add: await call('Storage.clearDataForOrigin', { origin: new URL(<url>).origin, storageTypes: 'local_storage' });"
+  e0rc=1
+else
+  echo "  ✓ every CDP driver clears local storage before navigating (the sketch autosave cannot leak between runs)"
+fi
+
 # Reaching the kernel outside the queue re-opens P4 — and `runKernel` keeps ONE resolve slot, so a second
 # road to it does not merely race, it orphans a promise. The APP section (everything above the test-only
 # __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly three calls:
@@ -114,7 +137,14 @@ echo "== every road class is named, and every name is drawable =="
 node - "$here" <<'NODE' || exit 1
 const fs = require('fs'), path = require('path'), here = process.argv[2];
 const read = (p) => fs.readFileSync(path.join(here, p), 'utf8');
-const emitted = new Set([...read('tools/gen-tiles.loft').matchAll(/return\s+(\d+)\s*;/g)].map(m => +m[1]));
+// ⚠ SCOPED TO `class_of`, not to the file. It used to scan all of gen-tiles.loft for `return <n>;`, which
+// works only while that file contains exactly one function shaped like a lookup table. PLAN-LAYERS §3 added
+// `kind_bit` (returning the NET_* bits 1/2/4/8/16) and the gate promptly reported class 16 as an unnamed
+// ROAD CLASS — 1/2/4/8 having been absorbed silently, because they collide with real class numbers. So the
+// failure was in the instrument, and the dangerous half is the four it did NOT report. The `class_name`
+// side was already scoped this way; this is the same slice on the other end.
+const classOfFn = read('tools/gen-tiles.loft').split('fn class_of')[1].split('\n}')[0];
+const emitted = new Set([...classOfFn.matchAll(/return\s+(\d+)\s*;/g)].map(m => +m[1]));
 const nameFn = read('lib/map_kernel/src/map_kernel.loft').split('fn class_name')[1].split('\n}')[0];
 const named = new Map([...nameFn.matchAll(/tp\s*==\s*(\d+)\s*\{\s*"([a-z_]+)"/g)].map(m => [+m[1], m[2]]));
 import('file://' + path.join(here, 'browser/map.mjs')).then((M) => {

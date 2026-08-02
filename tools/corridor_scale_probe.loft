@@ -55,7 +55,7 @@ fn main() {
     big += TTile { tkey: ot.tkey, ox: ot.ox, oy: ot.oy, oh: ot.oh, roads: [], steps: [] };
     nt = big[ot.tkey];
     if nt != null {
-      for orr in ot.roads { nt.roads += [TRoad { tp: orr.tp, flags: orr.flags, steps: orr.steps }]; }
+      for orr in ot.roads { nt.roads += [TRoad { tp: orr.tp, flags: orr.flags, nets: orr.nets, steps: orr.steps }]; }
       for os in ot.steps { nt.steps += [TStep { x: os.x, y: os.y, h: os.h }]; }
     }
   }

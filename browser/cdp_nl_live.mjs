@@ -51,6 +51,11 @@ ws.addEventListener('message', (m) => {
 });
 
 await send('Page.enable');
+// PLAN-LAYERS §5c — the sketch autosave lives in localStorage, and every gate reuses its chromium
+// --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
+// EVERY driver, and map_render_gate checks the line is present: the app's camera comment predicted
+// the "eighth one forgets" case exactly, so it is closed by a check rather than by discipline.
+await send('Storage.clearDataForOrigin', { origin: new URL(pageUrl).origin, storageTypes: 'local_storage' });
 await send('Runtime.enable');
 await send('Page.navigate', { url: pageUrl + CAM });
 for (let i = 0; i < 120; i++) { if (await ev('!!(window.__perfHooks && window.__perfHooks.matchSpec)')) break; await sleep(500); }

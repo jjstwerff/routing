@@ -1,0 +1,9 @@
+r100 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tname=Pieterpad%20%Noord,network=nwn,osmc:symbol=red:white:red_bar,ref=LAW%20%9,route=hiking,type=route Mw1@,w2@,w3@
+r101 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tnetwork=rwn,network:type=node_network,ref=12-34,route=foot,type=route Mw2@,w4@
+r102 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tname=Schelde-Rheinroute,network=ncn,ref=LF13,route=bicycle,type=route Mw4@,w5@
+r103 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tcolour=blue,route=mtb,type=route Mw5@
+r104 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tnetwork=rhn,route=horse,type=route Mw6@
+r105 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tnetwork=lcn,route=inline_skates,type=route Mw7@
+r106 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tname=Not%20%a%20%path%20%route,route=railway,type=route Mw8@
+r107 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tname=Ronde%2c%%20%kort,network=rcn,ref=RCN%20%7,route=bicycle,type=route Mw1@
+n999 v1 dV c0 t2020-01-01T00:00:00Z i0 u Tamenity=bench x6.0 y52.0

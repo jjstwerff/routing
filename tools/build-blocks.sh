@@ -135,7 +135,7 @@ fp_of() {  # $1 = stamp file, $2 = recipe, $3.. = outputs to discard when it cha
 }
 fp_of "$work/$id.recipe"     "w/highway n/barrier"                 "$roads"
 fp_of "$work/$id.exportrecipe" "linestring,point | -u type_id"     "$seq"
-fp_of "$work/$id.netrecipe"  "r/route=hiking,foot,bicycle,mtb"     "$nets"
+fp_of "$work/$id.netrecipe"  "r/route=v2 walk,cycle,mtb,horse,skate" "$nets"
 if newer "$roads" "$base_pbf"; then echo "  roads filter up to date"; else
   echo "  osmium tags-filter w/highway n/barrier"
   # BOTH ways and barrier NODES. A gate across a path is a node, so a way-only filter cannot see one —
@@ -168,7 +168,9 @@ echo "== R3b route networks =="
 if newer "$nets" "$base_pbf"; then echo "  networks up to date"; else
   python3 "$here/tools/route_networks.py" "$base_pbf" "$nets" || { echo "FAIL: route_networks.py"; exit 1; }
 fi
-echo "  networks: $(wc -l < "$nets") ways"
+# `wc -l` stopped being a way count when the sidecar grew its route table (PLAN-LAYERS §3): the file
+# now holds R, legacy and M records. The script's own report line is the honest one.
+echo "  networks: $(grep -c '^[0-9]' "$nets") ways, $(grep -c '^R\t' "$nets") routes"
 
 # --- R4 · generate ---------------------------------------------------------------------------------
 echo "== R4 generate =="

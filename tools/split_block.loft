@@ -16,7 +16,7 @@
 //   loft --native --lib lib tools/split_block.loft <in.store> <west.store> <east.store> <lon_deg>
 #cwd
 
-use routing_kernel::(TTile, TBarrier, TRoad, TStep, cell_ix);
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, TRoute, TRLink, cell_ix);
 
 fn copy_barriers(src: TTile) -> integer { n = 0; for _b in src.barriers { n += 1; } n }
 
@@ -25,11 +25,17 @@ fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
   t = dst[src.tkey];
   n = 0;
   if t != null {
-    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; n += 1; }
+    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, nets: r.nets, steps: r.steps }]; n += 1; }
     for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
     // ⚠ EVERY collection, or the split silently loses one. Barriers were added to TTile after this tool
     // was written, and a copier that omits a field does not fail — it produces a smaller, wronger block.
     for b in src.barriers { t.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
+    // PLAN-LAYERS §3 — the route table and its links. ⚠ `TRLink.road` is an index into THIS tile's
+    // `roads`, so a copier may only carry them verbatim while it copies every road in order, which is
+    // what the loop above does. A copier that ever FILTERS roads must remap these, not copy them.
+    for rt in src.routes { t.routes += [TRoute { rid: rt.rid, kind: rt.kind, level: rt.level, flags: rt.flags,
+                                                colour: rt.colour, rref: rt.rref, name: rt.name }]; }
+    for rl in src.rlinks { t.rlinks += [TRLink { road: rl.road, route: rl.route }]; }
   }
   n
 }

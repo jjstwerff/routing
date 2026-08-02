@@ -5,7 +5,9 @@
 // loft-wasm kernel for the visible viewport (`view <bbox>`) and the matched route (`match`), and renders
 // on a 2D canvas. No server: JS does pixels (map.mjs), loft does the map/route (store-kernel.mjs).
 import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewRenderLists,
-         cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES } from './map.mjs';
+         cameraFromHash, hashForCamera, densifySketch, isSketchEcho, PROFILES,
+         routeDistanceM, formatDistance, routeGpx,
+         SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
@@ -113,6 +115,17 @@ const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_UR
 // the case this exists to prevent, and it downloaded a 123 MB roads store whole at z8.
 const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z)
   || (inBandOf(coverage.block, z) ? ROADS : '');
+// PLAN-LAYERS §4 — the lowest zoom the blocks answering this viewport's ROADS claim to serve.
+//
+// The renderer needs it because a class ladder written for continuous data now lives inside a band: below
+// the floor there are no roads at all, so a class debut ABOVE the floor deletes content for part of a band
+// the block says it serves. `roadDebut` applies it; this is where the index's own `zoom[0]` is read.
+// 0 when the index declares no band, which means "no floor" and leaves the ladder exactly as it was.
+const roadsFloorFor = (b, z) => {
+  const chosen = blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z);
+  const floors = chosen.map((x) => (Array.isArray(x.zoom) ? x.zoom[0] : 0));
+  return floors.length ? Math.min(...floors) : 0;
+};
 // PLAN-SCALE §6f F3 — the BASE map is a covering set too, now that a country is three base regions. A
 // viewport on a cut needs both sides: one region answers a straddling z16 viewport with 13 946 of its
 // 25 862 features, i.e. half the screen. Falls back to LAYOUT (the camera's own block, possibly empty),
@@ -368,12 +381,17 @@ async function ensureViewNow() {
   // crossing the handover is exactly that.
   const src = `${baseFor(box, zoom0)}|${roadsFor(box, zoom0)}|${baseModeFor(box, zoom0)}|${roadsModeFor(box, zoom0)}`;
   if (loadedSrc === src && covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
+  // A view whose SOURCE changed discards the store the map is drawn from, and a paged one takes hundreds
+  // of range requests to replace it — so hold the last good frame and keep painting it, stretched to the
+  // camera, until real data lands. Only on a source change: a plain pan already has its data and holding
+  // a frame there would put stale pixels under a live map for no reason.
+  if (loadedSrc !== null && loadedSrc !== src) map.holdFrame();
   const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
   hud.textContent = 'loading map…';
   const t0 = performance.now();
   const zoom = zoom0;
   const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
-  map.loadRoadsFlat(text);
+  map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
   // because loft no longer walks it either, the `expose` pin survives the whole session (§7f).
@@ -400,6 +418,7 @@ async function ensureViewNow() {
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
   loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
+  map.releaseFrame();                    // real data is in — the held pixels have done their job
   map.render();
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
   hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
@@ -493,14 +512,93 @@ async function streamedMatch(spec, isCurrent) {
 // The rough sketch (PLAN-EDIT E0). The layer owns the points and ALL pointer input; this wiring is the
 // whole of the app's side of editing, and every later gesture rides it unchanged — which is the point of
 // the chokepoints: a new gesture mutates the point list and calls commitEdit, and nothing else.
+// PLAN-LAYERS §5c — AUTOSAVE THE SKETCH, because a session can end without being finished.
+//
+// Reported from the live site: a route was drawn, the page was reloaded, and the sketch was gone — and
+// the kernel had stopped answering in the same session, so there was no way to redraw it either. The
+// second half is a bug to find; the first half is a promise the app was not making, and this makes it.
+//
+// ⚠ ONE WRITE PER 10 s, LEADING AND TRAILING. Leading, so the first point is protected the instant it
+// exists rather than 10 s later — the reported case is a session that ends unexpectedly, and a window
+// where the work is not yet saved is exactly the window that loses it. Trailing, so the LAST state of a
+// burst is what ends up stored. A drag emits ~33 commits a second and each one would otherwise be a
+// synchronous JSON serialise + storage write on the gesture's own frame.
+const SKETCH_SAVE_MS = 10000;
+let sketchTimer = null, sketchPending = null;
+function saveSketchNow() {
+  if (!sketchPending) return;
+  const text = sketchToJson(sketchPending, 0);
+  sketchPending = null;
+  try {
+    if (text === null) localStorage.removeItem(SKETCH_KEY);   // over the cap — see SKETCH_MAX_PTS
+    else localStorage.setItem(SKETCH_KEY, text);
+    window.__storeApp = { ...(window.__storeApp || {}), sketchSaves: (window.__storeApp?.sketchSaves || 0) + 1 };
+  } catch (e) {
+    // A full or disabled storage must not take the app down with it: the sketch on screen is still the
+    // truth, and this is a safety net, not the thing being edited.
+    console.warn('sketch autosave failed:', e);
+  }
+}
+function saveSketchSoon(pts) {
+  sketchPending = pts.map(([a, b]) => [a, b]);
+  if (sketchTimer) return;                       // a write is already scheduled — it will take the latest
+  saveSketchNow();                               // …but protect what exists NOW, before the window opens
+  sketchTimer = setTimeout(() => { sketchTimer = null; saveSketchNow(); }, SKETCH_SAVE_MS);
+}
+// The tab going away is the case the throttle would otherwise lose. `pagehide` covers reload, navigation
+// and close; `visibilitychange` covers a phone being switched away from, which on iOS is where a tab is
+// most likely to be discarded without ever firing anything else.
+window.addEventListener('pagehide', saveSketchNow);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveSketchNow(); });
+
 const rough = new RoughLayer(map, {
-  onCommit: (pts) => requestMatch(pts),
+  onCommit: (pts) => { saveSketchSoon(pts); return requestMatch(pts); },
   deleteButton: document.getElementById('rough-delete'),   // bound BY the layer — see rough.mjs bind()
   snackbar: { el: document.getElementById('undo-snackbar'),
               label: document.getElementById('undo-snack-label'),
               button: document.getElementById('undo-snack-btn') },
   boxElement: document.getElementById('select-box'),
 });
+
+// PLAN-LAYERS §5b — the route bar: how long this route is, and a way to take it with you.
+//
+// ONE function owns both, called from every path that lands a route (the sketch, and the `__match` test
+// hook), because a bar updated at two sites is a bar that eventually disagrees with the map. The length
+// is loft's — `routeDistanceM` parses it, nothing here measures geometry.
+const routeBar = document.getElementById('route-bar');
+const routeDistEl = document.getElementById('route-dist');
+const routeGpxBtn = document.getElementById('route-gpx');
+let routeSummary = '';
+function showRoute(summary) {
+  routeSummary = summary || '';
+  const m = routeDistanceM(routeSummary);
+  const show = m !== null && map.route.length >= 2;
+  if (routeDistEl) routeDistEl.textContent = show ? formatDistance(m) : '';
+  if (routeBar) routeBar.classList.toggle('hidden', !show);
+  window.__storeApp = { ...(window.__storeApp || {}), routeDistM: show ? m : null,
+                        routeDistText: show ? formatDistance(m) : '' };
+}
+
+// The document is built from `map.route` — the route on screen, not the one a summary describes — so a
+// download can never disagree with what is drawn. `<a download>` + an object URL is the whole mechanism;
+// revoked on the next tick, because a blob held for the session is a leak the size of the route.
+if (routeGpxBtn) {
+  routeGpxBtn.addEventListener('click', () => {
+    if (map.route.length < 2) return;
+    const dist = formatDistance(routeDistanceM(routeSummary));
+    const doc = routeGpx(map.route, `routing ${PROFILE}${dist ? ` · ${dist}` : ''}`);
+    const url = URL.createObjectURL(new Blob([doc], { type: 'application/gpx+xml' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = 'route.gpx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    // Counted so the browser gate can assert the REAL button did the work — a hook that builds the
+    // document by a private road would prove the format and nothing about the wiring.
+    window.__storeApp = { ...(window.__storeApp || {}), gpxBytes: doc.length,
+                          gpxPts: (doc.match(/<trkpt /g) || []).length,
+                          gpxDownloads: (window.__storeApp?.gpxDownloads || 0) + 1 };
+  });
+}
 
 // Below two points there is no route to draw. Clearing it here rather than leaving the last one on screen
 // is what makes a delete-down-to-one-point degrade instead of lying (PLAN-EDIT failure path 8).
@@ -509,6 +607,7 @@ function requestMatch(pts) {
     map.setRoute([]); map.render();
     hud.textContent = `sketch ${pts.length} pt — add ≥2 to route`;
     window.__storeApp = { ...(window.__storeApp || {}), routePts: 0, summary: '' };
+    showRoute('');
     return Promise.resolve();
   }
   hud.textContent = 'matching…';
@@ -546,7 +645,11 @@ function requestMatch(pts) {
       }
     }
     map.render();
-    hud.textContent = sum || '(no route)';
+    showRoute(sum);
+    // The distance leads, because it is the thing being asked; the kernel's own line stays behind it
+    // rather than being replaced, since it is what every gate and every bug report quotes.
+    const d = formatDistance(routeDistanceM(sum));
+    hud.textContent = sum ? (d ? `${d} · ${sum}` : sum) : '(no route)';
     window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum,
                           routePts: map.route.length, matchRuns: (window.__storeApp?.matchRuns || 0) + 1 };
   });
@@ -555,6 +658,24 @@ function requestMatch(pts) {
 map.onMove(ensureView);        // re-view when the camera settles outside the loaded area
 map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
 await ensureView();       // initial load
+
+// PLAN-LAYERS §5c — and the sketch comes back with it.
+//
+// AFTER the first view, not before: `setPoints` commits, which posts a match, and a match queued ahead of
+// the initial view would make the app's first act a corridor read for a route nobody is looking at yet.
+// The points are drawn either way — the sketch layer does not need the kernel to show them, which is the
+// whole point of restoring on the session where the kernel is what broke.
+//
+// Ids are minted fresh (1..n) rather than stored: they are session-local handles for the double-click
+// detector and the selection anchors, and a restored sketch is a new session's starting point.
+{
+  let saved = [];
+  try { saved = sketchFromJson(localStorage.getItem(SKETCH_KEY)); } catch { saved = []; }
+  if (saved.length) {
+    rough.setPoints(saved.map(([lat, lon], i) => ({ id: i + 1, lat, lon })));
+    window.__storeApp = { ...(window.__storeApp || {}), sketchRestored: saved.length };
+  }
+}
 window.__storeApp = { ...(window.__storeApp || {}), ready: true };
 
 // Perf hook (headless profiler, browser/cdp_profile.mjs): run a view/match with each phase timed
@@ -741,7 +862,7 @@ window.__perfHooks = {
     const zoom = map.camera.zoom;
     const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
     const t1 = performance.now();
-    map.loadRoadsFlat(text);
+    map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
     const t2 = performance.now();
     // PLAN-PERF §0 step 13 — the layout layers come from the EXPOSED STORE, not from `text`. `ensureView`
     // does this on every view, so this probe must too: leaving it out would report a view the app never
@@ -994,10 +1115,11 @@ window.__perfHooks = {
     // vacuous gate is worse than none.) So: bake, then load an EMPTY road set, then compare a cached
     // frame against a forced-cold one. Without invalidation the cached frame still shows the old roads.
     M.blocked = true; M.render();                          // populate the cache
+    const bandFloor = M.roadsBandFloor || 0;                // restored below — see PLAN-LAYERS §4
     M.loadRoadsFlat('');                                    // a real data change — must invalidate
     const staleness = this.renderDiff(() => { M.blocked = true; M.render(); },
                                       () => { M.blocked = true; M._blocks = new Map(); M._blockZoom = null; M.render(); }).diff;
-    M.loadRoadsFlat(lastViewText || '');                    // restore the real roads
+    M.loadRoadsFlat(lastViewText || '', bandFloor);         // restore the real roads, and their band
     return { coldVsWarm: coldVsWarm.diff, labelDiffs: labels, roundTrip, staleness,
              settleFrames, worstFrameMs: +worstMs.toFixed(1),
              vsSnapped: vsSnapped.diff, vsSnappedMaxDelta: vsSnapped.maxDelta,
@@ -1446,6 +1568,7 @@ async function timeMatch(pts, stream) {
 window.__match = (pts) => jobs.post('match', async (isCurrent) => {
   const text = await streamedMatch(pts.map(([a, b]) => `${a},${b}`).join(';'), isCurrent);
   const sum = map.loadMatch(text); map.render();
+  showRoute(sum);                        // the same bar the sketch path fills — one owner, one truth
   const f = map.route;
   window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum, routePts: f.length,
                         routeEnds: f.length ? [f[0], f[f.length - 1]] : null,

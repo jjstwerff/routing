@@ -23,6 +23,11 @@ ws.addEventListener('message', (e) => {
 });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
+// PLAN-LAYERS §5c — the sketch autosave lives in localStorage, and every gate reuses its chromium
+// --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
+// EVERY driver, and map_render_gate checks the line is present: the app's camera comment predicted
+// the "eighth one forgets" case exactly, so it is closed by a check rather than by discipline.
+await call('Storage.clearDataForOrigin', { origin: new URL(app).origin, storageTypes: 'local_storage' });
 const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true })).result?.result?.value;
 
 // ⚠ THE CAMERA IS PINNED, not inherited. `DEFAULT_CAM` opens on the whole country (PLAN-SCALE §6i O1),
@@ -74,6 +79,29 @@ if (!(s2.growSteps >= 2)) { console.log(`  FAIL: the route did not grow during t
 else if (!(s2.streamedPts >= s2.routePts)) { console.log(`  FAIL: streamed ${s2.streamedPts} pts but the finished route has ${s2.routePts} — stretches lost, not stitched`); ok = false; }
 else if (JSON.stringify(s2.streamedEnds) !== JSON.stringify(s2.routeEnds)) { console.log(`  FAIL: the growing line ended somewhere else than the route — ${JSON.stringify(s2.streamedEnds)} vs ${JSON.stringify(s2.routeEnds)}`); ok = false; }
 else console.log(`  ✓ the line grew as it matched (${s2.growSteps} steps, ${s2.streamedPts} pts → ${s2.routePts} after spur removal, same endpoints)`);
+
+// 2c. PLAN-LAYERS §5b — the route says how long it is, and you can take it away.
+//
+// Driven through the REAL button (`#route-gpx`.click()), not a hook that builds the document by a private
+// road: the format is proved by map.test.mjs, and what can only be proved here is the WIRING — the bar is
+// visible, it carries a distance, and the click produces a document with one trkpt per route point. That
+// is the same rule map_render_gate states for the kernel calls: a listener on named chrome is not the road
+// the user takes.
+const bar = JSON.parse((await ev(`(() => JSON.stringify({
+  hidden: document.getElementById('route-bar')?.classList.contains('hidden'),
+  text:   document.getElementById('route-dist')?.textContent || '',
+  distM:  window.__storeApp?.routeDistM ?? null }))()`)) || '{}');
+if (bar.hidden !== false || !/^\d/.test(bar.text) || !(bar.distM > 0)) {
+  console.log(`  FAIL: the route bar does not report a distance — ${JSON.stringify(bar)}`); ok = false;
+} else {
+  await ev(`document.getElementById('route-gpx').click(), 1`);
+  const g = JSON.parse((await ev('JSON.stringify(window.__storeApp||{})')) || '{}');
+  if (!(g.gpxDownloads === 1 && g.gpxPts === s2.routePts && g.gpxBytes > 0)) {
+    console.log(`  FAIL: the GPX button produced ${g.gpxPts} trkpts for a ${s2.routePts}-point route (${g.gpxDownloads} downloads, ${g.gpxBytes} bytes)`); ok = false;
+  } else {
+    console.log(`  ✓ the route reports ${bar.text} (${bar.distM} m, loft's own length) and exports ${g.gpxPts} trkpts / ${g.gpxBytes} bytes of GPX`);
+  }
+}
 
 // 3. PLAN-PERF §6b(2) — the route ARRIVES progressively, not in one burst at #EOR.
 //
@@ -601,6 +629,46 @@ else if (!(ks.rangeReads > 0)) {
   // most of them however little data it needs. The fraction becomes an assertion at C2, where a block is
   // ~2 GB and a viewport is a rounding error in it. What IS asserted here is the mechanism: range reads
   // happen, the whole-file load is gone, and the route is unchanged.
+}
+
+// 9. PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD.
+//
+// The reported failure was a session that ended with the work in it: a route drawn, the page reloaded, the
+// points gone — and the kernel had stopped answering, so there was no way to draw them again. This is the
+// only assertion that can speak to it, because it is the only one that RELOADS: everything else about the
+// autosave (the throttle, the record format) is a unit test, and none of it proves the app comes back.
+//
+// Left last on purpose — it navigates, which resets every hook above it.
+{
+  const want = [[52.2412299, 6.8834496], [52.2694705, 6.9164085], [52.3116272, 6.9088554]];
+  await ev(`window.__rough.setPoints(${JSON.stringify(want.map(([lat, lon], i) => ({ id: i + 1, lat, lon })))}), 1`);
+  // THE PROMISE IS "the record matches the sketch within 10 s of the last change", and that is what is
+  // asserted — not the mechanism. The first version of this check asserted the LEADING edge and failed at
+  // 5 points for a 3-point sketch, correctly: the previous test had armed the window seconds earlier, so
+  // this edit was the one that waits for the trailing write. Asserting the edge instead of the promise
+  // would have made the gate demand a design nobody chose.
+  const count = async () => {
+    const s = await ev(`localStorage.getItem('routing.sketch.v1')`);
+    try { return JSON.parse(s).pts.length; } catch { return -1; }
+  };
+  let n = await count(), edge = 'leading';
+  if (n !== want.length) { await new Promise((r) => setTimeout(r, 11000)); n = await count(); edge = 'trailing'; }
+  if (n !== want.length) {
+    console.log(`  FAIL: 10 s after the edit the record holds ${n} points, not ${want.length}`); ok = false;
+  } else {
+    console.log(`  ✓ the sketch is stored within its window (${n} points, ${edge} edge)`);
+    await call('Page.navigate', { url: app + GATE_CAM });
+    let back = null;
+    for (let i = 0; i < 160; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      const s = await ev('window.__storeApp?JSON.stringify(window.__storeApp):""');
+      if (s && JSON.parse(s).ready) { back = JSON.parse(await ev('JSON.stringify(window.__rough.points)') || '[]'); break; }
+    }
+    const same = back && back.length === want.length
+      && back.every((p, i) => Math.abs(p.lat - want[i][0]) < 1e-9 && Math.abs(p.lon - want[i][1]) < 1e-9);
+    if (!same) { console.log(`  FAIL: the sketch did not survive the reload — ${JSON.stringify(back)}`); ok = false; }
+    else console.log(`  ✓ the sketch survives a reload: ${back.length} points restored, in order, at their own coordinates`);
+  }
 }
 
 console.log(ok ? 'PASS — store app renders + routes in-browser (no server)' : 'FAIL — store app gate');

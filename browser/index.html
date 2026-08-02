@@ -42,6 +42,16 @@
   #undo-snackbar.hidden { display: none; }
   #undo-snackbar button { background: none; border: 0; color: #7fb0ff; font: 600 14px system-ui, sans-serif;
                           cursor: pointer; padding: 2px 4px; }
+  /* PLAN-LAYERS §5b — the route bar: how far this route is, and a way to take it with you. Bottom-LEFT:
+     the HUD owns the top-left, the delete button and the snackbar own the bottom-centre, and a route you
+     just drew is the one thing you look for after drawing it. Hidden until there IS a route. */
+  #route-bar { position: fixed; left: 8px; bottom: 16px; display: flex; align-items: center; gap: 8px;
+               background: rgba(255,255,255,.94); border-radius: 6px; padding: 6px 8px 6px 12px;
+               box-shadow: 0 1px 3px rgba(0,0,0,.25); font: 14px system-ui, sans-serif; color: #333; }
+  #route-bar.hidden { display: none; }
+  #route-dist { font-weight: 600; font-variant-numeric: tabular-nums; }
+  #route-gpx { background: #2b6cff; color: #fff; border: 0; border-radius: 4px; padding: 5px 10px;
+               font: 600 13px system-ui, sans-serif; cursor: pointer; }
   /* Shift+drag rubber band (desktop). Transient chrome, so it is a DOM element rather than a canvas draw. */
   #select-box { position: fixed; border: 1px solid #2b6cff; background: rgba(43,108,255,.12);
                 pointer-events: none; }
@@ -59,6 +69,7 @@
 </div>
 <div id="hud">loading…</div>
 <button id="rough-delete" class="hidden">Delete point</button>
+<div id="route-bar" class="hidden"><span id="route-dist"></span><button id="route-gpx" type="button">GPX</button></div>
 <div id="undo-snackbar" class="hidden"><span id="undo-snack-label"></span><button id="undo-snack-btn" type="button">Undo</button></div>
 <div id="select-box" class="hidden"></div>
 <script type="module" src="./store-app.mjs"></script>

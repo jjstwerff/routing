@@ -19,7 +19,7 @@
 use routing_kernel::(GeoPoint, Way, TTile, MatchQuality,
                      tiles_corridor_ways, build_graph, corridor_margin,
                      match_state_new, match_incremental, match_state_result, match_quality, geodesic_m,
-                     RF_NET_WALK, RF_NET_CYCLE, RF_NET_MTB);
+                     NET_WALK, NET_CYCLE, NET_MTB);
 
 // The same deterministic lattice `corpus_tube.loft` sweeps, including i=25, the app's own sketch. Kept
 // identical on purpose: two gates disagreeing about what "the corpus" is would make both unreadable.
@@ -125,9 +125,9 @@ fn net_share_m(ways: vector<Way>, bit: integer, route: vector<GeoPoint>) -> floa
 }
 
 fn bit_for(profile: text) -> integer {
-  if profile.starts_with("walking") || profile.starts_with("running") { return RF_NET_WALK; }
-  if profile == "cycling_mtb" { return RF_NET_MTB; }
-  if profile.starts_with("cycling") { return RF_NET_CYCLE; }
+  if profile.starts_with("walking") || profile.starts_with("running") { return NET_WALK; }
+  if profile == "cycling_mtb" { return NET_MTB; }
+  if profile.starts_with("cycling") { return NET_CYCLE; }
   0
 }
 
@@ -148,10 +148,10 @@ fn main() {
   for t in roads {
     for r in t.roads {
       nr += 1;
-      fl = r.flags as integer;
-      if (fl & RF_NET_WALK) == RF_NET_WALK { nw += 1; }
-      if (fl & RF_NET_CYCLE) == RF_NET_CYCLE { nc += 1; }
-      if (fl & RF_NET_MTB) == RF_NET_MTB { nm += 1; }
+      fl = r.nets as integer;
+      if (fl & NET_WALK) == NET_WALK { nw += 1; }
+      if (fl & NET_CYCLE) == NET_CYCLE { nc += 1; }
+      if (fl & NET_MTB) == NET_MTB { nm += 1; }
     }
   }
   println("#N bits roads={nr} walk={nw} cycle={nc} mtb={nm}");

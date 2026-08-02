@@ -7,7 +7,10 @@
 //   4. orientation: east → +x, north → −y
 
 import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
-         parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB } from './map.mjs';
+         parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB,
+         routeDistanceM, formatDistance, routeGpx,
+         sketchToJson, sketchFromJson, SKETCH_MAX_PTS,
+         roadDebut, ROAD_STYLES, ROAD_ORDER } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1437,6 +1440,91 @@ console.log('\nbarrier marks:');
      'cycling road/gravel show the cycling network');
   ok(netForProfile('cycling_mtb') === NET_MTB, 'MTB shows the mtb network, not the cycling one');
   ok(netForProfile('driving_fastest') === 0 && netForProfile('') === 0, 'driving asks for no network');
+}
+
+// --- PLAN-LAYERS §5b — the route as an object: its length, and its GPX ------------------------------
+console.log('L4 · the matched route reports its distance and exports as GPX');
+{
+  // The length is LOFT's, taken off the summary line `emit_route` prints. Parsing is the whole of it —
+  // the moment this file computes a length instead, there are two answers to one question.
+  const SUM = 'SUMMARY ways=1523 route_pts=213 len=8234.7m profile=walking_paved';
+  ok(routeDistanceM(SUM) === 8234.7, `the summary's own length is read back exactly (${routeDistanceM(SUM)})`);
+  ok(routeDistanceM('SUMMARY error=need>=2pts') === null, 'an error summary has no distance, and says so');
+  ok(routeDistanceM('') === null && routeDistanceM(undefined) === null, 'no summary → no distance');
+  // `route_pts=213` also ends in a number and `len=` must not match inside another token.
+  ok(routeDistanceM('SUMMARY ways=2 xlen=99m len=12.5m profile=p') === 12.5, 'len= is matched as a whole token');
+
+  ok(formatDistance(840) === '840 m', 'under a kilometre reads in metres');
+  ok(formatDistance(999.6) === '1000 m', 'and rounds rather than jumping units early');
+  ok(formatDistance(8234.7) === '8.2 km', 'over a kilometre reads in km, one decimal');
+  ok(formatDistance(123456) === '123.5 km', 'a long route keeps the same shape');
+  ok(formatDistance(null) === '' && formatDistance(NaN) === '' && formatDistance(-1) === '',
+     'no distance formats to nothing, never to "NaN km"');
+
+  // The document must be the one `routing_kernel::gpx_export` writes — same header, same nesting, same
+  // trkpt shape — minus the <ele> the serverless app has no source for (gpx_export's ELEV_NONE branch).
+  const gpx = routeGpx([[52.2412299, 6.8834496], [52.2694705, 6.9164085]], 'routing walking_paved · 8.2 km');
+  ok(gpx.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="routing" '
+                  + 'xmlns="http://www.topografix.com/GPX/1/1">\n'), 'the GPX 1.1 header matches gpx_export');
+  ok((gpx.match(/<trkpt /g) || []).length === 2, 'one trkpt per route point');
+  ok(gpx.includes('<trkpt lat="52.2412299" lon="6.8834496"></trkpt>'), 'a point keeps the digits it was matched at');
+  ok(!gpx.includes('<ele>'), 'no elevation element — the app has no elevation source, which is the format\'s own branch');
+  ok(gpx.trimEnd().endsWith('</trkseg></trk>\n</gpx>'), 'and it closes the way gpx_export closes it');
+  ok(routeGpx([], 'x').includes('<trkseg>\n  </trkseg>'), 'no points is still a well-formed document');
+  ok(routeGpx([[1, 2]], 'a & b <c>').includes('<name>a &amp; b &lt;c&gt;</name>'), 'the name is XML-escaped');
+  ok(!routeGpx([[1, 2], [NaN, 3], [4, undefined]], 'x').includes('NaN'), 'a broken point is dropped, not written');
+}
+
+// --- PLAN-LAYERS §4 — a class debuts at its own zoom, or at its band's floor, whichever is earlier ---
+console.log('L2 · the road-class ladder is clamped to the band the block serves');
+{
+  // No band declared ⇒ the ladder is exactly what it always was. This is what keeps a block with no
+  // `zoom` in the index behaving as it did.
+  ok(roadDebut('path', 0) === 15 && roadDebut('motorway', 0) === 8, 'with no band floor, a class keeps its own debut');
+  // The roads blocks declare [14, 99]: below 14 there are no roads at all, so a class that debuts at 15
+  // deletes content for part of a band its own block says it serves — the reported bug.
+  ok(roadDebut('path', 14) === 14 && roadDebut('foot', 14) === 14 && roadDebut('service', 14) === 14,
+     'inside a band starting at 14, the classes that debut later are pulled down to it');
+  ok(roadDebut('motorway', 14) === 8 && roadDebut('residential', 14) === 13,
+     'a class that already debuts BELOW the floor is untouched — the floor is a ceiling on the debut, not a reset');
+  ok(roadDebut('platform', 14) === 14, 'and the last rung comes down too — a band draws what its block holds');
+  ok(roadDebut('nosuchclass', 14) === Infinity, 'a class with no style row never draws, band or no band');
+
+  // ⚠ THE LADDER IS KEPT, NOT DELETED. Ten of its rungs cannot fire while the only roads band starts at
+  // 14 — but the rule is right for a block whose band starts lower, and rows deleted now would have to be
+  // guessed again. This asserts the ladder is still WELL-FORMED so it stays usable: every drawn class has
+  // a debut, and every debut is inside the zoom range the app can show.
+  for (const cls of ROAD_ORDER) {
+    const st = ROAD_STYLES[cls];
+    if (!st || !(st.minZoom >= 1 && st.minZoom <= 22)) { ok(false, `${cls} has no usable debut`); break; }
+  }
+  ok(ROAD_ORDER.every((c) => ROAD_STYLES[c]), 'every class in the draw order still has a style row');
+}
+
+// --- PLAN-LAYERS §5c — the sketch autosave record --------------------------------------------------
+console.log('L5 · the sketch the user placed round-trips, and a bad record degrades to nothing');
+{
+  const pts = [[52.2412299, 6.8834496], [52.2694705, 6.9164085]];
+  const back = sketchFromJson(sketchToJson(pts, 1754000000000));
+  ok(back.length === 2 && back[0][0] === pts[0][0] && back[1][1] === pts[1][1],
+     'the points the user placed round-trip exactly, in order');
+  ok(sketchFromJson(sketchToJson([{ lat: 1.5, lon: 2.5 }])).length === 1, 'a {lat,lon} point saves too — the layer\'s own shape');
+  ok(sketchFromJson(sketchToJson([])).length === 0, 'an empty sketch is a valid record, not an absent one');
+
+  // A reader of persisted state must treat it as hostile — the same rule cameraFromHash is written under.
+  ok(sketchFromJson('') .length === 0 && sketchFromJson(null).length === 0, 'no record → no sketch');
+  ok(sketchFromJson('not json').length === 0, 'a corrupt record → no sketch, not a throw');
+  ok(sketchFromJson('{"v":2,"pts":[[1,2]]}').length === 0, 'a FUTURE version is refused, not guessed at');
+  ok(sketchFromJson('{"v":1,"pts":[[1,2],[3]]}').length === 0, 'a malformed entry condemns the record — half a sketch is a different sketch');
+  ok(sketchFromJson('{"v":1,"pts":[[1,"x"]]}').length === 0, 'a non-numeric coordinate is refused');
+  ok(sketchFromJson('{"v":1,"pts":[[91,2]]}').length === 0, 'an out-of-range latitude is refused (never boot at NaN)');
+  ok(sketchFromJson('{"v":1,"pts":[[1,181]]}').length === 0, 'and an out-of-range longitude');
+  ok(sketchFromJson('{"v":1}').length === 0 && sketchFromJson('null').length === 0, 'a record with no points → no sketch');
+
+  // The cap refuses rather than truncates: half a sketch restored as if it were whole is worse than none.
+  const many = Array.from({ length: SKETCH_MAX_PTS + 1 }, (_, i) => [52 + i * 1e-6, 6]);
+  ok(sketchToJson(many) === null, `over ${SKETCH_MAX_PTS} points the save is refused, not truncated`);
+  ok(sketchToJson(many.slice(0, SKETCH_MAX_PTS)) !== null, 'and exactly at the cap it still saves');
 }
 
 console.log(fails ? `\nM0+M1+E0-E7 FAIL — ${fails} check(s) failed` : '\nM0+M1+E0-E7 PASS — projection, pan/zoom and the whole rough-editor primitive set hold');

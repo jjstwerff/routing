@@ -17,7 +17,7 @@
 //   loft --native --lib lib tools/reorder_tiles.loft <in.store> <out.store> hilbert|row|keep
 #cwd
 
-use routing_kernel::(TTile, TRoad, TStep, cell_ix, tile_cell_key);
+use routing_kernel::(TTile, TRoad, TStep, TRoute, TRLink, cell_ix, tile_cell_key);
 
 // A tile's place in the chosen order. `sorted` gives the ordered walk without a sort of our own.
 struct Slot { const d: integer, const tkey: integer }
@@ -72,8 +72,12 @@ fn main() {
       fresh += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
       dst = fresh[src.tkey];
       if dst != null {
-        for r in src.roads { dst.roads += [TRoad { tp: r.tp, flags: r.flags, steps: r.steps }]; roads += 1; }
+        for r in src.roads { dst.roads += [TRoad { tp: r.tp, flags: r.flags, nets: r.nets, steps: r.steps }]; roads += 1; }
         for s in src.steps { dst.steps += [TStep { x: s.x, y: s.y, h: s.h }]; steps += 1; }
+        // ⚠ Verbatim, and only sound because every road is copied in order — TRLink.road is a per-tile index.
+        for rt in src.routes { dst.routes += [TRoute { rid: rt.rid, kind: rt.kind, level: rt.level, flags: rt.flags,
+                                                      colour: rt.colour, rref: rt.rref, name: rt.name }]; }
+        for rl in src.rlinks { dst.rlinks += [TRLink { road: rl.road, route: rl.route }]; }
       }
       written += 1;
     }

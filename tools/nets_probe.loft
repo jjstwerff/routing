@@ -1,0 +1,51 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// What `TRoad.nets` actually holds in a block — the distinct values and how many roads carry each.
+//
+// A per-bit count (tools/census.loft) answers "is the walking network there"; it cannot tell a bit that
+// was never written from one that was written and masked off on the way in. The raw VALUES can: a block
+// whose masks are all <= 7 was written by something that dropped the high bits, whatever the per-bit
+// counts say.
+//
+//   loft --native --lib lib tools/nets_probe.loft <block.roads.store>
+#cwd
+
+use routing_kernel::(TTile, TRoad);
+
+struct Bucket { const v: integer, n: integer }
+struct Seen { const b: hash<Bucket[v]> }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  path = a[0] ?? "";
+  if path == "" { println("usage: nets_probe <block.roads.store>"); return; }
+
+  roads: hash<TTile[tkey]> = [];
+  store_load(roads, path);
+  s = Seen { b: [] };
+  total = 0;
+  withnet = 0;
+  routes = 0;
+  links = 0;
+  for t in roads {
+    for r in t.roads {
+      total += 1;
+      v = r.nets as integer;
+      if v != 0 { withnet += 1; }
+      e = s.b[v];
+      if e == null { s.b += Bucket { v: v, n: 1 }; } else { e.n += 1; }
+    }
+    for _rt in t.routes { routes += 1; }
+    for _rl in t.rlinks { links += 1; }
+  }
+  println("#P roads={total} with-a-network={withnet} route-records={routes} links={links}");
+  // Walked by VALUE so a mask nobody expected shows up as itself rather than being folded into a bit.
+  v2 = 0;
+  while v2 < 32 {
+    e2 = s.b[v2];
+    if e2 != null { println("#P nets={v2} roads={e2.n}"); }
+    v2 += 1;
+  }
+}
