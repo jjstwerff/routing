@@ -170,7 +170,13 @@ fn main() {
       // How to read the BASE MAP, per store rather than per region (HANDOFF §0 rule 2): NL ships roads
       // beside the app and its base map somewhere else, so the two stores do not have to be read the
       // same way. Absent ⇒ "whole", which is the pre-F1 behaviour and what a 20 MB city block wants.
-      lmode      = lines[7] ?? "whole";
+      // Line 7 is the BASE read mode, optionally carrying the block's tier floor as `paged:N` — the
+      // finest tier that store actually holds (§6i O3b). A bare `paged` is floor 0, which is what every
+      // detailed block sends and exactly the behaviour this replaces.
+      lmode_raw  = lines[7] ?? "whole";
+      lmode_bits = lmode_raw.split(':');
+      lmode      = lmode_bits[0] ?? "whole";
+      lfloor     = if len(lmode_bits) > 1 { (lmode_bits[1] ?? "0") as integer ?? 0 } else { 0 };
       roads_urls: vector<text> = [];
       for u in roads_url.split(',') { if u != "" { roads_urls += [u]; } }
       layout_urls: vector<text> = [];
@@ -320,7 +326,11 @@ fn main() {
             // F1 — the base-map cells this viewport reads, in the LAYOUT's key space (~500 m cells),
             // which is not the roads' (2 km). Paged mode only: a whole-loaded store holds them already.
             lkeys: vector<integer> = [];
-            if lmode == "paged" && layout_at != "" { lkeys = layout_cell_keys(arg3, LAYOUT_PAD); }
+            // The base read mode may carry the block's TIER FLOOR as `paged:N` — the finest tier the
+            // store holds. Below it every key is provably absent, and an absent key still costs pages
+            // (§6i O3b: 2388 wasted asks on one z13 viewport, 169.6 MB against 43.7). A bare `paged` is
+            // floor 0, which is every detailed block and the behaviour this replaces.
+            if lmode == "paged" && layout_at != "" { lkeys = layout_cell_keys(arg3, LAYOUT_PAD, lfloor); }
             lbi = 0;
             for lburl in layout_urls {
               // Ask EVERY covering base block for the window, exactly as the roads loop below does. A

@@ -124,6 +124,30 @@ name      = "Netherlands — overview"
 base      = "stores/nl-overview.base.store"
 names     = "stores/nl.names.store"
 read_mode = "whole"
+zoom_max  = 12
+
+# PLAN-SCALE §6i O3b — THE MIDDLE ZOOMS. The overview is z<=10 content and the detailed regions cost
+# ~1.4 GB of keys at z12, so z12–z13 had neither: instant but coarse. This block is the country at z<=12
+# — towns, secondary roads, every medium area — binned with a TIER FLOOR of 1 and read PAGED.
+#
+# Measured, one viewport, all from the same 213 MB block:
+#
+#   z12   228 keys   37.5 MB          z13    82 keys   19.2 MB
+#
+# which is the same class as the detailed path at z16 (18.4 MB). A z<=13 variant was built and rejected:
+# 541 MB for 82.2 MB at z12, twice the cost for one more level of content.
+#
+# ⚠ `tier_floor` is what makes it affordable and it is not cosmetic. Every key below the floor is
+# provably absent, and an absent key still costs pages: the same z13 viewport asks 2469 keys and fetches
+# 169.6 MB without it, against 82 keys and 43.7 MB with it.
+[[region]]
+id        = "nl-mid"
+name      = "Netherlands — middle zooms (z12–13)"
+base      = "stores/nl-mid.base.store"
+names     = "stores/nl.names.store"
+read_mode = "paged"
+tier_floor = 1
+zoom_min  = 12
 zoom_max  = 14
 
 [[region]]

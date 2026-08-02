@@ -151,8 +151,21 @@ const modeOf = (blocks, kind) => {
 const READ_MODE = () => window.__readMode || coverage.block.readMode || 'whole';
 const roadsModeFor = (b, z) => window.__readMode
   || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z), 'roads');
-const baseModeFor = (b, z) => window.__baseReadMode
-  || modeOf(blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base', z), 'base');
+// The base mode, with the block's TIER FLOOR appended as `paged:N` when it has one (§6i O3b). The floor
+// is the finest tier that store holds; keys below it are provably absent and an absent key still costs
+// pages — 2469 asks and 169.6 MB against 82 and 43.7 on one z13 viewport of the middle-zoom block.
+//
+// The MINIMUM across the chosen set, because the floor must be low enough for every block being read: a
+// set mixing a floored block with an unfloored one has to ask from 0 or the unfloored one loses its fine
+// tiles. In practice the zoom bands make the set homogeneous.
+const baseModeFor = (b, z) => {
+  if (window.__baseReadMode) return window.__baseReadMode;
+  const chosen = blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', 'base', z);
+  const mode = modeOf(chosen, 'base');
+  if (mode !== 'paged' || !chosen.length) return mode;
+  const floor = Math.min(...chosen.map((x) => (typeof x.tierFloor === 'number' ? x.tierFloor : 0)));
+  return floor > 0 ? `${mode}:${floor}` : mode;
+};
 window.__coverage = coverage;
 if (coverage.outside) console.warn(`[coverage] the camera is outside every block; showing ${coverage.block.id}`);
 

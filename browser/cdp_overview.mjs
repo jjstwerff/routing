@@ -78,9 +78,17 @@ ok(drawn.at16 > 0 && drawn.at8 * 4 < drawn.at16,
    `the DRAW path applies the ladder: ${drawn.at8} areas at z8 against ${drawn.at16} at z16`);
 
 // 2 — the handover, both directions. Below it the overview alone; above it the detailed block alone.
-const below = await load('#13/52.2215/6.8937');
+// THREE bands now (§6i O3b): the overview below z12, the middle-zoom block at z12–13, the detailed
+// regions from z14. Each must answer ALONE — a set mixing them is a `whole` block sharing a working set
+// with a `paged` one, and at z12 the detailed blocks would name ~10 000 cell keys.
+const mid = await load('#12/52.2215/6.8937');
+ok(mid.drawn > 0 && mid.stores.every((u) => /nl-mid/.test(u)),
+   `z12 reads the middle-zoom block alone: ${JSON.stringify(mid.stores)}`);
+ok(mid.roads === 0, `and no detailed roads at z12 (R=${mid.roads})`);
+
+const below = await load('#11/52.2215/6.8937');
 ok(below.drawn > 0 && below.stores.every((u) => /overview/.test(u)),
-   `below the handover (z13) only the overview is read: ${JSON.stringify(below.stores)}`);
+   `below it (z11) only the overview is read: ${JSON.stringify(below.stores)}`);
 ok(below.roads === 0, `and still no detailed roads (R=${below.roads})`);
 
 const above = await load('#16/52.2215/6.8937');
