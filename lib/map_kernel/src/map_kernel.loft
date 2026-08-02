@@ -14,7 +14,7 @@
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
               cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
-use routing_kernel::(GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
+use routing_kernel::(TRoute, GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
                      RF_ACCESS_NO, RF_FOOT_YES, NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE,
                      BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
                      tiles_corridor_ways, tiles_corridor_ways_streamed, tiles_corridor_ways_tube_streamed,
@@ -127,10 +127,52 @@ fn emit_barriers(roads: hash<TTile[tkey]>, box: FBox) -> integer {
   n
 }
 
-fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
+// PLAN-LAYERS §3 step 7 — ONE ROUTE TABLE PER VIEW, and ids on the roads that are on them.
+//
+// The identity a walker reads is the route's, not the way's: a colour painted on the tree, an `ref` like
+// `LAW 9` or a knooppunt number. Those live on the relation, so the wire carries them ONCE per view and
+// each road names the routes it is on by INDEX into that table. Emitting them per road would repeat a
+// name for every way of a 500 km path.
+//
+// ⚠ THE VIEW EMITS WHAT IT TOUCHES, not the block's table. The country holds 83 762 relations; a viewport
+// holds tens. Serialising the whole table would put a country on the wire for a screen.
+struct ViewRoute { const rid: integer, const idx: integer, const kind: integer, const level: integer,
+                   const rflags: integer, const colour: text, const rref: text, const name: text }
+// `order` beside the hash because a loft hash cannot be iterated (C86) and the table has to come out in
+// index order — the id on a road line is a position in it.
+struct RouteTab { const byid: hash<ViewRoute[rid]>, const order: vector<integer> }
+
+// The view-local index for one of a tile's routes, adding it to the table the first time it is seen.
+fn route_index(tab: RouteTab, rt: TRoute) -> integer {
+  hit = tab.byid[rt.rid];
+  if hit != null { return hit.idx; }
+  idx = len(tab.order);
+  tab.byid += ViewRoute { rid: rt.rid, idx: idx, kind: rt.kind as integer, level: rt.level as integer,
+                          rflags: rt.flags as integer, colour: rt.colour, rref: rt.rref, name: rt.name };
+  tab.order += [rt.rid];
+  idx
+}
+
+// TAB-separated, so a route name carrying a `;` or a `|` cannot break the R line's grammar — the same
+// reason the sidecar's own records are tab-separated.
+fn emit_route_table(tab: RouteTab) -> integer {
+  n = 0;
+  for rid in tab.order {
+    v = tab.byid[rid];
+    if v != null {
+      println("ROUTE\t{v.idx}\t{v.kind}\t{v.level}\t{v.rflags}\t{v.colour}\t{v.rref}\t{v.name}");
+      n += 1;
+    }
+  }
+  n
+}
+
+fn emit_roads(roads: hash<TTile[tkey]>, box: FBox, tab: RouteTab) -> integer {
   n = 0;
   for t in roads {
     si = 0;
+    ri = 0;
+    li = 0;
     for r in t.roads {
       cnt = r.steps as integer;
       first = true; rmnla = 0; rmxla = 0; rmnlo = 0; rmxlo = 0;
@@ -175,11 +217,28 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
         // "marks" and reported an mtb network that did not exist.
         sfx = "";
         if marks != "" { sfx = "|{marks}"; }
-        line = "R {class_name(r.tp as integer)}{sfx}";
+        // WHICH routes, by index into this view's table. `t.rlinks` is in road order by construction
+        // (gen-tiles appends a link right after the road it belongs to), so this walks it with a cursor
+        // rather than scanning it per road — the difference between O(links) and O(roads x links).
+        rsfx = "";
+        while li < len(t.rlinks) {
+          lk = t.rlinks[li];
+          if lk == null { li += 1; continue; }
+          if (lk.road as integer) < ri { li += 1; continue; }
+          if (lk.road as integer) > ri { break; }
+          rt = t.routes[lk.route as integer];
+          if rt != null {
+            if rsfx == "" { rsfx = "#"; } else { rsfx += ","; }
+            rsfx += "{route_index(tab, rt)}";
+          }
+          li += 1;
+        }
+        line = "R {class_name(r.tp as integer)}{sfx}{rsfx}";
         for k in 0..cnt { s = t.steps[si + k]; if s != null { line += ";{deg(t.oy + (s.y as integer)):2.6},{deg(t.ox + (s.x as integer)):2.6}"; } }
         println(line); n += 1;
       }
       si += cnt;
+      ri += 1;
     }
   }
   n
@@ -188,7 +247,10 @@ fn emit_roads(roads: hash<TTile[tkey]>, box: FBox) -> integer {
 // Emit the base map for a loaded layout + roads store, restricted to `box` (a viewport). Text → println.
 fn emit_view(layout: hash<PTile[tkey]>, roads: hash<TTile[tkey]>, box: FBox) {
   na = emit_areas(layout, box); nb = emit_buildings(layout, box); nl = emit_lines(layout, box);
-  npo = emit_pois(layout, box); nlab = emit_labels(layout, box); nr = emit_roads(roads, box);
+  npo = emit_pois(layout, box); nlab = emit_labels(layout, box);
+  vtab = RouteTab { byid: [], order: [] };
+  nr = emit_roads(roads, box, vtab);
+  _nrt = emit_route_table(vtab);
   ng = emit_barriers(roads, box);
   println("# view: A={na} B={nb} L={nl} P={npo} labels={nlab} R={nr} G={ng}");
 }
@@ -281,8 +343,12 @@ pub fn layout_cell_keys(bbox: text, pad: integer, tier_lo: integer) -> vector<in
 
 pub fn do_view_roads_bbox(roads: hash<TTile[tkey]>, bbox: text) {
   fbox = parse_fbox(bbox);
-  nr = emit_roads(roads, fbox); ng = emit_barriers(roads, fbox);
-  println("# view: R={nr} G={ng}");
+  tab = RouteTab { byid: [], order: [] };
+  nr = emit_roads(roads, fbox, tab); ng = emit_barriers(roads, fbox);
+  // AFTER the roads: the table is only known once they have been walked, and the reader has the whole
+  // text before it parses anything, so order costs it nothing.
+  nrt = emit_route_table(tab);
+  println("# view: R={nr} G={ng} T={nrt}");
 }
 
 // Parse a rough sketch "lat,lon;lat,lon;…" into GeoPoints (bad tokens skipped).

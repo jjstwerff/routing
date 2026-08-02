@@ -10,7 +10,8 @@ import { densifySketch, isSketchEcho, AREA_DEBUT_LADDER, areaRenderList,
          parseStreetsFlat, netForProfile, NET_WALK, NET_CYCLE, NET_MTB,
          routeDistanceM, formatDistance, routeGpx,
          sketchToJson, sketchFromJson, SKETCH_MAX_PTS,
-         roadDebut, ROAD_STYLES, ROAD_ORDER } from './map.mjs';
+         roadDebut, ROAD_STYLES, ROAD_ORDER,
+         parseRouteTable, routeColour, routeLabel } from './map.mjs';
 import { makeView, projectWorld, unprojectWorld, panCenter, parseStretch, RouteMap, viewFromStore,
          cameraFromHash, hashForCamera, parseBarriers, orientBarriers, PROFILES } from './map.mjs';
 import { pickBlock, blocksForBox, resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1499,6 +1500,44 @@ console.log('L2 · the road-class ladder is clamped to the band the block serves
     if (!st || !(st.minZoom >= 1 && st.minZoom <= 22)) { ok(false, `${cls} has no usable debut`); break; }
   }
   ok(ROAD_ORDER.every((c) => ROAD_STYLES[c]), 'every class in the draw order still has a style row');
+}
+
+// --- PLAN-LAYERS §3 step 7 — a route drawn and named as ITSELF ------------------------------------
+console.log('L1 · the view carries a route table, and a route knows its colour and its name');
+{
+  const txt = [
+    'R path|w#0;52.0,6.0;52.001,6.001',
+    'R track|wc#0,1;52.0,6.0;52.001,6.001',
+    'R foot|w;52.0,6.0;52.001,6.001',                     // signposted, but on no route the view named
+    'ROUTE\t0\t1\t2\t0\tred\tLAW 9\tPieterpad',
+    'ROUTE\t1\t2\t1\t1\t\t12-34\t',
+  ].join('\n');
+  const F = parseStreetsFlat(txt);
+  ok(F.n === 3, `three ways parsed (${F.n})`);
+  ok(F.clsNames.join(',') === 'path,track,foot', `the class vocabulary survives the new suffix: ${F.clsNames}`);
+  ok(F.net[0] === NET_WALK && F.net[1] === (NET_WALK | NET_CYCLE), 'the marks still say WHETHER');
+  ok(JSON.stringify(F.rids) === JSON.stringify([[0], [0, 1], null]), `and the ids say WHICH: ${JSON.stringify(F.rids)}`);
+  ok(F.routes.length === 2 && F.routes[0].ref === 'LAW 9' && F.routes[0].name === 'Pieterpad',
+     'the table comes back indexed by the id the roads carry');
+  ok(F.routes[1].flags === 1 && F.routes[1].ref === '12-34', 'a knooppunt segment keeps its flag and its number');
+
+  ok(routeColour(F.routes[0]) === 'rgba(214,64,64,0.55)', `an osmc waycolour becomes a TRANSLUCENT colour: ${routeColour(F.routes[0])}`);
+  ok(routeColour(F.routes[1]) === null, 'a route with no colour falls back to the activity (null here)');
+  ok(routeColour({ colour: '#123456' }) === 'rgba(18,52,86,0.55)', 'an explicit hex passes through the same alpha, not around it');
+  ok(routeColour({ colour: 'chartreuse' }) === null, 'and a colour word we do not know does NOT become a stroke');
+  // osmc waycolours are compound in this data — `blue;green` and `blue;red` both occur. The FIRST is the
+  // colour painted along the way; the rest describe the symbol on it.
+  ok(routeColour({ colour: 'blue;green' }) === 'rgba(40,110,200,0.55)', 'a compound waycolour takes its first colour');
+  ok(routeColour({ colour: ' Red ' }) === 'rgba(214,64,64,0.55)', 'and it is read case- and space-insensitively');
+
+  // §3 measured names as the RARE case (8.5%) and refs as the identity (97%), which is why ref leads.
+  ok(routeLabel(F.routes[0]) === 'LAW 9', 'a short ref labels the route even when it has a name');
+  ok(routeLabel({ ref: 'RWN 1234567890', name: 'Trage Tocht' }) === 'Trage Tocht', 'a long ref yields to the name');
+  ok(routeLabel({ ref: '', name: '' }) === '', 'a route with neither is not labelled');
+
+  ok(parseRouteTable('ROUTE\tx\t1').length === 0, 'a malformed table line is dropped, not guessed at');
+  ok(parseStreetsFlat('R path|w#nonsense;52.0,6.0;52.001,6.001').rids[0].length === 0,
+     'a road whose ids do not parse carries none, and still draws');
 }
 
 // --- PLAN-LAYERS §5c — the sketch autosave record --------------------------------------------------

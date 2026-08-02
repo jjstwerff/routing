@@ -215,7 +215,7 @@ fn take_pois(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, mintier: integer
 // --- the spine: lift ways out of the roads store, CHAIN them, then decimate ---------------------------
 
 // One OSM way as absolute fixed-point vertices, with its class and the endpoint keys it can be chained on.
-struct Run { cls: integer, xs: vector<integer>, ys: vector<integer>, used: boolean }
+struct Run { cls: integer, chain: integer, xs: vector<integer>, ys: vector<integer>, used: boolean }
 // endpoint text key -> the runs that end there. Text rather than a packed integer because two i32
 // coordinates do not pack into an i64 without a bias that is easy to get subtly wrong, and this is a
 // generator: 183k lookups cost nothing.
@@ -225,10 +225,10 @@ struct EndPt { k: text, a: integer, b: integer }
 // signposted route now yields a run in each class — so a class-agnostic key let a motorway's run occupy
 // the slot a cycle route needed and chaining stalled at 2.35 ways per chain against the spine's 6.2.
 // Each class gets its own endpoint graph.
-fn end_key(cls: integer, x: integer, y: integer) -> text { "{cls}:{x},{y}" }
+fn end_key(cls: integer, chain: integer, x: integer, y: integer) -> text { "{cls}.{chain}:{x},{y}" }
 
-fn note_end(ends: hash<EndPt[k]>, cls: integer, x: integer, y: integer, ri: integer) {
-  ek = end_key(cls, x, y);
+fn note_end(ends: hash<EndPt[k]>, cls: integer, chain: integer, x: integer, y: integer, ri: integer) {
+  ek = end_key(cls, chain, x, y);
   e = ends[ek];
   if e == null { ends += [EndPt { k: ek, a: ri, b: 0 - 1 }]; }
   else if e.b < 0 { e.b = ri; }
@@ -257,6 +257,42 @@ fn spine_kind(cls: integer) -> text {
 // A way can be in several, so this yields a class per membership and the caller emits a run for each —
 // the same chaining then merges each network into its own long-distance runs, which is exactly what makes
 // a country-scale view of it affordable.
+// PLAN-LAYERS §3 step 8 — WHICH ROUTES A GENERALISED LEVEL KEEPS.
+//
+// ⚠ Level is a SELECTION rule here and NOT a general thinning rule, and §3's measurement is why: 92% of
+// the country's route relations are `regional`, so "drop below regional" moves almost nothing at z12.
+// What it does at the OVERVIEW's zoom is decisive — national + international is 850 relations against
+// 83 762, which is the difference between a country you can read and a red blanket.
+//
+// ⚠ ONLY THE OUTER ZOOM SELECTS. The middle-zoom block includes every signposted route, whatever its
+// level: by z12 you are looking at a region rather than a country, and a regional or unnamed local route
+// is exactly what you are there to find. Filtering it there would hide the ordinary walking network at
+// the zoom people plan at — the outer zoom is the one that cannot afford them.
+//
+//   zmax <= 10 (the overview)   national and international only — 850 relations, not 83 762
+//   above                       everything the block carries
+fn level_floor(zmax: integer) -> integer {
+  if zmax <= 10 { return 2; }
+  0
+}
+
+// The strongest route this road is on, of the given network bit: its LEVEL and its relation id. The id is
+// what a chain is keyed by — one polyline per ROUTE rather than per network — and -1 means the road
+// carries no route of that kind, which is how a way that merely LOOKS like one is kept out.
+fn best_route(t: TTile, road_ix: integer, bit: integer, out_level: &integer) -> integer {
+  best_rid = 0 - 1;
+  lvl = 0 - 1;
+  for lk in t.rlinks {
+    if (lk.road as integer) != road_ix { continue; }
+    rt = t.routes[lk.route as integer];
+    if rt == null { continue; }
+    if ((rt.kind as integer) & bit) == 0 { continue; }
+    if (rt.level as integer) > lvl { lvl = rt.level as integer; best_rid = rt.rid; }
+  }
+  out_level = lvl;
+  best_rid
+}
+
 fn net_classes(nets: integer, out: vector<integer>) {
   if (nets & NET_WALK) != 0 { out += [3]; }
   if (nets & NET_CYCLE) != 0 { out += [4]; }
@@ -265,9 +301,20 @@ fn net_classes(nets: integer, out: vector<integer>) {
   if (nets & NET_SKATE) != 0 { out += [7]; }
 }
 
+fn class_bit(cls: integer) -> integer {
+  if cls == 3 { return NET_WALK; }
+  if cls == 4 { return NET_CYCLE; }
+  if cls == 5 { return NET_MTB; }
+  if cls == 6 { return NET_HORSE; }
+  if cls == 7 { return NET_SKATE; }
+  0
+}
+
 fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends: hash<EndPt[k]>) {
+  floor = level_floor(zmax);
   for t in roads {
     cur = 0;
+    road_ix = 0;
     for r in t.roads {
       ns = r.steps;
       classes: vector<integer> = [];
@@ -275,6 +322,21 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
       if rcls >= 0 { classes += [rcls]; }
       net_classes(r.nets as integer, classes);
       for cls in classes {
+      // A network class carries a route's identity; a spine class does not, so only the former is
+      // selected on level and chained per route.
+      chain = 0;
+      bit = class_bit(cls);
+      keep = true;
+      if bit != 0 {
+        lvl = 0 - 1;
+        rid = best_route(t, road_ix, bit, lvl);
+        // A way whose `nets` bit is set but whose ROUTES this block does not carry keeps its bit and its
+        // level 0 — it is still signposted, it is simply unidentified. Dropping it would lose ground the
+        // sidecar knows about; keeping it below the floor would defeat the selection. It rides the floor.
+        keep = lvl >= floor;
+        if rid > 0 { chain = rid; }
+      }
+      if keep {
       if ns >= 2 && cur + ns - 1 < len(t.steps) {
         xs: vector<integer> = []; ys: vector<integer> = [];
         si = 0;
@@ -283,13 +345,19 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
           ys += [t.oy + ((t.steps[cur + si].y ?? (0 as i32)) as integer)];
           si += 1;
         }
-        runs += [Run { cls: cls, xs: xs, ys: ys, used: false }];
+        runs += [Run { cls: cls, chain: chain, xs: xs, ys: ys, used: false }];
         ri = len(runs) - 1;
-        note_end(ends, cls, xs[0] ?? 0, ys[0] ?? 0, ri);
-        note_end(ends, cls, xs[ns - 1] ?? 0, ys[ns - 1] ?? 0, ri);
+        // ⚠ CHAINED PER ROUTE, not per class. Two different hiking routes crossing at a junction used to
+        // compete for the same endpoint slot and stall each other's chain; keyed by the relation id they
+        // each chain through it, which is what makes a long-distance path ONE polyline instead of the
+        // dozens of ways it is made of.
+        note_end(ends, cls, chain, xs[0] ?? 0, ys[0] ?? 0, ri);
+        note_end(ends, cls, chain, xs[ns - 1] ?? 0, ys[ns - 1] ?? 0, ri);
+      }
       }
       }
       cur += ns;
+      road_ix += 1;
     }
   }
 }
@@ -303,16 +371,16 @@ fn collect_runs(roads: hash<TTile[tkey]>, zmax: integer, runs: vector<Run>, ends
 // with equal probability, that silently refused HALF of all continuations: 1508 city ways chained into
 // 814 pieces (1.85 ways each) instead of the 200 they should make. Used-ness alone excludes the run we
 // came from, so no self-index is needed.
-fn other_at(ends: hash<EndPt[k]>, runs: vector<Run>, x: integer, y: integer, cls: integer) -> integer {
-  e = ends[end_key(cls, x, y)];
+fn other_at(ends: hash<EndPt[k]>, runs: vector<Run>, x: integer, y: integer, cls: integer, chain: integer) -> integer {
+  e = ends[end_key(cls, chain, x, y)];
   if e == null { return 0 - 1; }
   if e.a >= 0 {
     oa = runs[e.a];
-    if oa != null && !oa.used && oa.cls == cls { return e.a; }
+    if oa != null && !oa.used && oa.cls == cls && oa.chain == chain { return e.a; }
   }
   if e.b >= 0 {
     ob = runs[e.b];
-    if ob != null && !ob.used && ob.cls == cls { return e.b; }
+    if ob != null && !ob.used && ob.cls == cls && ob.chain == chain { return e.b; }
   }
   0 - 1
 }
@@ -383,6 +451,7 @@ fn main() {
     if r0 != null && !r0.used {
       r0.used = true;
       cls = r0.cls;
+      chain = r0.chain;         // the route this chain belongs to — 0 for a spine class
       cx: vector<integer> = []; cy: vector<integer> = [];
       for xv in r0.xs { cx += [xv]; }
       for yv in r0.ys { cy += [yv]; }
@@ -392,7 +461,7 @@ fn main() {
       more = true;
       while more {
         more = false;
-        nx = other_at(ends, runs, cx[len(cx) - 1] ?? 0, cy[len(cy) - 1] ?? 0, cls);
+        nx = other_at(ends, runs, cx[len(cx) - 1] ?? 0, cy[len(cy) - 1] ?? 0, cls, chain);
         if nx >= 0 {
           o = runs[nx];
           if o != null {
@@ -415,7 +484,7 @@ fn main() {
       back = true;
       while back {
         back = false;
-        px2 = other_at(ends, runs, hx0, hy0, cls);
+        px2 = other_at(ends, runs, hx0, hy0, cls, chain);
         if px2 >= 0 {
           p = runs[px2];
           if p != null {
