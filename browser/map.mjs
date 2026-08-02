@@ -1373,6 +1373,7 @@ export class RouteMap {
     // without a second store in the kernel: keep the pixels, stretched to the new camera, until real data
     // replaces them. It is deliberately BELOW everything, so anything already loaded draws over it.
     this._drawHeldFrame();
+    this._drawFloor();
     mark('clear');
     // z-order: terrain → buildings → roads → labels. S13 gates small features by zoom.
     // The base map is either blitted from cached blocks (step 15) or drawn directly; the route and the
@@ -1627,6 +1628,96 @@ export class RouteMap {
     const y = (a.y - b.y) + this.height / 2 - h / 2;
     try { this.ctx.drawImage(this._heldCanvas, x, y, w, h); } catch { return false; }
     return true;
+  }
+
+  // PLAN-LAYERS §5 (L3) — THE FLOOR: the coarsest map that covers this ground, kept resident.
+  //
+  // `lists` are the OBJECT-path render lists (`viewRenderLists`), which are self-contained JS — rings and
+  // geometries materialised, no record offsets. That matters more than it looks: the store index the
+  // detailed map draws from is a set of POINTERS INTO WASM MEMORY, and the kernel rebinds that memory
+  // whenever the camera crosses into another block. A floor made of those pointers would be a floor that
+  // decodes to garbage exactly when it is needed.
+  //
+  // `extent` is the ground the floor HAS (fixed-point). Outside it the floor draws nothing, because there
+  // is nothing — the Netherlands is the dataset, and P3 measured its data ending at 7.25°E. A floor that
+  // pretended otherwise would be a map that says "empty" where it means "I do not know".
+  setFloor(lists, extent) {
+    this._floor = lists ? { lists, extent } : null;
+    return this;
+  }
+
+  // The ground the FINE layer is actually holding right now, as a fixed-point box, or null for "none".
+  // The app sets it per view; null means the floor may cover the whole screen, which is the band-crossing
+  // case (a view in flight holds nothing yet).
+  setHeldGround(box) { this._heldGround = box || null; return this; }
+
+  // ⚠ CLIPPED TO THE COMPLEMENT OF THE HELD GROUND, and drawing it plainly underneath is the bug.
+  //
+  // The overview is decimated to ONE PIXEL AT z10 (tools/build_overview.loft's eps). At z16 that tolerance
+  // is 2^6 = ~64 screen px, so painted under a detailed view it produces ghost lines beside the real ones
+  // — a wrong map that reads as a rendering artefact. So the floor draws only where the fine layer holds
+  // nothing: the screen rectangle MINUS the held ground, as an even-odd clip. Box arithmetic, exact, and
+  // no per-feature test.
+  _drawFloor() {
+    // ⚠ EVERY exit records, including the ones that draw nothing. The first version set `_floorStats` only
+    // on the drawing path, so a frame where the floor was correctly suppressed reported the PREVIOUS
+    // frame's numbers — and a gate reading them would have seen 33 203 features "drawn unclipped" over a
+    // detailed map that in fact had none of them. A stale instrument reads exactly like the bug it is
+    // meant to catch.
+    const stat = (why, drawn = 0, clipped = false) => { this._floorStats = { why, drawn, clipped }; return drawn > 0; };
+    const f = this._floor;
+    if (!f || !f.lists) return stat('no floor');
+    const ctx = this.ctx;
+    const win = this._screen();                       // the viewport in degrees
+    const ex = f.extent;
+    // Nothing of the floor is on screen — the honest empty case (past the data's edge).
+    if (ex && (ex.mxla / 1e7 < win.mnla || ex.mnla / 1e7 > win.mxla
+            || ex.mxlo / 1e7 < win.mnlo || ex.mnlo / 1e7 > win.mxlo)) return stat('past the data');
+    const held = this._heldGround;
+    let clipped = false;
+    ctx.save();
+    if (held) {
+      const a = this.project(held.mnla / 1e7, held.mnlo / 1e7);
+      const b = this.project(held.mxla / 1e7, held.mxlo / 1e7);
+      const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+      const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+      // The held ground covers the screen — the floor has nothing to add and the fine map is authoritative.
+      if (x0 <= 0 && y0 <= 0 && x1 >= this.width && y1 >= this.height) { ctx.restore(); return stat('covered by the fine layer'); }
+      ctx.beginPath();
+      ctx.rect(0, 0, this.width, this.height);
+      ctx.rect(x0, y0, x1 - x0, y1 - y0);
+      ctx.clip('evenodd');
+      clipped = true;
+    }
+    // Drawn through the OBJECT path, with the store index parked: the two paths are proven pixel-identical
+    // by the parity gate, and the object one is the only one that can draw geometry the kernel is not
+    // currently holding.
+    const sidx = this._sidx;
+    const keep = { areas: this.areas, lines: this.lines, pois: this.pois, places: this.places,
+                   buildings: this.buildings, streets: this.streets, streetsFlat: this.streetsFlat,
+                   streetLabels: this.streetLabels };
+    this._sidx = null;
+    this.areas = f.lists.areas || []; this.lines = f.lists.lines || [];
+    this.pois = f.lists.pois || []; this.places = f.lists.places || [];
+    // Everything the floor does NOT hold is parked EMPTY, not left alone: `_drawBase` would otherwise
+    // paint the detailed layer's buildings and roads through the floor's clip, in the one region the
+    // fine layer has already declared it cannot fill.
+    this.buildings = []; this.streets = []; this.streetsFlat = null; this.streetLabels = [];
+    let n = 0;
+    try {
+      // `_drawBase` with the store index parked takes the object branch for every layer — the same code
+      // the parity gate proves pixel-identical to the store one. Buildings and labels are deliberately
+      // included by it and simply absent from the overview's lists, so there is nothing to special-case.
+      const base = this._drawBase(this.camera.zoom) || {};
+      n = (base.areas || 0) + (base.lines || 0) + (base.streets || 0) + (base.pois || 0);
+    } finally {
+      this._sidx = sidx;
+      this.areas = keep.areas; this.lines = keep.lines; this.pois = keep.pois; this.places = keep.places;
+      this.buildings = keep.buildings; this.streets = keep.streets; this.streetsFlat = keep.streetsFlat;
+      this.streetLabels = keep.streetLabels;
+      ctx.restore();
+    }
+    return stat(clipped ? 'filling past the fine layer' : 'the fine layer holds nothing here', n, clipped);
   }
 
   invalidateBlocks() { this._blocks = new Map(); this._blockZoom = null; return this; }

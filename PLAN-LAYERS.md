@@ -41,10 +41,10 @@ warns about: one mechanism forced over two families that assert their difference
 | 6 ✅ *(code + fixture)* | **The block carries them** — `TRoad.nets: u16`, a per-tile `TRoute` table + sparse `TRLink`s (§3). Every copier carries them; conservation asserted | `match_parity.sh` **byte-identical**; the router A/B unchanged profile for profile; the fixture's walk/cycle/mtb counts **identical** (4543/2832/671) with horse 260 new. ⚠ **The country blocks are NOT regenerated** — see below |
 | 7 | **Draw by route** — colour from `osmc`, weight from level, `ref`/name as the label | the Pieterpad reads as itself, not as generic red |
 | 8 | **Generalise the overview by level, and chain by route id** — `build_overview.loft` selects on level × `zmax` and merges runs per `rid` | country zoom stops being a red blanket; an LF route is ONE polyline; overview size reported |
-| 9 | **The floor, resident** — read `nl-overview` once into a JS-side index, keep it, draw it under everything | retained bytes reported; z15 in Münster is no longer blank |
-| 10 | **Clip the floor to the complement of held ground** | z16 shows **no** ghost lines beside real ones (§5) |
-| 11 | **Retire `holdFrame`** (`map.mjs:1479`) — the floor supersedes stretched stale pixels | band-crossing gate green with it removed |
-| 12 | **Fix the outside-coverage fallback** (`coverage.mjs:207`) — outside → the floor block + an honest HUD | Münster names the floor, not `nl-west` |
+| 9 ✅ | **The floor, resident** — materialised from the country view the app already performs; the 33.7 MB fetch is the fallback, not the path | `how: "free"`, 149 113 areas · 56 859 lines · 1 230 843 coords, no extra request |
+| 10 ✅ | **Clip the floor to the complement of held ground** | inside NL at z15 it reports `covered by the fine layer, drawn 0` — no ghosting, by suppression |
+| 11 ⏸ | **Retire `holdFrame`** — deferred, with the reason written down (§5): the floor is resident only after a country view, so the held frame is still the only cover for a session that never sees one | — |
+| 12 ✅ | **Say it when there is nothing here** | `no map data here — the Netherlands is the dataset; pan back west`, instead of a blank canvas naming a block 300 km away |
 | 13 | **Rebuild the kernel on the new loft, re-bind the blocks, re-measure** (§6) | requests/bytes/file sizes, before and after, on **the installed binary** |
 
 Steps 1–4 are the reported bug. 5–8 are the ask. 9–12 are the pan. 13 is independent of all of them and
@@ -406,13 +406,37 @@ re-coupling it by hand: `67 of 206`, then green again on revert.
 **The ask:** when panning finds no data, show the NL map. **The measurement (§1c):** at z ≥ 14 outside a
 region, the app draws literally nothing and names a block 300 km away.
 
-**The obvious fix is wrong, and this is the claim to falsify first.** "Let the overview serve every
-zoom" — drop its `[0, 12]` ceiling so it joins the read set as a fallback. It cannot work as written:
-the read **mode** is a property of the *set* (`store-app.mjs:147`: paged if **any** chosen block says
-so), and `coverage.mjs:54` records that a `whole` block cannot share a working set with a `paged` one.
-Widening the band therefore either pages a 28 MB whole-file block or flips a 774 MB region to a whole
-download — the exact fault that shipped once already (`store-app.mjs:134`). **Probe P3 in §7 is there to
-kill this alternative with a number rather than with this paragraph.**
+**The obvious fix is wrong — P3 RAN, and it killed the alternative with a number.** "Let the overview
+serve every zoom" — drop its `[0, 12]` ceiling so it joins the read set as a fallback. Measured on the
+live site (2026-08-02), band widened to `[0, 99]` in the loaded index:
+
+| camera | result |
+|---|---|
+| inside NL, z15 | **nothing changes** — `chooseBlocks` drops the overview as a *nested duplicate* of the region that already contains the viewport |
+| past the border (7.36°E) | **nothing changes** — and see below |
+| **straddling the border (7.24°E)** | **+93 range reads, +5.8 MB, +2 whole-file loads — and 0 features drawn** |
+
+The last row is the design's premise confirmed and then some: the read **mode** is a property of the
+*set* (`store-app.mjs:147` — paged if any chosen block says so), a `whole` block cannot share a working
+set with a `paged` one (`coverage.mjs:54`), and the result is not a slow map but **no map, after paying
+for one**. Widening the band is not the fix.
+
+⚠ **P3 also narrowed L3's scope, and the first run of it measured the wrong camera.** Run inside NL, the
+alternative cannot even fire — so that run said "no change" for a reason that has nothing to do with the
+design. The cameras that matter are the border ones. And there the second finding is the one that
+matters most:
+
+> **The overview's own data ends at 7.25°E.** Past it there is nothing to draw *because there is nothing*
+> — the Netherlands is the dataset. No floor can invent Münster.
+
+So L3 is **not** "the map is never empty". It is three narrower and still-worth-it things:
+
+1. **never blank while a finer layer loads** — real vectors instead of `holdFrame`'s stretched pixels;
+2. **the coarse map fills where the fine layer has no ground but the country does** — the shape of the
+   Hengelo bug (a region's roads extent reaching past its base extent), and the border strip where the
+   detailed roads stop at 7.243°E while the overview runs to 7.25°E;
+3. **"outside coverage" becomes sayable** — today the app names `nl-west` for a camera in Münster and
+   draws a blank page with no explanation.
 
 **The design: the floor is resident on the JS side, not a member of the kernel's read set.**
 
@@ -440,6 +464,43 @@ Three things fall out of that clip for free:
   band-crossing gate must stay green without it.
 * **"Outside coverage" becomes sayable.** With a floor that always draws, `resolveCoverage`'s fallback
   can name the floor block and set an honest HUD instead of pointing at `nl-west` (step 12).
+
+### What landed (steps 9–12), and what P4/P5 measured
+
+**The floor is a BY-PRODUCT, not a fetch.** A bare visit opens on the country, so the store the kernel is
+already holding *is* the overview — snapshotting it there costs one walk of tiles already decoded and no
+network at all. Measured: `how: "free"`, **149 113 areas · 56 859 lines · 1 230 843 coords**, matching the
+block's own build log. The lazy 33.7 MB fetch remains for the case where a view leaves ground uncovered
+and the floor is not resident, so a deep link into a covered region is never charged for a floor it will
+never see.
+
+**P5 is answered by suppression, not by clipping.** Inside NL at z15 the floor reports
+`why: "covered by the fine layer", drawn: 0` — it never paints under a detailed view, so the ~64 px of
+z10 decimation cannot ghost. The clip is for the partial case; the whole-screen case exits earlier.
+
+⚠ **Three defects in this section were found by gates and probes rather than by reading:**
+
+1. **`heldGroundFor` first trusted the BASE extents** — which `coverage.mjs` already documents as
+   meaningless since tiering ("all four read lon 2.39..7.21"). It declared the whole country held and
+   suppressed the floor everywhere: 0 features drawn *and* "held ground true" at the same camera.
+2. **Then it trusted the ROADS extents alone** — and the middle-zoom band has no roads, so every z12 view
+   concluded "nothing is held" and fetched 33.7 MB behind a map that was already complete. `overview_gate`
+   caught it as *"z12 reads the middle-zoom block alone"* suddenly reading two stores. The rule is
+   `coverage.mjs`'s own `selBox`: roads when the block has them, its own base box when it does not.
+3. **`_floorStats` recorded only on the drawing path**, so a frame where the floor was correctly
+   suppressed reported the *previous* frame's numbers — 33 203 features "drawn unclipped" over a detailed
+   map that had none of them. A stale instrument reads exactly like the bug it exists to catch.
+
+⚠ **And the scope really is what P3 said.** The floor cannot fill past 7.25°E because nothing can: at
+52.20°N the country's data ends at **7.0955°E**, measured off the floor's own geometry. A camera 10 km
+into Germany draws nothing from either layer — so step 12 makes the app *say* so
+(`no map data here — the Netherlands is the dataset; pan back west`) instead of showing a blank canvas
+while naming a block 300 km away.
+
+**Not done: step 11.** `holdFrame` stays. The design had the floor supersede it, but the floor is resident
+only after a country view; on a session that never sees one, the held frame is still the only thing
+standing between a band crossing and a blank screen. Two mechanisms for one job is worth flagging — the
+right resolution is for the floor to cover it once it is always resident, not to delete the fallback now.
 
 **Predicted cost — the number that decides it.** 774 431 coordinates as Int32 pairs = 6.2 MB, plus
 ~173 000 feature records at ~40 B = ~7 MB → **~13 MB retained**. ⚠ That coordinate count is from the

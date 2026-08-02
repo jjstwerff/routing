@@ -121,6 +121,101 @@ const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnl
 // the floor there are no roads at all, so a class debut ABOVE the floor deletes content for part of a band
 // the block says it serves. `roadDebut` applies it; this is where the index's own `zoom[0]` is read.
 // 0 when the index declares no band, which means "no floor" and leaves the ladder exactly as it was.
+// PLAN-LAYERS §5 (L3) — THE FLOOR.
+//
+// The ground a view is actually holding: the box it read, intersected with the union of the ROADS extents
+// of the blocks that answered it — and only when the view actually produced something.
+//
+// ⚠ THE ROADS EXTENT, NOT THE BASE ONE, and `coverage.mjs` already says why in its own words: since the
+// base map became TIERED, "all four base extents read lon 2.39..7.21, i.e. they no longer identify a
+// region at all". A held-ground test built on those declares the whole country covered and suppresses the
+// floor everywhere — measured: at 7.22°E the app drew 0 features and still reported held ground.
+//
+// ⚠ AND IT IS GATED ON WHAT THE VIEW RETURNED, because an extent is a claim and a feature count is an
+// observation. A viewport past the data's edge intersects an extent that reaches over it and holds
+// nothing at all; only the count can tell those apart.
+function heldGroundFor(box, z, hadFeatures) {
+  if (!hadFeatures) return null;                          // nothing came back — the floor may cover it all
+  // The blocks that answered the BASE read, measured by their SELECTION extent — roads when the block has
+  // them, its own base box when it does not. That is `coverage.mjs`'s `selBox` rule and it matters in both
+  // directions: a detailed region is honestly bounded by its roads extent, while the overview and the
+  // middle-zoom block have no roads at all and are bounded by their own.
+  //
+  // ⚠ Using the roads extent ALONE said "nothing is held" for every z12 view, because that band's block
+  // carries no roads — so the floor fetched 33.7 MB behind a map that was already complete. The overview
+  // gate caught it as "z12 reads the middle-zoom block alone" suddenly reading two stores.
+  const chosen = blocksChosenFor(coverage.index, box.mnla, box.mnlo, box.mxla, box.mxlo, 'roads', 'base', z);
+  let mnla = Infinity, mnlo = Infinity, mxla = -Infinity, mxlo = -Infinity;
+  for (const b of chosen) {
+    const x = (b.roads && b.roads.bbox) || (b.base && b.base.bbox);
+    if (!x) continue;
+    mnla = Math.min(mnla, x.mnla); mnlo = Math.min(mnlo, x.mnlo);
+    mxla = Math.max(mxla, x.mxla); mxlo = Math.max(mxlo, x.mxlo);
+  }
+  if (!isFinite(mnla)) return null;                       // nothing answered — the floor may cover it all
+  const F = 1e7;
+  const hi = { mnla: Math.max(mnla, Math.round(box.mnla * F)), mnlo: Math.max(mnlo, Math.round(box.mnlo * F)),
+               mxla: Math.min(mxla, Math.round(box.mxla * F)), mxlo: Math.min(mxlo, Math.round(box.mxlo * F)) };
+  return (hi.mnla < hi.mxla && hi.mnlo < hi.mxlo) ? hi : null;
+}
+
+// The floor is fetched ON FIRST NEED, not at boot, and that is a measured choice rather than caution: the
+// overview is 33.7 MB. A bare visit opens on the country and pays for it anyway; someone who deep-links
+// to z16 inside a covered region never sees the floor and must not be charged 33.7 MB for it. So it loads
+// the first time a view leaves ground uncovered — which is the first pan that would otherwise go blank.
+const FLOOR_BLOCK = 'nl-overview';
+let floorState = 'idle';                                  // idle → loading → ready | absent
+const floorBlock = () => (coverage.index?.blocks || []).find((b) => b.id === FLOOR_BLOCK && b.base && b.base.url);
+const floorUrl = () => { const b = floorBlock(); return b ? new URL(b.base.url, INDEX_URL).href : '\u0000'; };
+function floorReport(lists, how) {
+  let coords = 0;
+  for (const a of lists.areas) coords += a.ring.length;
+  for (const l of lists.lines) coords += l.geom.length;
+  return { how, areas: lists.areas.length, lines: lists.lines.length,
+           pois: lists.pois.length, places: lists.places.length, coords };
+}
+function floorNeeded(box, z, hadFeatures) {
+  const held = heldGroundFor(box, z, hadFeatures);
+  if (!held) return true;                                 // nothing answered at all
+  const F = 1e7, pad = 0.02;                              // a screen-edge sliver is not worth 33.7 MB
+  return held.mnla > Math.round((box.mnla + pad) * F) || held.mxla < Math.round((box.mxla - pad) * F)
+      || held.mnlo > Math.round((box.mnlo + pad) * F) || held.mxlo < Math.round((box.mxlo - pad) * F);
+}
+async function ensureFloor(box, z, hadFeatures) {
+  if (floorState !== 'idle' || !floorNeeded(box, z, hadFeatures)) return;
+  const blk = floorBlock();
+  if (!blk) { floorState = 'absent'; return; }
+  floorState = 'loading';
+  const url = new URL(blk.base.url, INDEX_URL).href;
+  const x = blk.base.bbox;
+  const bbox = `${x.mnla / 1e7},${x.mnlo / 1e7},${x.mxla / 1e7},${x.mxlo / 1e7}`;
+  try {
+    // Its OWN kernel command, whole-file, over the block's whole extent — the one read this costs. It
+    // cannot join the view's read set: P3 measured that mixing a `whole` block into a `paged` one spends
+    // 5.8 MB and 2 whole-file loads and draws NOTHING (§5).
+    await jobs.post('floor', async () => {
+      // The kernel's own line protocol, spelled out rather than borrowed from `viewCmd`: this read names
+      // NO roads store and forces `whole` on both, which is the one command in the app that does.
+      await kernel.runKernel([url, '', 'view', bbox, '', 'whole', '', 'whole'].join('\n'));
+      const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+      if (!h) { floorState = 'absent'; return; }
+      // ⚠ STORE_KINDS, not APP_OBJECT_KINDS. The app materialises only the LABELS and draws all geometry
+      // from the store index (PLAN-PERF step 13), so asking for the app's own kind set gave a floor of
+      // 390 place names and no map at all — measured, and it looked exactly like a floor that had loaded.
+      // The floor is the one place that must materialise geometry: its whole purpose is to outlive the
+      // store the index points into.
+      const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
+      map.setFloor(lists, x);
+      floorState = 'ready';
+      window.__storeApp = { ...(window.__storeApp || {}), floor: floorReport(lists, 'fetched') };
+    });
+  } catch (e) { console.warn('floor load failed:', e); floorState = 'idle'; }
+  // ⚠ The floor's own read leaves the kernel holding the OVERVIEW. The next view must rebuild the
+  // session's store set rather than assume its own is still bound, so the source is invalidated here.
+  loadedSrc = null;
+  await ensureViewNow();
+}
+
 const roadsFloorFor = (b, z) => {
   const chosen = blocksChosenFor(coverage.index, b.mnla, b.mnlo, b.mxla, b.mxlo, 'roads', null, z);
   const floors = chosen.map((x) => (Array.isArray(x.zoom) ? x.zoom[0] : 0));
@@ -418,10 +513,44 @@ async function ensureViewNow() {
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
   loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
+  // PLAN-LAYERS §5 (L3) — the ground this view is ACTUALLY holding, which is what the floor draws around.
+  // The intersection of the box that was read with the extents of the blocks that answered it: a viewport
+  // wider than the data gets a held box narrower than the screen, and the floor fills the rest.
+  // PLAN-LAYERS §5 — THE FLOOR IS A BY-PRODUCT OF THE VIEW THAT ALREADY READ IT.
+  //
+  // A bare visit opens on the country, so the store the kernel is holding right now IS the overview.
+  // Snapshotting it here costs one walk of tiles already decoded and NO fetch — where the lazy path below
+  // costs 33.7 MB. That asymmetry decides the policy: take it for free when it is already here, and buy it
+  // only when a view has left ground uncovered and the user would otherwise be looking at nothing.
+  if (h && floorState === 'idle' && baseFor(box, zoom) === floorUrl()) {
+    const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, STORE_KINDS));
+    const blk = floorBlock();
+    if (blk && lists.areas.length) {
+      map.setFloor(lists, blk.base.bbox);
+      floorState = 'ready';
+      window.__storeApp = { ...(window.__storeApp || {}), floor: floorReport(lists, 'free') };
+    }
+  }
+  // What the view RETURNED decides whether this ground counts as held — see `heldGroundFor`.
+  const gotFeatures = Object.values(counts).reduce((a, b) => a + b, 0) > 0
+                   || (map.streetsFlat ? map.streetsFlat.n : 0) > 0;
+  map.setHeldGround(heldGroundFor(box, zoom, gotFeatures));
   map.releaseFrame();                    // real data is in — the held pixels have done their job
   map.render();
+  ensureFloor(box, zoom, gotFeatures);   // fetched on first NEED, never at boot — see below
   const sum = text.split('\n').find((l) => l.startsWith('# view')) || '(no view)';
-  hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
+  // PLAN-LAYERS §5 (L3), step 12 — SAY IT when there is nothing here.
+  //
+  // A viewport past the data drew a blank page and reported a view line, while `resolveCoverage` named a
+  // block 300 km away — so "outside the map" was indistinguishable from "the app is broken", which is
+  // what it was reported as. The floor draws whatever the country has; where even that is empty the
+  // honest answer is a sentence, not an empty canvas.
+  const floorDrew = (map._floorStats && map._floorStats.drawn) || 0;
+  if (!gotFeatures && !floorDrew) {
+    hud.textContent = 'no map data here — the Netherlands is the dataset; pan back west';
+  } else {
+    hud.textContent = `${sum.replace('# view: ', '')} · ${Math.round(performance.now() - t0)}ms — click to route`;
+  }
   // The app's OWN first view is the only genuinely cold one — it pays the session's store load. Every
   // __perfHooks.timedView after it is warm, so the profiler cannot see the load unless we record it here.
   const ms = performance.now() - t0;
