@@ -147,5 +147,19 @@ ok(probe.echoed?.echo === true && probe.echoed?.dense === 36,
    `the retry's decision: a returned trace IS an echo, and densifies 2 → ${probe.echoed?.dense} at ${probe.echoed?.step} m`);
 ok(probe.routed?.echo === false, 'and a real route is not treated as one');
 
+// PLAN-LAYERS §5 (L3) — the floor: free on a bare visit, suppressed where the fine layer holds the ground.
+{
+  const st = JSON.parse(await ev(`(() => { const m = window.__map0; m.camera.zoom = 15; m.camera.lat = 52.2215;
+    m.camera.lon = 6.8937; m._fireMove && m._fireMove(); return JSON.stringify(window.__storeApp?.floor || null); })()`) || 'null');
+  ok(st && st.how === 'free' && st.areas > 1000,
+     `the floor is a by-product of the country view, not a second fetch: ${JSON.stringify(st)}`);
+  await new Promise((r) => setTimeout(r, 12000));
+  const fs = JSON.parse(await ev(`(() => { const m = window.__map0; m.invalidateBlocks(); m.render();
+    return JSON.stringify(m._floorStats || {}); })()`) || '{}');
+  // ⚠ SUPPRESSED, not merely "drawn under". The overview is decimated to one pixel at z10, which is ~64 px
+  // at z16 — painting it beneath a detailed view produces ghost lines beside the real ones.
+  ok(fs.drawn === 0, `and it draws NOTHING where the detailed map holds the ground (why: ${fs.why})`);
+}
+
 console.log(fails ? `FAIL — ${fails} check(s)` : 'PASS — the country view, the handover and the retry all hold');
 process.exit(fails ? 1 : 0);

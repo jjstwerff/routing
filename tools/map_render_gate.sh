@@ -74,22 +74,24 @@ fi
 
 # Reaching the kernel outside the queue re-opens P4 — and `runKernel` keeps ONE resolve slot, so a second
 # road to it does not merely race, it orphans a promise. The APP section (everything above the test-only
-# __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly three calls:
-# the `view` inside ensureViewNow, the `match` inside streamedMatch, and the `find` inside initSearch's
-# `run` — each the body of a queued job.
+# __perfHooks block, which measures the kernel in isolation on purpose) must hold exactly four calls:
+# the `view` inside ensureViewNow, the `match` inside streamedMatch, the `find` inside initSearch's `run`,
+# and the FLOOR's one whole-file read inside ensureFloor (PLAN-LAYERS §5) — each the body of a queued job.
 #
 # The COUNT is a proxy for the real rule, which is "every one of them is inside jobs.post". Raising it is
-# therefore allowed, and adding a call outside the queue is not; if you raise it, name the third here so
-# the next reader can tell an intended road from a smuggled one.
+# therefore allowed, and adding a call outside the queue is not; if you raise it, NAME the new one here so
+# the next reader can tell an intended road from a smuggled one. The floor's is named above: it cannot
+# share the view's read set, because P3 measured that mixing a `whole` block into a `paged` one spends
+# 5.8 MB and two whole-file loads and draws nothing.
 app_end=$(grep -n 'window.__perfHooks = {' "$here/browser/store-app.mjs" | head -1 | cut -d: -f1)
 app_calls=$(head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -c 'kernel.runKernel')
-if [ "$app_calls" -ne 3 ]; then
-  echo "  FAIL: the app reaches the kernel from $app_calls places (expected 3 — ensureViewNow + streamedMatch + initSearch);"
-  echo "        a third is a road around the queue, which is how a match gets dropped (P4)."
+if [ "$app_calls" -ne 4 ]; then
+  echo "  FAIL: the app reaches the kernel from $app_calls places (expected 4 — ensureViewNow + streamedMatch + initSearch + ensureFloor);"
+  echo "        an extra one is a road around the queue, which is how a match gets dropped (P4)."
   head -n "${app_end:-0}" "$here/browser/store-app.mjs" | grep -n 'kernel.runKernel'
   e0rc=1
 else
-  echo "  ✓ the app reaches the kernel from exactly 3 places (view, match, find), each inside a queued job"
+  echo "  ✓ the app reaches the kernel from exactly 4 places (view, match, find, floor), each inside a queued job"
 fi
 [ $e0rc -eq 0 ] || exit 1
 
