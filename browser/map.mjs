@@ -532,8 +532,12 @@ export function parseView(txt) {
   for (const s of R) {
     const p = s.split(';'); if (p.length < 3) continue;
     const line = geom(p, 1); if (line.length < 2) continue;
+    // ⚠ The marks are LETTERS, not a mere presence: `path|w` is a signposted walking way, not a closed
+    // one. Testing `bar >= 0` was right while `x` was the only mark and became wrong the moment the
+    // networks joined it — the store-vs-object pixel gate caught it immediately, which is what it is for.
     const bar = p[0].indexOf('|');
-    streets.push({ cls: bar < 0 ? p[0] : p[0].slice(0, bar), shut: bar >= 0, line });
+    const marks = bar < 0 ? '' : p[0].slice(bar + 1);
+    streets.push({ cls: bar < 0 ? p[0] : p[0].slice(0, bar), shut: marks.includes('x'), line });
   }
   const streetLabels = [];
   for (const s of S) { const p = s.split(';'); if (p.length < 3) continue; const line = geom(p, 1); if (p[0] && line.length >= 2) streetLabels.push({ label: p[0], line }); }
@@ -690,10 +694,36 @@ function joinStretches(slots) {
 // those doubles to project(), and the gate is a pixel hash, so any re-rounding would show up as
 // antialiasing drift. Same drops in the same order as `parseView`'s street demux — `p.length >= 3` then
 // `>= 2` valid coordinates — so the same roads survive, in the same order, and buckets overdraw the same.
+// PLAN.md step 8 / DESIGN §6 — the SIGNPOSTED networks, as `map_kernel::emit_roads` marks them. These
+// are route relations someone maintains and signs on the ground (rwn/lwn/nwn/iwn, rcn/lcn/ncn/icn,
+// route=mtb), which is a different claim from "this way is walkable": the first is a recommendation, the
+// second a permission.
+export const NET_WALK = 1, NET_CYCLE = 2, NET_MTB = 4;
+
+// Which network the ACTIVITY asks to see. Walking and running both follow the walking network; cycling's
+// sub-modes split, because an MTB route and a road-cycling route are signed for different bicycles and
+// showing one while riding the other is worse than showing neither.
+export function netForProfile(profile) {
+  const p = String(profile || '');
+  if (p.startsWith('walking') || p.startsWith('running')) return NET_WALK;
+  if (p === 'cycling_mtb') return NET_MTB;
+  if (p.startsWith('cycling')) return NET_CYCLE;
+  return 0;                                          // driving asks for none
+}
+
+// Drawn as a CASING under nothing and over the road: a coloured band wider than the way itself, so the
+// road keeps its own colour and the network reads as an annotation on top of the map rather than a
+// recolouring of it. That is the Waymarkedtrails convention and the reason it survives a busy city.
+export const NET_STYLE = {
+  [NET_WALK]:  { color: 'rgba(214,64,64,0.55)', width: 5 },
+  [NET_CYCLE]: { color: 'rgba(40,110,200,0.55)', width: 5 },
+  [NET_MTB]:   { color: 'rgba(150,60,170,0.55)', width: 5 },
+};
+
 export function parseStreetsFlat(txt) {
   const lines = (txt || '').split('\n');
   let cap = 4096, xy = new Float64Array(cap * 2), nv = 0;
-  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map(), shut = [];
+  const off = [0], clsIdx = [], clsNames = [], clsOf = new Map(), shut = [], net = [];
   const bb = [];
   for (const raw of lines) {
     if (raw[0] !== 'R' || raw[1] !== ' ') continue;
@@ -715,16 +745,22 @@ export function parseStreetsFlat(txt) {
     // `class|x` marks a way the ROUTER REFUSES (map_kernel emit_roads). Splitting it here keeps the
     // class vocabulary the styles are keyed on unchanged and costs one bit per road, rather than a
     // parallel style table for every class crossed with open/closed.
+    // `class|<marks>` — `x` the router refuses it, `w`/`c`/`m` signposted walk/cycle/mtb network.
+    // Splitting here keeps the class vocabulary the styles are keyed on unchanged and costs two bytes per
+    // road rather than a parallel table for every class crossed with every network.
     const bar = p[0].indexOf('|');
     const name = bar < 0 ? p[0] : p[0].slice(0, bar);
-    shut.push(bar < 0 ? 0 : 1);
+    const marks = bar < 0 ? '' : p[0].slice(bar + 1);
+    shut.push(marks.includes('x') ? 1 : 0);
+    net.push((marks.includes('w') ? NET_WALK : 0) | (marks.includes('c') ? NET_CYCLE : 0)
+           | (marks.includes('m') ? NET_MTB : 0));
     let ci = clsOf.get(name);
     if (ci === undefined) { ci = clsNames.length; clsNames.push(name); clsOf.set(name, ci); }
     clsIdx.push(ci); off.push(nv);
     bb.push(mnla, mxla, mnlo, mxlo);
   }
   return { n: clsIdx.length, xy, off: Int32Array.from(off), cls: Uint8Array.from(clsIdx), clsNames,
-           shut: Uint8Array.from(shut), bb: Float64Array.from(bb), verts: nv };
+           shut: Uint8Array.from(shut), net: Uint8Array.from(net), bb: Float64Array.from(bb), verts: nv };
 }
 
 // --- Catalog v2 (§4b): Line + POI styles, following OSM Carto. Each kind is a row — grow freely. -----
@@ -792,6 +828,9 @@ export class RouteMap {
     this.lines = opts.lines || [];            // [{kind, name, geom}]      — M3b streams/rails/barriers
     this.pois = opts.pois || [];              // [{kind, name, at}]        — M3b point features
     this.route = opts.route || [];            // [[lat,lon], …]            — the matched route (read-only)
+    // The activity in force, as the app's dropdown has it. The renderer needs it for ONE thing — which
+    // signposted network to overlay — so it is a plain field the app writes rather than a subscription.
+    this.profile = opts.profile || '';
     this._stats = {};                         // per-render draw counts (gate hook)
     this._timeLayers = false;                 // opt-in per-layer render timing (PLAN-PERF §6 R)
     this._layerMs = null;
@@ -1712,6 +1751,9 @@ export class RouteMap {
     let s = this._streetScratch;
     if (!s || s.length < F.verts * 2) s = this._streetScratch = new Float64Array(Math.max(8192, F.verts * 2));
     const byClass = {}, byShut = {};
+    // The signposted network for the CURRENT activity, collected in the same pass — one bitmask test per
+    // way, and nothing at all when the activity asks for no network (driving).
+    const wantNet = netForProfile(this.profile), netRuns = [];
     let w = 0, vis = 0;
     for (let i = 0; i < F.n; i++) {
       const o4 = i * 4;
@@ -1734,6 +1776,7 @@ export class RouteMap {
       if (!on && !this._noVertexCull) { w = at; continue; }   // `_inView` — rewind the scratch, draw nothing
       const bucket = (F.shut && F.shut[i]) ? byShut : byClass;
       (bucket[cls] || (bucket[cls] = [])).push(at, len);
+      if (wantNet && F.net && (F.net[i] & wantNet)) netRuns.push(at, len);
       vis++;
     }
     const strokeRun = (at, len) => {
@@ -1758,6 +1801,20 @@ export class RouteMap {
         if (style.casing) { ctx.setLineDash([]); ctx.strokeStyle = style.casing; ctx.lineWidth = lw + 2; for (let j = 0; j < sb.length; j += 2) strokeRun(sb[j], sb[j + 1]); }
         ctx.setLineDash(style.dash || []); ctx.strokeStyle = style.core; ctx.lineWidth = lw;
         for (let j = 0; j < sb.length; j += 2) strokeRun(sb[j], sb[j + 1]);
+      }
+    }
+    // THE NETWORK OVERLAY, last so it sits ON the roads rather than under them (PLAN.md step 8). A
+    // translucent band wider than the way: the road keeps its own colour and the network reads as an
+    // annotation over the map, which is what makes it survive a city where every second street is drawn.
+    // It follows the activity dropdown — walking and running take the walking network, cycling splits at
+    // the sub-mode, because an MTB route and a road route are signed for different bicycles.
+    if (wantNet && netRuns.length) {
+      const ns = NET_STYLE[wantNet];
+      if (ns) {
+        ctx.setLineDash([]);
+        ctx.strokeStyle = ns.color;
+        ctx.lineWidth = Math.max(2, ns.width * scale);
+        for (let j = 0; j < netRuns.length; j += 2) strokeRun(netRuns[j], netRuns[j + 1]);
       }
     }
     ctx.setLineDash([]);

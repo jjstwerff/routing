@@ -58,6 +58,7 @@ const DEFAULT_CAM = { lat: 52.15, lon: 5.30, zoom: 8 };
 const bootCam = cameraFromHash(location.hash);
 if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
 const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
+map.profile = PROFILE;   // the signposted-network overlay follows it (§6/PLAN step 8)
 
 // `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
 // button into a rewind of every camera nudge.
@@ -240,6 +241,14 @@ function initActivityControls() {
     const next = `${ACT_KEY[act]}_${sub}`;
     if (!PROFILES.includes(next) || next === PROFILE) return;
     PROFILE = next;
+    // The overlay follows the activity, so the map has to be told and redrawn even when the sketch is
+    // empty — changing the dropdown with no route on screen must still swap walk/cycle/mtb network.
+    map.profile = PROFILE;
+    // ⚠ The block raster cache holds the roads, so a re-render alone BLITS the old picture and the
+    // overlay never changes (§6d: anything replacing layer data must invalidate). Measured: the canvas
+    // hash was identical across all five activities until this line existed.
+    map.invalidateBlocks();
+    map.render();
     rememberCamera();                       // the fragment carries the profile, so a reload keeps it
     // `rough.coords()`, not `map.points` — the layer's array holds point OBJECTS while `requestMatch`
     // destructures [lat, lon] pairs, which is the shape `onCommit` passes. Getting that wrong re-matched
@@ -992,6 +1001,12 @@ window.__perfHooks = {
     // against itself. Blocking is restored at the end.
     const wasBlocked = map.blocked;
     map.blocked = false;
+    // ⚠ And the NETWORK OVERLAY off, because only the flat street path draws it. This gate compares the
+    // store-backed geometry against the object path for buildings/areas/lines/pois; an annotation that
+    // exists in one render and not the other is a guaranteed mismatch that says nothing about the bridge.
+    // `netForProfile('')` is 0, which is how the overlay is switched off without a second flag.
+    const wasProfile = map.profile;
+    map.profile = '';
     const fp = () => { map.render(); const c = document.getElementById('map');
                        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
                        let hh = 0x811c9dc5;
@@ -1014,6 +1029,7 @@ window.__perfHooks = {
     map._sidx = idx;
     const store = fp();
     const kinds = Object.keys(idx).filter((k) => idx[k] && idx[k].n !== undefined);
+    map.profile = wasProfile;
     map.blocked = wasBlocked; map.invalidateBlocks();
     return { objects: objects.hash, store: store.hash, equal: objects.hash === store.hash,
              objectCounts: objects.counts, storeCounts: store.counts, kinds,
