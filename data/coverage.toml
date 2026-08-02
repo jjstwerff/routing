@@ -149,6 +149,12 @@ read_mode = "paged"
 tier_floor = 1
 zoom_min  = 12
 zoom_max  = 14
+# HOSTED ON ITS OWN PAGES DATA REPO, like the region base maps and for the same reason: 213 MB beside the
+# app took the site to 816 MB of a 950 MB budget (86%), and the block is a picture the browser reads by
+# range rather than something the app's own origin must serve. Verified on publication — a cross-origin
+# ranged GET answers 206 with `access-control-allow-origin: *` at the exact size.
+base_url_base = "https://jjstwerff.github.io/routing-data-nl-mid"
+base_cors     = true
 
 [[region]]
 id        = "nl-west"

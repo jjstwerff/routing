@@ -108,7 +108,6 @@ const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_UR
 //
 // The fallback follows the same rule as the set: the camera's block is only a sensible default while it
 // serves this zoom. Out of band it would drag a detailed store back in through the side door.
-const inBandOf = (b, z) => !b || !Array.isArray(b.zoom) || z === undefined || (z >= b.zoom[0] && z < b.zoom[1]);
 // ⚠ The fallback is applied HERE, not inside `chooseBlocks`. Passing `coverage.block` as the chooser's
 // fallback puts the camera's block back whenever the band excluded every candidate — which is exactly
 // the case this exists to prevent, and it downloaded a 123 MB roads store whole at z8.
@@ -122,7 +121,13 @@ const roadsFor = (b, z) => roadsUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnl
 // overview alone answers (one 19.6 MB whole file); above it the detailed regions alone do. Passing the
 // camera's zoom is the whole of the client's side of that: `blocksForBox` filters on the band the index
 // declares, and a block that declares none is unaffected.
-const baseFor = (b, z) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z) || LAYOUT;
+const inBandOf = (b, z) => !b || !Array.isArray(b.zoom) || z === undefined || (z >= b.zoom[0] && z < b.zoom[1]);
+// ⚠ The fallback honours the BAND, like `roadsFor`'s does. Falling back to the camera's block when no
+// block serves this zoom hands the view a store that has explicitly declared it does not serve it — and
+// it hides a missing level: with the middle-zoom block absent, a z12 view silently drew the city block's
+// base instead of nothing, which is a wrong map rather than an empty one.
+const baseFor = (b, z) => baseUrlsFor(coverage.index, INDEX_URL, b.mnla, b.mnlo, b.mxla, b.mxlo, null, z)
+  || (inBandOf(coverage.block, z) ? LAYOUT : '');
 // ⚠ A SESSION-WIDE READ MODE IS WRONG, AND IT BROKE THE LIVE MAP (2026-08-02). It is resolved from the
 // CAMERA's block, and the blocks a VIEWPORT needs are not always that block: at z13.68 over Enschede the
 // viewport escapes the little city block, selection correctly picks `nl-east` — and the mode said
