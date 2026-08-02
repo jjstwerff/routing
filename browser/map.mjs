@@ -839,10 +839,30 @@ const hexRgb = (h) => {
 // convention and reads correctly even when almost everything is one level.
 const LEVEL_WIDTH = [1.0, 1.15, 1.45, 1.8];         // local/unknown · regional · national · international
 
+// PLAN-LAYERS §3 step 7b — TWO TREATMENTS, because the two kinds of route are read differently.
+//
+// A long-distance path (national or international — the LAW/LF network) is a THING YOU FOLLOW FOR DAYS:
+// it earns a continuous line and its NAME along it, the way a street carries its name. A local or
+// regional route is a waymark you check at a junction, and a way commonly carries SEVERAL at once — so
+// they are drawn as short coloured blocks placed one after another along the way, a train, rather than
+// blended into a single colour that belongs to none of them.
+const ROUTE_LD_LEVEL = 2;                           // national and above is "long distance"
+// ⚠ A LONG-DISTANCE ROUTE GETS ITS OWN COLOUR, not the one on the tree, and the measurement is why: at
+// the reported camera all three national routes are `LAW 2` with `osmc` red — and 84 of the 104 local
+// routes are coloured too, red among them. Drawing both in their own colours makes the one thing a walker
+// most needs to tell apart the one thing the map does not distinguish. The LD line takes a colour no
+// waymark palette uses, and its IDENTITY is carried by the name flag along it rather than by its hue.
+const ROUTE_LD_COLOUR = 'rgba(140,29,91,0.78)';     // deep wine — outside the osmc vocabulary
+const ROUTE_LD_LABEL = '#7a1f4e';
+const ROUTE_BLOCK_LEN = 11, ROUTE_BLOCK_GAP = 7;    // one block of the train, and the space after it
+const ROUTE_LABEL_SPACING_PX = 620, ROUTE_FONTPX = 11;   // sparser than a street: a route name repeats less
+
 // A route's own colour, or null to fall back to the activity's.
 export function routeColour(rt) {
   if (!rt) return null;
-  const c = String(rt.colour || '').toLowerCase().trim();
+  // `osmc:symbol` waycolours can be COMPOUND — `blue;green` and `blue;red` both occur in this data. The
+  // first is the one painted along the way; the rest describe the symbol on it, which this line is not.
+  const c = String(rt.colour || '').toLowerCase().trim().split(';')[0].trim();
   if (!c) return null;
   if (OSMC_COLOURS[c]) return `rgba(${OSMC_COLOURS[c]},${NET_ALPHA})`;
   // an explicit `colour=#rrggbb` passes through — through the same alpha, not around it
@@ -1701,6 +1721,49 @@ export class RouteMap {
     return true;
   }
 
+  // PLAN-LAYERS §3 step 7b — THE TRAIN: one short block per route, laid along the way in turn.
+  //
+  // A way in the Achterhoek routinely carries three or four local walking routes at once, and blending
+  // them into one colour produces a colour that belongs to none of them — the map then says "there are
+  // routes here" and refuses to say which, which is the very thing the route table was added to fix. So
+  // each route gets its own block and they queue: red, blue, green, red, blue, green along the path,
+  // exactly as the waymarks themselves are stacked on a post.
+  //
+  // Walked in SCREEN space over the projected scratch, so the spacing is constant in pixels at every zoom
+  // — a train measured in metres would be a smear when zoomed out and a dotted line when zoomed in.
+  _strokeRouteTrain(sc, at, len, routes, width, fallback) {
+    const ctx = this.ctx;
+    const period = ROUTE_BLOCK_LEN + ROUTE_BLOCK_GAP;
+    ctx.setLineDash([]);
+    ctx.lineWidth = width;
+    ctx.lineCap = 'butt';                    // a butt cap keeps a block's length honest; round would blur
+    let carried = 0, k = 0;                  // distance already covered inside the current block slot
+    for (let i = 1; i < len; i++) {
+      const x0 = sc[(at + i - 1) * 2], y0 = sc[(at + i - 1) * 2 + 1];
+      const x1 = sc[(at + i) * 2], y1 = sc[(at + i) * 2 + 1];
+      const dx = x1 - x0, dy = y1 - y0, seg = Math.hypot(dx, dy);
+      if (!(seg > 0)) continue;
+      let done = 0;
+      while (done < seg) {
+        const slot = carried % period;
+        const take = Math.min(seg - done, (slot < ROUTE_BLOCK_LEN ? ROUTE_BLOCK_LEN : period) - slot);
+        if (slot < ROUTE_BLOCK_LEN) {        // inside a block — paint it in this route's colour
+          const t0 = done / seg, t1 = (done + take) / seg;
+          ctx.strokeStyle = routeColour(routes[k % routes.length]) || fallback;
+          ctx.beginPath();
+          ctx.moveTo(x0 + dx * t0, y0 + dy * t0);
+          ctx.lineTo(x0 + dx * t1, y0 + dy * t1);
+          ctx.stroke();
+        }
+        carried += take; done += take;
+        // One route per SLOT, so the next block belongs to the next route — that is what makes it a train
+        // rather than a dashed line in one colour.
+        if (carried % period === 0) k++;
+      }
+    }
+    ctx.lineCap = 'round';
+  }
+
   // PLAN-LAYERS §5 (L3) — THE FLOOR: the coarsest map that covers this ground, kept resident.
   //
   // `lists` are the OBJECT-path render lists (`viewRenderLists`), which are self-contained JS — rings and
@@ -2193,21 +2256,30 @@ export class RouteMap {
         // (highest level) decides, because two bands on one line is a smear rather than information.
         const tab = F.routes || [];
         const base = Math.max(2, ns.width * scale);
+        this._routeLabels = [];
         for (let j = 0; j < netRuns.length; j += 3) {
           const at = netRuns[j], len = netRuns[j + 1], road = netRuns[j + 2];
-          let colour = ns.color, level = -1;
+          // The routes this way carries, of the network the activity asked for, strongest first.
+          const mine = [];
           const ids = F.rids && F.rids[road];
-          if (ids) {
-            for (const id of ids) {
-              const rt = tab[id];
-              if (!rt || !(rt.kind & wantNet)) continue;    // a route of another mode is not this band
-              if (rt.level > level) { level = rt.level; colour = routeColour(rt) || ns.color; }
-            }
+          if (ids) for (const id of ids) { const rt = tab[id]; if (rt && (rt.kind & wantNet)) mine.push(rt); }
+          mine.sort((a, b) => b.level - a.level);
+          const lead = mine[0];
+          // A LONG-DISTANCE route gets the line, and its name along it.
+          if (lead && lead.level >= ROUTE_LD_LEVEL) {
+            ctx.strokeStyle = ROUTE_LD_COLOUR;
+            ctx.lineWidth = base * (LEVEL_WIDTH[Math.min(3, lead.level)] || 1);
+            strokeRun(at, len);
+            const label = routeLabel(lead);
+            if (label) this._routeLabels.push({ label, at, len });
           }
-          ctx.strokeStyle = colour;
-          ctx.lineWidth = base * (LEVEL_WIDTH[Math.max(0, level)] || 1);
-          strokeRun(at, len);
+          // The LOCAL and REGIONAL ones get the train of blocks — one colour per route, in order, laid
+          // along the way. A road with none of these draws nothing here, which is the point: the band it
+          // would otherwise get says "some route" and names none.
+          const locals = mine.filter((r) => r.level < ROUTE_LD_LEVEL);
+          if (locals.length) this._strokeRouteTrain(s, at, len, locals, base, ns.color);
         }
+
       }
     }
     ctx.setLineDash([]);
@@ -2399,10 +2471,63 @@ export class RouteMap {
       this._label(p.name, s.x, s.y, font, '#3a3a3a');
       placeLabels++;
     }
+    // PLAN-LAYERS §3 step 7b — THE ROUTE'S NAME ALONG ITS LINE, before the streets.
+    //
+    // Order is the decision: `fits` is greedy first-come, so whoever asks first wins a contested spot. A
+    // long-distance path's name is rarer and more useful than the fifth repetition of a street name, and
+    // the street pass repeats every 420 px precisely because street names are cheap to lose.
+    const routeLabels = (!onlyL || onlyL === 'streets') ? this._routeLabelPass(fits) : 0;
     const streetLabels = (z >= STREET_MINZOOM && (!onlyL || onlyL === 'streets')) ? this._streetLabels(fits) : 0;
     const buildingLabels = (!onlyL || onlyL === 'buildings') ? this._buildingLabelPass(fits) : 0;
-    return { placeLabels, streetLabels, buildingLabels };
+    return { placeLabels, streetLabels: streetLabels + routeLabels, buildingLabels };
   }
+
+  // The name of each long-distance route, repeated along the line it follows — the same walk the street
+  // labels use, at a wider spacing. Candidates are collected by the roads pass, which is the only place
+  // that knows which way carries which route.
+  _routeLabelPass(fits) {
+    const cands = this._routeLabels;
+    if (!cands || !cands.length) return 0;
+    const ctx = this.ctx, sc = this._streetScratch, font = `600 ${ROUTE_FONTPX}px system-ui, sans-serif`;
+    if (!sc) return 0;
+    ctx.font = font;
+    let n = 0;
+    // One label per ROUTE per frame at most, not per way: a route is made of dozens of ways and each
+    // would otherwise ask for its own copy of the name, forty times over the same path.
+    const seen = new Set();
+    for (const c of cands) {
+      if (seen.has(c.label)) continue;
+      const seg = []; let total = 0;
+      for (let i = 1; i < c.len; i++) {
+        const d = Math.hypot(sc[(c.at + i) * 2] - sc[(c.at + i - 1) * 2],
+                             sc[(c.at + i) * 2 + 1] - sc[(c.at + i - 1) * 2 + 1]);
+        seg.push(d); total += d;
+      }
+      if (total < 90) continue;                      // too short a piece to carry a name legibly
+      const w0 = ctx.measureText(c.label).width + 6;
+      const count = Math.max(1, Math.round(total / ROUTE_LABEL_SPACING_PX)), step = total / (count + 1);
+      for (let k = 1; k <= count; k++) {
+        const target = step * k; let acc = 0, i = 1;
+        while (i < c.len && acc + seg[i - 1] < target) { acc += seg[i - 1]; i++; }
+        if (i >= c.len) i = c.len - 1;
+        const x0 = sc[(c.at + i - 1) * 2], y0 = sc[(c.at + i - 1) * 2 + 1];
+        const x1 = sc[(c.at + i) * 2], y1 = sc[(c.at + i) * 2 + 1];
+        const t = seg[i - 1] ? (target - acc) / seg[i - 1] : 0;
+        const cx = x0 + (x1 - x0) * t, cy = y0 + (y1 - y0) * t;
+        let ang = Math.atan2(y1 - y0, x1 - x0); const deg = ang * 180 / Math.PI;
+        if (deg > 90) ang -= Math.PI; else if (deg < -90) ang += Math.PI;   // keep the text upright
+        const aw = Math.abs(w0 * Math.cos(ang)) + Math.abs(ROUTE_FONTPX * Math.sin(ang));
+        const ah = Math.abs(w0 * Math.sin(ang)) + Math.abs(ROUTE_FONTPX * Math.cos(ang));
+        if (!fits(cx, cy, aw, ah)) continue;
+        this._rotLabel(c.label, cx, cy, ang, font, ROUTE_LD_LABEL);
+        seen.add(c.label);
+        n++;
+        break;                                       // one placement per route, then move on
+      }
+    }
+    return n;
+  }
+
   _streetLabels(fits) {
     const ctx = this.ctx, font = `${STREET_FONTPX}px system-ui, sans-serif`; let n = 0;
     ctx.font = font;

@@ -1525,6 +1525,10 @@ console.log('L1 · the view carries a route table, and a route knows its colour 
   ok(routeColour(F.routes[1]) === null, 'a route with no colour falls back to the activity (null here)');
   ok(routeColour({ colour: '#123456' }) === 'rgba(18,52,86,0.55)', 'an explicit hex passes through the same alpha, not around it');
   ok(routeColour({ colour: 'chartreuse' }) === null, 'and a colour word we do not know does NOT become a stroke');
+  // osmc waycolours are compound in this data — `blue;green` and `blue;red` both occur. The FIRST is the
+  // colour painted along the way; the rest describe the symbol on it.
+  ok(routeColour({ colour: 'blue;green' }) === 'rgba(40,110,200,0.55)', 'a compound waycolour takes its first colour');
+  ok(routeColour({ colour: ' Red ' }) === 'rgba(214,64,64,0.55)', 'and it is read case- and space-insensitively');
 
   // §3 measured names as the RARE case (8.5%) and refs as the identity (97%), which is why ref leads.
   ok(routeLabel(F.routes[0]) === 'LAW 9', 'a short ref labels the route even when it has a name');

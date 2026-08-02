@@ -325,6 +325,29 @@ reported camera, against 83 762 in the country). Tab-separated, so a name holdin
 break the R line's grammar. Roads that are on no route carry nothing, and a road whose ids fail to parse
 still draws.
 
+### Step 7b — two treatments, because the two kinds of route are read differently
+
+A **long-distance path** (national or above — the LAW/LF network) is a thing you follow for days: it earns
+a continuous line and its **name along it**, the way a street carries its name. A **local or regional**
+route is a waymark you check at a junction, and a way commonly carries several at once — so they are drawn
+as short coloured blocks laid one after another, **a train**, rather than blended into a colour that
+belongs to none of them.
+
+⚠ **The long-distance line takes its own colour, and a measurement is why.** At the reported camera all
+three national routes are `LAW 2` with `osmc` **red** — and 84 of the 104 local routes are coloured too,
+red among them. Drawing both in their own colours makes the one thing a walker most needs to tell apart
+the one thing the map does not distinguish. So the LD line is a deep wine no waymark palette uses, and its
+identity is carried by the **name flag** rather than by its hue.
+
+⚠ **`osmc` waycolours are COMPOUND in this data** — `blue;green` and `blue;red` both occur. The first is
+the colour painted along the way; the rest describe the symbol on it. The parser took the whole string and
+matched nothing, so those routes silently fell back to the activity colour.
+
+**Route names are placed before street names**, because `fits` is greedy first-come and a long-distance
+path's name is rarer and more useful than the fifth repetition of a street name — and one placement per
+route per frame, not per way: a route is made of dozens of ways, each of which would otherwise ask for its
+own copy of the name.
+
 **A band takes its route's colour and its level's weight.** `osmc:symbol`'s waycolour where the route
 names one (87 of 107 here), the activity's colour where it does not; width from the level, strongest
 route winning where a way carries several — two bands on one line is a smear, not information.
