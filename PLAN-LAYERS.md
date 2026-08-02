@@ -234,18 +234,65 @@ network A/B is unchanged profile for profile.
 while it copies every road in order. Every copier does today, and each says so where it copies. A copier
 that ever FILTERS roads must remap them — that is the one way this representation can be silently wrong.
 
-> ### ⚠ THE PUBLISHED DATA IS NOW OLDER THAN THE CODE — read this before merging
+> ### ⚠ THE DATA IS REGENERATED LOCALLY AND NOT PUBLISHED — read this before merging
 >
-> The committed fixture is regenerated and every local gate is green. **The country blocks are not**, and
-> neither is what the live site serves. loft#705 gates `store_load` on the layout a store was written
-> with, so a v2 kernel meeting a v1 block **fails** rather than reading garbage — the honest failure, and
-> still a broken site.
+> Every block on this machine is v2 and every local gate is green. **What the live site serves is still
+> v1.** loft#705 gates `store_load` on the layout a store was written with, so a v2 kernel meeting a v1
+> block **fails** rather than reading garbage — the honest failure, and still a broken site.
 >
-> Order, therefore: **code (done) → regenerate the four region roads blocks + the overview and mid blocks
-> → republish → merge.** Merging this to `main` before the data is republished takes the live site down.
-> The regeneration is `tools/build-blocks.sh` over the cached country extract; the intermediates it needs
-> (`netherlands.geojsonseq`, 1.05 GB) are already on this machine, and the sidecar recipe string was
-> changed so the cached v1 sidecars invalidate themselves rather than being reused.
+> `browser/coverage.json` now describes the NEW blocks (sizes, sha256s, and the region roads bboxes that
+> were zeroed before), so **the index and the data must ship together**: publishing the index against the
+> old files points the app at hashes and sizes that do not match what it fetches.
+>
+> Order: **code + regeneration (done) → upload the six blocks → merge.** What must be uploaded: the four
+> region roads blocks (255.5 MB total), `nl-overview.base.store` (33.7 MB, beside the app) and
+> `nl-mid.base.store` (277.5 MB, its own Pages repo).
+
+### The regeneration, measured (2026-08-02)
+
+Built from the cached country extract — sidecar (14 s) → `gen-tiles` over 1.05 GB of `geojsonseq`
+(~11 min) → three cuts at 4.70 / 5.40 / 5.90°E → the two derived blocks.
+
+```
+country   12 483 tiles · 2 785 476 roads · 234 253 barriers
+          154 323 route records from 83 762 distinct routes (1.84x, the price of per-tile tables)
+          853 681 links
+```
+
+**Conservation, which is the whole reason to measure a regeneration:**
+
+| | country | Σ of the four regions | |
+|---|---|---|---|
+| ways | 2 785 476 | 2 785 476 | ✔ |
+| walk / cycle / mtb | 312 618 / 183 026 / 24 200 | identical | ✔ |
+| horse / skate | 12 126 / 543 | identical | ✔ |
+
+…and the cut reproduces the **published road counts exactly** — 628 997 / 759 999 / 574 028 / 822 452 —
+with `nl-east`'s walk/cycle/mtb (121 185 / 67 938 / 12 158) identical to the v1 block that shipped. The
+schema change moved every bit and lost none.
+
+**Size — the route table costs ~6%, and loft#730 more than pays for it:**
+
+| region | v1 published | v2 raw | v2 compacted at bind |
+|---|---|---|---|
+| nl-west | 99.4 MB | 104.0 MB | **53.6 MB** |
+| nl-midwest | 122.9 MB | 129.1 MB | **62.6 MB** |
+| nl-mideast | 102.0 MB | 108.5 MB | **55.2 MB** |
+| nl-east | 154.3 MB | 166.0 MB | **84.2 MB** |
+| **total** | **478.6 MB** | 507.6 MB | **255.5 MB — 0.53×** |
+
+The derived blocks were rebuilt from the new roads: `nl-overview` 90 tiles / 206 362 features / 33.7 MB,
+now carrying **852 `net_horse` and 28 `net_skate`** runs beside the 27 749 walk / 12 978 cycle / 942 MTB
+ones — the two new modes are visible at country zoom. `nl-mid` 3 569 tiles / 1 776 309 features / 277.5 MB.
+
+⚠ **The generator hit a documented loft trap and it cost the first country run.** `route_slot` scanned a
+tile's route table with `for existing in t.routes` — and iterating a collection yields COPIES (loft C86),
+so every candidate copied `TRoute`'s **three text fields**, 945 000 memberships deep. The run was still
+inside that function after 12 minutes of CPU with nothing written. Walking by INDEX (`t.routes[i]`, a
+live view) finished the country in ~11 minutes total. Proven behaviour-preserving: the fixture rebuilt
+with the index walk is **identical** to the one built with the copying iteration, category for category
+and `nets` value for `nets` value. This repo had already paid for the same trap once — `gen-names` copied
+618 000 strings per keystroke and took 5.4 s natively.
 
 ⚠ **This IS a schema change, and the rule that goes with it is absolute.** Adding a field to a stored
 struct makes **older blocks read garbage, not empty** (loft#700) — not a degraded picture, a wrong one.

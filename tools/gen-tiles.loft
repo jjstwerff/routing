@@ -152,10 +152,18 @@ CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_
 // is a second keyed collection per tile that the store would have to carry for the generator's benefit.
 // The index it returns is what `TRLink.route` means, which is why it must never be computed anywhere
 // else — a link is only meaningful against the table it was made for.
+// ⚠ WALKED BY INDEX, NOT WITH `for existing in t.routes`. Iterating a collection yields COPIES (loft
+// C86), and a copy of a TRoute copies its THREE text fields — so the obvious loop duplicated three
+// strings per candidate per membership, 945 000 memberships deep. Measured: the country run was still
+// inside this function after 12 minutes of CPU with no output; by index it is a live view and the
+// comparison reads one integer. This repo has paid for the same trap once already — `gen-names` copied
+// 618 000 strings per keystroke and took 5.4 s natively on the country store.
 fn route_slot(t: TTile, r: RouteRec) -> integer {
+  n = len(t.routes);
   i = 0;
-  for existing in t.routes {
-    if existing.rid == r.rid { return i; }
+  while i < n {
+    existing = t.routes[i];
+    if existing != null && existing.rid == r.rid { return i; }
     i += 1;
   }
   t.routes += [TRoute { rid: r.rid, kind: (r.kind & 255) as u8, level: (r.level & 255) as u8,
@@ -297,6 +305,10 @@ fn build_stream(path: text, netpath: text) -> hash<TTile[tkey]> {
       part = chunk[0..last_nl];
       for ln in part.split('\n') {
         if ln != "" { feed(idx, ln, sc, hits); nlines += 1; }
+        // A country is ~20M features and this loop used to print nothing until it finished, so a stall
+        // and a slow run looked identical from the outside. They are not the same thing and the
+        // difference decides whether you wait or investigate.
+        if nlines % 2000000 == 0 { println("  … {nlines} features, {hits} on a network"); }
       }
       pos = pos + last_nl + 1;
     }
