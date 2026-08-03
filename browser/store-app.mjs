@@ -163,9 +163,21 @@ function heldGroundFor(box, z, hadFeatures) {
 // overview is 33.7 MB. A bare visit opens on the country and pays for it anyway; someone who deep-links
 // to z16 inside a covered region never sees the floor and must not be charged 33.7 MB for it. So it loads
 // the first time a view leaves ground uncovered — which is the first pan that would otherwise go blank.
-const FLOOR_BLOCK = 'nl-overview';
+// ⚠ WHICH block is the floor comes from the INDEX, not from a constant here. It was `'nl-overview'`
+// until 2026-08-03, and that id is about to change — the overview stops being the Netherlands the moment
+// coverage crosses a border. A stale constant does not throw: `floorBlock()` returns undefined,
+// `ensureFloor` sets `floorState = 'absent'`, and the app quietly stops covering ground the fine layer
+// has not got. The failure is a map that goes blank where it used to be coarse, with nothing logged.
+//
+// `data/coverage.toml` declares `floor = true` on exactly one region; `build_index.sh` carries it
+// through. The fallback to the old id keeps an index written before this readable, so a deploy that
+// serves the previous index against this app still has a floor.
+const floorBlock = () => {
+  const blocks = coverage.index?.blocks || [];
+  const usable = (b) => b && b.base && b.base.url;
+  return blocks.find((b) => b.floor && usable(b)) || blocks.find((b) => b.id === 'nl-overview' && usable(b));
+};
 let floorState = 'idle';                                  // idle → loading → ready | absent
-const floorBlock = () => (coverage.index?.blocks || []).find((b) => b.id === FLOOR_BLOCK && b.base && b.base.url);
 const floorUrl = () => { const b = floorBlock(); return b ? new URL(b.base.url, INDEX_URL).href : '\u0000'; };
 function floorReport(lists, how) {
   let coords = 0;

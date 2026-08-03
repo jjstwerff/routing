@@ -123,9 +123,24 @@ echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
 # than by pulling in a parser — and a key that is not understood is a hard error, not a silent skip.
-id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
+id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""; fl=""; stg=""
 flush() {
   [ -n "$id" ] || return 0
+  # STAGED — the region's blocks exist and can be DERIVED FROM, but they are not fit to publish yet.
+  #
+  # Belgium is the case this exists for (@51 phase C): its roads block is built and correct, and it
+  # overlaps the live Netherlands index by 377 cells. Roads must be a disjoint partition — a corridor
+  # over the border would read those roads twice and match a DIFFERENT route, not a slower one (D12) —
+  # so it cannot enter an index until it is trimmed. But the derived blocks want it as an INPUT today.
+  #
+  # Without a flag that state has to live in someone's shell history, which HANDOFF §2 says is not a
+  # pipeline: the alternative was a second manifest kept in sync by hand, which is exactly how
+  # data-refresh.yml came to be cutting two halves while the manifest named four regions.
+  if [ "${stg:-false}" = "true" ]; then
+    echo "  $id: STAGED — a derivation source, deliberately not in any index"
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""; fl=""; stg=""
+    return 0
+  fi
   # ⚠ A block written before a schema change does not read as "field missing" — it reads GARBAGE
   # (loft#700: store_load ignores the sidecar's schema hash and maps old records at the new stride).
   # An index is the app's list of what to load, so a stale-schema block must not get into one.
@@ -142,7 +157,7 @@ flush() {
   # map that never loads. Publishing sets RELEASE_INDEX=1 and takes them all.
   if [ -n "$ubase" ] && [ "${RELEASE_INDEX:-0}" != "1" ]; then
     echo "  $id: published at $ubase — not in the site index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""; fl=""; stg=""
     return 0
   fi
   # …and the mirror of it: each index names only what it can actually serve.
@@ -165,7 +180,7 @@ flush() {
   # `url_base` one). The rule is unchanged; what was hard-coded is the place it looks.
   if [ "${RELEASE_INDEX:-0}" = "1" ] && [ -n "$roads" ] && [ ! -f "${PUBLISH_ROOT:-$here/blocks}/$(basename "$roads")" ]; then
     echo "  $id: ships with the site — not in the release index"
-    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
+    id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""; fl=""; stg=""
     return 0
   fi
   local rj bj
@@ -210,11 +225,20 @@ flush() {
   # THE TIER FLOOR (§6i O3b) — the finest tier the BASE store holds. A generalised block is binned with
   # one, and every key below it is provably absent; the client sends it to the kernel so those keys are
   # never asked for. Absent means 0, which is every detailed block.
-  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"tierFloor":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "${tfloor:-0}" "$rj" "$bj" "$nj")"
+  # THE FLOOR (PLAN-LAYERS §5 L3) — which block the app keeps resident to cover ground the fine layer has
+  # not got. It is a PROPERTY OF THE DATASET, so the manifest is where it belongs: `store-app.mjs` used to
+  # hard-code `nl-overview`, which meant the coverage could not be renamed without silently losing the
+  # floor — the app would find no block, set `floorState = 'absent'`, and simply stop filling gaps. There
+  # is no error for that; the map just goes blank where it used to be coarse.
+  #
+  # Exactly one block may claim it: the floor is a single whole-file read by construction (`ensureFloor`
+  # binds one store and one extent), which is the same reason the overview must span the whole coverage
+  # rather than be one block per country.
+  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"tierFloor":%s,"floor":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "${tfloor:-0}" "${fl:-false}" "$rj" "$bj" "$nj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
   echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode${zj:+ zoom=$zj}"
-  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""
+  id=""; name=""; roads=""; base=""; names=""; mode=""; ubase=""; bubase=""; bcors=""; zmin=""; zmax=""; tfloor=""; fl=""; stg=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -237,6 +261,12 @@ while IFS= read -r line; do
     base_url_base*=*) bubase="$(echo "$line" | cut -d'"' -f2)" ;;
     base*=*)       base="$(echo "$line" | cut -d'"' -f2)" ;;
     tier_floor*=*) tfloor="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
+    # ⚠ BOTH ARE BOOLEANS read off the bare token, like `base_cors`. Glob-ordering: neither shares a
+    # prefix with any pattern here — `tier_floor` starts with `t`, so `floor*` cannot swallow it, and
+    # nothing else begins `floor` or `staged`. `cut-regions.sh` and `build-derived.sh` read the same
+    # file and match neither, so both simply ignore these.
+    floor*=*)      fl="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
+    staged*=*)     stg="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     zoom_min*=*)   zmin="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     zoom_max*=*)   zmax="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
     read_mode*=*)  mode="$(echo "$line" | cut -d'"' -f2)" ;;

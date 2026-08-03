@@ -131,6 +131,17 @@ name      = "Netherlands — overview"
 base      = "stores/nl-overview.base.store"
 names     = "stores/nl.names.store"
 read_mode = "whole"
+# ⚠ THE RESIDENT FLOOR (PLAN-LAYERS §5 L3), and it is declared here rather than named in the app.
+# `store-app.mjs` hard-coded `nl-overview` until 2026-08-03, so renaming the overview — which the next
+# rung does, because it stops being the Netherlands — would have silently lost the floor: the app finds
+# no block, sets `floorState = 'absent'`, and stops filling ground the fine layer has not got. Nothing
+# reports that; the map just goes blank where it used to be coarse.
+#
+# Exactly ONE block may carry it. The floor is a single whole-file read by construction (`ensureFloor`
+# binds one store and one extent), which is also why the overview must span the whole coverage instead
+# of being one block per country: two `whole` blocks in a covering set make the kernel page them
+# (client/web_basemap_kernel.loft), and this one declares no tier floor to make that affordable.
+floor     = true
 zoom_max  = 12
 build_zmax = 10
 build_min_tier = 2
@@ -152,6 +163,16 @@ build_min_tier = 2
 [[region]]
 id        = "nl-mid"
 name      = "Netherlands — middle zooms (z12–13)"
+# ⚠ SCOPED, and it stopped being optional the moment a second country became a derivation source. With
+# no `derive_from` a derived block reads EVERY region with roads, so adding Belgium silently widened this
+# block to Belgium too — measured, the first time the staged regions were added. That is wrong twice: it
+# would put Belgian ground in a block the index says is the Netherlands, and it would make every Belgian
+# refresh rebuild this 305 MB block for nothing.
+#
+# The middle zooms are per-country BECAUSE THEY ARE PAGED: `store_load_keys` accumulates across a
+# covering set, so a viewport on the border reads both blocks and fetches only the cells it needs. The
+# OVERVIEW is the opposite and deliberately carries no `derive_from` — see its `floor = true` note.
+derive_from = "netherlands"
 base      = "stores/nl-mid.base.store"
 names     = "stores/nl.names.store"
 read_mode = "paged"
@@ -236,3 +257,42 @@ names     = "stores/nl.names.store"
 read_mode = "paged"
 base_url_base = "https://jjstwerff.github.io/routing-data-nl-east"
 base_cors     = true
+
+# @51 phase C — BELGIUM AND LUXEMBOURG, STAGED. Built, correct, and deliberately not in any index.
+#
+# `staged = true` means: these blocks exist and may be DERIVED FROM, but nothing published resolves to
+# them. `build_index.sh` drops them from both the site and the release index and says so; the derived
+# blocks read them as ordinary sources. That distinction is the whole reason the flag exists.
+#
+# ⚠ WHY THEY CANNOT SHIP AS ROADS YET. A raw Geofabrik Belgium extract overlaps the four live Netherlands
+# regions by 377 cells, PARTIALLY — neither block is a subset (@51 phase A measured it per pair). Roads
+# must be a disjoint PARTITION, because a route corridor is unbounded: a sketch over the border would
+# read those roads TWICE and `build_graph` would match a DIFFERENT route, not merely a slower one. That is
+# `PLAN-SCALE` D12, and `block_overlap_gate` is what enforces it. Phase C trims them; until then, staged.
+#
+# ⚠ Their BASE maps are a different question and are NOT the blocker — a base map is an overlapping COVER
+# because a viewport read is bounded, which is why the four NL regions already carry a 0.10° margin of
+# each other. What stops the base shipping is hosting, not correctness: Belgium is 1202.5 MB against a
+# ~1 GB Pages site, so it needs cutting in two exactly as the Netherlands did.
+#
+# ⚠ NO HEIGHTS. The terrain cache covers lat 50.63–54.27; Belgium reaches 49.50 and Luxembourg 49.45, so
+# the Ardennes — the one part of Benelux where a gradient cost means anything — has none, and neither
+# block has been through `bake-heights.sh`. `h == 0` is UNKNOWN, not sea level (@50 states the negative
+# control), so nothing reads wrong; there is simply no elevation there yet.
+[[region]]
+id        = "belgium"
+name      = "Belgium (staged — roads overlap NL by 377 cells)"
+staged    = true
+roads     = "stores/belgium.roads.store"
+base      = "stores/belgium.base.store"
+read_mode = "paged"
+zoom_min  = 14
+
+[[region]]
+id        = "luxembourg"
+name      = "Luxembourg (staged)"
+staged    = true
+roads     = "stores/luxembourg.roads.store"
+base      = "stores/luxembourg.base.store"
+read_mode = "paged"
+zoom_min  = 14
