@@ -144,6 +144,7 @@ tools/conservation_gate.sh     # 49 categories, none empty
 
 | doc | what it owns |
 |---|---|
+| **`plans/`** | **new multi-phase work — one directory per tracker issue, the way `../loft`, `../crawler` and `../moros` do it.** `plans/README.md` is the binding. The overview is DERIVED, not curated: `gh issue list -R jjstwerff/routing --label plan --state all`. ⚠ The 16 root-level `PLAN-*.md` predate this and stay where they are — they are reference docs with step ladders inside them, and they migrate opportunistically or not at all |
 | `DESIGN.md` | the north star — what the product is |
 | `PLAN-LAYERS.md` | **current work**: the layer model, the signposted networks, the coverage floor |
 | `PLAN-SCALE.md` | blocks, bands, regions, publishing — how the data is cut and hosted |

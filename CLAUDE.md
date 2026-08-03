@@ -6,6 +6,12 @@ Start with **`HANDOFF.md`** (resume state — short by design; its dated rungs a
 `docs/handoff-archive.md`) and the **`PLAN-*.md`** / `DESIGN.md` docs (plan of record). `HANDOFF.md` §4
 says which plan owns what.
 
+**New multi-phase work goes in `plans/`**, one directory per `jjstwerff/routing` issue, the same
+convention `../loft`, `../crawler` and `../moros` use — `plans/README.md` is the binding, and it names
+the lightest workflow for work that is *not* a plan (most of it). The 16 root-level `PLAN-*.md` predate
+this; they stay, and migrate opportunistically or not at all. **Claim the issue before you name the
+directory** — the number is the identity, and scanning the tree for a free one mints collisions.
+
 These notes carry context that isn't obvious from the code, so it survives across machines. (They
 mirror the maintainer's agent memory — keep both in sync when one changes.)
 
