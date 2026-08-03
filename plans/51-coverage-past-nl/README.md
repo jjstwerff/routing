@@ -19,10 +19,11 @@ against a 1 GB one, because `store_load_key` pages. What does not scale is hosti
 a WE-sized one is 130–270 GB). §6e's answer to the generator is structural and already chosen: never
 build one that big, one region per run.
 
-⚠ **The ceiling MOVED on 2026-08-03 and has not been re-costed.** loft#729/#730 took the four region
-roads blocks from 478.6 MB to **255.5 MB while carrying more data**, and every §1 size model predates
-that. The site sits at 639.8 MB of a ~950 MB budget. **C3's real cost is the first thing this plan
-measures**, and every number below §6b's C3 row should be treated as stale until it does.
+⚠ **The ceiling moved on 2026-08-03 — and phase A has now RE-COSTED it against real blocks.** loft#729/
+#730 took the four region roads blocks from 478.6 MB to **255.5 MB while carrying more data**. Benelux
+measured (not modelled) at **0.45 GB roads + 4.0 GB base**, against §6b's pre-halving estimate of ~1.5 +
+~9 GB for C3 — the roads half came in far cheaper. `PLAN-SCALE` §6b's C3 row is stale; the table below
+supersedes it.
 
 ## Goal
 
@@ -82,16 +83,18 @@ is the route the whole region gives**.
 |---|---|---|---|
 | **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | ✅ **MEASURED 2026-08-03** — see § below |
 | **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner LIST replaces the 62-bit mask. Proven at **70 blocks** (2 415 nested pairs = 70 choose 2 on identical copies), where the old code refused outright. The gate still rejects a manufactured overlap (39 shared cells), so it is not vacuous. It is also *faster*: the mask forced an O(blocks²) scan per cell — 3 844 iterations at 62 blocks — where almost every cell has ONE owner, so the check is now linear in cells rather than cells × blocks² |
-| **C** — generate and publish ONE neighbour (BE or DE-west). | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | Blocked on A |
+| **C** — publish ONE neighbour (BE first — A's numbers decided it). **It is a TRIM, not a re-tiling**: roads trimmed to cells the live index does not own; the base map may keep overlapping, because a viewport is bounded. Belgium needs ~2 base hosts. | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | **Unblocked** — A done |
 | **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | Blocked on C |
 | **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | Blocked on D |
 
 ## Open questions
 
-1. **Which neighbour first — Belgium or Germany-west?** BE shares the language border and the denser
-   cycle network; DE-west is the bigger test of size. *Decided by A's numbers.*
-2. **Does a second country's extract cut disjointly?** Geofabrik per-country extracts include
-   cross-border data on purpose. *Decided by B's gate, and it is the reason B runs before C.*
+1. ~~**Which neighbour first?**~~ **ANSWERED — Belgium.** 159.5 MB roads + 1202.5 MB base, so it fits
+   the rung at ~2 extra base hosts, and it exercises the border trim on real shared cells.
+2. ~~**Does a second country's extract cut disjointly?**~~ **ANSWERED — no, and it does not have to.**
+   377 shared cells, partial in both directions. But only ROADS need disjointness (an unbounded corridor
+   read); the base map is already published as an overlapping cover, because a viewport read is bounded.
+   The neighbour needs its roads *trimmed*, not the continent re-tiled.
 3. **Is C5 worth doing at all?** §6b already lists the honest alternatives — per-region on demand
    forever (C4 as the end state, "and it is a good one"), reduced detail, or an external map source.
    *Decided by E, and pre-committing storage before then is explicitly warned against.*
@@ -145,6 +148,63 @@ So **C3 is not "download the neighbour and add it to the index."** The blocks in
 from a common tiling, the way the four NL regions are — either one Benelux extract cut into regions, or
 per-country extracts trimmed to disjoint bands before they are published. That is phase C's real content
 and it was invisible until a second country existed.
+
+### The rule phase C turns on — and it is not about borders
+
+The overlap above looks like it demands one answer (cut everything from a common tiling), but the
+Netherlands already ships **two**, and which is right is decided by the READ, not by the border:
+roads are a disjoint **PARTITION** because a route corridor is unbounded; the base map is an overlapping
+**COVER** because a viewport is bounded. **`PLAN-SCALE` D12 owns that rule** — it is stated once, there.
+
+What it means here: **phase C is a TRIM, not a re-tiling.** A neighbour does not need one Benelux extract
+cut from scratch; it needs its *roads* trimmed to cells the live index does not already own — the same
+`split_block` pass `cut-regions.sh` runs internally, applied at the country edge. The 377 shared cells
+above are the trim list, and the gate that found them already computes it. Its base map may keep
+overlapping, as the four NL regions do today.
+
+### Measuring a tiling without building it — `tools/tiling_probe.py`
+
+Answering "do these overlap?" and "how many regions?" cost a full `gen-tiles` run: **25 min and 1.8 GB
+RSS** for Belgium, and the input grows several times again for France or Germany. Neither question needs
+a store — a feature is keyed at its FIRST VERTEX, so its cell is one `floordiv` on one coordinate, and a
+block's bytes track its coordinate count. The probe streams the geojsonseq the pipeline already produces
+and emits the cell set plus the counts.
+
+**Belgium in 8.4 s against 25 min**, and validated rather than asserted:
+
+| check | probe | real block | error |
+|---|---|---|---|
+| cells, 3 real blocks | — | — | within **0.25%** |
+| bytes per coordinate | ~15 | ~15 | constant across all three |
+| NL∩BE shared cells | 397 | 377 | +5.3%, and on the safe side |
+
+⚠ **It answers about the TILING, not about the block.** It cannot say a route is correct or a category
+survived — `conservation_gate` and `block_overlap_gate` still own those, on real blocks. It is the cheap
+screen you run *before* committing an hour of CPU.
+
+### The generator's memory is upstream, and the obvious fixes are MEASURED not to work
+
+`gen-tiles` accumulates its whole `hash<TTile[tkey]>` before persisting — the 130–270 GB figure §6e uses
+for WE. Two fixes suggest themselves and **both were tried and measured**, binning 400 000 features into
+40 000 tiles:
+
+| | bind LAST | bind FIRST |
+|---|---|---|
+| **scattered keys** | 59 MB | 266 MB |
+| **ordered keys** (feed in tkey order) | **59 MB** | 266 MB |
+
+Binding the store first — so records stream to disk as they are made — is **4.5× WORSE**, and feeding
+the input in key order changes **nothing**: the store has no way to be told "this tile is finished."
+⚠ An earlier simple test suggested bind-first *did* solve it; that test lacked the inner-vector appends
+the real generator does, and on the realistic pattern the result reverses. Filed as
+[loft#747](https://github.com/loft-lang/loft/issues/747).
+
+**So the bound comes from building less at a time**, which is structural and needed anyway.
+`tools/build-base-chunked.sh` already did this for the base map; `tools/build-blocks-banded.sh` (new)
+does it for roads, building longitude bands whose edges come from the probe's even-**cost** histogram —
+even *width* is rarely even cost. ⚠ Its outer edges are NOT seams: the first run trimmed the region's own
+bounds as if they were, and came out one way and two cells short (1 480 754 / 10 372 against 1 480 755 /
+10 374) because "keep west of hi" ate the cell containing hi.
 
 ### Two defects this phase found before producing a single size
 

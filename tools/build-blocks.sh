@@ -75,7 +75,16 @@ if [ -s "$pbf" ]; then
   echo "  have $(basename "$pbf") ($(du -h "$pbf" | cut -f1)) — checking it is still current"
   remote="$(curl -sIL "$url" | grep -i '^content-length' | tail -1 | tr -dc '0-9')"
   local_sz="$(stat -c%s "$pbf")"
-  if [ -z "$remote" ] || [ "$remote" = "$local_sz" ]; then need=0
+  # ⚠ A BLOCKED NETWORK ANSWERS THIS CHECK. Inside the Claude Code command sandbox (and behind any
+  # intercepting proxy) the HEAD returns an ERROR PAGE with its own content-length — a few kB, which is
+  # never the local size, so "upstream changed" fires and a good cache is re-fetched into a failure.
+  # A country extract is never under 1 MB, so a tiny "remote size" means we cannot see upstream, not that
+  # upstream shrank. Trust the cache and say why. (The download itself still verifies md5, so a real
+  # change is still caught the moment the network is actually reachable.)
+  if [ -n "$remote" ] && [ "$remote" -lt 1000000 ]; then
+    echo "  cannot reach upstream (HEAD returned $remote bytes — a proxy or error page); using the cache"
+    need=0
+  elif [ -z "$remote" ] || [ "$remote" = "$local_sz" ]; then need=0
   else echo "  upstream changed ($local_sz → $remote) — re-fetching to $(basename "$part")"; fi
 fi
 

@@ -9,10 +9,10 @@ account behind a rule, never for where things stand.
 
 ## 0. Where things stand (2026-08-03)
 
-**https://jjstwerff.github.io/routing/ is live and current.** `main` carries PRs #46–#48 and **#52**, the
-deploy is green, and the site serves dataset **`v2026-08-03`** — verified end to end: the four roads
+**https://jjstwerff.github.io/routing/ is live and current.** `main` carries PRs #46–#48, **#52**, **#53**
+and **#54**, the deploy is green, and the site serves dataset **`v2026-08-03c`** — verified end to end: the four roads
 blocks it serves are sha256-identical to the ones the gates ran against, and a ranged **GET** answers
-`206`. Nothing is in flight; no open PRs; no branch holds work that is not merged.
+`206`. No open PRs. **One branch is ahead** — see §0b.
 
 The app opens on the whole country, routes offline over its own blocks, and draws the signposted networks
 as the routes they belong to:
@@ -49,6 +49,30 @@ that is what keeps `main` resolving to the data it was built against while the n
 
 ---
 
+## 0b. This session shipped three datasets — and left one branch mid-flight
+
+| dataset | what it added | state |
+|---|---|---|
+| `v2026-08-03` | heights on every step + `oneway=` in flags 8–11 | live, PR #52 |
+| `v2026-08-03b` | castle labels (635, rank 3) | live, PR #53 |
+| `v2026-08-03c` | **`Area.parts`** — holes stop being filled in | **live**, PR #54 |
+
+⚠ **`area-holes` is 3 commits ahead of `main` and NOT merged.** They are @51 scaling work, not data:
+the 62-block cap fix, the paged-probe fix, and the phase-A measurements. Safe to sit; nothing depends
+on them and no data references them.
+
+### ⚠ In flight, unfinished: `tools/build-blocks-banded.sh` (untracked)
+
+Roads built in longitude bands so memory tracks the band, not the country — the roads equivalent of
+`build-base-chunked.sh`. **Its first run was one way and two cells short** (1 480 754 / 10 372 against
+Belgium's 1 480 755 / 10 374) because it trimmed the region's OUTER bounds as if they were seams, eating
+the cell holding the eastern bound. Fixed but **the re-run never completed** — it was killed when the
+same script deleted 37 files (below). Re-run and check both numbers before trusting it.
+
+`tools/tiling_probe.py` (untracked) is the other half and is *validated*: cell counts within **0.25%** of
+three real blocks, bytes/coord constant at **~15**, NL∩BE overlap predicted 397 against the gate's 377.
+Belgium in **8.4 s** where the build takes 25 min.
+
 ## 1. What is open
 
 1. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
@@ -65,12 +89,17 @@ that is what keeps `main` resolving to the data it was built against while the n
    now — and spending it is **[@50](plans/50-get-me-there/README.md)** phase B. Two of that plan's three
    data prerequisites shipped on 2026-08-03, which is why it stopped being a stub.
 
-**Three findings from the live map are written up as `## Open work`, not plans** (2026-08-03) — each is
-one decision plus one change, and `plans/README.md`'s own table routes that to the owning doc:
-`PLAN-MAP` § street names repeat (the spacing constant is not the lever; 60% needs a product decision),
-and `PLAN-BASEMAP` § two things the base map drops (`Area` has one ring so 2.6% of areas fill their
-holes; `historic=` polygons are in no layer, so 971 castles have no name). The last two want the SAME
-regeneration.
+**All three live-map findings SHIPPED** (2026-08-03) — they were `## Open work` rows rather than plans,
+and each turned out to be one decision plus one change, which is the routing `plans/README.md` predicts:
+street-name repeats down to **60.0%** of before (`STREET_LABEL_MIN_PX` 70 → **105 px**, a length floor
+rather than a spacing one — the spacing constant provably was NOT the lever: identical counts from 420 to
+1000 px), holes drawn (`Area.parts`, `v2026-08-03c`), and **635 castle names** at rank 3 (`v2026-08-03b`).
+The last two shared one regeneration, as predicted.
+
+⚠ **The 60% was measured on the DRAWN result, and the first attempt measured the wrong thing twice** —
+`layerCounts.streetLabels` (the store's 3912 named features, which no label rule moves) instead of
+`_stats.streetLabels` (the 82 placed), and then the wrong camera (z15 Enschede, not the reported z17.84
+Diepenheim). Both are §2 rules that were already written down.
 
 **Three plans are open** (`gh issue list -R jjstwerff/routing --label plan`): @49 nautical navigation
 (active), @50 get-me-there and @51 coverage past NL (both future). `plans/README.md` is the binding.
@@ -106,6 +135,13 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   two-halves recipe and the two drifted until the workflow could not run at all — failing *after* the
   upload. Both cuts are scripts now. The general form: if a step exists only in someone's terminal, the
   thing that duplicates it will diverge silently.
+* **NEVER `rm -f "$var"*` — and set `-u`.** `build-blocks-banded.sh` deleted **37 tracked files from the
+  repo root**: after a fix, `t1w`/`t1e` were only assigned on one branch, so band 0 left them unset and
+  `rm -f "$t1w"*` became `rm -f *`. Recovered only because all 37 were tracked and `rm -f` without `-r`
+  cannot reach subdirectories — luck twice over. Delete NAMED paths; `set -u` turns the unset case into
+  an error instead of a glob.
+* **`ps | grep <pattern>` matches its own grep.** Cost 12 minutes on a wait loop that could never end,
+  after two `pgrep -f` false positives reported dead processes as alive. Use `grep "[p]attern"`.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
