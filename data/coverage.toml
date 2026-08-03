@@ -126,9 +126,20 @@
 # rebuilt with its regions describes the previous snapshot while the routes underneath describe the new
 # one, with nothing to report it. `tools/build-derived.sh` reads these.
 [[region]]
-id        = "nl-overview"
-name      = "Netherlands — overview"
-base      = "stores/nl-overview.base.store"
+# ⚠ THE ID IS `overview`, NOT `nl-overview`, AND IT IS DELIBERATELY NOT NAMED AFTER A COUNTRY.
+#
+# This block spans the WHOLE COVERAGE and always will, so a country in its name is wrong at every rung
+# after the first. It carries no `derive_from` for the same reason: it must read every source region.
+#
+# Why it cannot be one overview per country, which is the obvious alternative and is what the middle
+# zooms do: it is read `whole`, and `client/web_basemap_kernel.loft` forces PAGED the moment a covering
+# set names more than one base URL (a whole-file load ADOPTS an image, so the second would replace the
+# first). This block declares no `tier_floor`, so being paged means asking a country-wide box at floor 0
+# — §6i measured that at 454 867 keys. And the resident floor below is a single store by construction.
+# One block, whole coverage, or the border viewport degrades to something far worse than a big download.
+id        = "overview"
+name      = "Benelux — overview"
+base      = "stores/overview.base.store"
 names     = "stores/nl.names.store"
 read_mode = "whole"
 # ⚠ THE RESIDENT FLOOR (PLAN-LAYERS §5 L3), and it is declared here rather than named in the app.
@@ -279,6 +290,39 @@ base_cors     = true
 # the Ardennes — the one part of Benelux where a gradient cost means anything — has none, and neither
 # block has been through `bake-heights.sh`. `h == 0` is UNKNOWN, not sea level (@50 states the negative
 # control), so nothing reads wrong; there is simply no elevation there yet.
+# The middle zooms for the staged countries. These are DERIVED blocks, so they are publishable even
+# while their sources are not: a derived block is a picture, never a routing input, and the overlap that
+# stops Belgium's ROADS shipping is a partition problem the base map does not have (D12 — a viewport is
+# bounded, so an overlapping cover is correct).
+#
+# Per country rather than one Benelux block, and that is the opposite choice from the overview above:
+# these are read PAGED, `store_load_keys` ACCUMULATES across a covering set, and a viewport on the border
+# reads both while fetching only the cells it needs. Merging them would rebuild the Netherlands' 305 MB
+# block every time Belgium changed, and buy nothing.
+[[region]]
+id        = "be-mid"
+name      = "Belgium — middle zooms (z12–13)"
+derive_from = "belgium"
+base      = "stores/be-mid.base.store"
+read_mode = "paged"
+tier_floor = 1
+zoom_min  = 12
+zoom_max  = 14
+build_zmax = 12
+build_min_tier = 1
+
+[[region]]
+id        = "lu-mid"
+name      = "Luxembourg — middle zooms (z12–13)"
+derive_from = "luxembourg"
+base      = "stores/lu-mid.base.store"
+read_mode = "paged"
+tier_floor = 1
+zoom_min  = 12
+zoom_max  = 14
+build_zmax = 12
+build_min_tier = 1
+
 [[region]]
 id        = "belgium"
 name      = "Belgium (staged — roads overlap NL by 377 cells)"

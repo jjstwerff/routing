@@ -54,10 +54,21 @@ flush() {
     [ -f "$cand" ] && { found="$cand"; break; }
   done
   if [ -n "$found" ]; then
-    group_paths[$key]="${group_paths[$key]:-} $found"
-    [ -n "$cfrom" ] && cut_paths[$cfrom]="${cut_paths[$cfrom]:-} $found"
+    # ⚠ A STAGED REGION IS IN NO INDEX, so it is not part of this invariant — which is "within one index",
+    # and a block nothing resolves to cannot be read beside anything. Grouping it with the site index made
+    # this gate fail the moment Belgium was added as a derivation source, and failing was CORRECT for the
+    # question it was asking; the question was just the wrong one for a block that does not ship.
+    #
+    # It is NOT dropped, though. The overlap it has with the live index is real and is exactly what @51
+    # phase C must trim, so it moves to its own section below that REPORTS without failing. Silently
+    # excluding it would delete the only measurement of the work that is outstanding.
+    if [ "${stg:-false}" = "true" ]; then staged_paths="${staged_paths:-} $found"
+    else
+      group_paths[$key]="${group_paths[$key]:-} $found"
+      [ -n "$cfrom" ] && cut_paths[$cfrom]="${cut_paths[$cfrom]:-} $found"
+    fi
   else missing+=("$roads"); fi
-  ubase=""; roads=""; cfrom=""
+  ubase=""; roads=""; cfrom=""; stg=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -70,6 +81,7 @@ while IFS= read -r line; do
     *base_url_base*=*) ;;
     *url_base*=*)  ubase="$(echo "$line" | cut -d'"' -f2)" ;;
     cut_from*=*)   cfrom="$(echo "$line" | cut -d'"' -f2)" ;;
+    staged*=*)     stg="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
   esac
 done < <(grep -v '^\s*#' "$manifest")
 flush
@@ -92,6 +104,26 @@ for key in "${!group_paths[@]}"; do
   echo "$out" | grep -E '^  block |^#O' | sed 's/^/    /'
   echo "$out" | grep -q '^#O ALL PASS' || rc=1
 done
+
+# --- STAGED blocks: how much would have to be trimmed before they could ship? --------------------------
+#
+# Reported, never failed. A staged block is in no index, so it breaks no invariant today — but the number
+# below IS the outstanding work (@51 phase C), and it is the only place it gets measured. When phase C
+# trims these and the flag comes off, they join C2 above and this section goes quiet on its own.
+if [ -n "${staged_paths:-}" ]; then
+  echo "== staged blocks: not in any index, so not part of C2 — this is the TRIM LIST =="
+  read -r -a live <<< "${group_paths[__site__]:-}"
+  for sp in ${staged_paths}; do
+    if [ ${#live[@]} -eq 0 ]; then echo "  $(basename "$sp"): nothing live to compare against"; continue; fi
+    sout="$("$loft" --native --lib "$here/lib" "$here/tools/block_overlap.loft" "${live[@]}" "$sp" 2>&1)"
+    shared="$(echo "$sout" | grep -oP 'PARTIALLY overlap: \K[0-9]+' | paste -sd+ | bc 2>/dev/null || echo 0)"
+    if [ "${shared:-0}" = 0 ]; then
+      echo "  ✔ $(basename "$sp"): disjoint from the live index already — it could ship as roads today"
+    else
+      echo "  · $(basename "$sp"): ${shared} cells shared with the live index — phase C trims these"
+    fi
+  done
+fi
 
 # --- the COMPLETENESS half: do the regions still add up to the block they were cut from? ---------------
 # Only runs where a `cut_from` source is present locally. It is a generated artifact and deliberately not

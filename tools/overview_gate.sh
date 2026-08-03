@@ -30,15 +30,15 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 # The overview is generated output (gitignored), so a fresh clone has not built it and there is nothing
 # to check. SKIP rather than FAIL — the same rule nl_live_gate uses for the country blocks.
-[ -f "$here/blocks/nl-overview.base.store" ] || {
-  echo "SKIP: no overview block (build: tools/build_overview.loft, or tools/fetch-site-blocks.sh)"; exit 2; }
+[ -f "$here/blocks/overview.base.store" ] || {
+  echo "SKIP: no overview block (build: tools/build-derived.sh, or tools/fetch-site-blocks.sh)"; exit 2; }
 
 srv=""; chr=""
 cleanup() { kill "$chr" "$srv" 2>/dev/null; }
 trap cleanup EXIT
 
 SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" >/dev/null || { echo "  FAIL: build-site"; exit 1; }
-grep -q nl-overview "$site/coverage.json" || {
+grep -q "overview.base.store" "$site/coverage.json" || {
   echo "  FAIL: the local site index does not name the overview — build-site dropped it"; exit 1; }
 
 # STAGE THE MIDDLE-ZOOM BLOCK LOCALLY. It is hosted on its own Pages data repo, so `SITE_LOCAL_ONLY`
