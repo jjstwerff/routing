@@ -7,177 +7,145 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-03)
+## 0. Where things stand (2026-08-03, late)
 
-**https://jjstwerff.github.io/routing/ is live and current.** `main` carries PRs #46–#48, **#52**, **#53**
-and **#54**, the deploy is green, and the site serves dataset **`v2026-08-03c`** — verified end to end: the four roads
-blocks it serves are sha256-identical to the ones the gates ran against, and a ranged **GET** answers
-`206`. No open PRs. **One branch is ahead** — see §0b.
+**The live site is `v2026-08-03c` — the Netherlands, 6 blocks — and it has not moved.**
+**`area-holes` is 27 commits ahead of `main` and carries BENELUX**, published as a release and NOT
+merged. The switch is the MERGE, not the publish (§0b).
 
-The app opens on the whole country, routes offline over its own blocks, and draws the signposted networks
-as the routes they belong to:
+| | live on Pages | on the branch |
+|---|---|---|
+| dataset | `v2026-08-03c` · 6 blocks | **`v2026-08-03d` · 10 blocks, released** |
+| coverage | Netherlands | **NL + Belgium + Luxembourg** |
 
-| | |
-|---|---|
-| **the map** | country overview → middle zooms → detailed regions, chosen by zoom band; a resident coarse **floor** fills ground the fine layer has not got, and says so where nothing exists |
-| **the networks** | five modes (walk · cycle · MTB · horse · inline skating). Long-distance paths draw as a named line; local ones as a **train** of coloured waymark blocks, one per route |
-| **the route** | click to sketch, drag/insert/delete to reshape, distance shown, **GPX** download, sketch **autosaved** every 10 s and restored on reload |
-| **the data** | 4 region roads blocks 255.5 MB · overview 26.3 MB · middle zooms 281.7 MB · names 36 MB, all same-origin or on their own Pages repos; base map 2.75 GB across four data repos |
-| **what the roads carry** *(new in `v2026-08-03`)* | a **height** on every one of 17 298 515 steps, and **direction** — 340 984 `oneway=yes`, 33 317 signposted bicycle contraflows. Both cost **zero bytes**: `TStep.h` and `flags` bits 8–11 already existed, so the blocks are the same size as the ones before them |
-| **the site** | 639.8 MB of a 950 MB Pages budget (67%) |
+What Benelux can do, all gated: **routes across the NL/BE border byte-identically** to a single block
+covering both · draws at every zoom from z0 · a height on every step · **search that crosses borders**.
+@51 phases **A–D are done and E is open**; the rung's own entry condition (a seam route) is
+`tools/seam_route_gate.sh`.
 
-**The plan of record for all of the above is `PLAN-LAYERS.md`** — the layer model, its two invariants, and
-every measurement the design was changed by. Steps 1–10 and 12 are done; **11 is deferred with its reason
-written down**.
+⚠ **Belgium ships with NO base map above z14.** 1202.5 MB against a ~1 GB Pages site needs cutting in
+two and two data repos of its own. It draws from the overview below z12 and `be-mid` at z12–14, and
+above that it is roads on a plain background — a state `store-app.mjs` handles as a product, not a
+fallback. Luxembourg's base is 70.6 MB and ships, so it has a complete map. **Asymmetric on purpose.**
+
+⚠ **The site is at 814.1 MB of 950 (86%).** Passing, and tighter than it should stay — `site_size_gate`'s
+own margin note says the next region added is what crosses it. The relief that needs no new decision is
+moving **`be-mid` (149.3 MB)** to its own Pages repo, as `nl-mid` already is: that lands it near 70%.
 
 ### ⚠ The store schema is v2, and older blocks are unreadable
 
 `TRoad` carries `nets: u16`, and every tile carries a `TRoute` table with sparse `TRLink`s
 (`PLAN-LAYERS` §3). loft#705 gates `store_load` on the layout a store was written with, so **a v2 kernel
-meeting a v1 block fails outright** — which is the honest failure, and still a broken site. Any block
-older than 2026-08-02 must be regenerated, not adapted.
+meeting a v1 block fails outright**. Any block older than 2026-08-02 must be regenerated, not adapted.
 
-⚠ **`v2026-08-03` is NOT a schema change**, and that distinction is the point. Heights and `oneway=` took
-a field and bits that were already in the layout, so an older block still *reads* — it simply has zeroes
-there. That is why the code could land before the data, and why a gradient cost must treat `h == 0` as
-*unknown* rather than sea level (`plans/50-get-me-there/` states the negative control).
-
-**The order that follows from it, and it is not optional:** code → regenerate → publish → merge. The
-Pages deploy derives its release tag from the committed index's `version` and verifies bytes + sha256 per
-block, so a dataset is always staged BESIDE the live one (`…b`, then `…c`) rather than clobbering it —
-that is what keeps `main` resolving to the data it was built against while the next one is uploaded.
+**The order that follows, and it is not optional:** code → regenerate → publish → merge. A dataset is
+always staged BESIDE the live one rather than clobbering it, which is what keeps `main` resolving to the
+data it was built against.
 
 ---
 
-## 0b. This session: three datasets shipped, and one branch of scaling work not merged
+## 0b. This session: Benelux, and four upstream findings
 
-| dataset | what it added | state |
-|---|---|---|
-| `v2026-08-03` | heights on every step + `oneway=` in flags 8–11 | live, PR #52 |
-| `v2026-08-03b` | castle labels (635, rank 3) | live, PR #53 |
-| `v2026-08-03c` | **`Area.parts`** — holes stop being filled in | **live**, PR #54 |
+**Nothing is merged and the live site is untouched.** `data-v2026-08-03d` is published (23 assets,
+784 MB, each verified by a ranged GET) but `browser/coverage.json` naming it lives only on this branch.
+To go live: open a PR. To abandon: delete the branch; the release is inert without an index pointing at it.
 
-⚠ **`area-holes` is 11 commits ahead of `main` and NOT merged** (pushed, tree clean). **No data and no
-schema change**, so nothing here obsoletes a published block: @51's phase A/B work and its three new
-tools (below), plus a `test-map` fix that had been red independently (§0c). Safe to sit, and safe to PR
-whenever you want it.
+⚠ **Only 784 MB was uploaded, not 3.91 GB.** The four NL base maps and `nl-mid` (3.12 GB) are unchanged
+and already served by their own Pages repos. `publish-release.sh` would have taken all of them — stage
+the referenced set and point `BLOCKS_OUT` at it, as HANDOFF has warned since §3.
 
-✅ **All four suites are green on it** — `make test`, `test-native`, `test-wasm`, `test-map`. Re-run in
-that order; `test-native` (~5 min) is the one that owns the data gates.
+### The data, in the order it was built
 
-### Three new tools for scaling past NL
+1. **Derived blocks** so Belgium is not blank below z14 — `overview` (renamed from `nl-overview`,
+   46.4 MB, spans the whole coverage), `be-mid` 149.3 MB, `lu-mid` 17.0 MB.
+2. **The border trim** (@51 phase C) — `tools/trim-borders.sh`. 6 blocks, 23 299 cells, disjoint.
+3. **Heights** for BE/LU, then **names**: `coverage.names.store`, 63.5 MB, 518 804 records.
+4. **Published** as `v2026-08-03d`.
 
-All committed, all belonging to **[@51](plans/51-coverage-past-nl/README.md)**, whose phase A is now
-measured and phase B done.
+### Four things that were measured and came out the OPPOSITE way
 
-* ✅ **`tools/tiling_probe.py` — trusted.** Answers "do these overlap?" and "how many regions?" *without
-  building a store*: a feature is keyed at its first vertex, so its cell is one `floordiv`. **Belgium in
-  8.4 s against a 25-minute build**, validated to within **0.25%** on cells against three real blocks.
-  Run it before committing an hour of CPU. It says nothing about whether a block is *correct* —
-  `conservation_gate` and `block_overlap_gate` still own that.
-* ✅ **`tools/build-blocks-banded.sh` — exact where it is asked to be.** Builds roads in longitude bands
-  so the generator's memory tracks the band, not the country. Belgium's three bands are **disjoint**
-  (0 shared cells over 10 373) *and* complete: all **10 372 cells inside the bbox match the whole-country
-  block in cell and way count**. Exactly two cells differ and **neither is at a band seam** — one lies
-  wholly south of the south bound (0 ways), one straddles the north bound (−4 ways). Both are artifacts
-  of the country bbox: `osmium extract` keeps a way when *any* node is inside, and a block keys it at its
-  **first vertex**, which may be outside — so which border artifacts come along depends on the longitude
-  window. The whole-country block has them for the same accidental reason.
-* ✅ **`tools/cell_diff.loft` (new) is what found that**, and a cell-set diff alone could not have: the
-  four missing ways were in a cell that was *present but under-filled*. It reports MISSING / **SHORT** /
-  OVER / outside-the-reference. `block_overlap` proves no cell is held twice; this proves none is held
-  zero times — neither implies the other. **It is now the C2b half of `block_overlap_gate.sh`**, and the
-  live dataset passes it for the first time: all **12 483** cells of `netherlands.roads.store` are held
-  by exactly one of the four shipped `nl-*` regions, each with the same way count. The manifest gained
-  `cut_from` to record that parentage, which until now lived only in `cut-regions.sh`'s argument.
+Each cost a wrong claim that was already written down or about to be:
 
-## 0c. `make test-map` was RED, and not for the reason it looked like
+* **Binding a store FIRST is 3–5× CHEAPER, not 4.5× worse.** @51 said the reverse; it was measured
+  against loft#746 on a binary that no longer exists. `tools/bind_order_gate.sh` is the re-runnable form.
+  A bound store's pages are evictable — bind-first completes under a cgroup cap where bind-last is
+  OOM-killed. **`PLAN-SCALE` §6e's 130–270 GB is a bind-LAST number.**
+* **"Key order changes the file 2.3×" was RETRACTED.** A store's file is its CAPACITY, on a 7/3 ladder
+  (loft#752): 250k, 300k and 400k roads all persist to *exactly* 91 419 400 bytes. Real effect after
+  `store_reclaim` is ~1.5×. **"Stream in cell order" still stands** — @51 came one commit from recording
+  the opposite.
+* **z13 elevation is not worth adopting.** Belgium and Luxembourg baked both ways: mean |Δ| **1.15 m and
+  1.41 m**, and the RANGE is identical (568 m). Luxembourg is the hilliest ground in the dataset, so the
+  "sample by terrain, not by country" hypothesis is refuted too. `PLAN-RESTORE` §5 decision 3 is answered.
+* **The 0.8% of unsampled steps was a PADDING bug, not resolution.** `bake-heights` pads 0.35° now
+  (`TERRAIN_PAD`) and z12 fills 100%.
 
-The NL live gate routed and searched in Amsterdam but drew **no base map**. Nothing was wrong with the
-app, the block, or the schema sidecar — the same file served from the gate's own origin draws **252 450
-features in ~5 s**, from Pages draws nothing, and from Pages with `--disable-web-security` draws the
-identical 252 450.
+### The upstream ledger
 
-**Pages sends `access-control-allow-origin: *` and a real `content-range`, but no
-`access-control-expose-headers`** — and `Content-Range` is not CORS-safelisted, so a cross-origin reader
-gets `null` for the store size and stops after two `bytes=0-0` probes. **Silently**: no console error, no
-failed request. That is now §2's own rule, and it corrects a claim that was load-bearing in `PLAN-SCALE`
-§9 and @51 — *a second Pages repo is free only because it is the SAME ORIGIN* (`…/routing` and
-`…/routing-data-nl-*` are paths on one host). A custom domain or a native app is not, and would need a
-real CORS host; `cors_host_gate`'s header already named both required headers.
+| | |
+|---|---|
+| **loft#739** | ✅ fixed; **both workarounds deleted**. `loft_bug_gate` FAILS if either returns |
+| **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
+| **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
+| **loft#757** | **filed by us**: `store_persist_bind` records the CALLER'S root shape (§2) |
 
-⚠ **Production could not have hit this**, and did not. Only the gate served the app from `127.0.0.1`
-while inheriting the published absolute URLs. It now serves the base from its own origin the way
-production does — and drops the remote host *only* where the block is present locally, so a region we
-cannot serve still fails honestly instead of 404ing against ourselves.
+### New tools, all gated
 
-Fixing it exposed a second defect the first had been hiding: with the base finally on the app's origin
-its pages joined the same session counter, and the roads-block budget failed on **base-map** bytes
-(107.4 MB "of a 222.4 MB block"). `store-kernel`'s stats now carry a **per-store** breakdown and the
-driver reads the roads row — 138 reads, 10.7 MB, 4.8%. The general form is §2's: *a number is not a
-measurement until you know what it is attributed to.*
+`bind_order_gate`+`probe` · `trim_cells` · `trim-borders.sh` · `merge_blocks` · `reseat_schema` ·
+`height_diff` · `find_probe` · `loft_schema_probe` · `derived_scope_gate` (in `make test`) ·
+`seam_route_gate` (@51 D).
 
-⚠ **This gate had presumably been red since the base map moved to four data repos**, so treat "gates
-green" in any earlier note as covering the gates that were actually run.
+---
 
 ## 1. What is open
 
-1. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
-   floor is resident only after a country view, so the held frame is still the only cover for a session
-   that never sees one. The resolution is to make the floor always-resident, not to delete the fallback.
-2. **A kernel death reported from the live site, not reproduced.** "wasm stopped working, so I had no way
-   to progress." The sketch autosave makes it *survivable* (reload and your points are back); it is not
-   fixed. What would move it: the console line at the moment it stops answering, plus
+**Benelux is functionally complete; what remains is deployment and one design limit.**
+
+1. **THE PR.** `area-holes` → `main` is what moves the site to Benelux. Nothing else does. `main` is
+   protected and needs `build-test` green.
+2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
+   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
+3. **The site is at 86%.** Move `be-mid` to its own Pages repo (~70%) before adding anything.
+4. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
+   first search; Western Europe extrapolates to ~500 MB. It is one store because `NAMES` is resolved once
+   at boot, `store_load_url_trusted` ADOPTS, and every store numbers records from 0 — a covering set is
+   not available without changing all three. Same ceiling shape as the overview. **Cost it in @51 phase E**
+   rather than discovering it at C4.
+5. **@51 phase E** — decide C4/C5. `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on
+   MEASURED CHANGE, not density; the world is a funding decision).
+6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
+7. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
+   survivable. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
-3. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2).
-   **[@51](plans/51-coverage-past-nl/README.md) phases A and B are DONE, and C is unblocked** — Benelux measured for
-   real (BE 159.5 MB roads + 1202.5 MB base; base size does *not* track road density) and the 62-block
-   index cap removed. **C is unblocked and is a TRIM, not a re-tiling**: raw country extracts overlap the
-   live index by 377 cells, but only *roads* need disjointness (`PLAN-SCALE` **D12**).
-4. **The router does not COST the gradient yet.** R2 made it *possible* — `way_penalty` can see a height
-   now — and spending it is **[@50](plans/50-get-me-there/README.md)** phase B. Two of that plan's three
-   data prerequisites shipped on 2026-08-03, which is why it stopped being a stub.
-
-**All three live-map findings SHIPPED** (2026-08-03) — they were `## Open work` rows rather than plans,
-and each turned out to be one decision plus one change, which is the route `plans/README.md` itself predicts:
-street-name repeats down to **60.0%** of before (`STREET_LABEL_MIN_PX` 70 → **105 px**, a length floor
-rather than a spacing one — the spacing constant provably was NOT the lever: identical counts from 420 to
-1000 px), holes drawn (`Area.parts`, `v2026-08-03c`), and **635 castle names** at rank 3 (`v2026-08-03b`).
-The last two shared one regeneration, as predicted.
-
-⚠ **The 60% was measured on the DRAWN result, and the first attempt measured the wrong thing twice** —
-`layerCounts.streetLabels` (the store's 3912 named features, which no label rule moves) instead of
-`_stats.streetLabels` (the 82 placed), and then the wrong camera (z15 Enschede, not the reported z17.84
-Diepenheim). Both are §2 rules that were already written down.
-
-**Three plans are open** (`gh issue list -R jjstwerff/routing --label plan`): @49 nautical navigation
-(active), @50 get-me-there and @51 coverage past NL (both future). `plans/README.md` is the binding.
-
-**Closed 2026-08-03 — the dataset shipped.** `v2026-08-03` is live: the country regenerated from the
-CACHED 2026-08-01 export on purpose, so every count that moved is the change under test rather than OSM
-drift — and none moved (ways 2 785 476 · barriers 234 253 · networks 312 618 / 183 026 / 24 200 / 12 126 /
-543, all identical). New: 17 298 515 heights from 3 876 terrarium tiles, and direction matching the
-source export exactly. The four region blocks compact to the byte sizes of the ones they replace.
-⚠ One measured characteristic: terrarium carries **bathymetry**, so a way over water reads the seabed —
-13 steps of 17.3 M are below −20 m, deepest −69 m in the Westerschelde channel.
-
-**Closed 2026-08-03:** `data-refresh.yml` can run again. It cut TWO halves while the manifest had named
-FOUR regions since §6f F3, so `publish-release.sh` failed building the index *after* uploading gigabytes
-— and it never built `nl-mid` at all. The cause was a recipe that lived only in a shell history and got
-COPIED into YAML; both cuts are now scripts (`tools/cut-regions.sh`, `tools/build-derived.sh`) that the
-workflow calls, verified by re-cutting the live country and reproducing all six shipped blocks.
-
-**Closed since the last handoff:** loft#729 (`store_load_keys` over-fetch) is FIXED upstream and
-inherited here — a wide viewport reads 22.3 MB in 332 requests where it read 31.1 MB in 466, and binding
-a block compacts it (nl-east 161.8 → 81.3 MB). The four region roads blocks now total **255.5 MB against
-478.6**, carrying MORE data. See `PLAN-PERF` § "the 2026.8.0 store fixes".
-
----
+8. **[loft#757](https://github.com/loft-lang/loft/issues/757)** open upstream; nothing here is blocked on
+   it — every tool binds a bare local — and `loft_bug_gate` reports when it changes.
 
 ## 2. Rules that still bite
 
 Each of these cost a session or a wrong dataset to learn. The full account is in
 `docs/handoff-archive.md`; what follows is the rule.
+
+* **A STORE'S FILE SIZE IS ITS CAPACITY, NOT ITS CONTENT** ([loft#752](https://github.com/loft-lang/loft/issues/752)).
+  Capacity climbs a ladder whose every rung is **7/3** of the last: 250 000, 300 000 and 400 000 roads all
+  persist to *exactly* 91 419 400 bytes. So **two `store_persist_bind` outputs may never be compared by
+  `stat`** — under 133% any difference may be one rung, and any equality may hide a doubling. Call
+  `store_reclaim` first, or it is not a measurement. This cost a finding that was filed upstream, read as
+  "feeding a generator its keys in order is worse on every axis", and was one commit from deleting a
+  sorting stage. `bind_order_probe` reclaims before the gate reads the file.
+* **A TRIM IS ONLY VALID AS A SET.** The four NL blocks gave 200 cells to Belgium; publishing them while
+  Belgium stayed staged would have left those cells owned by NOBODY — a hole inside the Netherlands, at
+  the border, exactly where a cross-border route goes. Either the whole set ships or none of it does.
+* **CONSERVATION IS A PROPERTY OF THE INDEX, NOT OF ONE COUNTRY'S CUT** — and those stopped being the
+  same thing when coverage crossed a border. C2b compared the NL regions against `netherlands.roads.store`
+  and failed on a dataset that conserves perfectly: a cell that leaves the Netherlands has not vanished,
+  it has MOVED. Every roads block is a part now; MISSING and SHORT stay hard failures, OVER is the trim's
+  fingerprint.
+* **A FRESHLY WRITTEN STORE IS ~2× ITS BOUND SIZE.** `trim_cells`, `build_overview` and anything else that
+  writes rather than adopts carries the growth slack binding sheds (loft#730) — `nl-west` 108.6 MB against
+  56.2 MB. **Compact before publishing** (`store_compact_probe`), or the site's roads double.
+* **A GATE POINTED AT A STAGING DIRECTORY GOES GREEN WHEN THE STAGING ENDS.** `seam_route_gate` read
+  `blocks/trim`, and the moment the trimmed set BECAME the real one it SKIPped — passing, having tested
+  nothing. A gate must follow what ships, not where it was built.
 
 * **A recipe that lives in a shell history is not a pipeline.** F3's four-region cut was performed by
   hand twice and written down nowhere a machine reads, so `data-refresh.yml` carried a COPY of an older
@@ -275,9 +243,17 @@ make test-map      # the browser gates, headless Chromium                 (~4 mi
 tools/match_parity.sh          # the route is byte-identical, 5 cases
 tools/network_gate.sh          # sidecar + block + the router's network A/B (the slowest, 9 profiles)
 tools/conservation_gate.sh     # 49 categories, none empty
-tools/block_overlap_gate.sh    # C2 no cell held twice · C2b the regions still ADD UP to their source
+tools/block_overlap_gate.sh    # C2 no cell held twice · C2b every source cell is still held SOMEWHERE
 tools/height_gate.sh           # every step has the terrain's own height, at no cost in bytes
-tools/loft_bug_gate.sh         # are loft#739's two bugs still there? (says when a workaround can go)
+tools/loft_bug_gate.sh         # the three upstream bugs — FAILS on #739 returning, reports #757
+tools/bind_order_gate.sh       # which bind order bounds a generator, and is its memory reclaimable
+```
+
+Two that are NOT in a suite, because each needs generated data a fresh clone does not have:
+
+```bash
+tools/seam_route_gate.sh       # @51 D — a route across the NL/BE border is the one-block route
+tools/trim-borders.sh          # re-derive the disjoint Benelux roads set (~10 min)
 ```
 
 * Build with the **installed `loft` on `PATH`**; the sibling `../loft` and `../loft2` trees belong to
@@ -290,14 +266,19 @@ tools/loft_bug_gate.sh         # are loft#739's two bugs still there? (says when
   that already exists), `tools/cut-regions.sh` (the four-region cut, both rules), `tools/build-derived.sh`
   (overview + middle zooms), `tools/route_networks.py` (the route sidecar). Compaction is now a pass
   inside the cut, not a thing to remember.
+* **Regenerating the Benelux roads set** is `tools/trim-borders.sh` — it reads the manifest, assigns every
+  shared cell to whichever block HOLDS more of it (ties to the live side), and proves the result disjoint.
+  ⚠ Its output is uncompacted: run `tools/store_compact_probe.loft` over each block before publishing, or
+  the site's roads double (§2).
 * Publishing: `tools/publish-release.sh <tag>` for the release, `tools/publish-pages-data.sh` for a block
   that needs a CORS host. **Both verify before the index points anywhere.**
 
   ⚠ **`publish-release.sh` uploads every store the MANIFEST names that exists in `blocks/` — which is
   more than the release should hold.** The four region *base* blocks resolve to their own Pages hosts, so
   putting them on the release adds 2.75 GB no index URL points at. Stage the referenced set and point
-  `BLOCKS_OUT` at it; `data-v2026-08-03` was published that way, and its asset list diffs clean against
-  the release before it. Worth fixing in the script.
+  `BLOCKS_OUT` at it; `data-v2026-08-03d` was published that way — **784 MB instead of 3.91 GB**, by
+  staging exactly the blocks the INDEX names with a RELATIVE url (those are the ones `fetch-site-blocks.sh`
+  pulls). Worth fixing in the script.
 
 * **The switch is the MERGE, not the publish.** Publishing stages a dataset beside the live one; the site
   moves when the committed index reaches `main`, because the deploy job resolves the tag from it and
