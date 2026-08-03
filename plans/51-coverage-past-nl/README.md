@@ -202,9 +202,28 @@ the real generator does, and on the realistic pattern the result reverses. Filed
 **So the bound comes from building less at a time**, which is structural and needed anyway.
 `tools/build-base-chunked.sh` already did this for the base map; `tools/build-blocks-banded.sh` (new)
 does it for roads, building longitude bands whose edges come from the probe's even-**cost** histogram —
-even *width* is rarely even cost. ⚠ Its outer edges are NOT seams: the first run trimmed the region's own
-bounds as if they were, and came out one way and two cells short (1 480 754 / 10 372 against 1 480 755 /
-10 374) because "keep west of hi" ate the cell containing hi.
+even *width* is rarely even cost. Belgium in 3 bands, against the whole-country block:
+
+| | b0 `[2.52, 4.1)` | b1 `[4.1, 5.2)` | b2 `[5.2, 6.43]` | sum | whole country |
+|---|---|---|---|---|---|
+| ways | 404 583 | 693 186 | 382 982 | **1 480 751** | 1 480 755 |
+| cells | 2 748 | 4 219 | 3 406 | **10 373** | 10 374 |
+| bytes | 82 MB | 133 MB | 84 MB | 299 MB | 159.5 MB *(compacted)* |
+
+✅ **Disjoint** — `block_overlap.loft` reports 0 nested pairs and no partial overlap over all 10 373
+cells. That is the property routes depend on (D12), and it holds.
+
+⚠ **NOT conservation-clean: one cell and its 4 ways are missing**, so the tool is not trusted yet. The
+shortfall is coherent (4 ways ≈ one absent cell, not scattered loss) and the band cell-ranges provably
+tile `[126, 321]` with no gap, so the cell is present in the *whole-country* extract and absent from the
+band extract that owns it — which points at `osmium extract`'s clipping, not at the trim. **Next step: diff
+the three bands' cell sets against the whole block's and look at the one key.** Until that closes, a
+banded build needs its sum checked against `<block>.srccount`.
+
+⚠ Two traps this cost, both already in HANDOFF §2. Its outer edges are NOT seams — trimming the region's
+own bounds ate the cell containing the eastern bound. And an earlier run's numbers were **contaminated**:
+it did not delete its blocks first, and `store_persist_bind` over an existing file keeps the old image
+while returning `true`, so band 1 reported 4 ways it had not built from a byte-identical extract.
 
 ### Two defects this phase found before producing a single size
 

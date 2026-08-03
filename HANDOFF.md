@@ -61,17 +61,22 @@ that is what keeps `main` resolving to the data it was built against while the n
 the 62-block cap fix, the paged-probe fix, and the phase-A measurements. Safe to sit; nothing depends
 on them and no data references them.
 
-### ⚠ In flight, unfinished: `tools/build-blocks-banded.sh` (untracked)
+### Two new tools for scaling past NL — one trusted, one not
 
-Roads built in longitude bands so memory tracks the band, not the country — the roads equivalent of
-`build-base-chunked.sh`. **Its first run was one way and two cells short** (1 480 754 / 10 372 against
-Belgium's 1 480 755 / 10 374) because it trimmed the region's OUTER bounds as if they were seams, eating
-the cell holding the eastern bound. Fixed but **the re-run never completed** — it was killed when the
-same script deleted 37 files (below). Re-run and check both numbers before trusting it.
+Both are committed and both belong to **[@51](plans/51-coverage-past-nl/README.md)**, whose phase A is
+now measured and phase B done.
 
-`tools/tiling_probe.py` (untracked) is the other half and is *validated*: cell counts within **0.25%** of
-three real blocks, bytes/coord constant at **~15**, NL∩BE overlap predicted 397 against the gate's 377.
-Belgium in **8.4 s** where the build takes 25 min.
+* ✅ **`tools/tiling_probe.py` — trusted.** Answers "do these overlap?" and "how many regions?" *without
+  building a store*: a feature is keyed at its first vertex, so its cell is one `floordiv`. **Belgium in
+  8.4 s against a 25-minute build**, validated to within **0.25%** on cells against three real blocks.
+  Run it before committing an hour of CPU. It says nothing about whether a block is *correct* —
+  `conservation_gate` and `block_overlap_gate` still own that.
+* ⚠ **`tools/build-blocks-banded.sh` — NOT trusted yet.** Builds roads in longitude bands so the
+  generator's memory tracks the band, not the country. Belgium's three bands are provably **disjoint**
+  (0 shared cells over 10 373 — the property routes depend on), but the sum is **1 480 751 ways / 10 373
+  cells against the whole block's 1 480 755 / 10 374**: one cell and its four ways are missing. The
+  diagnosis is narrowed and written up in @51; until it closes, check any banded sum against
+  `<block>.srccount`.
 
 ## 1. What is open
 
