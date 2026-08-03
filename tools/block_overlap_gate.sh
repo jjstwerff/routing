@@ -139,11 +139,33 @@ for srcid in "${!cut_paths[@]}"; do
     continue
   fi
   complete_checked=$((complete_checked + 1))
-  echo "  $srcid -> ${#parts[@]} part(s):"
+  # ⚠ EVERY BLOCK IN THE INDEX IS A PART, not only the ones cut from this source — because after a BORDER
+  # TRIM a cell that leaves the Netherlands has not vanished, it has MOVED. @51 phase C gave 200 cells to
+  # Belgium (it held more of each), and against the `cut_from` set alone those read as MISSING and the
+  # gate failed on a dataset that conserves perfectly. Conservation is a property of the INDEX, not of one
+  # country's cut, and it stopped being the same thing the moment coverage crossed a border.
+  read -r -a allparts <<< "${group_paths[__site__]:-}"
+  for extra in "${allparts[@]}"; do
+    case " ${parts[*]} " in *" $extra "*) ;; *) parts+=("$extra") ;; esac
+  done
+  echo "  $srcid -> ${#parts[@]} part(s) (every roads block in the index):"
   cout="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$ref" "${parts[@]}" 2>&1)" \
     || { echo "$cout"; echo "FAIL — the completeness probe did not run"; exit 1; }
-  echo "$cout" | grep -E '^#C' | head -12 | sed 's/^/    /'
-  echo "$cout" | grep -q '^#C ALL PASS' || rc=1
+  # MISSING and SHORT are still hard failures: a source cell held by nobody, or held with FEWER ways than
+  # the source, is data lost. OVER is expected and reported — a trimmed cell is held by the neighbour that
+  # held MORE of it, which is the rule the trim applied and therefore its fingerprint.
+  miss="$(echo "$cout" | grep -oP '^#C FAIL — \K[0-9]+' || echo 0)"
+  shrt="$(echo "$cout" | grep -oP 'SHORT \(\K[0-9]+' || echo 0)"
+  over="$(echo "$cout" | grep -oP '; \K[0-9]+(?= cell\(s\) OVER)' || echo 0)"
+  if echo "$cout" | grep -q '^#C ALL PASS'; then
+    echo "$cout" | grep -E '^#C ALL' | sed 's/^/    /'
+  elif [ "${miss:-0}" = 0 ] && [ "${shrt:-0}" = 0 ]; then
+    echo "    every cell of $srcid is held, none with fewer ways — ${over:-0} reassigned to a neighbour by the border trim"
+  else
+    echo "$cout" | grep -E '^#C' | head -12 | sed 's/^/    /'
+    echo "    MISSING=${miss:-?} SHORT=${shrt:-?} — a cell held by nobody, or with fewer ways than the source, is data LOST"
+    rc=1
+  fi
 done
 
 # …and prove the check can still FAIL, on every run. Since nesting became an allowed outcome (a city block

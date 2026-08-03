@@ -20,7 +20,10 @@
 
 use routing_kernel::(TTile, TRoad, TStep);
 
-struct Block { roads: hash<TTile[tkey]> }
+// ⚠ A BARE LOCAL, not a wrapper struct. This bound through `struct Block { roads: … }` until
+// 2026-08-03, which means it COMPACTED AND CORRUPTED in one pass: loft#757 makes the sidecar record the
+// binding program's root shape, so every other tool then fails to load the block it just shrank. Found by
+// sweeping every `store_persist_bind` in tools/ after gen_heights did exactly this to Belgium.
 
 fn main() {
   a: vector<text> = [];
@@ -29,13 +32,13 @@ fn main() {
   if path == "" { println("usage: store_compact_probe <block.store>  (rewrites it — use a copy)"); return; }
 
   before = file(path).size;
-  b = Block { roads: [] };
-  ok = store_persist_bind(b.roads, path);
+  b: hash<TTile[tkey]> = [];
+  ok = store_persist_bind(b, path);
   // Read something real back: a bind whose result is never used is a bind a compiler may skip, and a
   // "compaction" measured on a store nobody opened is not a measurement.
   tiles = 0;
   roads = 0;
-  for t in b.roads { tiles += 1; roads += len(t.roads); }
+  for t in b { tiles += 1; roads += len(t.roads); }
   after = file(path).size;
   println("#C bind={ok} tiles={tiles} roads={roads}");
   println("#C bytes before={before} after={after}");

@@ -327,18 +327,23 @@ build_min_tier = 1
 
 [[region]]
 id        = "belgium"
-name      = "Belgium (staged — roads overlap NL by 377 cells)"
-staged    = true
+name      = "Belgium"
+# ⚠ NO `base`, AND THAT IS A HOSTING LIMIT, NOT A GAP IN THE DATA. belgium.base.store is 1202.5 MB
+# against a ~1 GB Pages site, so it needs cutting in two and two data repos of its own before it can be
+# named here. Until then Belgium draws from the overview below z12 and `be-mid` at z12-14, and above z14
+# it is roads and a route on a plain background — the state store-app.mjs handles as a product
+# (`base: null`), not a fallback. Its ROADS are what this rung is for and they are here.
 roads     = "stores/belgium.roads.store"
-base      = "stores/belgium.base.store"
 names     = "stores/coverage.names.store"
 read_mode = "paged"
 zoom_min  = 14
 
 [[region]]
 id        = "luxembourg"
-name      = "Luxembourg (staged)"
-staged    = true
+name      = "Luxembourg"
+# Its base map is 70.6 MB — small enough to ship beside the app, so Luxembourg gets a complete map at
+# every zoom while Belgium waits for hosting. Asymmetric on purpose: withholding data that fits, to match
+# data that does not, helps nobody.
 roads     = "stores/luxembourg.roads.store"
 base      = "stores/luxembourg.base.store"
 names     = "stores/coverage.names.store"

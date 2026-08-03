@@ -53,3 +53,4 @@ lib/imaging/tests/_tmp_*.png
 # Generated map blocks (tools/build-blocks.sh) — output, not source. A country block is ~300 MB and
 # is rebuilt from OSM, so it belongs beside the site it is served from, never in git.
 blocks/
+blocks/pre-trim/

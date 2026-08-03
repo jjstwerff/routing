@@ -19,17 +19,24 @@
 #
 #   tools/seam_route_gate.sh
 #
-# Runs against `blocks/trim/`, which is NOT what the index resolves to — publishing those changes four
-# published Netherlands blocks. That is deliberate: the rung can be proven before it is paid for.
+# Runs against whatever the index resolves to — `blocks/` once the trim ships, `blocks/trim/` while it is
+# still staged beside the live dataset. The rung can therefore be proven before it is paid for, and keeps
+# being proven after.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
-trim="${TRIM_DIR:-$here/blocks/trim}"
+# The blocks the INDEX resolves to. This read `blocks/trim` while the trimmed set was staged beside the
+# live one; once it shipped, the trimmed blocks became the real ones and a gate still pointing at the
+# staging directory SKIPs — green, having tested nothing. Prefer the real set, fall back to staging.
+trim="${TRIM_DIR:-}"
+if [ -z "$trim" ]; then
+  if [ -f "$here/blocks/belgium.roads.store" ]; then trim="$here/blocks"; else trim="$here/blocks/trim"; fi
+fi
 be="$trim/belgium.roads.store"
 work="${TMPDIR:-/tmp}/seam-route-$$"
 
 for f in "$trim/nl-west.roads.store" "$trim/nl-midwest.roads.store" "$be"; do
-  [ -f "$f" ] || { echo "SKIP: no trimmed block at $f (build: tools/trim-borders.sh)"; exit 2; }
+  [ -f "$f" ] || { echo "SKIP: no block at $f (build: tools/trim-borders.sh)"; exit 2; }
 done
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
