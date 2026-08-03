@@ -34,12 +34,54 @@ echo "$out" | grep -q '^#R ALL PASS' || { echo "FAIL — see the lines above"; e
 # The COUNTRY store when it has been built. It is generated output (gitignored), so its absence is not a
 # failure — but when it is there it is what actually ships, and a fixture set proven only against a city
 # says nothing about 296 457 street names competing for the same query.
-big="$here/blocks/nl.names.store"
+big="$here/blocks/coverage.names.store"
+[ -f "$big" ] || big="$here/blocks/nl.names.store"
 if [ -f "$big" ]; then
   echo "  -- against the country store --"
   bout="$("$loft" --native --lib "$here/lib" "$here/tools/name_probe.loft" "$big" 2>&1)"
   echo "$bout" | grep -E '^#R' | sed 's/^/  /'
   echo "$bout" | grep -q '^#R ALL PASS' || { echo "FAIL — the country store does not satisfy the fixtures"; exit 1; }
+fi
+
+# --- SEARCH MUST CROSS A BORDER (2026-08-03) ---------------------------------------------------------
+#
+# One country hid this completely. `NAMES` is resolved ONCE at boot from the CAMERA's block, and
+# `store_load_url_trusted` adopts an image rather than adding to one — so search was single-block by
+# construction, and a user in Breda searching "Turnhout" got Dutch streets NAMED AFTER the city and never
+# the city itself, 18 km away. Same defect the base map had before §6f F3 made it a covering set.
+#
+# ⚠ THE CONTROL IS THE POINT. Each case is run against the coverage store AND the single-country one, and
+# the gate demands the country store FAIL — otherwise it proves nothing about the fix, only that the query
+# matches something. Measured: nl.names.store answers "turnhout" with Turnhoutstraat and Turnhoutseweg,
+# both in the Netherlands, and never with Turnhout.
+cov="$here/blocks/coverage.names.store"
+if [ -f "$cov" ]; then
+  echo "  -- search across a border --"
+  # name | camera lat,lon | the place it must find, lat,lon | tolerance in degrees
+  while IFS='|' read -r q cam want tol; do
+    [ -n "$q" ] || continue
+    cl="${cam%,*}"; co="${cam#*,}"
+    wl="${want%,*}"; wo="${want#*,}"
+    hit="$("$loft" --native --lib "$here/lib" "$here/tools/find_probe.loft" "$cov" "$cl" "$co" "$q" 5 2>&1 \
+           | awk -v a="$wl" -v b="$wo" -v t="$tol" '/^FOUND / { split($2,c,","); \
+               if ((c[1]-a)^2 + (c[2]-b)^2 < t*t) print "yes" }' | head -1)"
+    if [ "$hit" != yes ]; then
+      echo "  FAIL: \"$q\" from $cam did not find $want in the coverage store"; exit 1
+    fi
+    # The control: the single-country store must NOT find it, or this case is not testing the fix.
+    if [ -f "$here/blocks/nl.names.store" ]; then
+      ctl="$("$loft" --native --lib "$here/lib" "$here/tools/find_probe.loft" "$here/blocks/nl.names.store" "$cl" "$co" "$q" 5 2>&1 \
+             | awk -v a="$wl" -v b="$wo" -v t="$tol" '/^FOUND / { split($2,c,","); \
+                 if ((c[1]-a)^2 + (c[2]-b)^2 < t*t) print "yes" }' | head -1)"
+      if [ "$ctl" = yes ]; then
+        echo "  FAIL: the NL-only store also finds \"$q\" — this case does not test the covering set"; exit 1
+      fi
+    fi
+    echo "  ✔ \"$q\" from $cam — found across the border, and NOT in the single-country store"
+  done <<'CASES'
+turnhout|51.5719,4.7683|51.3234,4.9485|0.02
+echternach|50.8503,4.3517|49.8121,6.4215|0.02
+CASES
 fi
 
 echo "  R4 GATE PASSES"
