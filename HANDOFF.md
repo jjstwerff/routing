@@ -204,6 +204,20 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
   schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
   fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
+* **BIND A BARE LOCAL, NEVER A STRUCT FIELD** ([loft#757](https://github.com/loft-lang/loft/issues/757),
+  filed 2026-08-03). The sidecar records the CALLER'S root shape, not the bound collection's — so
+  `store_persist_bind(w.recs, …)` through a `struct Wrap { recs: … }` writes a sidecar naming `Wrap`, and
+  every tool that binds a bare `hash<TTile[tkey]>` then fails to load the block. That is all of them.
+  `gen_heights` did this and left Belgium and Luxembourg readable only by itself. **The records are never
+  damaged — only the sidecar** — so `tools/reseat_schema.loft` repairs it without regenerating anything
+  (10 128 191 heights recovered). ⚠ And the tool that causes it can still read its own output perfectly,
+  which is why it survived a green gate all session: `height_gate`'s verifier used the same wrapper, so
+  two wrongs cancelled. Reproduces on the interpreter too — `tools/loft_bug_gate.sh` watches it.
+* **A READ THAT RETURNS NOTHING IS A BROKEN READER, NOT A CLEAN RESULT.** Fixing the above made
+  `height_gate`'s verify read ZERO steps, and it still printed "no step left at 0" and "round-trips:
+  999999..-999999m" in green — every assertion was over an empty set. Any gate whose checks are a loop
+  over what it read back needs a non-vacuity assertion FIRST. Same family as the paged spot check that
+  passed while fetching nothing, and the border route that "passed" while drawing 0 cells from one side.
 * ✅ **[loft#739](https://github.com/loft-lang/loft/issues/739) is FIXED and both workarounds are GONE**
   (2026-08-03). `grid_h` reads one `i16` again instead of recombining two `u8`s, and nothing forbids a
   keyed lookup on a bound store. ⚠ **`tools/loft_bug_gate.sh` therefore FAILS now** where it used to

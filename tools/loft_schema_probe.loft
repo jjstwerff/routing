@@ -1,0 +1,45 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// DOES `store_persist_bind` THROUGH A WRAPPER STRUCT MAKE A STORE UNREADABLE? — minimal, no libraries.
+//
+// The sidecar records the BINDING PROGRAM'S root shape. A store written from a bare `hash<Rec[k]>` and
+// later ADOPTED through `struct Wrap { recs: hash<Rec[k]> }` — the ordinary shape for an in-place editor
+// — comes back with a sidecar naming `Wrap`, and loft#705 then refuses the original bare-local reader.
+//
+//   loft --native --lib lib tools/loft_schema_probe.loft <scratch.store>
+#cwd
+
+struct Rec  { const k: integer, v: integer }
+struct Wrap { recs: hash<Rec[k]> }
+
+fn main() {
+  a0: vector<text> = [];
+  for x in arguments() { a0 += [x]; }
+  path = a0[0] ?? "";
+  if path == "" { println("#P SKIP no path given"); return; }
+  _ = delete(path);
+  _ = delete("{path}.dschema");
+
+  // WRITE from a bare local — what every generator in the consumer does.
+  a: hash<Rec[k]> = [];
+  for i in 0..10 { a += Rec { k: i, v: i }; }
+  w1 = store_persist_bind(a, path);
+
+  // ADOPT through a WRAPPER and edit in place — what an in-place editor naturally looks like, because a
+  // hash is usually reached for as a struct field.
+  w = Wrap { recs: [] };
+  w2 = store_persist_bind(w.recs, path);
+  nw = 0;
+  for r in w.recs { r.v = r.v + 100; nw += 1; }
+
+  // READ BACK with the shape it was WRITTEN with.
+  b: hash<Rec[k]> = [];
+  ok = store_load(b, path);
+  nb = 0;
+  for r2 in b { nb += 1; }
+
+  println("#P write={w1} adopt={w2} edited={nw} reload={ok} records={nb}");
+  if ok && nb == 10 { println("#P FIXED — a wrapper bind leaves the store readable by its original shape"); }
+  else { println("#P BUG PRESENT — after a wrapper bind, the bare-local reader gets {nb} of 10 records (load={ok})"); }
+}

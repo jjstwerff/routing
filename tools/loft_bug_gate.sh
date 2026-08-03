@@ -7,12 +7,18 @@
 # loft-lang/loft#739 — two symptoms of what looks like one fault: a type-id table shifted by declaring a
 # `hash<T[key]>` over a library-imported struct. Both found while building PLAN-RESTORE R2.
 #
-# ⚠ BOTH ARE `--native` ONLY. The interpreter answers correctly, so every gate that runs interpreted stays
-# green while the generator-side tools break — which is exactly why this gate exists.
+# loft-lang/loft#757 — `store_persist_bind` records the CALLER'S root shape, so binding through a wrapper
+# struct rewrites the sidecar and makes the store unloadable by every other tool. Found by baking heights
+# into Belgium and Luxembourg, which left both blocks readable only by the tool that broke them.
+#
+# ⚠ #739's TWO ARE `--native` ONLY. The interpreter answers correctly, so every gate that runs interpreted
+# stays green while the generator-side tools break — which is exactly why this gate exists. #757 is not:
+# it reproduces on both backends and needs no library at all.
 #
 #   loft_store_key_probe   a keyed lookup on a `store_persist_bind`-bound store ABORTS the process
 #                          (`find called on non-collection type: <varies> (db=128)`)
 #   loft_seek_probe        one of the sized binary reads (`f#read as u16`/`as i16`) returns NULL
+#   loft_schema_probe      a wrapper-struct bind leaves the store unreadable by a bare-local reader
 #
 # ⚠ IT DID ITS JOB, AND THAT FLIPPED ITS EXIT CODE (2026-08-03). Both bugs are fixed upstream and both
 # workarounds are DELETED — `gen_heights.loft` reads one `i16` again, and nothing forbids a keyed lookup
@@ -20,7 +26,7 @@
 # is a REGRESSION that breaks the height pipeline: this gate now FAILS on one being present. It used to
 # exit 0 either way, which was right only while the workarounds existed.
 #
-# A probe outside a gate is a comment (CLAUDE.md), which is exactly why these two are in one.
+# A probe outside a gate is a comment (CLAUDE.md), which is exactly why all three are in one.
 #
 #   tools/loft_bug_gate.sh
 set -uo pipefail
@@ -76,14 +82,37 @@ else
 fi
 
 echo
+echo "-- store_persist_bind through a wrapper struct (loft#757; workaround: bind a bare local)"
+# ⚠ NOT a --native-only bug, unlike the two above: it reproduces on the interpreter too, which is why the
+# probe takes no library and this check does not care which backend ran it.
+out3="$("$loft" --native "$here/tools/loft_schema_probe.loft" "$work/schema.store" 2>&1)"
+if grep -q '^#P FIXED' <<<"$out3"; then
+  echo "   ✅ FIXED — a wrapper bind leaves the store readable by its original shape."
+  echo "      tools/reseat_schema.loft (the repair) and gen_heights' bare-local note can go."
+  fixed=$((fixed + 1))
+elif grep -q '^#P BUG PRESENT' <<<"$out3"; then
+  # Reported, NOT failed. Every tool here already binds a bare local, so nothing in the tree is broken by
+  # this being present — unlike loft#739 above, whose workarounds are gone. What it guards is the next
+  # editor written the natural way, which is how gen_heights acquired it.
+  echo "   bug present — $(grep '^#P BUG PRESENT' <<<"$out3" | sed 's/^#P //')"
+  echo "      Bind a BARE LOCAL, never a struct field. This corrupted every Belgian and Dutch"
+  echo "      block's sidecar on 2026-08-03; the records survived, nothing else could read them."
+else
+  echo "   ⚠ UNKNOWN — the probe reported neither:"; sed 's/^/     /' <<<"$out3" | tail -3
+fi
+
+echo
 if [ "$bad" -gt 0 ]; then
   echo "FAIL — $bad upstream bug(s) are back, and the workarounds for them are gone."
   echo "       tools/height_gate.sh is what breaks next; git log tools/gen_heights.loft has the old shape."
   exit 1
 fi
 if [ "$fixed" -gt 0 ]; then
-  echo "Both fixed, both workarounds removed. This gate is a regression guard now, not a to-do list."
+  echo "$fixed of 3 fixed. #739's two are regression guards now — their workarounds are gone, so the gate"
+  echo "FAILS if either returns. #757 is reported only: every tool here already binds a bare local, so"
+  echo "nothing is broken while it stands. What it guards is the next in-place editor written the obvious"
+  echo "way, which is exactly how gen_heights acquired it."
 else
-  echo "⚠ Neither probe reported a clear status — treat this run as NO information, not as a pass."
+  echo "⚠ No probe reported a clear status — treat this run as NO information, not as a pass."
 fi
 exit 0
