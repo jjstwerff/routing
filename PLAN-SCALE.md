@@ -2131,6 +2131,59 @@ This is the part that has no natural forcing function, so it gets an explicit ta
 oldest block in the index is inside the target; a single stale region is one block's work to fix; and no
 step in doing any of that required a codec of our own.
 
+### 8b. One cadence for every region stops working before the world does (2026-08-03)
+
+Everything above assumes **one** target for every block, and that is right up to Western Europe: ~40
+blocks on a 14-day cycle is ~3 blocks a day, which one machine sustains. It is not right for the world,
+which is roughly another order of magnitude on top of WE's 44–88 GB of base map.
+
+**Two decisions, and they are different.** The world as *coverage* is a hosting-and-funding question —
+Pages is out well before it, and the maintainer's position is recorded: **Western Europe as a recurring
+build is fine; the world needs funding and probably a dedicated host, and is not something to absorb
+quietly.** Nothing in this plan should be designed as if it were free. The world as a *refresh cadence*
+is the engineering half, and it is the cheaper problem: refresh less where less has changed.
+
+#### ⚠ "Sparse" is the wrong key, and this repo already has the measurement that says so
+
+The obvious rule is *refresh sparse regions less often*. It conflates two different axes, and @51 phase A
+measured them apart:
+
+| | by road ways | by base-map bytes |
+|---|---|---|
+| Belgium vs the Netherlands | 53% | **44%** |
+| Luxembourg vs the Netherlands | 6% | **2.6%** |
+
+Density predicts a region's **SIZE**. It says nothing about its **CHANGE RATE**. Keying cadence on
+density starves a sparse region that is being actively mapped — exactly where a new path is most likely to
+be the thing a router gets wrong — while rebuilding a dense but stable one every fortnight for nothing.
+The same error in miniature is `PLAN-PERF` §7h: an aggregate that wins on average and loses on the
+interaction anyone actually performs.
+
+#### The key is measured change, and it costs no build to read
+
+OSM publishes what moved. Geofabrik ships per-region diffs with change counts, so *"how much of this
+region changed since the snapshot we shipped"* is a download of kilobytes and no generation at all — the
+same shape as `tools/tiling_probe.py`, which answers a tiling question in **8.4 s against a 25-minute
+build** and is trusted precisely because it was validated against real blocks before being believed.
+
+So the design is: **a region's target is derived from its own measured change rate, and the alarm keys on
+the region's own target rather than one global number.** The machinery is mostly present —
+`refresh-region.sh <id>` has always been per region, so nothing forces a global refresh; what is missing
+is a cadence field in the manifest and something that sets it.
+
+Three things to get right when it is built, each of which is a failure this repo has already paid for
+somewhere else:
+
+1. **The measurement must be a gate, not a script someone runs.** A cadence chosen by a probe nobody
+   re-runs is a cadence frozen at the day it was picked (`tools/bind_order_gate.sh` is the standing
+   example of what that costs).
+2. **A region that has never been measured must read as URGENT, not as fresh.** Absent evidence is not
+   evidence of stability — the same rule that makes `heldGroundFor` gate on what a view actually
+   RETURNED rather than on an extent that claims to cover it.
+3. **Publish the cadence, not just the age.** §8 already says the app shows the age of the data under the
+   cursor; if the target varies per region, the age alone is unreadable — 20 days is fine in the Ardennes
+   and late in Amsterdam.
+
 ---
 
 ## 9. Still open — with the instrument named
