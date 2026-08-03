@@ -44,11 +44,11 @@ that is what keeps `main` resolving to the data it was built against while the n
 
 ## 1. What is open
 
-1. **⚠ A REGENERATION IS PENDING, and until it runs the new data is code-only.** `TStep.h` (heights, R2)
-   and `oneway=` (bits 8–11) both landed on 2026-08-03 and are both **inert on the published blocks**,
-   which carry zeroes for them. Neither is a schema change — `h` and the free `flags` bits already
-   existed — so old blocks stay readable and nothing is broken; they simply have no data yet.
-   `tools/refresh-region.sh <id> <source> --regions` now does the whole sequence including both.
+1. **⚠ A DATASET IS BUILT AND NOT PUBLISHED.** `v2026-08-03` carries heights (R2) and `oneway=`, is
+   committed in `browser/coverage.json`, and every gate is green — but the live site still serves
+   `v2026-08-02c`, whose blocks have zeroes for both. Publishing is four roads blocks, **267.9 MB**; the
+   base map, names, overview and middle zooms are byte-unchanged and stay put. One command:
+   `tools/publish-release.sh data-v2026-08-03`. Until it runs, the new fields are code-only.
 2. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
    floor is resident only after a country view, so the held frame is still the only cover for a session
    that never sees one. The resolution is to make the floor always-resident, not to delete the fallback.
@@ -56,11 +56,15 @@ that is what keeps `main` resolving to the data it was built against while the n
    to progress." The sketch autosave makes it *survivable* (reload and your points are back); it is not
    fixed. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
-4. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2). The blocks
-   halving (below) moved that ceiling and it has not been re-costed since.
+4. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2), and the
+   blocks halving moved that ceiling without a re-costing — which is now phase A of
+   **[@51](plans/51-coverage-past-nl/README.md)**.
 5. **The router does not COST the gradient yet.** R2 made it *possible* — `way_penalty` can see a height
-   now; spending it is `PLAN-ROUTING`'s, and the weight is a routing-quality choice with the 26-sketch
-   corpus as its instrument.
+   now — and spending it is **[@50](plans/50-get-me-there/README.md)** phase B. Two of that plan's three
+   data prerequisites shipped on 2026-08-03, which is why it stopped being a stub.
+
+**Three plans are open** (`gh issue list -R jjstwerff/routing --label plan`): @49 nautical navigation
+(active), @50 get-me-there and @51 coverage past NL (both future). `plans/README.md` is the binding.
 
 **Closed 2026-08-03:** `data-refresh.yml` can run again. It cut TWO halves while the manifest had named
 FOUR regions since §6f F3, so `publish-release.sh` failed building the index *after* uploading gigabytes
@@ -150,7 +154,7 @@ tools/conservation_gate.sh     # 49 categories, none empty
 | `PLAN-SCALE.md` | blocks, bands, regions, publishing — how the data is cut and hosted |
 | `PLAN-PERF.md` | what the app costs and why, including the loft store fixes |
 | `PLAN-EDIT.md` | the sketch editor, and the route as an object (distance, GPX, autosave) |
-| `PLAN-MATCH.md` / `PLAN-ROUTING.md` | the matcher's ladder, and the get-me-there fork |
+| `PLAN-MATCH.md` | the matcher's ladder (the get-me-there fork moved to `plans/50-get-me-there/`) |
 | `PLAN-BUILD.md` / `PLAN-APP.md` / `PLAN-MAP.md` / `PLAN-BROWSER.md` | the standalone app and its renderer |
 | `PLAN-RESTORE.md` / `PLAN-TILES.md` / `PLAN-BASEMAP.md` | features restored from the old client, and the data they need |
 | `docs/ARCHITECTURE.md` | which file does what |

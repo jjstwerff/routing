@@ -555,6 +555,12 @@ anywhere in coverage; the base map offers a region download. *Gate:* the 26-sket
 
 ## 6b. The coverage ladder — how it actually gets to WE
 
+> **C3 and above are now a plan: [`plans/51-coverage-past-nl/`](plans/51-coverage-past-nl/README.md)
+> ([routing#51](https://github.com/jjstwerff/routing/issues/51)).** This § stays as the reference — it
+> records what each rung *proved*, and the entry gates the plan is measured against. ⚠ Every size below
+> C2 predates loft#730's compaction (blocks halved 2026-08-03) and is stale until phase A re-costs it.
+
+
 The steps above are *capabilities*; this is the *rollout*, and it is deliberately a ladder of small,
 boring, revertible rungs. Each rung is a **real deployment** that a user can route on, each is entered only
 when the named gates are green, and each can be the last one for a while without anything being

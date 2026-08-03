@@ -14,7 +14,7 @@ What should happen. Keep the north-star in mind (low floor, high ceiling — nob
 `DESIGN.md`).
 
 **Which family (if routing)**
-Sketch-faithful (foot/cycle/scenic) or get-me-there? See `PLAN-MATCH` §9 / `PLAN-ROUTING`.
+Sketch-faithful (foot/cycle/scenic) or get-me-there? See `PLAN-MATCH` §9 / `plans/50-get-me-there/`.
 
 **Relevant plan doc**
 Which `PLAN-*.md` this touches, if any.

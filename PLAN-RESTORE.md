@@ -60,7 +60,7 @@ implements all nine — `walking_paved|trail`, `running_fast|trail`, `cycling_ro
 
 **The designs are written. Do not redesign them** — including the one for the *unbuilt* half: `DESIGN.md` §6 (the profile matrix) and §7 (overlay
 toggle), `PLAN.md` step 8 (done 2026-07-01, with its acceptance check), `PLAN-MATCH.md` §9 (mode ×
-intent), `PLAN-ROUTING.md`, and **`PLAN-TILES.md` §Future (292–300) for the network membership itself**.
+intent), [`plans/50-get-me-there/`](plans/50-get-me-there/README.md), and **`PLAN-TILES.md` §Future (292–300) for the network membership itself**.
 Commits: `bf5220b`, `fdf59d6`, `c76a915`, `1744cba`, `bcd28df`.
 
 ---
@@ -144,7 +144,7 @@ sidecar**, and a program that dies mid-bind leaves the schema hash changed — w
 `store_load` on. A probe pointed at the committed fixture made it unloadable.
 
 *Still open from this step:* the router does not yet COST the gradient. `way_penalty` can now see one —
-that is what R2 was the prerequisite for — but spending it is `PLAN-ROUTING`'s, and a preference weight is
+that is what R2 was the prerequisite for — but spending it is [@50](plans/50-get-me-there/README.md)'s, and a preference weight is
 a routing-quality choice with the corpus as its instrument (§5 decision 1).
 
 <details><summary>The original note, written when this looked like the expensive step</summary>
@@ -160,7 +160,7 @@ waiting on a regeneration, so R2 sets that schedule — worth knowing before it 
 profile came from the server fetching AWS terrarium PNGs per request. Under the rule, height belongs in
 the block: **one number per stored step**, sampled at generation.
 
-This is also the prerequisite for the gradient/climb work `PLAN-ROUTING` describes — a bike profile that
+This is also the prerequisite for the gradient/climb work [@50](plans/50-get-me-there/README.md) describes — a bike profile that
 avoids a 12% ramp cannot be written against `h = 0`.
 
 *Observable:* a route's elevation profile drawn from the block alone, with the network off; and

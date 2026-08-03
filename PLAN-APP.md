@@ -165,7 +165,7 @@ package the browser shell where node/jco/a browser exist.
 
 Related: **PLAN-BROWSER** (serverless phases; this refines its Phase 8 post-8.2), **PLAN-TILES**
 (block/tile format, directory, boundary nodes, 0.5 GB cap), **PLAN-MATCH** (the wasm matcher),
-**PLAN-ROUTING** (the get-me-there fork), loft-libs-net **#517** (the range-fetch stack).
+**[`plans/50-get-me-there/`](plans/50-get-me-there/README.md)** (the get-me-there fork), loft-libs-net **#517** (the range-fetch stack).
 
 ---
 
