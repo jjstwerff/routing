@@ -1,7 +1,7 @@
 # loft feedback from the `routing` consumer
 
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
-**Last updated:** 2026-07-06 — see the dated sections at the bottom; the CURRENT upstream asks are
+**Last updated:** 2026-08-03 — see the dated sections at the bottom; the CURRENT upstream asks are
 consolidated in *"2026-07-03 — remaining upstream blockers"*.
 
 `routing` (a phone-first route planner) consumes loft as a **native server** (v1) and, later, as a
@@ -1955,3 +1955,68 @@ real block is **−14.1% per unit of content** (16.61 → 14.27 bytes/step).
 ⚠ Two traps paid for here: `reserve` through `for t in idx` reserves COPIES (C86) and silently does
 nothing; and block size is still non-deterministic run to run (spread 1.007–1.021×), so a single-run
 before/after is noise — read as signal twice before measuring with n=4.
+
+---
+
+## 2026-08-03 — C86 (iteration copies) is a PERFORMANCE CLIFF, not just a semantic footnote
+
+**loft:** 2026.8.0, md5 `ea0486770b1ed2d703f4a5187d3b1b0f`. **Not a bug** — the documented rule, met at
+scale. Filed because the DEFINITION half of loft is what this consumer exists to test, and this is a case
+where the rule is stated in terms of semantics and bites in terms of hours.
+
+`for x in collection` yields COPIES. The reference says so, and for a scalar-ish struct the cost is
+invisible. The moment the element carries `text` fields it is not: a copy is N string copies, and a
+membership scan is quadratic in a way nothing in the source suggests.
+
+**What it cost here.** A per-tile lookup, written the obvious way:
+
+```loft
+fn route_slot(t: TTile, r: RouteRec) -> integer {
+  i = 0;
+  for existing in t.routes {            // TRoute { rid, kind, level, flags, colour: text, rref: text, name: text }
+    if existing.rid == r.rid { return i; }
+    i += 1;
+  }
+  …
+}
+```
+
+Called once per way→route membership: **945 000 times** over a country build, each iteration copying
+**three text fields** to compare one integer. The build was still inside this function after **12 minutes
+of CPU** with nothing written and no output — indistinguishable, from the outside, from a hang.
+
+**The fix is one line and the reference already names it** — index instead of iterate, because `v[i]` is
+a live view:
+
+```loft
+  n = len(t.routes);
+  while i < n { existing = t.routes[i]; if existing != null && existing.rid == r.rid { return i; } i += 1; }
+```
+
+Same country build: **~11 minutes total**, and the fixture rebuilt with the index walk is IDENTICAL to
+the one built with the copying loop, category for category.
+
+### Why this is definition-relevant rather than a note in our own tree
+
+The rule as written is *"iteration yields copies"*, which reads as a **semantic** caution — it tells you
+the loop variable is not an alias. What it does not tell you is that the cost of a copy is **unbounded in
+the element type**, so the same loop is free on `struct P { x: i32, y: i32 }` and pathological on a struct
+with three strings. This consumer has now paid for it twice — `gen-names` (618 000 string copies per
+keystroke, 5.4 s natively) and this — and both times the code looked idiomatic.
+
+Three things that would each have prevented it, in the order we would value them:
+
+1. **Say the cost where the rule is.** The reference's C86 note is about aliasing; one sentence — *"a copy
+   costs the element's heap contents, so iterate by index when the element owns `text` or collections"* —
+   turns a semantic footnote into a performance rule.
+2. **A diagnostic.** `for x in c` where the element type owns heap and the body only READS scalar fields
+   is mechanically detectable, and the fix is mechanical too. A warning naming the index form would have
+   cost nothing and saved the run.
+3. **Or make it not true** — a read-only iteration that does not copy when the body never mutates and
+   never escapes the element. That is the largest change and the one that removes the class rather than
+   documenting it; the other two are worth having whether or not it ever happens.
+
+**No repro attached deliberately:** the shape is `tests/scripts` sized and the rule is already documented,
+so what is being reported is the *ergonomic* verdict, which is what the formal-definition work asked this
+consumer for. If a repro is wanted, `tools/gen-tiles.loft`'s `route_slot` at commit `83e1dd7^` is the
+copying version and `83e1dd7` the index one, over the same 1.05 GB input.

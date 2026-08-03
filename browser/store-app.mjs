@@ -641,7 +641,7 @@ async function streamedMatch(spec, isCurrent) {
 // The rough sketch (PLAN-EDIT E0). The layer owns the points and ALL pointer input; this wiring is the
 // whole of the app's side of editing, and every later gesture rides it unchanged — which is the point of
 // the chokepoints: a new gesture mutates the point list and calls commitEdit, and nothing else.
-// PLAN-LAYERS §5c — AUTOSAVE THE SKETCH, because a session can end without being finished.
+// PLAN-EDIT E9 — AUTOSAVE THE SKETCH, because a session can end without being finished.
 //
 // Reported from the live site: a route was drawn, the page was reloaded, and the sketch was gone — and
 // the kernel had stopped answering in the same session, so there was no way to redraw it either. The
@@ -689,7 +689,7 @@ const rough = new RoughLayer(map, {
   boxElement: document.getElementById('select-box'),
 });
 
-// PLAN-LAYERS §5b — the route bar: how long this route is, and a way to take it with you.
+// PLAN-EDIT E8 — the route bar: how long this route is, and a way to take it with you.
 //
 // ONE function owns both, called from every path that lands a route (the sketch, and the `__match` test
 // hook), because a bar updated at two sites is a bar that eventually disagrees with the map. The length
@@ -788,7 +788,7 @@ map.onMove(ensureView);        // re-view when the camera settles outside the lo
 map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
 await ensureView();       // initial load
 
-// PLAN-LAYERS §5c — and the sketch comes back with it.
+// PLAN-EDIT E9 — and the sketch comes back with it.
 //
 // AFTER the first view, not before: `setPoints` commits, which posts a match, and a match queued ahead of
 // the initial view would make the app's first act a corridor read for a route nobody is looking at yet.

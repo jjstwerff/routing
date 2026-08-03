@@ -454,3 +454,91 @@ Out of scope by §8 and still open: GPX import/export, elevation, the sync serve
 **draft-save of the undo history** (`DESIGN.md` §10 — the history is per-session and ephemeral by design;
 persisting it is its own track). `History.exportHistory`/`importHistory` from `undo.js` were deliberately
 **not** ported, because nothing consumes them yet.
+
+---
+
+# E8–E9 — the route as an object, and the sketch that outlives the session
+
+*Moved here from `PLAN-LAYERS.md` §5b/§5c (2026-08-03). They were designed there because they were asked
+for alongside the layer work; they belong with the editor that owns the sketch and its output.*
+**Both shipped 2026-08-02** — see the commits `feat(app): the route says how long it is…` and
+`feat(app): the sketch you drew survives a reload…`.
+
+## E8 — the route as an object you can read and take away
+
+Two asks, one theme, and both are **smaller than they look because the work is already done** — which is
+the finding, and the reason this § is short rather than protocol-heavy.
+
+**The distance already exists and is already on screen — as kernel debug text.** `emit_route`
+(`map_kernel.loft:312`) prints `SUMMARY ways=N route_pts=M len=X.Xm profile=P` for *every* match,
+including the streamed session path, and `len` is `path_length_m` — loft's geodesic length over the
+matched geometry, not a browser approximation of it. The app then does `hud.textContent = sum`
+(`store-app.mjs:555`), so the user is shown the raw line. Nothing needs computing; the distance needs
+**presenting**: metres → `8.2 km`, in its own element, cleared when the route is.
+
+⚠ **Do not recompute it in JS.** A haversine over `map.route` would be a second answer to a question
+loft already answers, and the two would drift the moment either changes — the shape this repo has paid
+for repeatedly (six copies of one ladder). The kernel's number is the number; JS parses and formats it.
+
+**GPX is already written — in loft, for the client that had a server.** `routing_kernel.loft:2185`
+`gpx_export(points, elevs, name)` is the format of record, and `server/server.loft:329` serves it over
+the websocket. The deployed app has **no server**, so the old path (`gpx.js` → `ws.requestExport`) cannot
+be reached at all. The route is already in the browser (`map.route`), so the export is a **document, not
+a request**: build the same GPX 1.1 document JS-side and hand it to a `Blob` download.
+
+* **No `<ele>`.** `gpx_export` omits the element when the elevation is `ELEV_NONE`, and the serverless app
+  has no elevation source — so it takes that branch for every point, which is a *shape the format already
+  defines* rather than a variant of it.
+* **The two writers must agree**, and the gate is a comparison, not a promise: same points in → same
+  document out as `gpx_export`, modulo the elevation branch.
+* **Import is not in this step.** `gpx.js`'s reader needs `clean_track`/`retrace_m` from the kernel
+  (`server.loft:332`), which is a kernel command, not a DOM change. Named here so it is a decision, not an
+  omission.
+
+**Where the code goes** — the pure half in `map.mjs` (`formatDistance`, `routeDistanceM`, `routeGpx`),
+unit-tested in `map.test.mjs`; the DOM half in `store-app.mjs`. The browser assert belongs in
+`cdp_verify_store.mjs`, beside the match it already drives: **after a match, the bar reads a distance and
+the GPX document holds one `<trkpt>` per route point.**
+
+---
+
+## E9 — the sketch survives, because the session does not always
+
+**Reported from the live site:** a route was drawn, the page was reloaded, and the points were gone — and
+the kernel had stopped answering in that same session, so there was no way to draw them again either.
+Two faults, and they compose into "no way to progress": one destroyed the work, the other removed the
+means to redo it.
+
+**What is saved is the points the USER PLACED, not the matched route.** The sketch is the work; the route
+is derived from it. Restoring the sketch re-matches and gives back an editable sketch; restoring the
+route would give back a line you can look at and cannot edit — and if the two ever disagreed, the derived
+one would be the lie. (Being able to export a route the kernel can no longer produce is a *separate*
+want; it is not this one, and conflating them is how the wrong thing gets stored.)
+
+| | |
+|---|---|
+| **key** | `routing.sketch.v1` — one record, overwritten. A recovery net, not a document store |
+| **cadence** | one write per **10 s**, **leading and trailing** — leading so the first point is protected the instant it exists, trailing so the last state of a burst is what lands |
+| **also flushed on** | `pagehide` (reload, navigation, close) and `visibilitychange`→hidden (a phone switching away, where a tab is discarded without another event) |
+| **restored** | after the first view, before `ready` — `setPoints` commits, which posts a match, and a match queued *ahead* of the first view would make the app's first act a corridor read for a route nobody is looking at yet |
+| **cap** | 5 000 points (~150 kB); beyond it the save is **refused, not truncated** — half a sketch restored as if whole is worse than none |
+
+⚠ **A reader of persisted state must treat it as hostile**, the same rule `cameraFromHash` is written
+under: a corrupt, truncated, hand-edited or future-version record degrades to *no sketch*, never to a
+boot at NaN. A malformed *entry* condemns the whole record, because a sketch missing its 4th point is a
+**different sketch**, silently.
+
+⚠ **This re-opens the trap the camera comment closed, and it is closed differently.** `store-app.mjs`
+says the camera rides the URL rather than localStorage partly because every gate's chromium reuses a
+persistent `--user-data-dir`, so saved state leaks from one run into the next — and it names the cure's
+weak point: *"staying deterministic would have meant clearing storage in all seven, with the eighth
+forgetting to."* A leaked sketch is not cosmetic here: it re-matches at boot, which moves the range-read
+and match counters other gates assert on. So every CDP driver clears local storage before it navigates,
+and **`map_render_gate` fails if one does not** — the eighth-forgetting case is closed by a check rather
+than by discipline. That check is the load-bearing part of this section.
+
+**What this does NOT do.** The kernel dying mid-session is a real fault and is *not* fixed here — this
+makes it **survivable** (reload, and your points are back), not absent. Chasing it needs what the session
+that hit it saw: a `kernel job "…" failed` line, a wasm trap, or a stalled range fetch.
+
+---

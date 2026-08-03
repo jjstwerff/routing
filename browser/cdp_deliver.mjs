@@ -27,7 +27,7 @@ ws.addEventListener('message', (e) => {
 });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
-// PLAN-LAYERS §5c — the sketch autosave lives in localStorage, and every gate reuses its chromium
+// PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
 // EVERY driver, and map_render_gate checks the line is present: the app's camera comment predicted
 // the "eighth one forgets" case exactly, so it is closed by a check rather than by discipline.

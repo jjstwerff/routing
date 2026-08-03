@@ -23,7 +23,7 @@ ws.addEventListener('message', (e) => {
 });
 await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
-// PLAN-LAYERS §5c — the sketch autosave lives in localStorage, and every gate reuses its chromium
+// PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
 // EVERY driver, and map_render_gate checks the line is present: the app's camera comment predicted
 // the "eighth one forgets" case exactly, so it is closed by a check rather than by discipline.
@@ -80,7 +80,7 @@ else if (!(s2.streamedPts >= s2.routePts)) { console.log(`  FAIL: streamed ${s2.
 else if (JSON.stringify(s2.streamedEnds) !== JSON.stringify(s2.routeEnds)) { console.log(`  FAIL: the growing line ended somewhere else than the route — ${JSON.stringify(s2.streamedEnds)} vs ${JSON.stringify(s2.routeEnds)}`); ok = false; }
 else console.log(`  ✓ the line grew as it matched (${s2.growSteps} steps, ${s2.streamedPts} pts → ${s2.routePts} after spur removal, same endpoints)`);
 
-// 2c. PLAN-LAYERS §5b — the route says how long it is, and you can take it away.
+// 2c. PLAN-EDIT E8 — the route says how long it is, and you can take it away.
 //
 // Driven through the REAL button (`#route-gpx`.click()), not a hook that builds the document by a private
 // road: the format is proved by map.test.mjs, and what can only be proved here is the WIRING — the bar is
@@ -631,7 +631,7 @@ else if (!(ks.rangeReads > 0)) {
   // happen, the whole-file load is gone, and the route is unchanged.
 }
 
-// 9. PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD.
+// 9. PLAN-EDIT E9 — THE SKETCH SURVIVES A RELOAD.
 //
 // The reported failure was a session that ended with the work in it: a route drawn, the page reloaded, the
 // points gone — and the kernel had stopped answering, so there was no way to draw them again. This is the

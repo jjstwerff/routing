@@ -1,10 +1,33 @@
 # routing — architecture & developer reference
 
-A snapshot of how the project is built as of 2026-07-02 (Phases 1–2 complete; Phase 3 steps 12–14
-done). DESIGN.md is the *intent*; PLAN.md is the *per-step status*; this is the *current shape* —
-components, the wire protocol, the kernel API, and how to build/run/test.
+DESIGN.md is the *intent*; PLAN.md is the *per-step status*; this is the *current shape* — components,
+the wire protocol, the kernel API, and how to build/run/test.
 
-## Topology — server-first
+## ⚠ There are TWO consumers in this tree, and the deployed one is not the one below
+
+| | where | what it is |
+|---|---|---|
+| **the standalone app — DEPLOYED** | `browser/` | no server at all: the page runs a loft-wasm kernel, reads the map blocks over HTTP Range, matches routes in the browser. **This is what https://jjstwerff.github.io/routing/ serves.** |
+| the server-first client — legacy | `index.html`, `app.js`, `ws.js`, `vendor/leaflet/` | a thin Leaflet page talking to a native loft server over a WebSocket. Still in the tree, still tested, and the source of features the standalone app has been re-growing one at a time |
+
+Everything from "Topology" down describes the **legacy** one. The standalone app's plan of record is
+`PLAN-BUILD.md` (how it is assembled), `PLAN-LAYERS.md` (what it draws), `PLAN-EDIT.md` (the sketch and
+the route as an object) and `PLAN-PERF.md` (what it costs).
+
+### The standalone app's components
+
+| File | Role |
+|---|---|
+| `browser/index.html` | the shell: canvas, HUD, search bar, activity selectors, route bar (distance + GPX), undo snackbar |
+| `browser/store-app.mjs` | the app: resolves which blocks a viewport needs, drives the kernel through ONE queue, owns the sketch's lifecycle (autosave/restore) and the resident coarse floor |
+| `browser/map.mjs` | the renderer: projection, layers, the road-class ladder, the signposted networks (long-distance lines, waymark trains), labels, the route and the rough sketch |
+| `browser/rough.mjs` | the sketch layer: ALL pointer input, undo/redo, selection — one dispatcher, asserted singular by `map_render_gate` |
+| `browser/coverage.mjs` | the index → which block answers this box at this zoom, and how it is read |
+| `browser/store-kernel.mjs` + `store-kernel.wasm` | the loft-wasm kernel and its host channel; the wasm is COMMITTED and rebuilt with `node browser/build-store-kernel.mjs` |
+| `browser/loft-deliver.js` / `loft-store.mjs` / `store-geom.mjs` | loft's own store reader (vendored) and this repo's index over it — how JS reads a block without loft walking it |
+| `browser/cdp_*.mjs` | the headless-Chromium gates: what the app DREW, not merely what it fetched |
+
+## Topology — server-first (the legacy client)
 
 ```
 ┌─ browser (thin) ─────────────┐         ┌─ loft server (native) ───────────────┐
