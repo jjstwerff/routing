@@ -190,6 +190,7 @@ test: check
 	@LOFT_BIN="$(LOFT)" ./tools/elevation_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/routes_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
+	@./tools/derived_scope_gate.sh
 	@echo "  ALL OFFLINE GATES PASS"
 
 test-native: check-rustc
