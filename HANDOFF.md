@@ -44,19 +44,29 @@ that is what keeps `main` resolving to the data it was built against while the n
 
 ## 1. What is open
 
-1. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
+1. **⚠ A REGENERATION IS PENDING, and until it runs the new data is code-only.** `TStep.h` (heights, R2)
+   and `oneway=` (bits 8–11) both landed on 2026-08-03 and are both **inert on the published blocks**,
+   which carry zeroes for them. Neither is a schema change — `h` and the free `flags` bits already
+   existed — so old blocks stay readable and nothing is broken; they simply have no data yet.
+   `tools/refresh-region.sh <id> <source> --regions` now does the whole sequence including both.
+2. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
    floor is resident only after a country view, so the held frame is still the only cover for a session
    that never sees one. The resolution is to make the floor always-resident, not to delete the fallback.
-2. **A kernel death reported from the live site, not reproduced.** "wasm stopped working, so I had no way
+3. **A kernel death reported from the live site, not reproduced.** "wasm stopped working, so I had no way
    to progress." The sketch autosave makes it *survivable* (reload and your points are back); it is not
    fixed. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
-3. **⚠ `data-refresh.yml` still cannot run.** It merges chunks into TWO halves while `data/coverage.toml`
-   has named FOUR regions since §6f F3, so `publish-release.sh` fails building the release index AFTER
-   uploading gigabytes. The recipe is noted beside the step; the regeneration this repo actually performs
-   is the manual one described in `PLAN-LAYERS` §3.
 4. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2). The blocks
    halving (below) moved that ceiling and it has not been re-costed since.
+5. **The router does not COST the gradient yet.** R2 made it *possible* — `way_penalty` can see a height
+   now; spending it is `PLAN-ROUTING`'s, and the weight is a routing-quality choice with the 26-sketch
+   corpus as its instrument.
+
+**Closed 2026-08-03:** `data-refresh.yml` can run again. It cut TWO halves while the manifest had named
+FOUR regions since §6f F3, so `publish-release.sh` failed building the index *after* uploading gigabytes
+— and it never built `nl-mid` at all. The cause was a recipe that lived only in a shell history and got
+COPIED into YAML; both cuts are now scripts (`tools/cut-regions.sh`, `tools/build-derived.sh`) that the
+workflow calls, verified by re-cutting the live country and reproducing all six shipped blocks.
 
 **Closed since the last handoff:** loft#729 (`store_load_keys` over-fetch) is FIXED upstream and
 inherited here — a wide viewport reads 22.3 MB in 332 requests where it read 31.1 MB in 466, and binding
@@ -74,8 +84,17 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
 * **Anchor a toolchain claim to the binary's mtime + md5, never `--version`.** `/usr/local/bin/loft` has
-  changed twice mid-session while printing the same string. Today it is **2026.8.0, md5
-  `ea0486770b1ed2d703f4a5187d3b1b0f`**.
+  changed twice mid-session while printing the same string — and did it AGAIN on 2026-08-03 08:52, mid-
+  session, halfway through a bug hunt: two narrowing results from the same hour contradict each other
+  because they ran on different binaries. Today it is **2026.8.0, md5
+  `0849e437f5003c848168674b9eff8fdc`** (was `ea0486770b…`). `tools/loft_bug_gate.sh` prints md5 + mtime
+  for exactly this reason.
+* **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
+  schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
+  fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
+* **Two `--native`-only loft bugs are live** ([loft#739](https://github.com/loft-lang/loft/issues/739)):
+  a keyed lookup on a bound store ABORTS, and one sized `f#read` width returns null silently. Both are
+  worked around; `tools/loft_bug_gate.sh` reports when each workaround can be deleted.
 * **`store_persist_bind` over an EXISTING file keeps the old image and returns `true`** — new counts, fresh
   mtime, previous map on disk. Every persisting tool refuses an existing target (`#PERSIST FAIL`). Delete
   before you regenerate.
@@ -110,9 +129,12 @@ tools/conservation_gate.sh     # 49 categories, none empty
   other agents and are read-only (`CLAUDE.md`).
 * `browser/store-kernel.wasm` is committed and must be rebuilt whenever a kernel source or the toolchain
   changes: `node browser/build-store-kernel.mjs`. `map_render_gate` fails on a stale one.
-* Regenerating data: `tools/build-blocks.sh` for a region, `tools/build_overview.loft` for the two derived
-  blocks, `tools/route_networks.py` for the route sidecar. `tools/store_compact_probe.loft` reports what a
-  block costs after loft's compaction — run it before publishing.
+* Regenerating data: **`tools/refresh-region.sh <id> <geofabrik-path> --regions`** is the whole sequence
+  (roads → heights → names → base → cut → index) and is what the workflow runs. Its parts are runnable
+  alone: `tools/build-blocks.sh` (one region's roads), `tools/bake-heights.sh` (R2 elevation, on a block
+  that already exists), `tools/cut-regions.sh` (the four-region cut, both rules), `tools/build-derived.sh`
+  (overview + middle zooms), `tools/route_networks.py` (the route sidecar). Compaction is now a pass
+  inside the cut, not a thing to remember.
 * Publishing: `tools/publish-release.sh <tag>` for the release, `tools/publish-pages-data.sh` for a block
   that needs a CORS host. **Both verify before the index points anywhere.**
 
