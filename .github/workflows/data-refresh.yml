@@ -59,10 +59,10 @@ on:
         description: "Geofabrik path, e.g. europe/netherlands"
         required: false
         default: "europe/netherlands"
-      split_lon:
-        description: "Longitude to cut the country into <id>-west / <id>-east"
-        required: false
-        default: "5.40"
+      # ⚠ NOT A SPLIT LONGITUDE ANY MORE. The cut is four regions at 4.70 / 5.40 / 5.90, and those bounds
+      # are declared per-region in data/coverage.toml where tools/cut-regions.sh reads them — so there is
+      # nothing for a dispatcher to type, and an input that could disagree with the manifest is exactly
+      # how this job came to cut two halves while the manifest named four regions.
       tag_date:
         description: "Dataset version, e.g. v2026-09-01 (default: today, UTC)"
         required: false
@@ -95,8 +95,8 @@ jobs:
         run: df -h / | tail -1
 
       # ROADS + NAMES ONLY. See the note at the top: the base map needs ~11.7 GB of intermediates and
-      # does not fit here. `--split 5.40` cuts the country into the halves data/coverage.toml names, and
-      # refresh-region.sh asserts the split conserves every way before anything is published.
+      # does not fit here. `--regions` cuts into the regions data/coverage.toml names, asserting that the
+      # cut conserves every way before anything is published.
       - name: Refresh ${{ github.event.inputs.region || 'netherlands' }}
         env:
           DATASET_VERSION: ${{ github.event.inputs.tag_date }}
@@ -105,7 +105,7 @@ jobs:
           DATASET_VERSION="$ver" ./tools/refresh-region.sh \
             "${{ github.event.inputs.region || 'netherlands' }}" \
             "${{ github.event.inputs.source || 'europe/netherlands' }}" \
-            --no-base --split "${{ github.event.inputs.split_lon || '5.40' }}"
+            --no-base --regions
           echo "DATASET_VERSION=$ver" >> "$GITHUB_ENV"
 
       - name: Disk after
@@ -219,38 +219,36 @@ jobs:
       # manifest — roads and names included. This runner has only the base chunks, so without these the
       # index build fails with "manifest names a missing block" AFTER a 2 GB upload has already happened.
       # Fetching them from the release the `refresh` job just made doubles as proof those assets landed.
+      # The list comes from the MANIFEST, not from a literal here. A hard-coded pair is what left this job
+      # fetching nl-west/nl-east after the manifest had named four regions, and the failure landed at the
+      # very end — after the upload — rather than here.
       - name: Fetch the roads + names published by the refresh job
         run: |
           set -e
           base="https://github.com/${{ github.repository }}/releases/download/data-${{ needs.refresh.outputs.version }}"
-          for f in nl-west.roads.store nl-east.roads.store nl.names.store; do
+          for f in $(grep -oP '^\s*roads\s*=\s*"\K[^"]+' data/coverage.toml | xargs -n1 basename | sort -u) nl.names.store; do
             curl -fsSL --retry 3 -o "blocks/$f" "$base/$f"
             curl -fsSL --retry 3 -o "blocks/$f.dschema" "$base/$f.dschema" || true
             echo "  fetched $f ($(stat -c%s "blocks/$f") bytes)"
           done
 
-      # ⚠⚠ THIS PIPELINE STILL PRODUCES TWO REGIONS AND THE MANIFEST NAMES FOUR — IT CANNOT RUN AS IS.
+      # ✅ FIXED 2026-08-03 — this job produced TWO regions while the manifest named FOUR, which is why
+      # the workflow could never run: `publish-release.sh` fails building the release index on blocks
+      # nobody made, AFTER uploading gigabytes. The recipe (F3's cut: cover + margin for the base, a plain
+      # partition for the roads) now lives in `tools/cut-regions.sh`, which a person can run locally —
+      # and it was verified by re-cutting the live country and finding the four shipped blocks reproduced
+      # category for category, roads and base.
       #
-      # `data/coverage.toml` has named nl-west / nl-midwest / nl-mideast / nl-east since §6f F3 (cuts at
-      # 4.70 / 5.40 / 5.90, each base region carrying a 0.10° margin of its neighbours, roads cut WITHOUT
-      # one). This job merges the chunks into the old two halves, and `refresh-region.sh --split 5.40`
-      # splits the roads the same old way — so `publish-release.sh` would fail building the release index
-      # on the two blocks the manifest names and this job never produced, AFTER uploading gigabytes.
-      #
-      # It is a pre-existing gap, not one the overview step below introduces, and it is the reason the
-      # workflow has never actually run (see the header). Fixing it means reproducing F3's cut here: four
-      # bands, `trim_base.loft … cover` for the base (a region must be a complete map of its own ground)
-      # and a plain partition for the roads (blocks must stay disjoint, `block_overlap_gate`). Do that
-      # against a real run with eyes on it — the recipe is in PLAN-SCALE §6f F3, and guessing it produces
-      # a dataset that looks published and is wrong.
-      - name: Merge chunks into nl-west / nl-east
+      # A CHUNK EDGE NO LONGER HAS TO ALIGN WITH A REGION EDGE. The old step grouped whole chunks into a
+      # region, so the edges had to be a superset of the region bounds. `cut-regions.sh` instead trims
+      # EACH chunk to the region's band and merges the pieces — and because `cover` is a per-tile
+      # predicate and the chunks are a partition of tiles, that gives the same tile set as trimming an
+      # assembled country, which no runner can hold. The edges below are kept because they are what
+      # `base_chunk_gate.sh` measured, not because the cut needs them.
+      - name: Cut the chunks into the regions the manifest names
         run: |
           set -e
-          # 2.38..5.40 is west, 5.40..7.32 is east — the same meridian data/coverage.toml names.
-          "$LOFT_BIN" --native --lib lib tools/merge_base.loft blocks/nl-west.base.store \
-            blocks/netherlands-c00.base.store blocks/netherlands-c01.base.store | grep '^#M'
-          "$LOFT_BIN" --native --lib lib tools/merge_base.loft blocks/nl-east.base.store \
-            blocks/netherlands-c02.base.store blocks/netherlands-c03.base.store | grep '^#M'
+          SKIP_ROADS=1 ./tools/cut-regions.sh netherlands
           # The chunk files are a build intermediate; publish-release.sh only uploads what the manifest
           # names, but leaving 2 GB of them around invites someone to point an index at one.
           rm -f blocks/netherlands-c0*.base.store*
@@ -271,15 +269,19 @@ jobs:
       # country store — because a region carries a 0.10° margin of its neighbours and a feature in a
       # margin band is written twice. The geometry is identical, so it draws identically. Roads are cut
       # WITHOUT margins, so the spine is unaffected (14 633 chains against 14 631).
-      - name: Build the country overview
-        run: |
-          set -e
-          rm -f blocks/nl-overview.base.store blocks/nl-overview.base.store.dschema
-          "$LOFT_BIN" --native --lib lib tools/build_overview.loft \
-            blocks/nl-west.base.store,blocks/nl-east.base.store \
-            blocks/nl-west.roads.store,blocks/nl-east.roads.store \
-            blocks/nl-overview.base.store 10 2 | grep '^#O'
-          ls -l blocks/nl-overview.base.store
+      # --- the DERIVED blocks must be rebuilt WITH the regions, or they silently describe older ground ---
+      #
+      # PLAN-SCALE §6i O1/O3b. The overview and the middle zooms are the map every zoom below 14 draws,
+      # and both are DERIVED from the regions — so a refresh that rebuilds the regions and not them
+      # leaves the country view describing the previous snapshot while the routes underneath describe the
+      # new one. Nothing would report it: publish-release.sh uploads whatever `blocks/` holds that the
+      # manifest names, so a stale file is re-published looking current.
+      #
+      # ⚠ This step used to build the overview from TWO region stores and never built `nl-mid` at all —
+      # both fixed by moving the recipe into `tools/build-derived.sh`, which takes its inputs and its
+      # parameters from the manifest.
+      - name: Build the derived blocks (overview + middle zooms)
+        run: ./tools/build-derived.sh netherlands
 
       - name: Publish the base map
         env:

@@ -22,7 +22,15 @@
 #
 #   tools/refresh-region.sh <region-id> <geofabrik-path> [bbox]
 #     --no-base    skip the base map (roads + names only — see the note on cost below)
-#     --split LON  cut the country blocks at this longitude into <id>-west / <id>-east
+#     --regions    cut into the regions data/coverage.toml names (tools/cut-regions.sh) — what you want
+#     --split LON  cut in two at this longitude into <id>-west / <id>-east
+#
+# ⚠ `--split` PREDATES THE COVERAGE MODEL AND IS NOT WHAT SHIPS. The manifest has named FOUR regions cut
+# at 4.70 / 5.40 / 5.90 since PLAN-SCALE §6f F3, and a two-way split produces blocks whose names nothing
+# downstream asks for: `publish-release.sh` fails building the release index on the four the manifest
+# does name — after uploading gigabytes. It is kept because splitting one block in two is still the
+# cheapest way to manufacture a seam for a gate (S8), which is what it was written for. For a refresh
+# that will be published, use `--regions`.
 #
 # ⚠ COST, measured on the Netherlands 2026-08-01, because it decides where this can run:
 #     roads + names   ~6 min, ~3 GB peak disk, well inside a CI runner
@@ -36,14 +44,16 @@ loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 work="${BLOCKS_WORK:-$HOME/.cache/routing-blocks}"
 out="${BLOCKS_OUT:-$here/blocks}"
 
-id=""; src=""; bbox=""; do_base=1; split_lon=""
+id=""; src=""; bbox=""; do_base=1; split_lon=""; do_regions=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-base) do_base=0; shift ;;
+    --regions) do_regions=1; shift ;;
     --split)   split_lon="${2:-}"; shift 2 ;;
     *) if [ -z "$id" ]; then id="$1"; elif [ -z "$src" ]; then src="$1"; else bbox="$1"; fi; shift ;;
   esac
 done
+[ "$do_regions" = 1 ] && [ -n "$split_lon" ] && { echo "FAIL: --regions and --split are two different cuts; pick one" >&2; exit 2; }
 [ -n "$id" ] && [ -n "$src" ] || { sed -n '/^#   tools\/refresh-region.sh/,/^#   That asymmetry/p' "$0" | sed 's/^# \?//'; exit 2; }
 
 step() { echo; echo "########## $* ##########"; }
@@ -64,7 +74,12 @@ else
   step "3/6 base map — SKIPPED (--no-base)"
 fi
 
-if [ -n "$split_lon" ]; then
+if [ "$do_regions" = 1 ]; then
+  step "4/6 cut into the regions data/coverage.toml names"
+  # The cut, its bounds, its two opposite rules and its conservation checks all live in one place —
+  # see the header of that script for why they may not live here as well.
+  SKIP_BASE="$([ "$do_base" = 1 ] && echo 0 || echo 1)" "$here/tools/cut-regions.sh" "$id" || die "cut-regions"
+elif [ -n "$split_lon" ]; then
   step "4/6 split at ${split_lon}°E"
   # ⚠ CONSERVATION IS CHECKED HERE, not at the end. A split that loses a tile produces two blocks that
   # each look fine and a country with a hole in it; the only moment the whole and the parts can be
