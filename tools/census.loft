@@ -112,6 +112,11 @@ fn main() {
   emit(ac, ["water","forest","grass","heath","scrub","park","farmland","residential","industrial",
             "sand","wetland","bare","other","reserve","site"], "cover");
   emit(lc, ["river","stream","ditch","canal","railway","tram","hedge","wall","fence","runway","taxiway","border","powerline"], "line");
-  emit(kc, ["street","park","sports","cemetery","reserve","site"], "label");
+  // ⚠ A KIND MISSING FROM THIS LIST IS INVISIBLE TO THE GATE, not absent from the block. `castle` was
+  // added to the store on 2026-08-03 and this list was not, so the first census after the rebuild showed
+  // counts identical to the previous store and read as "the change did not take" — it had, 635 of them.
+  // The conservation gate exists to catch a category going silently to zero; it can only do that for
+  // categories it names.
+  emit(kc, ["street","park","sports","cemetery","reserve","site","castle"], "label");
   emit(pc, ["tree","bench","picnic","viewpoint","tower","pylon","information","camp"], "poi");
 }

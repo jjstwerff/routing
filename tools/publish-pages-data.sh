@@ -164,10 +164,22 @@ done
 echo
 
 # --- 3. VERIFY, because "the workflow went green" is not "a browser can read it" --------------------
-hdr="$(curl -s -D - -o /dev/null -r 0-15 -H 'Origin: https://jjstwerff.github.io' "$url/$name")"
-code="$(echo "$hdr" | head -1 | awk '{print $2}')"
-acao="$(echo "$hdr" | grep -ci '^access-control-allow-origin')"
-crange="$(echo "$hdr" | grep -oPi '^content-range: bytes 0-15/\K[0-9]+' | tr -d '\r')"
+#
+# ⚠ RETRY, because a green deploy is not a propagated one. Pages serves the PREVIOUS artifact for a
+# short while after the run completes, so a single check right after the deploy reports the old size and
+# fails a publish that is perfectly correct — measured 2026-08-03 on nl-west: "FAIL: served 555212616
+# bytes, block is 555499328", and the same URL returned 555499328 two minutes later. A false FAIL on a
+# 3 GB publish is worse than a slow one: it invites someone to re-run an operation that already worked.
+for attempt in $(seq 1 20); do
+  hdr="$(curl -s -D - -o /dev/null -r 0-15 -H 'Origin: https://jjstwerff.github.io' "$url/$name")"
+  code="$(echo "$hdr" | head -1 | awk '{print $2}')"
+  acao="$(echo "$hdr" | grep -ci '^access-control-allow-origin')"
+  crange="$(echo "$hdr" | grep -oPi '^content-range: bytes 0-15/\K[0-9]+' | tr -d '\r')"
+  [ "$code" = "206" ] && [ "$crange" = "$bytes" ] && break
+  [ "$attempt" = 20 ] && break
+  echo "   …serving ${crange:-?} of $bytes, waiting for the deploy to propagate ($attempt/20)"
+  sleep 15
+done
 echo "   ranged GET → $code · ACAO $([ "$acao" -gt 0 ] && echo present || echo MISSING) · size ${crange:-?}"
 [ "$code" = "206" ] || { echo "FAIL: $url/$name did not answer a ranged GET"; exit 1; }
 [ "$acao" -gt 0 ]   || { echo "FAIL: no Access-Control-Allow-Origin — a browser cannot read this"; exit 1; }
