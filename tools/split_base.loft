@@ -41,6 +41,12 @@ fn seal_extents(idx: hash<PTile[tkey]>) {
   }
 }
 
+fn copy_parts(parts: vector<i32>) -> vector<i32> {
+  q: vector<i32> = [];
+  for v in parts { q += [v]; }
+  q
+}
+
 fn copy_ring(ring: vector<Coord>) -> vector<Coord> {
   r: vector<Coord> = [];
   for c in ring { r += [Coord { x: c.x, y: c.y }]; }
@@ -52,7 +58,7 @@ fn copy_into(dst: hash<PTile[tkey]>, src: PTile) -> integer {
   t = dst[src.tkey];
   n = 0;
   if t != null {
-    for a in src.areas { t.areas += [Area { cover: a.cover, ring: copy_ring(a.ring) }]; n += 1; }
+    for a in src.areas { t.areas += [Area { cover: a.cover, ring: copy_ring(a.ring), parts: copy_parts(a.parts) }]; n += 1; }
     for b in src.buildings { t.buildings += [Building { name: b.name, ring: copy_ring(b.ring) }]; n += 1; }
     for l in src.lines { t.lines += [Line { kind: l.kind, name: l.name, geom: copy_ring(l.geom) }]; n += 1; }
     for lb in src.labels { t.labels += [Label { name: lb.name, kind: lb.kind, rank: lb.rank, line: copy_ring(lb.line) }]; n += 1; }

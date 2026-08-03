@@ -1,0 +1,22 @@
+LOFT-DSCHEMA v1
+hash=6501487006378623525
+--
+@endian	little
+Area	size=12	struct{cover@0:text, ring@4:vector<Coord>, parts@8:vector<int<-2147483647,false>>}
+Building	size=8	struct{name@0:text, ring@4:vector<Coord>}
+Coord	size=8	struct{x@0:int<-2147483647,false>, y@4:int<-2147483647,false>}
+Label	size=20	struct{name@8:text, kind@12:text, rank@0:integer, line@16:vector<Coord>}
+Line	size=12	struct{kind@0:text, name@4:text, geom@8:vector<Coord>}
+PTile	size=84	struct{tkey@0:integer, ox@8:integer, oy@16:integer, areas@64:vector<Area>, buildings@68:vector<Building>, lines@72:vector<Line>, labels@76:vector<Label>, pois@80:vector<Poi>, fcount@24:integer, fmnla@32:integer, fmnlo@40:integer, fmxla@48:integer, fmxlo@56:integer}
+Poi	size=16	struct{kind@0:text, name@4:text, at@8:Coord}
+hash<PTile[tkey]>	size=4	hash<PTile>(keys=[0],elem_size=84)
+int<-2147483647,false>	size=4	int4(start=-2147483647,null=false)
+integer	size=8	base
+text	size=4	base
+vector<Area>	size=4	vector<Area>(elem_size=12)
+vector<Building>	size=4	vector<Building>(elem_size=8)
+vector<Coord>	size=4	vector<Coord>(elem_size=8)
+vector<Label>	size=4	vector<Label>(elem_size=20)
+vector<Line>	size=4	vector<Line>(elem_size=12)
+vector<Poi>	size=4	vector<Poi>(elem_size=16)
+vector<int<-2147483647,false>>	size=4	vector<int<-2147483647,false>>(elem_size=4)

@@ -121,7 +121,21 @@ pub fn key_tier(key: integer) -> integer { (key / TIER_STRIDE) ?? 0 }
 // Label is text; Poi is a point icon (trees, benches, viewpoints, towers, ruins — and stream crossings:
 // fords, stepping-stones, footbridges). The map matcher reads none of it.
 pub struct Coord    { const x: i32, const y: i32 }
-pub struct Area     { const cover: text, const ring: vector<Coord> }        // filled polygon (landcover + parking/camp/ruin/playground)
+// A filled polygon (landcover + parking/camp/ruin/playground).
+//
+// ⚠ `ring` holds EVERY ring of the feature, concatenated: the outer boundary first, then any interior
+// rings (holes) and any further polygons of a multipolygon. `parts` gives the index in `ring` where each
+// ring AFTER the first begins, so an empty `parts` is the simple case — 97.4% of areas, measured.
+//
+// It exists because an `Area` used to be one ring and the rest were dropped, which does not degrade a
+// shape, it INVERTS it: Weldam's garden moat is an outer ring with three inner ones, so keeping only the
+// outer filled the garden it encloses with water. Sampled 400 000 area polygons from the Netherlands:
+// 10 454 (2.61%) carry at least one hole and 14 099 interior rings were being discarded — mostly grass
+// (5 521) and forest (2 632), i.e. every wood with a clearing and every field with a pond.
+//
+// A renderer draws it as one path with a subpath per ring and an EVEN-ODD fill, which gets holes and
+// disjoint parts from the same mechanism.
+pub struct Area     { const cover: text, const ring: vector<Coord>, const parts: vector<i32> }
 pub struct Building { const name: text, const ring: vector<Coord> }         // footprint polygon
 pub struct Line     { const kind: text, const name: text, const geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
 pub struct Label    { const name: text, const kind: text, const rank: integer, const line: vector<Coord> }

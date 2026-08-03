@@ -20,6 +20,12 @@
 
 use basemap::(PTile, Area, Building, Line, Poi, Label, Coord);
 
+fn copy_parts(parts: vector<i32>) -> vector<i32> {
+  q: vector<i32> = [];
+  for v in parts { q += [v]; }
+  q
+}
+
 fn copy_ring(ring: vector<Coord>) -> vector<Coord> {
   r: vector<Coord> = [];
   for c in ring { r += [Coord { x: c.x, y: c.y }]; }
@@ -55,7 +61,7 @@ fn main() {
                      fcount: t.fcount, fmnla: t.fmnla, fmnlo: t.fmnlo, fmxla: t.fmxla, fmxlo: t.fmxlo };
       d = out[t.tkey];
       if d != null {
-        for ar in t.areas { d.areas += [Area { cover: ar.cover, ring: copy_ring(ar.ring) }]; f += 1; }
+        for ar in t.areas { d.areas += [Area { cover: ar.cover, ring: copy_ring(ar.ring), parts: copy_parts(ar.parts) }]; f += 1; }
         for bu in t.buildings { d.buildings += [Building { name: bu.name, ring: copy_ring(bu.ring) }]; f += 1; }
         for ln in t.lines { d.lines += [Line { kind: ln.kind, name: ln.name, geom: copy_ring(ln.geom) }]; f += 1; }
         for lb in t.labels { d.labels += [Label { name: lb.name, kind: lb.kind, rank: lb.rank, line: copy_ring(lb.line) }]; f += 1; }

@@ -153,15 +153,42 @@ fn rebase(ring: vector<Coord>, ox: integer, oy: integer, nox: integer, noy: inte
 struct Counts { areas: integer, lines: integer, labels: integer, pois: integer,
                 coords_in: integer, coords_out: integer, spine: integer, spine_coords: integer }
 
+// One ring of an Area's concatenated `ring`, as its own vector — `basemap::Area` explains the layout.
+fn ring_slice(ring: vector<Coord>, from: integer, to: integer) -> vector<Coord> {
+  r: vector<Coord> = [];
+  for i in from..to { rc = ring[i]; if rc != null { r += [Coord { x: rc.x, y: rc.y }]; } }
+  r
+}
+
 fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, mintier: integer, c: Counts) {
   for a in src.areas {
     if area_debut(a.ring) <= zmax {
-      g = decimate(a.ring, src.ox, src.oy, eps);
+      // ⚠ DECIMATE EACH RING SEPARATELY. Douglas-Peucker over the concatenated `ring` would simplify the
+      // JUMP from one ring's end to the next ring's start as though it were geometry, which is not a
+      // coarser shape but a wrong one. The surviving rings are re-indexed as they are appended, so
+      // `parts` still describes the decimated output rather than the input.
+      g: vector<Coord> = [];
+      newparts: vector<i32> = [];
+      nrings = len(a.parts) + 1;
+      for ri in 0..nrings {
+        from = 0;
+        if ri > 0 { pv = a.parts[ri - 1]; if pv != null { from = pv as integer; } }
+        to = len(a.ring);
+        if ri < nrings - 1 { qv = a.parts[ri]; if qv != null { to = qv as integer; } }
+        if to <= from { continue; }
+        d = decimate(ring_slice(a.ring, from, to), src.ox, src.oy, eps);
+        // A ring that decimates below a triangle has no area left at this zoom — dropping it is right,
+        // and dropping a HOLE simply fills it, which is the honest outcome when it is sub-pixel.
+        if len(d) >= 3 {
+          if len(g) > 0 { newparts += [len(g) as i32? ?? (0 as i32)]; }
+          for dc in d { g += [Coord { x: dc.x, y: dc.y }]; }
+        }
+      }
       if len(g) >= 3 {
         pl = ring_place(g, src.ox, src.oy, mintier);
         k = want_tile(dst, pl.key, pl.ox, pl.oy);
         t = dst[k];
-        if t != null { t.areas += [Area { cover: a.cover, ring: rebase(g, src.ox, src.oy, pl.ox, pl.oy) }]; }
+        if t != null { t.areas += [Area { cover: a.cover, ring: rebase(g, src.ox, src.oy, pl.ox, pl.oy), parts: newparts }]; }
         c.areas += 1; c.coords_in += len(a.ring); c.coords_out += len(g);
       }
     }

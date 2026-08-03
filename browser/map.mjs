@@ -420,7 +420,11 @@ export function viewFromStore(mem, handle, fbox, deps, want) {
     const oy = Number(flatField(mem, handle, i, 'oy'));
     if (need('areas')) {
       for (const a of flatField(mem, handle, i, 'areas') || []) {
-        if (ringHits(ox, oy, a.ring, fbox)) out.areas.push({ cover: a.cover, ring: degRing(ox, oy, a.ring) });
+        // `parts` rides along so the OBJECT path cuts the same holes as the flat one — the two are held
+        // pixel-identical by a parity gate, and an area filled solid on one path and hollow on the other
+        // is exactly what that gate exists to catch. Absent on a pre-`parts` block, which reads as one ring.
+        if (ringHits(ox, oy, a.ring, fbox)) out.areas.push({ cover: a.cover, ring: degRing(ox, oy, a.ring),
+                                                            parts: a.parts ? Array.from(a.parts) : null });
       }
     }
     if (need('buildings')) {
@@ -1564,11 +1568,23 @@ export class RouteMap {
   // M2: one filled path per area, coloured by Carto cover class.
   // Trace a degree-space ring as a closed path, without filling it — shared by the cover pass and the
   // designation overlay, so the two cannot disagree about the outline they draw.
-  _pathRing(r) {
+  _pathRing(r, parts) {
     const ctx = this.ctx;
     ctx.beginPath();
-    for (let i = 0; i < r.length; i++) { const s = this.project(r[i][0], r[i][1]); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
-    ctx.closePath();
+    if (!parts || !parts.length) {
+      for (let i = 0; i < r.length; i++) { const s = this.project(r[i][0], r[i][1]); if (i === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
+      ctx.closePath();
+      return;
+    }
+    let from = 0;
+    for (let q = 0; q <= parts.length; q++) {
+      const to = q < parts.length ? parts[q] : r.length;
+      if (to - from >= 3) {
+        for (let i = from; i < to; i++) { const s = this.project(r[i][0], r[i][1]); if (i === from) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
+        ctx.closePath();
+      }
+      from = to;
+    }
   }
 
   // Returns whether it actually PAINTED. The caller counts draws, and a skipped area must not be counted,
@@ -1580,9 +1596,9 @@ export class RouteMap {
     const fill = COVER_COLORS[area.cover];
     if (!fill) return false;                             // unknown cover / designation — see DESIGNATION_STYLES
     const ctx = this.ctx;
-    this._pathRing(r);
+    this._pathRing(r, area.parts);
     ctx.fillStyle = fill;
-    ctx.fill();
+    ctx.fill('evenodd');                                 // holes and disjoint parts, by one rule
     return true;
   }
 
@@ -1606,7 +1622,7 @@ export class RouteMap {
       if (!S || z < S.minZoom) return 0;
       ctx.fillStyle = S.tint; ctx.strokeStyle = S.outline;
       ctx.lineWidth = S.w; ctx.setLineDash(S.dash);
-      path(); ctx.fill(); ctx.stroke();
+      path(); ctx.fill('evenodd'); ctx.stroke();   // holes, same rule as the cover pass
       return 1;
     };
     let n = 0;
@@ -1624,12 +1640,12 @@ export class RouteMap {
         const cover = decodeText(mem, sb, col.sRec[i], cache);
         if (!DESIGNATION_STYLES[cover]) continue;
         const si = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
-        n += draw(cover, () => { this._pathFlat(si, len); ctx.closePath(); });
+        n += draw(cover, () => { this._pathFlat(si, len, this._partsOf(i32, sb, col.pRec ? col.pRec[i] : 0)); ctx.closePath(); });
       }
     } else {
       for (const a of this.areas) {
         if (!DESIGNATION_STYLES[a.cover] || a.ring.length < 3) continue;
-        n += draw(a.cover, () => this._pathRing(a.ring));
+        n += draw(a.cover, () => this._pathRing(a.ring, a.parts));
       }
     }
     ctx.restore();
@@ -1920,11 +1936,38 @@ export class RouteMap {
     }
     return false;
   }
-  _pathFlat(s, len) {
+  // `parts` (optional) gives where each ring after the first begins, as `basemap::Area` stores it. Each
+  // ring becomes its own SUBPATH so an even-odd fill can cut the holes out; without it a moat's outer
+  // ring is filled solid and swallows the garden it encloses.
+  _pathFlat(s, len, parts) {
     const ctx = this.ctx;
     ctx.beginPath();
-    ctx.moveTo(s[0], s[1]);
-    for (let k = 1; k < len; k++) ctx.lineTo(s[2 * k], s[2 * k + 1]);
+    if (!parts || !parts.length) {
+      ctx.moveTo(s[0], s[1]);
+      for (let k = 1; k < len; k++) ctx.lineTo(s[2 * k], s[2 * k + 1]);
+      return;
+    }
+    let from = 0;
+    for (let r = 0; r <= parts.length; r++) {
+      const to = r < parts.length ? parts[r] : len;
+      if (to - from >= 3) {
+        ctx.moveTo(s[2 * from], s[2 * from + 1]);
+        for (let k = from + 1; k < to; k++) ctx.lineTo(s[2 * k], s[2 * k + 1]);
+        ctx.closePath();
+      }
+      from = to;
+    }
+  }
+
+  // The parts vector of one Area, or null when it has a single ring (the 97.4% case, and every block
+  // published before the field existed). Same record layout the coords use: length at +4, data at +8.
+  _partsOf(i32, sb, pRec) {
+    if (!pRec) return null;
+    const n = new Uint32Array(i32.buffer)[(sb + pRec * 8 + 4) >> 2];
+    if (!n) return null;
+    const o = (sb + pRec * 8 + 8) >> 2, out = new Array(n);
+    for (let k = 0; k < n; k++) out[k] = i32[o + k];
+    return out;
   }
 
   // The screen rect in FIXED POINT (deg * 1e7), matching the index's stored bounds so the per-feature
@@ -2089,10 +2132,10 @@ export class RouteMap {
       const fill = COVER_COLORS[cover];
       if (!fill) continue;                                // unknown cover draws nothing (DESIGNATION_STYLES)
       const s = this._projectFlat(i32, (sb + col.rec[i] * 8 + 8) >> 2, len, col.ox[i], col.oy[i], K);
-      this._pathFlat(s, len);
+      this._pathFlat(s, len, this._partsOf(i32, sb, col.pRec ? col.pRec[i] : 0));
       ctx.closePath();
       ctx.fillStyle = fill;
-      ctx.fill();
+      ctx.fill('evenodd');
       n++;
     }
     return n;
