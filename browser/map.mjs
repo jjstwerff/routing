@@ -230,6 +230,26 @@ const roughRole = (i, n) => (i === 0 ? 'start' : i === n - 1 ? 'finish' : 'mid')
 const roadScale = (z) => (z >= 17 ? 1.9 : z >= 15 ? 1.4 : z >= 13 ? 1.0 : z >= 11 ? 0.7 : 0.5);
 // Street labels (S10): repeat every ~420 px — far sparser than before (one name, not ten in a row).
 const STREET_MINZOOM = 13, STREET_SPACING_PX = 420, STREET_FONTPX = 11;
+// A street must be at least this long ON SCREEN to be worth naming.
+//
+// ⚠ THIS is the lever that thins street labels, not STREET_SPACING_PX. That constant repeats a label
+// along ONE feature, and `Math.max(1, …)` floors every named street at one label however wide it gets —
+// swept 420 -> 1000 px over five live cameras it moved 508 candidates to 498, a 2% change. What crowds
+// the screen is one NAME on many FEATURES (OSM splits a street into dozens of ways): at z15 over
+// Enschede, 169 candidates carried 121 distinct names, and *Weldammerlaan* drew four times on one
+// screen at z16.8. Culling the short fragments is what removes them, because a 90 px stub of a street
+// still draws a full-width name.
+// 105 px is MEASURED, not chosen: it is the value that draws 60% of the labels the old 70 px floor did,
+// which is what was asked for. Drawn counts over Enschede at z15 / z16 / z17, one sweep so the baseline
+// is internally consistent:
+//
+//    70 px (was)  82 · 77 · 66  = 225   100%          120 px  31 · 41 · 35 = 107   47.6%
+//   100 px        46 · 53 · 42  = 141    62.7%        140 px  23 · 28 · 27 =  78   34.7%
+//   105 px        43 · 51 · 41  = 135    60.0%  <--   170 px  16 · 17 · 19 =  52   23.1%
+//
+// Re-measure with `browser/cdp_label_census.mjs` if the font, the canvas size or the collision rule
+// changes — all three move the count, and this number is only meaningful against the drawn result.
+const STREET_LABEL_MIN_PX = 105;
 // Place labels (S9): rank → the min zoom it appears at, and its font size (city → hamlet).
 const RANK_MINZOOM = { 6: 0, 5: 9, 4: 11, 3: 12, 2: 13, 1: 14 };
 const RANK_FONTPX = { 6: 16, 5: 14, 4: 12, 3: 11, 2: 10, 1: 9 };
@@ -2540,7 +2560,7 @@ export class RouteMap {
       if (!label || px.length < 2 || !this._inView(px)) continue;   // unnamed / off-screen → no label
       const seg = []; let total = 0;
       for (let i = 1; i < px.length; i++) { const d = Math.hypot(px[i].x - px[i - 1].x, px[i].y - px[i - 1].y); seg.push(d); total += d; }
-      if (total < 70) continue;
+      if (total < STREET_LABEL_MIN_PX) continue;
       const w0 = ctx.measureText(label).width + 4;
       const count = Math.max(1, Math.round(total / STREET_SPACING_PX)), step = total / (count + 1);
       for (let k = 1; k <= count; k++) {

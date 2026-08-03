@@ -332,3 +332,57 @@ at S5.0 from the probe result.**
 - **DIY vs tooling:** we build our own format (in-ethos, reuses the loft#522 range-read spine). The two
   things vector-tile tooling gives for free — per-zoom generalization (S13) and label collision (S14) — are
   explicitly *ours* to handle, sequenced last so they never block the first working region.
+
+---
+
+## Open work — two things the base map drops, and they share one regeneration
+
+Both found on 2026-08-03 from one report: *"Weldam is a big estate with only a small house name"* and
+*"the Weldam house with gardens are not a single body of water — is that our layering or OSM?"* Neither
+is OSM's fault. **They are listed together because they want the same block regeneration**, and
+`PLAN-RESTORE` §4's lesson is that bundling advice must name what it is waiting for: this is it.
+
+### 1. An `Area` has ONE ring, so every hole is filled in
+
+```loft
+pub struct Area { const cover: text, const ring: vector<Coord> }   // no interior rings
+```
+
+OSM maps Weldam's garden moat as a multipolygon with holes — `rings=[[69, 47, 51, 35]]`, an outer ring
+and **three inner ones**. We keep the outer and drop the rest, so the moat fills the garden it encloses
+and the estate renders as a solid blue block with the house floating on it (screenshot at
+`#16.8/52.21527/6.58494`).
+
+**It is not rare.** Sampled 400 000 area polygons from the NL export: **10 454 (2.61%) have at least one
+hole, 14 099 interior rings dropped** — grass 5 521, forest 2 632, water 890, meadow 406, farmland 304,
+heath 273. Every wood with a clearing and every field with a pond is filled solid too; the moat is just
+where it is obvious.
+
+*Cost:* `Area` gains inner rings — a **schema change**, so loft#700 applies: every block regenerates,
+every copier (`split_block`, `trim_base`, `build_overview`, `merge_base`) carries the new field, and
+conservation is asserted in and out. The renderer needs the even-odd fill to match.
+
+### 2. `historic=` polygons are in no layer, so castles and estates have no name
+
+`poi_kind` has no castle case — **`castle` appears nowhere in the tree** — and the extraction misses the
+geometry entirely: `areas` filters landuse/natural/leisure, `buildings` needs `building=`, and
+`pois` is `n/historic`, i.e. **nodes only**. So a castle mapped as a way or relation is invisible.
+
+Measured over the NL extract — **971 named castle/manor polygons**:
+
+| | | |
+|---|---|---|
+| also tagged `building=` | **874** | survive only as an ordinary building label at z≥16 — the "small house name" |
+| no building tag | **97** | **dropped entirely**: Warmelo, Kasteel Doorwerth, Citadel van 's-Hertogenbosch, Kasteel Kerckebosch |
+
+At the reported camera, `Huize Diepenheim` is case 1 and `Warmelo` is case 2.
+
+*Cost:* add `w/historic r/historic` to the `areas` layer (or its own), give `poi_kind`/`area_use` a castle
+or estate value, and style it above an ordinary building. Additive to the taxonomy — **not** a schema
+change on its own, so if it rides with §1's regeneration it is nearly free; alone it still costs a full
+one.
+
+⚠ **The estate is a separate question from the castle.** Weldam's grounds are mapped as many landuse
+polygons with no estate-wide name, so naming the *estate* is not a filter change — there is nothing to
+carry. Only the house (`historic=castle`) and the moat have names. Scope this to the castle/manor and
+say so, or it will read as unfinished.

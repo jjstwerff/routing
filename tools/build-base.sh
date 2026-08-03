@@ -110,8 +110,13 @@ SITES="hospital,school,university,college,kindergarten"
 AMENITY_AREAS="$SITES,grave_yard"
 
 echo "== base layers for $id =="
-layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_AREAS" w/aeroway=aerodrome \
-                           r/landuse r/natural r/leisure "r/amenity=$AMENITY_AREAS" r/aeroway=aerodrome || exit 1
+# ⚠ `historic` IS HERE FOR ITS NAME, not its fill. `area_use` gives a castle no cover, so it adds no
+# polygon — what it adds is a rank-3 LABEL (basemap::area_label_kind). Without it a castle reaches the
+# store only when it also carries `building=`, and 97 of the Netherlands' 971 named castle/manor polygons
+# do not — Warmelo, Kasteel Doorwerth and the Citadel van 's-Hertogenbosch were absent from the map
+# entirely, while the other 874 drew as ordinary house names.
+layer areas     polygon    w/landuse w/natural w/leisure "w/amenity=$AMENITY_AREAS" w/aeroway=aerodrome w/historic \
+                           r/landuse r/natural r/leisure "r/amenity=$AMENITY_AREAS" r/aeroway=aerodrome r/historic || exit 1
 layer buildings polygon    w/building r/building         || exit 1
 layer places    point      n/place                       || exit 1
 layer lines     linestring w/waterway w/railway w/barrier w/aeroway=runway,taxiway \
