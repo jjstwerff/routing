@@ -1,0 +1,81 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// WHAT DID A FINER TERRAIN ZOOM ACTUALLY BUY? — the same block's heights, sampled twice, compared.
+//
+// `fetch-terrain.sh` says a hillier country is the reason to raise the zoom, and z13 costs 4x the tiles
+// and 4x the download. That is a recommendation, not a measurement: whether it changes a route's
+// elevation profile depends on the terrain and on how a road sits in it, and the only way to know is to
+// sample the same steps both ways and subtract.
+//
+//   loft --native --lib lib tools/height_diff.loft <a.roads.store> <b.roads.store>
+//
+// Compares STEP BY STEP within each cell, which is the only comparison that means anything: an aggregate
+// (min/max/mean over a country) is preserved by almost any resampling and would report "no change" for a
+// grid that had moved every individual sample. `PLAN-PERF` §7h is the same error in the performance
+// domain — an average that wins while the thing anyone actually does gets worse.
+//
+// ⚠ BOTH BLOCKS MUST BE THE SAME BLOCK, differing only in `h`. It checks the cell keys and the per-cell
+// step counts and refuses otherwise, because comparing heights across a regeneration would attribute
+// OSM drift to the resampling.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: height_diff <a.roads.store> <b.roads.store>"); return; }
+
+  ta: hash<TTile[tkey]> = [];
+  if !store_load(ta, a[0] ?? "") { println("#D FAIL cannot load {a[0] ?? \"\"}"); return; }
+  tb: hash<TTile[tkey]> = [];
+  if !store_load(tb, a[1] ?? "") { println("#D FAIL cannot load {a[1] ?? \"\"}"); return; }
+
+  cells = 0; steps = 0; same = 0; diff = 0;
+  absum = 0; absmax = 0;
+  over1 = 0; over5 = 0; over20 = 0;
+  azero = 0; bzero = 0;
+  for t in ta {
+    u = tb[t.tkey];
+    if u == null { println("#D FAIL cell {t.tkey} is absent from the second block — not the same block"); return; }
+    na = len(t.steps);
+    if na != len(u.steps) {
+      println("#D FAIL cell {t.tkey} has {na} steps against {len(u.steps)} — not the same block");
+      return;
+    }
+    cells += 1;
+    for i in 0..na {
+      ha = 0; hb = 0;
+      if i < len(t.steps) { ha = (t.steps[i].h ?? (0 as i32)) as integer; }
+      if i < len(u.steps) { hb = (u.steps[i].h ?? (0 as i32)) as integer; }
+      steps += 1;
+      // ⚠ COUNTED, NOT CALLED "UNSAMPLED". `h == 0` is the unfilled value AND a legal height at sea
+      // level, and the two are indistinguishable in the record — which is exactly why a gradient cost
+      // must treat 0 as UNKNOWN (plans/50-get-me-there states the negative control). Belgium is a
+      // coastal country, so most of these are real. `gen_heights`' own `filled=` count is the
+      // authoritative coverage number; this one is only here to show it moving.
+      if ha == 0 { azero += 1; }
+      if hb == 0 { bzero += 1; }
+      d = hb - ha;
+      if d < 0 { d = 0 - d; }
+      if d == 0 { same += 1; }
+      else {
+        diff += 1;
+        absum += d;
+        if d > absmax { absmax = d; }
+        if d >= 1 { over1 += 1; }
+        if d >= 5 { over5 += 1; }
+        if d >= 20 { over20 += 1; }
+      }
+    }
+  }
+  pct = 0.0;
+  if steps > 0 { pct = (diff as float) * 100.0 / (steps as float) ?? 0.0; }
+  mean = 0.0;
+  if diff > 0 { mean = (absum as float) / (diff as float) ?? 0.0; }
+  println("#D cells={cells} steps={steps} unchanged={same} changed={diff} ({pct:4.1}%)");
+  println("#D |Δ| mean over changed = {mean:5.2} m · max {absmax} m · >=1 m {over1} · >=5 m {over5} · >=20 m {over20}");
+  println("#D at exactly 0 m (sea level or unknown — indistinguishable): first {azero}, second {bzero}");
+  println("#D ALL PASS — same cells, same steps, heights compared");
+}

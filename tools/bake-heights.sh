@@ -35,10 +35,27 @@ ext="$("$loft" --native --lib "$here/lib" "$here/tools/store_extent.loft" "$bloc
        | grep -oP '^EXTENT \K.*')"
 [ -n "$ext" ] || die "store_extent read no extent from $block"
 read -r mnla mnlo mxla mxlo _tiles _feat <<<"$ext"
-bbox="$(awk -v a="$mnlo" -v b="$mnla" -v c="$mxlo" -v d="$mxla" \
+# ⚠ THE GRID IS PADDED, because a block's EXTENT is not the ground its steps stand on.
+#
+# `store_extent` measures the block; a WAY is keyed at its first vertex and never clipped, so its later
+# steps overhang — `tools/tile_overhang.loft` measured that at up to 16 cells (0.32°). Sampled against an
+# unpadded grid those steps fall outside it and silently keep h = 0, which is indistinguishable from sea
+# level in the record.
+#
+# Measured on Belgium at z12: 78 538 of 10 206 729 steps (0.8%) got no height, and the same block at z13
+# came out 100% only because the finer grid's rounding happened to reach further. That is luck, not
+# coverage. The margin makes it deliberate.
+#
+# 0.35° is the overhang bound plus a cell. It costs tiles — Belgium goes 1748 → ~2500 at z12 — and the
+# terrain cache is fetched once, ever, so the trade is heavily in favour of paying it.
+pad="${TERRAIN_PAD:-0.35}"
+bbox="$(awk -v a="$mnlo" -v b="$mnla" -v c="$mxlo" -v d="$mxla" -v p="$pad" \
+  'BEGIN { printf "%.5f,%.5f,%.5f,%.5f", a/1e7 - p, b/1e7 - p, c/1e7 + p, d/1e7 + p }')"
+raw="$(awk -v a="$mnlo" -v b="$mnla" -v c="$mxlo" -v d="$mxla" \
   'BEGIN { printf "%.5f,%.5f,%.5f,%.5f", a/1e7, b/1e7, c/1e7, d/1e7 }')"
 echo "== heights for $(basename "$block") =="
-echo "   extent $bbox  (from the block, not the manifest)"
+echo "   extent $raw  (from the block, not the manifest)"
+echo "   grid   $bbox  (+${pad}° for way overhang — steps reach past the block's own extent)"
 
 # --- 2. terrain, once ------------------------------------------------------------------------------
 TERRAIN_DIR="$tdir" "$here/tools/fetch-terrain.sh" "$bbox" "$zoom" "$tdir" | sed 's/^/   /' \
