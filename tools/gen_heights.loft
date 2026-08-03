@@ -1,0 +1,163 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// FILL IN THE HEIGHT OF EVERY STORED STEP, from terrain sampled on the BUILD MACHINE (PLAN-RESTORE R2).
+//
+// `TStep` has carried `h: i32` since the tile format existed, and `tools/gen-tiles.loft` has written `0`
+// into every one of them. The old client got its elevation profile from the server fetching AWS terrarium
+// PNGs per request — exactly the shape an offline app cannot have. Under this repo's rule height belongs
+// in the block: sampled once, at generation, and never fetched again.
+//
+// ⚠ IT COSTS THE BLOCK NOTHING. `h` is already in the schema and already occupies its four bytes in every
+// TStep record, so filling it changes no layout, no stride and no file size. This is NOT a schema change:
+// older blocks stay readable, loft#700 does not apply, and a regeneration buys only the DATA.
+//
+//   loft --native --lib lib tools/gen_heights.loft <block.store> <grid.hgt>
+//
+// The grid is what `tools/pack_terrain.py` writes from the PNG cache `tools/fetch-terrain.sh` fills.
+// Nothing here touches the network or decodes an image: a sample is a seek and a two-byte read, and a
+// coordinate outside the grid (or in a tile the cache never had) keeps its zero and is COUNTED, so a
+// half-covered block reports itself instead of publishing as finished.
+//
+// ⚠ IT EDITS THE BLOCK IN PLACE, and it is the ONE tool here that WANTS `store_persist_bind` to adopt an
+// existing image. Everywhere else that is the hazard the `#PERSIST FAIL` guards exist for. Here adopting
+// IS the operation — the block is opened, its steps are given heights, and the same file is written back.
+// That makes it IDEMPOTENT: the same grid gives the same heights, so a run that dies half way is fixed by
+// running it again, not by regenerating the block.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep, tile_xf, tile_yf);
+
+TILE_PX = 256;             // a terrarium tile is 256x256 samples
+UNIT = 10000000.0;         // fixed-point units per degree (1e-7°), as TTile stores them
+HDR_BYTES = 24;            // "LTH1" + zoom, x0, y0, cols, rows — see pack_terrain.py
+
+struct Block { roads: hash<TTile[tkey]> }
+
+// Where the packed grid starts and how it is laid out. `present` is one byte per tile: it is what tells
+// "the cache never had this tile" apart from "this tile is at sea level", and the Netherlands is full of
+// legitimate zeroes — a zero sentinel would have reported the whole country as flat and plausible.
+struct Grid {
+  zoom: integer, x0: integer, y0: integer, cols: integer, rows: integer,
+  present: vector<integer>,
+}
+
+// Height in whole metres at a coordinate, or null when the grid does not cover it.
+fn grid_h(f: File, g: Grid, lat: float, lon: float) -> integer? {
+  xf = tile_xf(lon, g.zoom);
+  yf = tile_yf(lat, g.zoom);
+  tx = floor(xf) as integer;
+  ty = floor(yf) as integer;
+  cx = tx - g.x0;
+  cy = ty - g.y0;
+  if cx < 0 || cy < 0 || cx >= g.cols || cy >= g.rows { return null; }
+  ti = cy * g.cols + cx;
+  if ti >= len(g.present) { return null; }
+  pv = g.present[ti] ?? 0;
+  if pv == 0 { return null; }
+  sx = floor((xf - (tx as float)) * (TILE_PX as float)) as integer;
+  sy = floor((yf - (ty as float)) * (TILE_PX as float)) as integer;
+  if sx >= TILE_PX { sx = TILE_PX - 1; }
+  if sy >= TILE_PX { sy = TILE_PX - 1; }
+  if sx < 0 { sx = 0; }
+  if sy < 0 { sy = 0; }
+  f#next = (HDR_BYTES + g.cols * g.rows + (ti * TILE_PX * TILE_PX + sy * TILE_PX + sx) * 2) as integer;
+  // ⚠ TWO `u8` READS, NOT ONE `as i16` — loft-lang/loft#739. In a `--native` program that declares a hash
+  // over a library-imported struct (which this one must, to bind the block) exactly one sized read width
+  // comes back NULL, silently, and here that width is `i16`. It read as "0 of 289 117 steps got a height"
+  // against a grid whose header the same handle had just parsed correctly. `u8` is sound, so the two bytes
+  // are recombined by hand. `tools/loft_bug_gate.sh` says when this can go back to one read.
+  lo = f#read as u8;
+  hi = f#read as u8;
+  if lo == null || hi == null { return null; }
+  v = (hi as integer) * 256 + (lo as integer);
+  if v >= 32768 { v = v - 65536; }      // little-endian int16, sign-corrected
+  v
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 {
+    println("usage: gen_heights <block.store> <grid.hgt>");
+    return;
+  }
+  path = a[0] ?? "";
+  gpath = a[1] ?? "";
+  if !file(path).exists() { println("#H FAIL no block at {path}"); return; }
+  if !file(gpath).exists() { println("#H FAIL no height grid at {gpath} (tools/pack_terrain.py)"); return; }
+
+  b = Block { roads: [] };
+  bound = store_persist_bind(b.roads, path);
+  if !bound { println("#H FAIL could not bind {path}"); return; }
+
+  // ⚠ ITERATE — DO NOT LOOK UP BY KEY. `b.roads[k]` on a store bound with `store_persist_bind` PANICS the
+  // runtime (`find called on non-collection type: … (db=…)`, src/database/search.rs:229) — it is not a
+  // slow path or a wrong answer, it aborts. Filed in docs/loft-feedback.md with a 12-line repro.
+  //
+  // Iterating is also what makes this an in-place edit rather than a copier: the loop variable of a bound
+  // store's own hash is a LIVE VIEW, so `t.steps[i] = …` writes through to the file. Proven directly —
+  // a step written in one run reads back changed in the next. (That is narrower than it sounds: the
+  // "iteration yields copies" rule (loft C86) still bites on an inner collection walked for its scalar
+  // and text fields. Here the record's vector is shared, so the write lands.)
+  g = Grid { zoom: 0, x0: 0, y0: 0, cols: 0, rows: 0, present: [] };
+  ntiles2 = 0;
+  total = 0;
+  filled = 0;
+  hmin = 100000;
+  hmax = 0 - 100000;
+
+  {
+    f = file(gpath);
+    f#format = LittleEndian;
+    magic = f#read(4) as text;
+    if magic != "LTH1" {
+      println("#H FAIL {gpath} is not a height grid (magic {magic})");
+      return;
+    }
+    g.zoom = f#read as i32;
+    g.x0 = f#read as i32;
+    g.y0 = f#read as i32;
+    g.cols = f#read as i32;
+    g.rows = f#read as i32;
+    ntiles = g.cols * g.rows;
+    for _pi in 0..ntiles { g.present += [f#read as u8]; }
+    npresent = 0;
+    for pi2 in 0..len(g.present) { if (g.present[pi2] ?? 0) != 0 { npresent += 1; } }
+    println("#H grid z{g.zoom} x{g.x0}+{g.cols} y{g.y0}+{g.rows} · {npresent}/{ntiles} tiles present");
+
+    for t in b.roads {
+      ntiles2 += 1;
+      ns = len(t.steps);
+      for si in 0..ns {
+        // Read x/y into scalars BEFORE writing the slot back: `h` is the only field this tool may change,
+        // and a step whose x or y moved would move a road.
+        vx = 0;
+        vy = 0;
+        if si < len(t.steps) {
+          vx = t.steps[si].x as integer;
+          vy = t.steps[si].y as integer;
+        }
+        total += 1;
+        hh = grid_h(f, g, ((t.oy + vy) as float) / UNIT, ((t.ox + vx) as float) / UNIT);
+        if hh != null {
+          // `TStep.h` is binding-const, so the record is REPLACED rather than assigned into. `steps` is a
+          // builder field (`const steps: vector<TStep>`), which permits exactly this.
+          t.steps[si] = TStep { x: vx as i32? ?? (0 as i32), y: vy as i32? ?? (0 as i32),
+                                h: hh as i32? ?? (0 as i32) };
+          filled += 1;
+          if hh < hmin { hmin = hh; }
+          if hh > hmax { hmax = hh; }
+        }
+      }
+    }
+  }
+
+  pct = 0.0;
+  if total > 0 { pct = (filled as float) * 100.0 / (total as float) ?? 0.0; }
+  println("#H tiles={ntiles2} steps={total} filled={filled} ({pct:4.1}%)");
+  if filled > 0 { println("#H height min={hmin}m max={hmax}m"); }
+  // A block where nothing was sampled is a failure, not an empty result: it means the grid is for the
+  // wrong area or the wrong zoom, and the block would publish looking finished.
+  if filled == 0 { println("#H FAIL no step got a height — does {gpath} cover this block?"); }
+}

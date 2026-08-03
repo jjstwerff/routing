@@ -1,0 +1,54 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// UPSTREAM BUG PROBE — loft-lang/loft#739. A keyed lookup on a store bound with `store_persist_bind`
+// PANICS the runtime. ⚠ `--native` ONLY — the interpreter answers correctly.
+//
+//   thread '<unnamed>' panicked at src/database/search.rs:229:37:
+//   find called on non-collection type: <varies> (db=128)
+//
+// ⚠ The type it names DIFFERS from run to run and program to program (`Pixel`, `short<-32768,false>`,
+// `Block`), which is itself part of the report: the message prints whatever type currently holds id 128,
+// so it points at something unrelated to the code that failed. That is what made it expensive — the first
+// message blamed the imaging library in a program whose failing line indexed a road tile.
+//
+// It matters because keyed access is the point of a bound store. ITERATION works and is the workaround
+// `tools/gen_heights.loft` uses (the loop variable is a live view, so writes through it reach the file);
+// a lookup is what you reach for first.
+//
+//   loft --native --lib lib tools/loft_store_key_probe.loft <block.store>
+//
+// It must be a POPULATED, EXISTING store — binding a fresh empty one and inserting hits a different panic
+// (src/database/structures.rs:80), and an empty store answers a lookup with null and no abort.
+//
+// ⚠ POINT IT AT A COPY, and the path is REQUIRED for that reason — it used to default to the committed
+// Enschede fixture and quietly damaged it. `store_persist_bind` REWRITES THE `.dschema` SIDECAR to include
+// the binding program's own wrapper struct (`Block size=4 struct{roads@0:hash<TTile[tkey]>}`) and changes
+// the schema hash with it. loft#705 gates `store_load` on that hash, so merely *reading* a shipped block
+// with a tool that binds it can leave the block unloadable by the app. `tools/loft_bug_gate.sh` copies
+// first for exactly this reason.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+struct Block { roads: hash<TTile[tkey]> }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  path = a[0] ?? "";
+  if path == "" { println("#P SKIP usage: loft_store_key_probe <block.store>  — point it at a COPY"); return; }
+  if !file(path).exists() { println("#P SKIP no block at {path}"); return; }
+
+  b = Block { roads: [] };
+  ok = store_persist_bind(b.roads, path);
+  n = 0;
+  key = 0;
+  for t in b.roads { n += 1; if key == 0 { key = t.tkey; } }
+  println("#P bound={ok} tiles={n} first key={key}");
+  if n == 0 { println("#P SKIP the store is empty — the lookup only aborts on a populated one"); return; }
+
+  println("#P about to look that key up — this is the line that aborts");
+  t2 = b.roads[key];
+  println("#P FIXED — lookup returned null={t2 == null}, no panic");
+}

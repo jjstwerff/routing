@@ -2020,3 +2020,92 @@ Three things that would each have prevented it, in the order we would value them
 so what is being reported is the *ergonomic* verdict, which is what the formal-definition work asked this
 consumer for. If a repro is wanted, `tools/gen-tiles.loft`'s `route_slot` at commit `83e1dd7^` is the
 copying version and `83e1dd7` the index one, over the same 1.05 GB input.
+
+---
+
+## 2026-08-03 — a `hash<T[key]>` over an IMPORTED struct shifts the type-id table: an aborted lookup and a null binary read
+
+**loft:** 2026.8.0, md5 `0849e437f5003c848168674b9eff8fdc`, installed 2026-08-03 08:52 — **not** the
+`ea0486770b…` binary the rest of this repo's docs are anchored to; it was replaced mid-session, and the
+first hour of narrowing below spans both, which is why only the re-run facts are stated.
+**`--native` ONLY — the interpreter is correct for both symptoms**, which is what makes them survivable:
+every gate that runs interpreted stays green while the generator-side tools break.
+**Filed upstream as [loft#739](https://github.com/loft-lang/loft/issues/739)** (`sev:high`, `wa:partial`,
+`area:native`, `hit-by:routing`).
+**Repros:** `tools/loft_store_key_probe.loft`, `tools/loft_seek_probe.loft`, both run by
+`tools/loft_bug_gate.sh`, which prints the status and the workaround to delete when it goes green.
+
+Two symptoms, filed as one because they share a signature. Both appeared while building PLAN-RESTORE R2
+(sampling terrain into `TStep.h`), and between them they cost most of a day.
+
+### Symptom 1 — a keyed lookup on a bound store ABORTS
+
+```loft
+b = Block { roads: [] };                       // struct Block { roads: hash<TTile[tkey]> }
+store_persist_bind(b.roads, "enschede.roads.store");
+for t in b.roads { key = t.tkey; }             // iteration: FINE
+t2 = b.roads[key];                             // <- process abort
+```
+
+```
+thread '<unnamed>' panicked at src/database/search.rs:229:37:
+find called on non-collection type: Block (db=128)
+```
+
+Not a wrong answer or a slow path — the process dies. Iteration over the same bound store works, and the
+loop variable is a **live view** (a write through it reaches the file, verified by writing `h=4242` in one
+run and reading it back in the next), so there is a workaround; it is just not the thing anyone reaches
+for first.
+
+### Symptom 2 — a sized binary read returns NULL
+
+```loft
+use routing_kernel::(TTile, TRoad, TStep);
+struct Blk { roads: hash<TTile[tkey]> }        // never constructed, never used
+
+f = file(p); f#format = LittleEndian;
+f#next = 4;
+v = f#read as u16;                             // null — with the struct line deleted, 258
+```
+
+No error, no panic. `as u8`, `as i16`, `as i32`, `as integer` and `as text` are all correct in the same
+handle; exactly one width comes back null. **Which width varies between programs** — `u16` in the probe
+above, `i16` in `tools/gen_heights.loft`, whose grid header (`text` + five `i32` + twenty `u8`) read
+perfectly out of the handle that then returned null for every sample. That presented as *"0 of 289 117
+steps got a height"* against a grid the same program had just described correctly.
+
+### Why one report and not two
+
+The diagnostic in symptom 1 names **a different type on every program** — `Pixel` in one, `Block` in
+another, `short<-32768,false>` (i16!) in a third — always `db=128`. It is reporting whatever type
+currently holds that id, so it points at code unrelated to the failure: the first message blamed the
+imaging library in a program whose failing line indexed a road tile. Read together with symptom 2's
+*one arbitrary sized-integer alias resolves wrongly*, both look like one type-id table being shifted by
+the declaration rather than two independent faults. Fixing one may well fix both; they are reported
+together so that can be checked in one place.
+
+**The trigger is the DECLARATION.** `struct Blk { roads: hash<TTile[tkey]> }` is never constructed, no
+store is bound, and `TTile` is never touched — deleting that one line makes every read correct. The
+struct must be keyed on a **library-imported** type: the same shape over a two-line local library does
+**not** reproduce, so something about the size or content of `routing_kernel` is part of it. That is as
+far as this consumer got; the repro is one file plus this public repo.
+
+### What made it expensive, and what would have made it cheap
+
+1. **The message names the wrong thing.** `db=128` with a type resolved at print time is worse than no
+   type at all — it sends you into a library you never called. Printing the *collection expression's*
+   static type, or the source span, would have ended it in minutes.
+2. **Symptom 2 is silent.** A `f#read` that cannot resolve its width returns null rather than failing, and
+   null is a legitimate value of the surrounding `integer?`, so it flows straight into a `?? 0` and
+   becomes data. A read that cannot be performed is not the same as a read that found nothing.
+3. **`--version` did not move while the binary did.** Two of the narrowing results in this session
+   contradict each other because `/usr/local/bin/loft` was reinstalled between them. That is this repo's
+   own documented rule (`CLAUDE.md`) and it still cost an hour; the gate now prints md5 + mtime so a
+   status is anchored to what produced it.
+
+### What this tree does about it
+
+`tools/gen_heights.loft` iterates instead of looking up, and reads **two `u8`s and recombines them**
+instead of one `u16` — both with a comment pointing at `tools/loft_bug_gate.sh`, which reports when each
+workaround can go. The gate exits 0 either way: it is there to make the workarounds die when their reason
+does, not to fail a build over someone else's bug.

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Jurjen Stellingwerff
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# ONE COMMAND for a whole region refresh — acquire → roads → networks → names → base → split → index.
+# ONE COMMAND for a whole region refresh — acquire → roads → networks → heights → names → base → cut → index.
 #
 # Every step here already existed as its own script; what did not exist was the ORDER, and the order is
 # where the mistakes live. Doing it by hand on 2026-08-01 produced four of them, each of which passed the
@@ -59,28 +59,43 @@ done
 step() { echo; echo "########## $* ##########"; }
 die()  { echo "FAIL: $*" >&2; exit 1; }
 
-step "1/6 roads — acquire, filter, export, join networks, generate"
+step "1/7 roads — acquire, filter, export, join networks, generate"
 "$here/tools/build-blocks.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-blocks"
 
-step "2/6 names — street + place search index (PLAN-RESTORE R4)"
+step "2/7 heights — sample terrain into TStep.h (PLAN-RESTORE R2)"
+# BEFORE the cut, deliberately: `split_block.loft` already carries `h` through, so sampling the country
+# once gives all four regions their heights. Doing it after would be four passes over four terrain grids
+# for the same answer.
+#
+# ⚠ NOT FATAL. Terrain is a third-party download and the rest of the dataset does not depend on it — a
+# refresh that cannot reach the terrain service should still produce routable blocks, with `h` at 0 as it
+# has been all along. It says so loudly rather than failing the run.
+if [ "${SKIP_HEIGHTS:-0}" = "1" ]; then
+  echo "  SKIPPED (SKIP_HEIGHTS=1)"
+elif ! "$here/tools/bake-heights.sh" "$out/$id.roads.store" "${TERRAIN_ZOOM:-12}"; then
+  echo "  ⚠ HEIGHTS NOT BAKED — the blocks are routable but carry h=0, so there is no elevation profile."
+  echo "    Re-run on the built block when the terrain is reachable: tools/bake-heights.sh $out/$id.roads.store"
+fi
+
+step "3/7 names — street + place search index (PLAN-RESTORE R4)"
 "$loft" --native-release --lib "$here/lib" "$here/tools/gen-names.loft" \
   "$out/$id.names.store" "$work/$id.geojsonseq" "$work/$id.places.geojsonseq" \
   || die "gen-names"
 
 if [ "$do_base" = 1 ]; then
-  step "3/6 base map — landcover, buildings, lines, labels, pois"
+  step "4/7 base map — landcover, buildings, lines, labels, pois"
   "$here/tools/build-base.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-base"
 else
-  step "3/6 base map — SKIPPED (--no-base)"
+  step "4/7 base map — SKIPPED (--no-base)"
 fi
 
 if [ "$do_regions" = 1 ]; then
-  step "4/6 cut into the regions data/coverage.toml names"
+  step "5/7 cut into the regions data/coverage.toml names"
   # The cut, its bounds, its two opposite rules and its conservation checks all live in one place —
   # see the header of that script for why they may not live here as well.
   SKIP_BASE="$([ "$do_base" = 1 ] && echo 0 || echo 1)" "$here/tools/cut-regions.sh" "$id" || die "cut-regions"
 elif [ -n "$split_lon" ]; then
-  step "4/6 split at ${split_lon}°E"
+  step "5/7 split at ${split_lon}°E"
   # ⚠ CONSERVATION IS CHECKED HERE, not at the end. A split that loses a tile produces two blocks that
   # each look fine and a country with a hole in it; the only moment the whole and the parts can be
   # compared is right now, while both exist.
@@ -103,7 +118,7 @@ elif [ -n "$split_lon" ]; then
   [ "$((we + ea))" = "$wh" ] || die "the split lost $((wh - we - ea)) ways — do not publish this"
 fi
 
-step "5/6 index"
+step "6/7 index"
 # The version and the release tag are ONE decision. Set them apart and index_fresh_gate rejects the
 # result — which is right, and is why this takes the tag rather than inventing a date.
 ver="${DATASET_VERSION:-v$(date -u +%Y-%m-%d)}"
@@ -112,7 +127,7 @@ if grep -q 'base_url_base\|url_base' "$here/data/coverage.toml"; then
 fi
 DATASET_VERSION="$ver" "$here/tools/build_index.sh" || die "build_index"
 
-step "6/6 what is left, and why it is not automatic"
+step "7/7 what is left, and why it is not automatic"
 cat <<EOF
   Built into $out. NOT published — publishing replaces data other people may be reading, so it stays a
   deliberate act:

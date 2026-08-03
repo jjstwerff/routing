@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// UPSTREAM BUG PROBE — loft-lang/loft#739. Declaring a `hash<T[key]>` over a LIBRARY-IMPORTED struct
+// makes one of the sized binary reads (`f#read as i16` / `as u16` / …) return NULL.
+// ⚠ `--native` ONLY — the interpreter answers correctly.
+//
+// No error and no panic: the read just comes back null, so a program sampling a binary file silently gets
+// nothing. `tools/gen_heights.loft` hit it as "0 of 289 117 steps got a height" on a grid whose header it
+// had just read correctly out of the same handle — `as text`, `as i32` and `as u8` all worked; the one
+// `as i16` did not.
+//
+// ⚠ WHICH width breaks VARIES between programs. In this probe it is `u16`; in `gen_heights` it was `i16`;
+// the widths either side of the broken one are fine. Together with the sibling symptom —
+// `tools/loft_store_key_probe.loft`, where a keyed lookup aborts with `find called on non-collection type:
+// <varies> (db=128)` and names a DIFFERENT type every run — it reads as one type-id table being shifted
+// by the declaration, rather than two unrelated faults.
+//
+// THE TRIGGER IS THE DECLARATION. Delete the `Blk` line and every read below is correct. The program
+// never constructs a `Blk`, never binds a store, and never touches `TTile`.
+//
+//   loft --native --lib lib tools/loft_seek_probe.loft [scratch.bin]
+//
+// Not reducible further so far: the same shape over a two-line local library does NOT reproduce, so the
+// size or content of `routing_kernel` is part of it. Reported as-is — the shape is exact and the repro is
+// one file plus this repo. loft 2026.8.0, `--native`.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+// ⚠ DELETE THIS LINE AND EVERY READ BELOW IS CORRECT. It is never used.
+struct Blk { roads: hash<TTile[tkey]> }
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  p = a[0] ?? "loft_seek_probe.bin";
+  _ = delete(p);
+  {
+    w = file(p);
+    w#format = LittleEndian;
+    w += (0x41 as u8); w += (0x42 as u8); w += (0x43 as u8); w += (0x44 as u8);
+    w += (258 as i16? ?? (0 as i16));
+    w += (66051 as i32? ?? (0 as i32));
+  }
+  bad = 0;
+  {
+    f = file(p);
+    f#format = LittleEndian;
+    v8 = f#read as u8;
+    f#next = 4;
+    v16 = f#read as i16;
+    f#next = 6;
+    v32 = f#read as i32;
+    f#next = 4;
+    vu16 = f#read as u16;
+    println("#S as u8  -> {v8}     (expect 65)");
+    println("#S as i16 -> {v16}    (expect 258)");
+    println("#S as i32 -> {v32}    (expect 66051)");
+    println("#S as u16 -> {vu16}   (expect 258)");
+    if v8 != 65 { bad += 1; }
+    if v16 != 258 { bad += 1; }
+    if v32 != 66051 { bad += 1; }
+    if vu16 != 258 { bad += 1; }
+  }
+  _ = delete(p);
+  if bad > 0 { println("#S BUG PRESENT — {bad} of 4 sized reads came back wrong or null"); }
+  else { println("#S FIXED — all four sized reads are correct"); }
+}
