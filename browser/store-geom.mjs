@@ -44,6 +44,16 @@ function field(d, typeId, name) {
   return { pos: Number(f.pos), content: f.content };
 }
 
+// Like `field`, but for a field the store may legitimately not have. `Area.parts` arrived after blocks
+// were already published, and a reader that THREW on its absence would refuse an older block outright
+// instead of drawing it the way it always drew — one ring, holes filled. Absent means "no interior
+// rings", which is exactly what an older block means.
+function fieldOpt(d, typeId, name) {
+  const n = d.nodes[typeId];
+  const f = n && n.fields && n.fields.find((x) => x.name === name);
+  return f ? { pos: Number(f.pos), content: f.content } : null;
+}
+
 // The layout the render path is written against, derived from the descriptor ONCE per build so the hot
 // loops below are pure integer arithmetic. Everything here is a fact about the store, not a guess:
 // `descMap()` dumps it and `coordLayout()` gates the part that matters.
@@ -61,7 +71,8 @@ export function storeLayout(h) {
     fcount: field(d, tile, 'fcount').pos,
     fmnla: field(d, tile, 'fmnla').pos, fmnlo: field(d, tile, 'fmnlo').pos,
     fmxla: field(d, tile, 'fmxla').pos, fmxlo: field(d, tile, 'fmxlo').pos,
-    areas: { ...kind('areas', 'ring'), text: field(d, d.nodes[field(d, tile, 'areas').content].elem, 'cover') },
+    areas: { ...kind('areas', 'ring'), text: field(d, d.nodes[field(d, tile, 'areas').content].elem, 'cover'),
+             parts: fieldOpt(d, d.nodes[field(d, tile, 'areas').content].elem, 'parts') },
     buildings: { ...kind('buildings', 'ring'), text: field(d, d.nodes[field(d, tile, 'buildings').content].elem, 'name') },
     lines: { ...kind('lines', 'geom'), text: field(d, d.nodes[field(d, tile, 'lines').content].elem, 'kind'),
              text2: field(d, d.nodes[field(d, tile, 'lines').content].elem, 'name') },
@@ -89,6 +100,7 @@ class Column {
     this.sRec = new Uint32Array(cap);     // primary text record (cover / name / kind) — decoded lazily
     this.sRec2 = new Uint32Array(cap);    // secondary text record (name, where a kind is primary)
     this.num = new Int32Array(cap);       // a per-feature scalar (label rank); 0 otherwise
+    this.pRec = new Uint32Array(cap);     // Area.parts record (0 = one ring, the 97.4% case)
   }
   grow() {
     const c = this.rec.length * 2, cp = (a, T, k = 1) => { const b = new T(c * k); b.set(a); return b; };
@@ -96,14 +108,14 @@ class Column {
     this.ox = cp(this.ox, Int32Array); this.oy = cp(this.oy, Int32Array);
     this.bb = cp(this.bb, Int32Array, 4);
     this.sRec = cp(this.sRec, Uint32Array); this.sRec2 = cp(this.sRec2, Uint32Array);
-    this.num = cp(this.num, Int32Array);
+    this.num = cp(this.num, Int32Array); this.pRec = cp(this.pRec, Uint32Array);
   }
-  push(rec, len, ox, oy, mnla, mxla, mnlo, mxlo, sRec, sRec2, num) {
+  push(rec, len, ox, oy, mnla, mxla, mnlo, mxlo, sRec, sRec2, num, pRec = 0) {
     if (this.n === this.rec.length) this.grow();
     const i = this.n++;
     this.rec[i] = rec; this.len[i] = len; this.ox[i] = ox; this.oy[i] = oy;
     this.bb[i * 4] = mnla; this.bb[i * 4 + 1] = mxla; this.bb[i * 4 + 2] = mnlo; this.bb[i * 4 + 3] = mxlo;
-    this.sRec[i] = sRec; this.sRec2[i] = sRec2; this.num[i] = num;
+    this.sRec[i] = sRec; this.sRec2[i] = sRec2; this.num[i] = num; this.pRec[i] = pRec;
   }
 }
 
@@ -192,7 +204,8 @@ export function buildIndex(mem, h, L, fbox, kinds) {
         col.push(gRec, len, ox, oy, ringSpan[0], ringSpan[1], ringSpan[2], ringSpan[3],
                  spec.text ? u32(eAt + spec.text.pos) : 0,
                  spec.text2 ? u32(eAt + spec.text2.pos) : 0,
-                 spec.rank ? i64(eAt + spec.rank.pos) : 0);
+                 spec.rank ? i64(eAt + spec.rank.pos) : 0,
+                 spec.parts ? u32(eAt + spec.parts.pos) : 0);
       }
     }
   }
