@@ -49,7 +49,7 @@ that is what keeps `main` resolving to the data it was built against while the n
 
 ---
 
-## 0b. This session shipped three datasets — and left one branch mid-flight
+## 0b. This session: three datasets shipped, and one branch of scaling work not merged
 
 | dataset | what it added | state |
 |---|---|---|
@@ -57,9 +57,13 @@ that is what keeps `main` resolving to the data it was built against while the n
 | `v2026-08-03b` | castle labels (635, rank 3) | live, PR #53 |
 | `v2026-08-03c` | **`Area.parts`** — holes stop being filled in | **live**, PR #54 |
 
-⚠ **`area-holes` is 5 commits ahead of `main` and NOT merged** (pushed). All @51 scaling work, no data:
-the 62-block cap fix, the paged-probe fix, the phase-A measurements, and the two new tools below. Safe to
-sit — nothing depends on them and no dataset references them.
+⚠ **`area-holes` is 11 commits ahead of `main` and NOT merged** (pushed, tree clean). **No data and no
+schema change**, so nothing here obsoletes a published block: @51's phase A/B work and its three new
+tools (below), plus a `test-map` fix that had been red independently (§0c). Safe to sit, and safe to PR
+whenever you want it.
+
+✅ **All four suites are green on it** — `make test`, `test-native`, `test-wasm`, `test-map`. Re-run in
+that order; `test-native` (~5 min) is the one that owns the data gates.
 
 ### Three new tools for scaling past NL
 
@@ -87,6 +91,35 @@ measured and phase B done.
   by exactly one of the four shipped `nl-*` regions, each with the same way count. The manifest gained
   `cut_from` to record that parentage, which until now lived only in `cut-regions.sh`'s argument.
 
+## 0c. `make test-map` was RED, and not for the reason it looked like
+
+The NL live gate routed and searched in Amsterdam but drew **no base map**. Nothing was wrong with the
+app, the block, or the schema sidecar — the same file served from the gate's own origin draws **252 450
+features in ~5 s**, from Pages draws nothing, and from Pages with `--disable-web-security` draws the
+identical 252 450.
+
+**Pages sends `access-control-allow-origin: *` and a real `content-range`, but no
+`access-control-expose-headers`** — and `Content-Range` is not CORS-safelisted, so a cross-origin reader
+gets `null` for the store size and stops after two `bytes=0-0` probes. **Silently**: no console error, no
+failed request. That is now §2's own rule, and it corrects a claim that was load-bearing in `PLAN-SCALE`
+§9 and @51 — *a second Pages repo is free only because it is the SAME ORIGIN* (`…/routing` and
+`…/routing-data-nl-*` are paths on one host). A custom domain or a native app is not, and would need a
+real CORS host; `cors_host_gate`'s header already named both required headers.
+
+⚠ **Production could not have hit this**, and did not. Only the gate served the app from `127.0.0.1`
+while inheriting the published absolute URLs. It now serves the base from its own origin the way
+production does — and drops the remote host *only* where the block is present locally, so a region we
+cannot serve still fails honestly instead of 404ing against ourselves.
+
+Fixing it exposed a second defect the first had been hiding: with the base finally on the app's origin
+its pages joined the same session counter, and the roads-block budget failed on **base-map** bytes
+(107.4 MB "of a 222.4 MB block"). `store-kernel`'s stats now carry a **per-store** breakdown and the
+driver reads the roads row — 138 reads, 10.7 MB, 4.8%. The general form is §2's: *a number is not a
+measurement until you know what it is attributed to.*
+
+⚠ **This gate had presumably been red since the base map moved to four data repos**, so treat "gates
+green" in any earlier note as covering the gates that were actually run.
+
 ## 1. What is open
 
 1. **`PLAN-LAYERS` step 11** — `holdFrame` and the resident floor are two mechanisms for one job. The
@@ -97,7 +130,7 @@ measured and phase B done.
    fixed. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
 3. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2).
-   **[@51](plans/51-coverage-past-nl/README.md) phases A and B are now DONE** — Benelux measured for
+   **[@51](plans/51-coverage-past-nl/README.md) phases A and B are DONE, and C is unblocked** — Benelux measured for
    real (BE 159.5 MB roads + 1202.5 MB base; base size does *not* track road density) and the 62-block
    index cap removed. **C is unblocked and is a TRIM, not a re-tiling**: raw country extracts overlap the
    live index by 377 cells, but only *roads* need disjointness (`PLAN-SCALE` **D12**).
@@ -191,6 +224,10 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **Only a GET measures a range.** GitHub Pages answers a ranged HEAD with `200` and no `content-range`,
   so a check built on HEAD reports a correct file as broken and a poll on it never terminates. A release
   download also 302s, so a status check without `-L` fails every asset.
+* **A number is not a measurement until you know what it is ATTRIBUTED to.** The NL live gate's
+  roads-block budget was a session total; the moment the base map joined that origin it failed on
+  base-map bytes and accused the roads path of fetching 107 MB it never asked for. `store-kernel`'s
+  stats are per-store now. Same family as the `view`-vs-`match` attribution error in `CLAUDE.md`.
 * **A probe outside a gate is a comment**, *a profile without its spread is not a measurement*, and *a
   corpus average is not a claim about one interaction*. `PLAN-PERF` §7e/§7h are the write-ups.
 * **Wait for the view to CHANGE before measuring it.** A stability window alone returns before a cold
@@ -201,11 +238,20 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 
 ## 3. How to resume
 
+**All four suites, in this order** — measured 2026-08-03 on this box, all green:
+
 ```bash
-make test          # offline: kernel suites + server harnesses          (~2 min)
-make test-map      # the browser gates, headless Chromium               (~10 min)
+make test          # offline: kernel suites + server harnesses            (~15 s)
+make test-native   # the DATA gates, native backend — the slow, thorough one  (~5 min)
+make test-wasm     # wasip2 parity: geodesic + a byte-identical full match  (~15 s)
+make test-map      # the browser gates, headless Chromium                 (~4 min)
+```
+
+`test-native` already runs the gates below, so reach for one individually only to iterate on it:
+
+```bash
 tools/match_parity.sh          # the route is byte-identical, 5 cases
-tools/network_gate.sh          # sidecar + block + the router's network A/B
+tools/network_gate.sh          # sidecar + block + the router's network A/B (the slowest, 9 profiles)
 tools/conservation_gate.sh     # 49 categories, none empty
 tools/block_overlap_gate.sh    # C2 no cell held twice · C2b the regions still ADD UP to their source
 tools/height_gate.sh           # every step has the terrain's own height, at no cost in bytes
