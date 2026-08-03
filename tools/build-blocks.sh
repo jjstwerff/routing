@@ -194,8 +194,17 @@ echo "  extent lat $(python3 -c "print(f'{$1/1e7:.4f}..{$3/1e7:.4f}')") lon $(py
 # saying "I know how small this is meant to be" rather than the check being deleted.
 [ "$5" -ge "${MIN_TILES:-100}" ] || { echo "FAIL: only $5 tiles (floor ${MIN_TILES:-100}) — the block is empty or the filter dropped everything"; exit 1; }
 # A paged spot check: the read path the client uses, on the block it will actually read.
-LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" 2>&1 \
+#
+# ⚠ THE VIEWPORT COMES FROM THIS BLOCK'S OWN EXTENT. It used to be hardcoded to Enschede inside the
+# probe, so every other region asked 42 keys, loaded 0, and this line printed a pass — measured on the
+# first Belgium block. A 0.03° box at the extent's centre is a realistic viewport wherever the block is.
+pv_cla=$(( ($1 + $3) / 2 )); pv_clo=$(( ($2 + $4) / 2 ))
+LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" \
+  $((pv_cla - 300000)) $((pv_clo - 400000)) $((pv_cla + 300000)) $((pv_clo + 400000)) 2>&1 \
   | grep -E '^store_load_keys|^asked' | sed 's/^/  /'
+# A spot check that loads NOTHING is not a pass. It means the viewport missed the data — which is what a
+# hardcoded one did for every region but the first.
+'
 
 # The box the block was cut from, recorded BESIDE it. Without this, nothing downstream can tell whether a
 # source export and a block describe the same ground — and a count comparison between two different boxes

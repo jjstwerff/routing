@@ -17,8 +17,23 @@ use routing_kernel::(TTile, bbox_cell_keys);
 fn main() {
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
-  // A realistic viewport over the covered area, in fixed-point 1e-7 degrees.
-  keys: vector<integer> = bbox_cell_keys(522000000, 68400000, 522600000, 69200000);
+  // A realistic viewport, in fixed-point 1e-7 degrees. Taken from the CALLER when it supplies one,
+  // because a fixed viewport measures nothing outside the block it was written for.
+  //
+  // ⚠ IT USED TO BE HARDCODED to Enschede (52.20–52.26, 6.84–6.92), and `build-blocks.sh` prints the
+  // result without asserting on it. So for every block outside that box the spot check asked 42 keys,
+  // loaded 0, and the build carried on — measured on the first Belgium block: `asked=42 loaded=0
+  // roads=0`. A check that is vacuous everywhere except where it was born is worse than none, because it
+  // reads as a pass. Found by plans/51 phase A, which exists to surface exactly this before a continent
+  // is generated on top of it.
+  mnla = 522000000; mnlo = 68400000; mxla = 522600000; mxlo = 69200000;
+  if len(a) >= 5 {
+    mnla = (a[1] ?? "") as integer ?? mnla;
+    mnlo = (a[2] ?? "") as integer ?? mnlo;
+    mxla = (a[3] ?? "") as integer ?? mxla;
+    mxlo = (a[4] ?? "") as integer ?? mxlo;
+  }
+  keys: vector<integer> = bbox_cell_keys(mnla, mnlo, mxla, mxlo);
   ws: hash<TTile[tkey]> = [];
   got = store_load_keys(ws, a[0] ?? "", keys);
   roads = 0;
