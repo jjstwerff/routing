@@ -654,3 +654,33 @@ New, and part of `make test-map`:
   here assumes one country: the floor is "the coarsest block whose extent covers the viewport", and a
   second country is a second floor block.
 * **`par` / threading, transit, the day-planner.** Untouched.
+
+
+---
+
+## Open work — step 11, now reported from real use
+
+**2026-08-03:** *"when zooming out there is again only empty space, can we keep the NL data around to at
+least render something."* This is step 11's deferral being felt, and the report narrows it usefully.
+
+**The settled view is fine, measured.** Screenshots of the live site zooming out from Weldam:
+
+| camera | areas | lines | places | verdict |
+|---|---|---|---|---|
+| z13.5 | 8 753 | 504 | 3 | landcover, water, boundaries, Goor/Diepenheim/Hengevelde — not blank |
+| z11.5 | 7 041 | 1 250 | 7 | towns, the road spine, landcover — reads as a proper map |
+
+So the blank is **the transition**, not the destination: the interval while the new band's block loads.
+`holdFrame` is supposed to cover exactly that, and the floor is the other half — but the floor is
+materialised from a country view, so **a session that deep-links to z16 and zooms out has no floor to
+fall back on** and nothing to hold. That is step 11's reason for being deferred, and it is now a user
+report rather than a note.
+
+⚠ **A settle-based probe cannot see this.** Every browser gate here waits for the view to stop changing
+before it measures (HANDOFF §2), which is precisely the interval that goes blank. Reproducing it needs a
+capture DURING the band crossing — that instrument does not exist yet, and building it is the first step,
+not the fix.
+
+**The resolution stays what §5 said:** make the floor always-resident rather than delete the fallback.
+What the report adds is that "always" has to include a session that never sees the country — which is the
+deep-link case, i.e. every shared URL.

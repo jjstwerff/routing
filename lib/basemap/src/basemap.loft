@@ -217,7 +217,15 @@ pub fn fold_name(s: text) -> text {
 // is on the ground — but a green shape with no name tells you nothing about the city you are looking at.
 // Deliberately narrow: `playground`, `pitch`-in-a-park and every back-garden `garden` would bury the map
 // in labels, so only the things a person would name in directions are listed.
-pub fn area_label_kind(landuse: text, leisure: text, amenity: text = "") -> text {
+pub fn area_label_kind(landuse: text, leisure: text, amenity: text = "", historic: text = "") -> text {
+  // A CASTLE IS A LANDMARK, NOT A HOUSE. 874 of the Netherlands' 971 named castle/manor polygons also
+  // carry `building=`, so before this they drew as an ordinary building name — 10 px, z16 and up, the
+  // same weight as a shed. Reported as "Weldam is a big estate with only a small house name".
+  //
+  // ⚠ It is deliberately standing in for ESTATE-level data, which OSM does not have here: Weldam's
+  // grounds are dozens of unnamed landuse polygons, so there is no estate name to carry. The castle is
+  // the only named thing at that scale, so naming it prominently is what fills the gap.
+  if historic == "castle" || historic == "manor" || historic == "fort" { return "castle"; }
   if leisure == "sports_centre" || leisure == "golf_course" || leisure == "stadium"
      || leisure == "horse_riding" || leisure == "water_park" { return "sports"; }
   if leisure == "park" || leisure == "recreation_ground" { return "park"; }

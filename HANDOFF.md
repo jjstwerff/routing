@@ -65,6 +65,13 @@ that is what keeps `main` resolving to the data it was built against while the n
    now — and spending it is **[@50](plans/50-get-me-there/README.md)** phase B. Two of that plan's three
    data prerequisites shipped on 2026-08-03, which is why it stopped being a stub.
 
+**Three findings from the live map are written up as `## Open work`, not plans** (2026-08-03) — each is
+one decision plus one change, and `plans/README.md`'s own table routes that to the owning doc:
+`PLAN-MAP` § street names repeat (the spacing constant is not the lever; 60% needs a product decision),
+and `PLAN-BASEMAP` § two things the base map drops (`Area` has one ring so 2.6% of areas fill their
+holes; `historic=` polygons are in no layer, so 971 castles have no name). The last two want the SAME
+regeneration.
+
 **Three plans are open** (`gh issue list -R jjstwerff/routing --label plan`): @49 nautical navigation
 (active), @50 get-me-there and @51 coverage past NL (both future). `plans/README.md` is the binding.
 

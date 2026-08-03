@@ -252,3 +252,45 @@ saved routes, undo. Keeping this phase presentation-only is what makes the rende
 A full-bleed, Leaflet-free canvas app that presents the whole Enschede base map (terrain/buildings/streets/
 labels) with left-drag pan + wheel zoom, loading only the viewport's tiles from the store, routing/base-map
 isolation intact — and exposing the `project/unproject/camera/hitTest` seam that PLAN-EDIT will build on.
+
+---
+
+## Open work — street names repeat, and the spacing constant is not the lever
+
+**Reported 2026-08-03:** *"the repeat of street names is still too much, reduce it to 60%."* The obvious
+fix is wrong, which is the point of writing this down before someone tries it again.
+
+**`STREET_SPACING_PX` (420) does almost nothing.** It repeats a label along ONE feature, and
+`Math.max(1, Math.round(total / S))` floors every named street at one label however wide S gets. Swept
+420 → 1000 px over five live cameras: **508 → 498 candidates, a 2% move.** At z15 over Enschede not one
+street in view is long enough to earn a second label, so 420 / 700 / 1000 / 1400 px all drew **exactly
+82**.
+
+**What repeats is one NAME across many FEATURES.** OSM splits a street into dozens of ways and each gets
+its single label. Measured with `browser/cdp_label_census.mjs`:
+
+| camera | candidates | distinct names | drawn |
+|---|---|---|---|
+| z15 Enschede | 169 | 121 | 82 |
+| z17 Enschede | 98 | — | 64 |
+| z15.5 Amsterdam | 200 | — | 79 |
+| z16.8 Weldam | 13 | — | 12 |
+
+Worst offenders at z15 Enschede: Haaksbergerstraat ×8, Hengelosestraat ×7, Boulevard 1945 ×5. A
+screenshot at z16.8 shows *Weldammerlaan* four times and *Prins Mauritslaan* three times across one
+screen.
+
+**A per-name minimum gap gets to 88%, and stops there.** Prototyped (a name may not be placed within N px
+of itself, checked before `fits` — which cannot do this job, because two labels 200 px apart overlap
+nothing): 82 → 73 at z15 Enschede, flat from 200 px to 600 px. Only ~10 of the 82 drawn are duplicates,
+so **removing every duplicate cannot reach 60%.**
+
+⚠ **So 60% requires dropping DISTINCT street names too, and that is a product decision, not a tuning
+one.** The candidates, in the order they cost:
+
+1. a **minimum on-screen length** before a street is labelled at all (the 70 px floor is nearly nothing);
+2. a **per-screen cap**, labelling the longest N and skipping the rest;
+3. raising **`STREET_MINZOOM`** (13) so streets name themselves later.
+
+Decide the rule, then tune it against `cdp_label_census.mjs` at the cameras above — the per-name gap is
+worth keeping in any case, since it removes true duplicates that no length rule would.
