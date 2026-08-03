@@ -2109,3 +2109,48 @@ far as this consumer got; the repro is one file plus this public repo.
 instead of one `u16` — both with a comment pointing at `tools/loft_bug_gate.sh`, which reports when each
 workaround can go. The gate exits 0 either way: it is there to make the workarounds die when their reason
 does, not to fail a build over someone else's bug.
+
+---
+
+## 2026-08-03 — key ORDER changes a bound store's bytes by 2.3× for identical content
+
+**loft 2026.8.0**, md5 `276cf8f9aed6dee49c28494afd297a82` (2026-08-03 19:06), `--native`. Found while
+re-measuring [loft#747](https://github.com/loft-lang/loft/issues/747) with `tools/bind_order_gate.sh`.
+
+Binning 400 000 roads into 40 000 tiles — `hash<TTile[tkey]>`, each tile appending to inner
+`vector<TRoad>` / `vector<TStep>` — the only difference between these two runs is the ORDER the keys
+arrive in. `scattered` revisits every tile round-robin; `ordered` fills tile 0 completely, then tile 1:
+
+| | peak RSS | file | read-back |
+|---|---|---|---|
+| scattered, bind first | 85 MB | **91 MB** | tiles=40000 roads=400000 steps=4000000 |
+| ordered, bind first | 117 MB | **213 MB** | tiles=40000 roads=400000 steps=4000000 |
+| scattered, bind last | 292 MB | 83 MB | identical |
+| ordered, bind last | 622 MB | 132 MB | identical |
+
+**The stores hold the same records** — verified by reading each back and counting, not by inspection —
+and the ordered one is **2.3× larger on disk and 1.4× more expensive to build**. At 1.6 M / 160 k the
+RSS gap persists (458 vs 273 MB) while the files converge (497 MB both), so it is not a fixed overhead.
+
+### Why this is worth a note rather than a shrug
+
+The intuition every generator author has is the opposite one: *feed the input in key order so each tile
+is finished before the next begins, and the store can let go of it.* That is exactly what this tree
+believed, wrote into a plan, and was about to build a sorting stage for. Measured, ordering the input is
+the **worse** of the two on every axis.
+
+It is the same family as *"a persisted store's SIZE is an allocation artifact"* (2026-07-31) — growth
+slack decided by allocation pattern rather than content — but it is sharper here, because the pattern is
+chosen by the CONSUMER and there is no signal that one choice costs 2.3× the other.
+
+### What would help the formal definition
+
+A stated relationship between insert order and persisted size, even a loose one ("bytes are within k× of
+content, independent of order"). Today a generator cannot reason about the size of what it is writing:
+the same records in a different order give a different file, and nothing in the language says so.
+
+### What this tree does about it
+
+Nothing yet — `gen-tiles.loft` already feeds scattered keys, which is the cheaper side by accident of how
+OSM extracts are ordered. The finding is recorded so the "obvious" optimisation is not attempted twice;
+`tools/bind_order_gate.sh` is the re-runnable form of it.

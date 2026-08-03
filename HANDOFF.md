@@ -197,15 +197,23 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **Anchor a toolchain claim to the binary's mtime + md5, never `--version`.** `/usr/local/bin/loft` has
   changed twice mid-session while printing the same string — and did it AGAIN on 2026-08-03 08:52, mid-
   session, halfway through a bug hunt: two narrowing results from the same hour contradict each other
-  because they ran on different binaries. Today it is **2026.8.0, md5
-  `0849e437f5003c848168674b9eff8fdc`** (was `ea0486770b…`). `tools/loft_bug_gate.sh` prints md5 + mtime
-  for exactly this reason.
+  because they ran on different binaries. It moved a THIRD time the same day at 19:06. Today it is
+  **2026.8.0, md5 `276cf8f9aed6dee49c28494afd297a82`** (was `0849e437f5…`, before that `ea0486770b…`) —
+  three distinct binaries, one version string. `tools/loft_bug_gate.sh` and `tools/bind_order_gate.sh`
+  both print md5 + mtime for exactly this reason, and a finding without one is not re-runnable.
 * **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
   schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
   fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
-* **Two `--native`-only loft bugs are live** ([loft#739](https://github.com/loft-lang/loft/issues/739)):
-  a keyed lookup on a bound store ABORTS, and one sized `f#read` width returns null silently. Both are
-  worked around; `tools/loft_bug_gate.sh` reports when each workaround can be deleted.
+* ✅ **[loft#739](https://github.com/loft-lang/loft/issues/739) is FIXED** (2026-08-03), and
+  `tools/loft_bug_gate.sh` says so against the installed binary: the keyed lookup on a bound store no
+  longer aborts and every sized `f#read` is correct. **Both workarounds in `tools/gen_heights.loft` can
+  be deleted** — the iterate-only lookup and the two-byte read in `grid_h`. The gate is what to trust
+  here, not this line: it re-checks on whatever binary is installed.
+* **A CAP WITHOUT `MemorySwapMax=0` MEASURES SWAP, NOT EVICTION.** Testing whether a bound store's pages
+  are reclaimable under `systemd-run -p MemoryMax=96M` had BOTH bind orders "completing" — this box has
+  8 GB of swap and the unbound heap simply paged out. Adding `-p MemorySwapMax=0` separated them
+  immediately: bind-first completes, bind-last is OOM-killed. Same family as the ranged-HEAD trap — the
+  instrument answered a question next to the one being asked.
 * **`store_persist_bind` over an EXISTING file keeps the old image and returns `true`** — new counts, fresh
   mtime, previous map on disk. Every persisting tool refuses an existing target (`#PERSIST FAIL`). Delete
   before you regenerate.

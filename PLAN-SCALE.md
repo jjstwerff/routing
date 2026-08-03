@@ -977,10 +977,29 @@ accumulates the entire store in memory, writing it once with `store_persist_bind
     NL base:  17.29 M features  →  ~6 GB RSS   ≈ 350 bytes/feature, linear
     WE base:  390–780 M features (§1's 44–88 GB at ~113 B/feature payload)  →  130–270 GB RSS
 
-Nothing tunes out of that. Two ways past it:
+> ⚠ **THE 130–270 GB IS A `store_persist_bind`-LAST NUMBER, and that is no longer the only option
+> (2026-08-03).** It measures a generator that accumulates an unbound `hash` — anonymous heap, which the
+> kernel cannot reclaim. **Binding the store FIRST and inserting into it is 2.8–5.3× cheaper, and its
+> pages are file-backed and evictable**: under a cgroup cap with swap disabled, a bind-first build
+> completes in half its own uncapped RSS while a bind-last build of the same data is OOM-killed. So
+> dataset size sets a *throughput* cost for a bound store, not a memory requirement.
+>
+> This § predates that. It was written against loft 2026.8.0 md5 `0849e437…`, where
+> [loft#746](https://github.com/loft-lang/loft/issues/746) broke the bind-first insert path outright — and
+> the plan that reported it ([@51](plans/51-coverage-past-nl/README.md)) had the direction *backwards* as a
+> result. The measurement is now `tools/bind_order_gate.sh`, re-runnable against whichever binary is
+> installed.
+>
+> **What this does NOT settle:** WE itself. The gate measured to 1.6 M features; WE is ~390–780 M. The
+> floor is real (400 k completes at 48 MB, dies at 32) and capping costs ~2× wall. So the region structure
+> below stays — it is still how this gets built — but it is now a *throughput and CI* choice rather than
+> the only way the data can exist. `PLAN-SCALE` should not be re-planned around one gate run.
 
-* **make the store writable incrementally** — a real capability, an upstream ask on `loft-lang/loft`, and
-  an unknown timeline;
+Nothing tunes out of that *for a generator that binds last*. Two ways past it:
+
+* **make the store writable incrementally** — ✅ **it already is** ([loft#747](https://github.com/loft-lang/loft/issues/747);
+  bind first, then insert). What remains open upstream is only an eviction *hint* — a way to say "this
+  tile is finished" — which turns the cap's throughput cliff into a curve;
 * **never build a store that big.**
 
 The second needs nothing from anyone, and it is not a workaround: **C4/C5 already specify 10–16 roads

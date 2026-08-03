@@ -186,24 +186,57 @@ and emits the cell set plus the counts.
 survived — `conservation_gate` and `block_overlap_gate` still own those, on real blocks. It is the cheap
 screen you run *before* committing an hour of CPU.
 
-### The generator's memory is upstream, and the obvious fixes are MEASURED not to work
+### ~~The generator's memory is upstream~~ — REFUTED 2026-08-03, and by our own gate
 
-`gen-tiles` accumulates its whole `hash<TTile[tkey]>` before persisting — the 130–270 GB figure §6e uses
-for WE. Two fixes suggest themselves and **both were tried and measured**, binning 400 000 features into
-40 000 tiles:
+> ⚠ **This section said binding the store FIRST was 4.5× worse and that key order changed nothing. Both
+> halves are wrong.** The measurement was correct for the binary it ran on — loft 2026.8.0 md5
+> `0849e437…`, where [loft#746](https://github.com/loft-lang/loft/issues/746) broke the bind-first insert
+> path — and it was a throwaway probe, so nobody could re-run it when upstream disagreed. It is now
+> **`tools/bind_order_gate.sh`**, and the numbers below come from it.
 
-| | bind LAST | bind FIRST |
+Re-measured on loft 2026.8.0 md5 `276cf8f9…` (2026-08-03 19:06), binning **400 000 roads into 40 000
+tiles at 10 steps per road** — `gen-tiles.loft`'s shape, inner-vector appends included, because that is
+the detail the old finding turned on:
+
+| | bind LAST | bind FIRST | |
+|---|---|---|---|
+| **scattered keys** | 292 MB | **85 MB** | bind-first **3.4× lower** |
+| **ordered keys** (feed in tkey order) | 622 MB | **117 MB** | bind-first **5.3× lower** |
+
+At 1.6 M roads / 160 k tiles the direction holds and the ratio narrows — 765 → 273 MB scattered (2.8×),
+1633 → 458 MB ordered (3.6×). **Binding first is the cheaper order, not the more expensive one.**
+
+**And the memory a bound store holds is RECLAIMABLE, which is the half that decides §6e.** Under a cgroup
+cap with swap disabled:
+
+| | 400 k / 40 k | 1.6 M / 160 k |
 |---|---|---|
-| **scattered keys** | 59 MB | 266 MB |
-| **ordered keys** (feed in tkey order) | **59 MB** | 266 MB |
+| bind FIRST, capped at half its uncapped RSS | **completes** (44 MB peak, 6.1 s vs 3.2 s) | **completes** (88 MB peak, 27.6 s vs 12.7 s) |
+| bind LAST, same cap | **OOM-killed** | **OOM-killed** (kernel: `Failed with result 'oom-kill'`) |
 
-Binding the store first — so records stream to disk as they are made — is **4.5× WORSE**, and feeding
-the input in key order changes **nothing**: the store has no way to be told "this tile is finished."
-⚠ An earlier simple test suggested bind-first *did* solve it; that test lacked the inner-vector appends
-the real generator does, and on the realistic pattern the result reverses. Filed as
-[loft#747](https://github.com/loft-lang/loft/issues/747).
+A bound store is file-backed, so its pages can be written back and evicted; an unbound `hash` is
+anonymous heap and cannot be. That is the difference between a dataset that sets a *throughput* cost and
+one that sets a *memory requirement*.
 
-**So the bound comes from building less at a time**, which is structural and needed anyway.
+Three limits, so this does not become the next stale premise:
+
+1. **The floor is not zero and it grows.** 400 k completes at 48 MB and dies at 32; 1.6 M was only tested
+   down to 96 MB. Capping costs ~2× wall at both scales — gentler than the 271 s cliff upstream saw at
+   32 MB, but not free.
+2. **WE remains an extrapolation.** This measured to 1.6 M features; WE is two orders of magnitude more.
+   What is now *settled* is that §6e's 130–270 GB is a **bind-LAST** number, not that WE fits.
+3. ⚠ **`MemoryMax` alone proves nothing on a box with swap.** The first run of the cap test had both
+   orders "completing" under 96 MB, because this machine has 8 GB of swap and bind-last simply paged out.
+   `MemorySwapMax=0` is what separates eviction from swapping — the gate sets it, and the two orders come
+   apart the moment it does.
+
+**A new finding the old measurement had backwards: KEY ORDER IS NOT NEUTRAL.** Feeding tiles in key order
+costs *more* than scattering them — 1.4× the RSS at both scales, and at 400 k a **2.3× bigger file** (213
+against 91 MB) for byte-for-byte the same logical content, verified by read-back. That is the opposite of
+the intuition the old section was built on, and it is worth knowing before any generator is "improved" by
+sorting its input.
+
+**Building less at a time is now a THROUGHPUT choice, not a necessity.**
 `tools/build-base-chunked.sh` already did this for the base map; `tools/build-blocks-banded.sh` (new)
 does it for roads, building longitude bands whose edges come from the probe's even-**cost** histogram —
 even *width* is rarely even cost. Belgium in 3 bands, against the whole-country block:
