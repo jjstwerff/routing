@@ -32,7 +32,19 @@ TILE_PX = 256;             // a terrarium tile is 256x256 samples
 UNIT = 10000000.0;         // fixed-point units per degree (1e-7°), as TTile stores them
 HDR_BYTES = 24;            // "LTH1" + zoom, x0, y0, cols, rows — see pack_terrain.py
 
-struct Block { roads: hash<TTile[tkey]> }
+// ⚠ NO WRAPPER STRUCT. `store_persist_bind` RECORDS THE BINDING PROGRAM'S OWN ROOT SHAPE in the
+// `.dschema` sidecar, so binding through a `struct Block { roads: … }` rewrote the sidecar to name it and
+// changed the schema hash — after which loft#705 makes every OTHER tool fail to load the block, because
+// they all bind a bare `hash<TTile[tkey]>` (gen-tiles, split_block, store_extent, cell_diff, the lot).
+//
+// Measured on a copy of the Enschede fixture, 2026-08-03, loft 2026.8.0 md5 276cf8f9: heights filled
+// 289 117/289 117 and the block was then unreadable — `store_extent` returned 0 0 0 0 0 0. The damage is
+// SIDECAR-ONLY (the records are intact and correct), which is what makes it survivable and also what
+// makes it invisible: the tool that caused it can still read its own output.
+//
+// It breaks the refresh: `refresh-region.sh` bakes heights at step 2 and cuts regions at step 5, and the
+// cut cannot load what the bake left behind. `tools/reseat_schema.loft` is the recovery for a block that
+// already has it.
 
 // Where the packed grid starts and how it is laid out. `present` is one byte per tile: it is what tells
 // "the cache never had this tile" apart from "this tile is at sea level", and the Netherlands is full of
@@ -87,8 +99,8 @@ fn main() {
   if !file(path).exists() { println("#H FAIL no block at {path}"); return; }
   if !file(gpath).exists() { println("#H FAIL no height grid at {gpath} (tools/pack_terrain.py)"); return; }
 
-  b = Block { roads: [] };
-  bound = store_persist_bind(b.roads, path);
+  b: hash<TTile[tkey]> = [];
+  bound = store_persist_bind(b, path);
   if !bound { println("#H FAIL could not bind {path}"); return; }
 
   // ⚠ ITERATE, and the reason is the WRITE, not a bug. The loop variable of a bound store's own hash is a
@@ -126,7 +138,7 @@ fn main() {
     for pi2 in 0..len(g.present) { if (g.present[pi2] ?? 0) != 0 { npresent += 1; } }
     println("#H grid z{g.zoom} x{g.x0}+{g.cols} y{g.y0}+{g.rows} · {npresent}/{ntiles} tiles present");
 
-    for t in b.roads {
+    for t in b {
       ntiles2 += 1;
       ns = len(t.steps);
       for si in 0..ns {

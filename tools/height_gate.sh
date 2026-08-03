@@ -73,14 +73,17 @@ echo '  ✔ block unchanged at '"$before"' bytes — h was already in the schema
 cat > "$work/verify.loft" <<'LOFTEOF'
 #cwd
 use routing_kernel::(TTile, TRoad, TStep);
-struct Block { roads: hash<TTile[tkey]> }
+// ⚠ A BARE LOCAL, matching every other reader and matching what `gen_heights` now binds. This was a
+// `struct Block { roads: … }` wrapper, which happened to agree with gen_heights while gen_heights was
+// ALSO corrupting the sidecar — so the two wrongs cancelled and the gate stayed green. The moment
+// gen_heights was fixed this read ZERO steps, and every assertion below passed on an empty set.
 fn main() {
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
-  b = Block { roads: [] };
-  store_load(b.roads, a[0] ?? "");
+  b: hash<TTile[tkey]> = [];
+  store_load(b, a[0] ?? "");
   tot = 0; zero = 0; mn = 999999; mx = 0 - 999999; shown = 0;
-  for t in b.roads {
+  for t in b {
     ns = len(t.steps);
     for i in 0..ns {
       s = t.steps[i];
@@ -102,6 +105,12 @@ fn main() {
 LOFTEOF
 vout="$("$loft" --native --lib "$here/lib" "$work/verify.loft" "$work/block.store" 2>&1)"
 grep '^#V steps' <<<"$vout" | sed 's/^/  /'
+vsteps="$(grep -oP '^#V steps=\K[0-9]+' <<<"$vout")"
+# ⚠ NON-VACUITY FIRST. Every assertion below is over the steps this read back, so zero steps satisfies all
+# of them: the gate reported "no step left at 0" and "round-trips through store_load: 999999..-999999m"
+# over an EMPTY set, in green. A read that returns nothing is a broken reader, not a clean block.
+[ "${vsteps:-0}" -gt 0 ] || fail "the verify read back 0 steps — the reader cannot load what gen_heights wrote"
+[ "${vsteps:-0}" = "$filled" ] || fail "verify read $vsteps steps, gen_heights filled $filled — they must be the same block"
 vzero="$(grep -oP '^#V steps=\d+ zero=\K[0-9]+' <<<"$vout")"
 vmin="$(grep -oP 'min=\K-?[0-9]+' <<<"$vout")"
 vmax="$(grep -oP 'max=\K-?[0-9]+' <<<"$vout")"
