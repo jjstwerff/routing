@@ -57,9 +57,9 @@ that is what keeps `main` resolving to the data it was built against while the n
 | `v2026-08-03b` | castle labels (635, rank 3) | live, PR #53 |
 | `v2026-08-03c` | **`Area.parts`** — holes stop being filled in | **live**, PR #54 |
 
-⚠ **`area-holes` is 3 commits ahead of `main` and NOT merged.** They are @51 scaling work, not data:
-the 62-block cap fix, the paged-probe fix, and the phase-A measurements. Safe to sit; nothing depends
-on them and no data references them.
+⚠ **`area-holes` is 5 commits ahead of `main` and NOT merged** (pushed). All @51 scaling work, no data:
+the 62-block cap fix, the paged-probe fix, the phase-A measurements, and the two new tools below. Safe to
+sit — nothing depends on them and no dataset references them.
 
 ### Two new tools for scaling past NL — one trusted, one not
 
@@ -87,15 +87,17 @@ now measured and phase B done.
    to progress." The sketch autosave makes it *survivable* (reload and your points are back); it is not
    fixed. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
-3. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2), and the
-   blocks halving moved that ceiling without a re-costing — which is now phase A of
-   **[@51](plans/51-coverage-past-nl/README.md)**.
+3. **Western Europe** is still bounded by PUBLISHING, not by the read path (`PLAN-SCALE` D2).
+   **[@51](plans/51-coverage-past-nl/README.md) phases A and B are now DONE** — Benelux measured for
+   real (BE 159.5 MB roads + 1202.5 MB base; base size does *not* track road density) and the 62-block
+   index cap removed. **C is unblocked and is a TRIM, not a re-tiling**: raw country extracts overlap the
+   live index by 377 cells, but only *roads* need disjointness (`PLAN-SCALE` **D12**).
 4. **The router does not COST the gradient yet.** R2 made it *possible* — `way_penalty` can see a height
    now — and spending it is **[@50](plans/50-get-me-there/README.md)** phase B. Two of that plan's three
    data prerequisites shipped on 2026-08-03, which is why it stopped being a stub.
 
 **All three live-map findings SHIPPED** (2026-08-03) — they were `## Open work` rows rather than plans,
-and each turned out to be one decision plus one change, which is the routing `plans/README.md` predicts:
+and each turned out to be one decision plus one change, which is the route `plans/README.md` itself predicts:
 street-name repeats down to **60.0%** of before (`STREET_LABEL_MIN_PX` 70 → **105 px**, a length floor
 rather than a spacing one — the spacing constant provably was NOT the lever: identical counts from 420 to
 1000 px), holes drawn (`Area.parts`, `v2026-08-03c`), and **635 castle names** at rank 3 (`v2026-08-03b`).
