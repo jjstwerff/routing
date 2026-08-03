@@ -81,7 +81,7 @@ is the route the whole region gives**.
 | Phase | Effort | Verify | Status |
 |---|---|---|---|
 | **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | Open |
-| **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | Open (independent of A) |
+| **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner LIST replaces the 62-bit mask. Proven at **70 blocks** (2 415 nested pairs = 70 choose 2 on identical copies), where the old code refused outright. The gate still rejects a manufactured overlap (39 shared cells), so it is not vacuous. It is also *faster*: the mask forced an O(blocks²) scan per cell — 3 844 iterations at 62 blocks — where almost every cell has ONE owner, so the check is now linear in cells rather than cells × blocks² |
 | **C** — generate and publish ONE neighbour (BE or DE-west). | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | Blocked on A |
 | **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | Blocked on C |
 | **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | Blocked on D |
