@@ -285,12 +285,29 @@ of itself, checked before `fits` — which cannot do this job, because two label
 nothing): 82 → 73 at z15 Enschede, flat from 200 px to 600 px. Only ~10 of the 82 drawn are duplicates,
 so **removing every duplicate cannot reach 60%.**
 
-⚠ **So 60% requires dropping DISTINCT street names too, and that is a product decision, not a tuning
-one.** The candidates, in the order they cost:
+⚠ **So 60% required dropping DISTINCT street names too** — a product decision, not a tuning one. Three
+rules were on the table: a minimum on-screen length, a per-screen cap of the longest N, or raising
+`STREET_MINZOOM`. **Chosen 2026-08-03: the minimum length** (`STREET_LABEL_MIN_PX`), because it removes
+exactly the thing that causes the complaint — a 90 px stub of a street still draws a full-width name, and
+the stubs are what turn one street into eight labels.
 
-1. a **minimum on-screen length** before a street is labelled at all (the 70 px floor is nearly nothing);
-2. a **per-screen cap**, labelling the longest N and skipping the rest;
-3. raising **`STREET_MINZOOM`** (13) so streets name themselves later.
+### Landed: `STREET_LABEL_MIN_PX = 105` (was an unnamed `70`)
 
-Decide the rule, then tune it against `cdp_label_census.mjs` at the cameras above — the per-name gap is
-worth keeping in any case, since it removes true duplicates that no length rule would.
+Measured, one sweep over Enschede so the baseline is internally consistent — drawn labels at z15/z16/z17:
+
+| floor | z15 | z16 | z17 | total | vs 70 px |
+|---|---|---|---|---|---|
+| **70 px** (was) | 82 | 77 | 66 | 225 | 100% |
+| 100 px | 46 | 53 | 42 | 141 | 62.7% |
+| **105 px** | **43** | **51** | **41** | **135** | **60.0%** ← |
+| 120 px | 31 | 41 | 35 | 107 | 47.6% |
+| 140 px | 23 | 28 | 27 | 78 | 34.7% |
+| 170 px | 16 | 17 | 19 | 52 | 23.1% |
+
+⚠ **The number is only meaningful against the DRAWN result**, so re-measure with `cdp_label_census.mjs`
+if the font, the canvas size or the collision rule changes — all three move it.
+
+**Still available if it is still too busy:** the per-name gap (a name may not repeat within N px of
+itself, checked before `fits`, which cannot do it — two labels 200 px apart overlap nothing). Prototyped
+at 82 → 73 on the old floor; it removes true duplicates that no length rule reaches, and it composes with
+the floor rather than replacing it.

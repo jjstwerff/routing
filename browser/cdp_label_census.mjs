@@ -7,7 +7,8 @@
 // that decide any thinning rule, and answers them from the RENDERER rather than from the store:
 //
 //   drawn        `_stats.streetLabels` — what layoutLabels PLACED, after the `fits` collision cull
-//   candidates   features past the 70 px floor, i.e. what could have been labelled
+//   candidates   features past this probe's OWN 70 px census floor — deliberately lower than the
+//                renderer's `STREET_LABEL_MIN_PX`, so you can see the fragments the floor is cutting
 //   names        distinct names among them — `candidates - names` is the cross-feature repetition
 //   lengths      each candidate's on-screen length, which is what decides repeats WITHIN one feature
 //
@@ -39,6 +40,10 @@ await new Promise((r) => ws.addEventListener('open', r));
 await call('Runtime.enable'); await call('Page.enable');
 const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true })).result?.result?.value;
 
+// PLAN-EDIT E9 — the sketch autosave lives in localStorage and every gate reuses the same persistent
+// `--user-data-dir`, so one run's sketch restores into the next one's numbers. Cleared in EVERY driver;
+// `map_render_gate` checks the line is present.
+await call('Storage.clearDataForOrigin', { origin: new URL(app).origin, storageTypes: 'local_storage' });
 await call('Page.navigate', { url: 'about:blank' });
 await new Promise((r) => setTimeout(r, 500));
 await call('Page.navigate', { url: app });
