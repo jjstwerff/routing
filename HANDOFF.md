@@ -61,22 +61,28 @@ that is what keeps `main` resolving to the data it was built against while the n
 the 62-block cap fix, the paged-probe fix, the phase-A measurements, and the two new tools below. Safe to
 sit — nothing depends on them and no dataset references them.
 
-### Two new tools for scaling past NL — one trusted, one not
+### Three new tools for scaling past NL
 
-Both are committed and both belong to **[@51](plans/51-coverage-past-nl/README.md)**, whose phase A is
-now measured and phase B done.
+All committed, all belonging to **[@51](plans/51-coverage-past-nl/README.md)**, whose phase A is now
+measured and phase B done.
 
 * ✅ **`tools/tiling_probe.py` — trusted.** Answers "do these overlap?" and "how many regions?" *without
   building a store*: a feature is keyed at its first vertex, so its cell is one `floordiv`. **Belgium in
   8.4 s against a 25-minute build**, validated to within **0.25%** on cells against three real blocks.
   Run it before committing an hour of CPU. It says nothing about whether a block is *correct* —
   `conservation_gate` and `block_overlap_gate` still own that.
-* ⚠ **`tools/build-blocks-banded.sh` — NOT trusted yet.** Builds roads in longitude bands so the
-  generator's memory tracks the band, not the country. Belgium's three bands are provably **disjoint**
-  (0 shared cells over 10 373 — the property routes depend on), but the sum is **1 480 751 ways / 10 373
-  cells against the whole block's 1 480 755 / 10 374**: one cell and its four ways are missing. The
-  diagnosis is narrowed and written up in @51; until it closes, check any banded sum against
-  `<block>.srccount`.
+* ✅ **`tools/build-blocks-banded.sh` — exact where it is asked to be.** Builds roads in longitude bands
+  so the generator's memory tracks the band, not the country. Belgium's three bands are **disjoint**
+  (0 shared cells over 10 373) *and* complete: all **10 372 cells inside the bbox match the whole-country
+  block in cell and way count**. Exactly two cells differ and **neither is at a band seam** — one lies
+  wholly south of the south bound (0 ways), one straddles the north bound (−4 ways). Both are artifacts
+  of the country bbox: `osmium extract` keeps a way when *any* node is inside, and a block keys it at its
+  **first vertex**, which may be outside — so which border artifacts come along depends on the longitude
+  window. The whole-country block has them for the same accidental reason.
+* ✅ **`tools/cell_diff.loft` (new) is what found that**, and a cell-set diff alone could not have: the
+  four missing ways were in a cell that was *present but under-filled*. It reports MISSING / **SHORT** /
+  OVER / outside-the-reference. `block_overlap` proves no cell is held twice; this proves none is held
+  zero times — neither implies the other.
 
 ## 1. What is open
 

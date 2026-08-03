@@ -210,15 +210,33 @@ even *width* is rarely even cost. Belgium in 3 bands, against the whole-country 
 | cells | 2 748 | 4 219 | 3 406 | **10 373** | 10 374 |
 | bytes | 82 MB | 133 MB | 84 MB | 299 MB | 159.5 MB *(compacted)* |
 
-✅ **Disjoint** — `block_overlap.loft` reports 0 nested pairs and no partial overlap over all 10 373
-cells. That is the property routes depend on (D12), and it holds.
+✅ **Disjoint** — `block_overlap.loft`: 0 nested pairs, no partial overlap over all 10 373 cells. That
+is the property routes depend on (D12).
 
-⚠ **NOT conservation-clean: one cell and its 4 ways are missing**, so the tool is not trusted yet. The
-shortfall is coherent (4 ways ≈ one absent cell, not scattered loss) and the band cell-ranges provably
-tile `[126, 321]` with no gap, so the cell is present in the *whole-country* extract and absent from the
-band extract that owns it — which points at `osmium extract`'s clipping, not at the trim. **Next step: diff
-the three bands' cell sets against the whole block's and look at the one key.** Until that closes, a
-banded build needs its sum checked against `<block>.srccount`.
+✅ **Complete everywhere inside the requested area** — and this took a second tool to see.
+`tools/cell_diff.loft` (new) compares a reference block against a set of parts on both axes: which cells
+no part holds, *and* which cells every part holds but **under-fills**. A cell-set diff alone could not
+have found this, because the missing ways were in a cell that was present.
+
+Exactly two cells out of 10 374 differ, and **neither is at a band seam** (those are lon 4.1 and 5.2):
+
+| | cell | lon | lat | vs Belgium's bbox `2.5231,49.4967,6.4253,51.5051` |
+|---|---|---|---|---|
+| **MISSING** | 125562201 | 5.56–5.58 | 49.46–49.48 | wholly **south** of 49.4967 — outside it. Holds **0 ways** (a barrier-only tile) |
+| **SHORT** −4 ways | 127398467 | 4.76–4.78 | 51.50–51.52 | **straddles** the north bound 51.5051 |
+
+**The mechanism, and it is not the band cut.** `osmium extract` keeps a way when *any* node falls in the
+bbox, and a block keys it at its **FIRST VERTEX** — which may be outside. So a way skimming the northern
+border can be anchored beyond it, and whether it survives depends on which longitude window you extract:
+the band owning its first-vertex cell may not contain the one node that was inside, and the 0.15° margin
+only reaches ways shorter than the margin. Both differing cells are therefore **artifacts of the country
+bbox, not of the banding** — the whole-country block has them for the same accidental reason.
+
+**Verdict: the banded build is exact where it is asked to be.** All 10 372 cells inside the bbox match the
+whole-country block in cell *and* way count. What a banded build changes is which border artifacts come
+along, and those are anchored outside the area by definition. Check a banded sum with `cell_diff` against
+a reference when one exists; when one does not — which is the whole point of banding — the sum against
+`<block>.srccount` plus a `block_overlap` pass is the check.
 
 ⚠ Two traps this cost, both already in HANDOFF §2. Its outer edges are NOT seams — trimming the region's
 own bounds ate the cell containing the eastern bound. And an earlier run's numbers were **contaminated**:
