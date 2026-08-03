@@ -88,8 +88,8 @@ is the route the whole region gives**.
 | **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | ✅ **MEASURED 2026-08-03** — see § below |
 | **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner LIST replaces the 62-bit mask. Proven at **70 blocks** (2 415 nested pairs = 70 choose 2 on identical copies), where the old code refused outright. The gate still rejects a manufactured overlap (39 shared cells), so it is not vacuous. It is also *faster*: the mask forced an O(blocks²) scan per cell — 3 844 iterations at 62 blocks — where almost every cell has ONE owner, so the check is now linear in cells rather than cells × blocks² |
 | **C** — publish ONE neighbour (BE first — A's numbers decided it). ~~roads trimmed to cells the live index does not own~~ — **that trim was measured to be WRONG, see below**. | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | **TRIMMED AND VERIFIED 2026-08-03, NOT PUBLISHED** — `tools/trim-borders.sh` |
-| **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | Blocked on C |
-| **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | Blocked on D |
+| **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | ✅ **DONE 2026-08-03** — `tools/seam_route_gate.sh`, 4 crossings, all identical. **The rung is entered.** |
+| **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | **Unblocked** — D done. See `PLAN-SCALE` §8b for the cadence half of the same decision |
 
 ## Open questions
 
@@ -360,3 +360,45 @@ minority side held that the winner did not. If `TRoad` ever gains a way id this 
 It changes **four PUBLISHED Netherlands blocks**, so it needs a dataset version, a release upload and a
 re-index — and the switch is the MERGE, not the publish. Phase D (the cross-border route) can be measured
 against `blocks/trim/` without publishing anything.
+
+---
+
+## Phase D, DONE (2026-08-03) — the rung is entered
+
+**A route from the Netherlands into Belgium is byte-identical to the same route matched against a single
+block covering both.** `tools/seam_route_gate.sh`, four crossings at four longitudes across two Dutch
+blocks, every one identical in way count, point count and route fingerprint:
+
+| crossing | Dutch block | cells | route |
+|---|---|---|---|
+| Bergen op Zoom → Antwerpen | `nl-west` | 61 NL + 48 BE | 193 pts, identical |
+| Breda → Turnhout | `nl-midwest` | 51 + 57 | 384 pts, identical |
+| Baarle, through the enclaves | `nl-midwest` | 16 + 11 | 129 pts, identical |
+| Reusel → Arendonk | `nl-midwest` | 11 + 29 | 283 pts, identical |
+
+**This is the rung's stated entry condition** — *"not entered when the data is published; entered when a
+route crosses the seam and is the route the whole region gives"* — so C3 is entered on the data in
+`blocks/trim/`, ahead of any decision to publish it.
+
+### What had to be built, and why the internal gate could not answer it
+
+`cross_block_gate` asks the same question one country in, and gets its reference free: it MANUFACTURES a
+seam by splitting a block it already has, so the unsplit original is the answer. **At a real border there
+is no original** — the two blocks came from different Geofabrik extracts and no file has ever held both.
+So `tools/merge_blocks.loft` builds the reference by merging them, and refuses inputs that are not a
+partition. The gate therefore rests on the trim being right and says so when it is not.
+
+`cross_block_probe.loft` gained a trace argument. The manufactured seam keeps its default, so one
+instrument now answers both seams — which is the point, because two results from two probes would not be
+comparable.
+
+### ⚠ The negative control fired on the gate's own first draft
+
+@51 asks for *"a sketch that STRADDLES the cut, not one that merely nears it"*. The first corpus paired
+the Bergen op Zoom → Antwerpen crossing (lon 4.29) with `nl-midwest`, whose band is **4.70–5.40** — so the
+Dutch side of that route lives in `nl-west`. The corridor drew **0 cells** from the block it was given and
+48 from Belgium, and the probe reported it **VACUOUS rather than passing**.
+
+That is the whole value of the check: paired with the wrong block, a border test proves nothing and its
+output is indistinguishable from a pass. A crossing must be run against the block that actually holds its
+Dutch side, and the gate now covers two pairs for that reason.

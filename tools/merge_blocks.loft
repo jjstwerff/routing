@@ -1,0 +1,86 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// MERGE DISJOINT ROADS BLOCKS INTO ONE — the reference @51 phase D needs, and `split_block`'s inverse.
+//
+// WHY IT EXISTS. Phase D asks whether a route across the Netherlands/Belgium seam is the route a single
+// block covering both would give. Inside one country that reference is free — `cross_block_gate`
+// manufactures its seam by SPLITTING a block it already has, so the unsplit original is the answer. At a
+// real border there is no original: the two blocks came from different Geofabrik extracts and no file
+// ever held both.
+//
+//   loft --native --lib lib tools/merge_blocks.loft <out.store> <in.store> <in.store> [more…]
+//
+// ⚠ IT REFUSES OVERLAPPING INPUTS, and that refusal is the point rather than a safety net. A merge is
+// only meaningful over a PARTITION: if two inputs hold the same cell, the union is ambiguous — take one
+// and the reference is missing ways, take both and it holds duplicates that `build_graph` would count
+// twice, which is precisely the defect the whole trim exists to remove. So a shared key is a hard error
+// naming the cell, not a merge policy. `tools/trim-borders.sh` is what makes the inputs fit.
+//
+// Because the inputs are disjoint, the merge is a concatenation: no key is rewritten, no geometry moves,
+// and `TRLink.road` stays valid because every tile is copied whole and in order (`split_block.loft`
+// carries the same warning about filtering roads).
+#cwd
+
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, TRoute, TRLink);
+
+fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
+  dst += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
+  t = dst[src.tkey];
+  n = 0;
+  if t != null {
+    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, nets: r.nets, steps: r.steps }]; n += 1; }
+    for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
+    for b in src.barriers { t.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
+    for rt in src.routes { t.routes += [TRoute { rid: rt.rid, kind: rt.kind, level: rt.level, flags: rt.flags,
+                                                colour: rt.colour, rref: rt.rref, name: rt.name }]; }
+    for rl in src.rlinks { t.rlinks += [TRLink { road: rl.road, route: rl.route }]; }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 3 { println("usage: merge_blocks <out.store> <in.store> <in.store> [more…]"); return; }
+  out_path = a[0] ?? "";
+  if file(out_path).exists() {
+    println("#M FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
+    return;
+  }
+
+  out: hash<TTile[tkey]> = [];
+  tin = 0; win = 0;
+  i = 1;
+  while i < len(a) {
+    p = a[i] ?? "";
+    src: hash<TTile[tkey]> = [];
+    if !store_load(src, p) { println("#M FAIL cannot load {p}"); return; }
+    nt = 0; nw = 0;
+    for t in src {
+      // The partition check, per cell rather than per block: two blocks can share one cell while neither
+      // contains the other, which is exactly the shape a border produces and exactly what a bbox test
+      // cannot see.
+      if out[t.tkey] != null {
+        println("#M FAIL cell {t.tkey} is held by {p} AND by an earlier input — the inputs are not a partition");
+        return;
+      }
+      nw += copy_into(out, t);
+      nt += 1;
+    }
+    println("#M in {p}: {nt} cells, {nw} ways");
+    tin += nt; win += nw;
+    i += 1;
+  }
+
+  ok = store_persist_bind(out, out_path);
+  // Counted on the way OUT as well as the way in, because "the merge kept everything" is the one property
+  // a reference block must have — a reference that quietly lost a cell makes every comparison against it
+  // pass for the wrong reason.
+  tout = 0; wout = 0;
+  for t2 in out { tout += 1; wout += len(t2.roads); }
+  println("#M out {tout} cells / {wout} ways · persist {ok}");
+  if tout != tin { println("#M FAIL cells lost: {tout} out of {tin}"); return; }
+  if wout != win { println("#M FAIL ways lost: {wout} out of {win}"); return; }
+  println("#M ALL PASS — every cell and every way of every input is in the merge, exactly once");
+}
