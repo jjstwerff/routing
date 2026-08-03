@@ -80,7 +80,7 @@ is the route the whole region gives**.
 
 | Phase | Effort | Verify | Status |
 |---|---|---|---|
-| **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | Open |
+| **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | ✅ **MEASURED 2026-08-03** — see § below |
 | **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner LIST replaces the 62-bit mask. Proven at **70 blocks** (2 415 nested pairs = 70 choose 2 on identical copies), where the old code refused outright. The gate still rejects a manufactured overlap (39 shared cells), so it is not vacuous. It is also *faster*: the mask forced an O(blocks²) scan per cell — 3 844 iterations at 62 blocks — where almost every cell has ONE owner, so the check is now linear in cells rather than cells × blocks² |
 | **C** — generate and publish ONE neighbour (BE or DE-west). | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | Blocked on A |
 | **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | Blocked on C |
@@ -95,3 +95,61 @@ is the route the whole region gives**.
 3. **Is C5 worth doing at all?** §6b already lists the honest alternatives — per-region on demand
    forever (C4 as the end state, "and it is a good one"), reduced detail, or an external map source.
    *Decided by E, and pre-committing storage before then is explicitly warned against.*
+
+
+---
+
+## Phase A, measured (2026-08-03) — Benelux built, not estimated
+
+Belgium and Luxembourg were built for real, with today's schema. Raw block bytes (roads compact to ~0.5x
+at bind; base does not):
+
+| | roads | base | base tiles / features |
+|---|---|---|---|
+| Netherlands | 272 MB | 2691 MB *(4 regions)* | 186 215 / 17.3 M |
+| **Belgium** | **159.5 MB** | **1202.5 MB** | 148 858 / 10.7 M |
+| **Luxembourg** | **16.9 MB** | **70.6 MB** | 14 246 / 0.56 M |
+| **Benelux** | **~449 MB** | **~3965 MB** | |
+
+### Three things the measurement changed
+
+1. **Base size does NOT track road density, so the extrapolation would have been wrong.** Belgium is 53%
+   of the Netherlands by road ways but **44%** by base bytes; Luxembourg is 6% by roads and **2.6%** by
+   base. The base map is buildings and landcover, and those do not scale with the road network. This is
+   the reason phase A insisted on a real block rather than a model.
+2. **Belgium cannot ship as ONE base block.** 1202.5 MB is over the ~1 GB Pages-per-site cap, so it needs
+   cutting exactly as the Netherlands did. Luxembourg at 70.6 MB is comfortably one, or can ride with a
+   Belgian region. **Benelux is ~7 base hosts** (NL 4 + BE 2 + LU 1) against the 4 live today.
+3. **§6b's estimate was pessimistic on roads and close on base.** It put C3 — Benelux *plus a big
+   neighbour* — at ~1.5 GB roads + ~9 GB base. Benelux alone is 0.45 GB + 4.0 GB, so the roads half came
+   in far cheaper than the pre-halving model assumed.
+
+### ⚠ The blocker phase C actually has: raw country extracts OVERLAP
+
+`block_overlap_gate`'s question is no longer theoretical. A raw Geofabrik Belgium extract against the
+four live Netherlands regions:
+
+```
+blocks 0 and 4 PARTIALLY overlap: 143 shared cells   (nl-west    vs belgium)
+blocks 1 and 4 PARTIALLY overlap: 108 shared cells   (nl-midwest vs belgium)
+blocks 2 and 4 PARTIALLY overlap: 111 shared cells   (nl-mideast vs belgium)
+blocks 3 and 4 PARTIALLY overlap:  15 shared cells   (nl-east    vs belgium)
+```
+
+**377 shared cells, and PARTIAL — neither block is a subset.** Belgium's extent reaches lat 53.74 / lon
+1.89, well inside the Netherlands, because `osmium extract` keeps whole ways and Geofabrik's country
+files deliberately carry cross-border data. A corridor over the border would read those roads twice and
+match a **different** route, not a slower one.
+
+So **C3 is not "download the neighbour and add it to the index."** The blocks in one index have to be cut
+from a common tiling, the way the four NL regions are — either one Benelux extract cut into regions, or
+per-country extracts trimmed to disjoint bands before they are published. That is phase C's real content
+and it was invisible until a second country existed.
+
+### Two defects this phase found before producing a single size
+
+* **The 62-block cap** (phase B) — fixed; WE is 34–68 blocks, so it would have bound at exactly this rung.
+* **The paged spot check was vacuous outside Enschede.** `page_locality_probe.loft` hardcoded its
+  viewport, so `build-blocks.sh` printed `asked=42 loaded=0 roads=0` for Belgium and carried on — a pass,
+  for a read path that fetched nothing. It now derives the viewport from the block's own extent:
+  **42/42 keys, 8 491 roads** on the same block. It would have read as a pass for every country C3 adds.
