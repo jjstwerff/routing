@@ -7,16 +7,21 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-03, late)
+## 0. Where things stand (2026-08-04, early)
 
-**The live site is `v2026-08-03c` — the Netherlands, 6 blocks — and it has not moved.**
-**`area-holes` is 27 commits ahead of `main` and carries BENELUX**, published as a release and NOT
-merged. The switch is the MERGE, not the publish (§0b).
+**THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
+PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
 
-| | live on Pages | on the branch |
-|---|---|---|
-| dataset | `v2026-08-03c` · 6 blocks | **`v2026-08-03d` · 10 blocks, released** |
-| coverage | Netherlands | **NL + Belgium + Luxembourg** |
+| | live on Pages |
+|---|---|
+| dataset | **`v2026-08-03d` · 10 blocks** |
+| coverage | **Netherlands + Belgium + Luxembourg** |
+
+Verified on the site itself rather than on the workflow's tick: the live index serves 10 blocks, and
+`belgium.roads`, `overview.base`, `coverage.names` and `luxembourg.roads` each answer a **ranged GET**
+with a real `206` + `content-range`, so the paged read path works from the live origin. The deploy
+re-verified every block's sha256 on the way in — which is why a rollback is flipping the index, not
+regenerating.
 
 What Benelux can do, all gated: **routes across the NL/BE border byte-identically** to a single block
 covering both · draws at every zoom from z0 · a height on every step · **search that crosses borders**.
@@ -28,9 +33,10 @@ two and two data repos of its own. It draws from the overview below z12 and `be-
 above that it is roads on a plain background — a state `store-app.mjs` handles as a product, not a
 fallback. Luxembourg's base is 70.6 MB and ships, so it has a complete map. **Asymmetric on purpose.**
 
-⚠ **The site is at 814.1 MB of 950 (86%).** Passing, and tighter than it should stay — `site_size_gate`'s
-own margin note says the next region added is what crosses it. The relief that needs no new decision is
-moving **`be-mid` (149.3 MB)** to its own Pages repo, as `nl-mid` already is: that lands it near 70%.
+⚠ **The site is LIVE at 814.1 MB of 950 (86%)** — this is now a property of production, not of a branch.
+Passing, and tighter than it should stay: `site_size_gate`'s own margin note says the next region added is
+what crosses it. The relief that needs no new decision is moving **`be-mid` (149.3 MB)** to its own Pages
+repo, as `nl-mid` already is: that lands it near 70%. **Do it before adding anything, not after.**
 
 ### ⚠ The store schema is v2, and older blocks are unreadable
 
@@ -44,11 +50,10 @@ data it was built against.
 
 ---
 
-## 0b. This session: Benelux, and four upstream findings
+## 0b. How Benelux was built, and five upstream findings
 
-**Nothing is merged and the live site is untouched.** `data-v2026-08-03d` is published (23 assets,
-784 MB, each verified by a ranged GET) but `browser/coverage.json` naming it lives only on this branch.
-To go live: open a PR. To abandon: delete the branch; the release is inert without an index pointing at it.
+**Landed as PR #55** (`build-test` 4m23s, `deploy` 24s), on top of `data-v2026-08-03d` — 23 assets,
+784 MB, each verified by a ranged GET before the index pointed anywhere.
 
 ⚠ **Only 784 MB was uploaded, not 3.91 GB.** The four NL base maps and `nl-mid` (3.12 GB) are unchanged
 and already served by their own Pages repos. `publish-release.sh` would have taken all of them — stage
@@ -62,9 +67,9 @@ the referenced set and point `BLOCKS_OUT` at it, as HANDOFF has warned since §3
 3. **Heights** for BE/LU, then **names**: `coverage.names.store`, 63.5 MB, 518 804 records.
 4. **Published** as `v2026-08-03d`.
 
-### Four things that were measured and came out the OPPOSITE way
+### Five things that were measured and came out the OPPOSITE way
 
-Each cost a wrong claim that was already written down or about to be:
+Each cost a wrong claim that was already written down, about to be, or already filed upstream:
 
 * **Binding a store FIRST is 3–5× CHEAPER, not 4.5× worse.** @51 said the reverse; it was measured
   against loft#746 on a binary that no longer exists. `tools/bind_order_gate.sh` is the re-runnable form.
@@ -79,6 +84,10 @@ Each cost a wrong claim that was already written down or about to be:
   "sample by terrain, not by country" hypothesis is refuted too. `PLAN-RESTORE` §5 decision 3 is answered.
 * **The 0.8% of unsampled steps was a PADDING bug, not resolution.** `bake-heights` pads 0.35° now
   (`TERRAIN_PAD`) and z12 fills 100%.
+* **loft#757, which WE filed, was refuted — the refusal we called a bug was the diagnosis.** A field bind
+  writes a container-rooted file *by design*; what we asked for would have made the load SUCCEED on
+  mismatched bytes. The rule survives, the reason did not (§2), and `loft_bug_gate` guards a CONTRACT now
+  instead of watching a defect.
 
 ### The upstream ledger
 
@@ -88,6 +97,7 @@ Each cost a wrong claim that was already written down or about to be:
 | **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
 | **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
 | **loft#757** | **filed by us, then REFUTED and closed** — the sidecar is honest; the rule survives (§2) |
+| **loft#762** | **filed by us**, open: `--native` emits invalid Rust for `for _ in <BOUND hash>` (§2) |
 
 ### New tools, all gated
 
@@ -99,24 +109,28 @@ Each cost a wrong claim that was already written down or about to be:
 
 ## 1. What is open
 
-**Benelux is functionally complete; what remains is deployment and one design limit.**
+**Benelux is deployed. Nothing is half-landed — what remains is headroom and one design decision.**
 
-1. **THE PR.** `area-holes` → `main` is what moves the site to Benelux. Nothing else does. `main` is
-   protected and needs `build-test` green.
+1. ⚠ **THE SITE IS LIVE AT 86% of its 950 MB budget**, and this is the one that binds. Move **`be-mid`
+   (149.3 MB)** to its own Pages repo (`tools/publish-pages-data.sh`), as `nl-mid` already is — that lands
+   it near 70%. It needs no new decision and nothing else can be added until it happens.
 2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
    (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
-3. **The site is at 86%.** Move `be-mid` to its own Pages repo (~70%) before adding anything.
-4. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
+3. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
    first search; Western Europe extrapolates to ~500 MB. It is one store because `NAMES` is resolved once
    at boot, `store_load_url_trusted` ADOPTS, and every store numbers records from 0 — a covering set is
    not available without changing all three. Same ceiling shape as the overview. **Cost it in @51 phase E**
    rather than discovering it at C4.
-5. **@51 phase E** — decide C4/C5. `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on
-   MEASURED CHANGE, not density; the world is a funding decision).
-6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
-7. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
+4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
+   `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
+   world is a funding decision).
+5. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
+6. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
    survivable. What would move it: the console line at the moment it stops answering, plus
-   `window.__perfHooks.kernelStats()`.
+   `window.__perfHooks.kernelStats()`. ⚠ **Benelux widens the exposure** — more blocks, more first-visit
+   paths — so a second report is likelier now than it was on the NL-only site.
+7. **[loft#762](https://github.com/loft-lang/loft/issues/762)** open upstream, filed by us; nothing here
+   is blocked on it — no `for _ in` in this tree walks a bound store (§2).
 8. ~~**loft#757** open upstream~~ — **closed 2026-08-03 as answered, and our reading was wrong** (§2).
    Nothing here is blocked on it, and nothing changes in the tree: every tool already binds a bare local,
    which is what the compiler now recommends in so many words.
@@ -178,6 +192,16 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   safe case; a half-swap is what breaks `--native`. It is also byte-identical to `../loft/target/release/loft`,
   so the sibling tree's dev build is what got installed. `tools/loft_bug_gate.sh` and `tools/bind_order_gate.sh`
   both print md5 + mtime for exactly this reason, and a finding without one is not re-runnable.
+  ⚠ **A suite that STRADDLES an install has measured nothing.** That is what happened here — the four
+  suites were re-run end to end on `601806ef` before the PR, and the straddled results were thrown away.
+  A green tick against an unknown binary is not evidence.
+* **`--native` IS THE DEFAULT, so a no-flag failure says NOTHING about the interpreter** — and this cost a
+  wrong claim posted on a public issue before it was caught. Probing loft#762, `loft x.loft` failed with
+  rustc errors, which was reported upstream as "not gated behind `--native`; the program cannot run at
+  all". `loft --help` says *native is default*: the no-flag run WAS the native path, and `--interpret`
+  runs the same file fine. **To claim a backend, name it** — `--interpret` and `--native` explicitly, never
+  the bare invocation. Same family as the ranged-HEAD and the swap-cap traps: the instrument answered the
+  question next to the one being asked.
 * **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
   schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
   fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
@@ -248,7 +272,8 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 
 ## 3. How to resume
 
-**All four suites, in this order** — measured 2026-08-03 on this box, all green:
+**All four suites, in this order** — all green on this box 2026-08-04, on loft 2026.8.0 md5
+`601806ef` (re-run end to end after the binary moved mid-run; §2):
 
 ```bash
 make test          # offline: kernel suites + server harnesses            (~15 s)
