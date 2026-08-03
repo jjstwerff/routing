@@ -2105,7 +2105,65 @@ far as this consumer got; the repro is one file plus this public repo.
 
 ### What this tree does about it
 
-`tools/gen_heights.loft` iterates instead of looking up, and reads **two `u8`s and recombines them**
-instead of one `u16` — both with a comment pointing at `tools/loft_bug_gate.sh`, which reports when each
-workaround can go. The gate exits 0 either way: it is there to make the workarounds die when their reason
-does, not to fail a build over someone else's bug.
+`tools/gen_heights.loft` iterated instead of looking up, and read **two `u8`s and recombined them**
+instead of one `i16` — both with a comment pointing at `tools/loft_bug_gate.sh`.
+
+**✅ FIXED UPSTREAM the same day, and both workarounds are deleted (2026-08-03).** Turnaround was hours:
+filed against md5 `0849e437…`, fixed in `fd93a5ff`, verified here on md5 `276cf8f9…`. `grid_h` reads one
+`i16` again and `height_gate` reports the same 289 117/289 117 steps at 10–88 m, so the simplification is
+behaviour-identical.
+
+⚠ **That flipped the gate's exit code.** It used to exit 0 on the bug being present, which was right only
+while the tree routed around it. With the workarounds gone, either bug returning silently gives every step
+no height — so `loft_bug_gate.sh` now FAILS on a regression instead of reporting one.
+
+---
+
+## 2026-08-03 — ~~key ORDER changes a bound store's bytes by 2.3×~~ RETRACTED: a store's FILE is its CAPACITY
+
+**This finding was wrong, and the way it was wrong is the useful part.** Filed on
+[loft#747](https://github.com/loft-lang/loft/issues/747), refuted by the maintainer within the hour, and
+reproduced here before being written down again.
+
+### The claim, and the refutation
+
+Binning 400 000 roads into 40 000 tiles, the same records either way, `scattered` keys produced a 91 MB
+file and `ordered` keys a 213 MB one — a **2.33×** "ordering penalty", which read as *feeding a generator
+its input in key order is worse on every axis*. A sorting stage was about to be removed from a plan on
+the strength of it.
+
+**A bound store's file size is its CAPACITY, not its content**, quantized to a ladder whose every rung is
+**7/3** of the last. Sweeping the feature count with order held FIXED, measured here:
+
+| roads | file (bytes) |
+|---|---|
+| 200 000 | 39 179 744 |
+| 250 000 | **91 419 400** |
+| 300 000 | **91 419 400** |
+| 400 000 | **91 419 400** |
+
+Doubling the data changes the file by **zero bytes**, and 91419400 / 39179744 = 2.3333. Ordered insertion
+used marginally more capacity than scattered and **tipped one rung** — and a rung is 133%. The 2.33× was
+the ladder, not the input order. Upstream filed it as
+[loft#752](https://github.com/loft-lang/loft/issues/752), because loft#710 already decided a store's size
+must follow its content and fixed only the image-write path; the bind-FIRST path is the one it missed.
+
+### `store_reclaim` makes the number mean content again
+
+Calling it before measuring, same shape: ordered 132 MB against scattered 83 MB. So the **real** effect of
+ordering is **~1.6× on this shape** (the maintainer measures 1.30× on theirs) and it is interior
+fragmentation — growing one tile's vectors to completion before starting the next — which `DATABASE.md`
+records as open under @PLN123 arc B. Real, worth knowing, and nothing like the conclusion it was carrying.
+
+### The rule this leaves behind
+
+**Never compare two `store_persist_bind` outputs by `stat`.** Any size difference under 133% may be a
+single rung, and any equality may be hiding a doubling. Call `store_reclaim` first, or the comparison is
+not a measurement. `tools/bind_order_probe.loft` now calls it before the gate reads the file, and
+`tools/bind_order_gate.sh` labels the column `content` rather than `file` — the maintainer asked for
+exactly that, having made the same mistake in their own table on the same issue.
+
+The general form is already `CLAUDE.md`'s and this cost a second instance of it: *a number is not a
+measurement until you know what it is attributed to.* A file size looks like the most concrete number
+available, which is precisely why it was believed without asking what produced it.
+

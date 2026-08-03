@@ -47,6 +47,11 @@ export async function createKernel(wasmUrl) {
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
   // PLAN-SCALE C1b: a working-set read is only a working set if you can SEE what it fetched.
   let rangeReads = 0, rangeBytes = 0, rangeAsked = 0;
+  // Per STORE, not just the session total. A gate that says "48% of a 222.4 MB block" has to be able to
+  // name which block, and the session total silently stopped being able to: once the base map moved to
+  // the app's own origin its pages joined the same counter, and a roads-block budget started failing on
+  // base-map bytes. The url is right here, so attribution costs one Map.
+  const perStore = new Map();
   const rangeFails = [];
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
@@ -144,6 +149,9 @@ export async function createKernel(wasmUrl) {
               // Counted on DELIVERY. The first version counted the request, so a cross-origin read that
               // the browser blocked still reported "38 range reads, 2.3 MB" while the matcher got nothing.
               rangeReads++; rangeBytes += ctrl.httpBytes.length;
+              const sk = url.split('?')[0].split('/').pop() || url;
+              const pe = perStore.get(sk) || { reads: 0, bytes: 0 };
+              pe.reads++; pe.bytes += ctrl.httpBytes.length; perStore.set(sk, pe);
             }
             wake('fetch');
           })
@@ -247,7 +255,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size }),
+    stats: () => ({ starts, commands, storeLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore) }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

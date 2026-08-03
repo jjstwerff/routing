@@ -1,0 +1,128 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// DOES BINDING THE STORE FIRST BOUND A GENERATOR'S MEMORY? — the measurement behind
+// [loft#747](https://github.com/loft-lang/loft/issues/747), in the tree instead of in a README.
+//
+// WHY THIS EXISTS AS A FILE. `plans/51-coverage-past-nl/` states that binding first is 4.5x WORSE, and
+// `PLAN-SCALE` §6e builds on it: Western Europe needs 130-270 GB, therefore never generate a store that
+// big. Upstream re-measured and got the OPPOSITE (4.4x better) once loft#746 was fixed. Both numbers were
+// produced by throwaway probes on different binaries and different programs, so neither can be re-run —
+// which is HANDOFF §2's rule about a probe outside a gate, charged to the most expensive claim we own.
+//
+// WHAT IT BINS, and why not something simpler. The shape is `gen-tiles.loft`'s, not a synthetic one: a
+// `hash<TTile[tkey]>` whose tiles own INNER VECTORS that are appended to as features arrive. That detail
+// is the whole point — an earlier simple test suggested bind-first already worked, and the plan records
+// that it "reverses on the realistic pattern" once the inner-vector appends are there. So the probe does
+// the appends, and a claim measured here is a claim about the generator.
+//
+//   loft --native --lib lib tools/bind_order_probe.loft <out.store> <roads> <tiles> <first|last> \
+//        [scattered|ordered] [steps-per-road]
+//   loft --native --lib lib tools/bind_order_probe.loft <out.store> - - verify
+//
+// `ordered` feeds keys monotonically, so every tile is complete before the next begins — the input a
+// streaming generator would produce. The plan claims that changes nothing; that is a claim to re-test,
+// not to inherit.
+//
+// It prints counts it accumulated WHILE BUILDING and never walks the collection afterwards. That is not
+// tidiness: iterating a loft collection copies each record's heap (C86), so a verification pass inside
+// the measured run would charge the measurement for a walk the generator never does.
+#cwd
+
+use routing_kernel::(TTile, TRoad, TStep);
+
+// Spread keys so no two consecutive features land in the same tile — Knuth's multiplicative constant,
+// kept well inside i64 for the feature counts this runs at (400k * 2654435761 ~ 1.1e15).
+KNUTH = 2654435761;
+
+// One feature: find or create its tile, then append a road and its steps to that tile's inner vectors.
+// Deliberately the same three moves `gen-tiles.loft`'s `add_way` makes, in the same order.
+fn add_feature(idx: hash<TTile[tkey]>, key: integer, spr: integer, seq: integer) -> integer {
+  t = idx[key];
+  if t == null {
+    idx += TTile { tkey: key, ox: key * 100, oy: key * 100, oh: 0, roads: [], steps: [] };
+    t = idx[key];
+  }
+  for s in 0..spr {
+    t.steps += [TStep { x: ((seq + s) % 1000) as i32? ?? (0 as i32),
+                        y: ((seq - s) % 1000) as i32? ?? (0 as i32),
+                        h: 0 as i32 }];
+  }
+  // MASK, not modulo — `gen-tiles.loft` does the same, and the reason is the type checker: `x % 8` is
+  // range (-7, 7) because the operand could be negative, so it will not narrow to u8, while `x & 7`
+  // is provably (0, 7) and does.
+  t.roads += [TRoad { tp: (seq & 7) as u8, flags: (seq & 65535) as u16,
+                      nets: 0 as u16, steps: (spr & 255) as u8 }];
+  spr
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  path  = a[0] ?? "";
+  mode  = a[3] ?? "last";
+  if path == "" {
+    println("usage: bind_order_probe <out.store> <roads> <tiles> <first|last> [scattered|ordered] [spr]");
+    return;
+  }
+
+  // The read-back half, run as its own process so it cannot contaminate the write's resident set. A
+  // generator that used less memory because it wrote LESS is not a cheaper generator, and only counting
+  // the records that reached the file can tell those apart.
+  if mode == "verify" {
+    back: hash<TTile[tkey]> = [];
+    store_load(back, path);
+    vt = 0; vr = 0; vs = 0;
+    for bt in back { vt += 1; vr += len(bt.roads); vs += len(bt.steps); }
+    println("#V tiles={vt} roads={vr} steps={vs}");
+    return;
+  }
+
+  nroad = (a[1] ?? "") as integer ?? 400000;
+  ntile = (a[2] ?? "") as integer ?? 40000;
+  order = a[4] ?? "scattered";
+  spr   = (a[5] ?? "") as integer ?? 10;
+  if ntile < 1 { ntile = 1; }
+
+  // ⚠ DELETE BY NAMED PATH, and delete before binding. `store_persist_bind` over an existing file keeps
+  // the OLD image and still returns true (HANDOFF §2), so a re-run without this measures the previous
+  // run's store and reports fresh counts over stale bytes. Named paths, never a glob — §2's other rule.
+  _ = delete(path);
+  _ = delete("{path}.dschema");
+
+  idx: hash<TTile[tkey]> = [];
+  bound_first = false;
+  if mode == "first" { bound_first = store_persist_bind(idx, path); }
+
+  per = nroad / ntile; if per < 1 { per = 1; }
+  nr = 0; ns = 0;
+  for i in 0..nroad {
+    key = 0;
+    // `ordered` walks the key space once, so a tile is finished before the next one opens; `scattered`
+    // revisits every tile throughout. If the store can only release what it will not see again, these
+    // two must differ — and the plan says they do not.
+    // `?? 0` discharges C80's fallible divide/modulo, and it binds looser than the operator so it
+    // applies to the RESULT. Both guards above make the zero unreachable; it is the type, not a case.
+    if order == "ordered" { key = i / per ?? 0; } else { key = (i * KNUTH) % ntile ?? 0; }
+    if key >= ntile { key = ntile - 1; }
+    ns += add_feature(idx, key, spr, i);
+    nr += 1;
+  }
+
+  bound_last = false;
+  if mode != "first" { bound_last = store_persist_bind(idx, path); }
+  ok = bound_first || bound_last;
+
+  // ⚠ A BOUND STORE'S FILE SIZE IS ITS CAPACITY, NOT ITS CONTENT, and comparing raw sizes manufactures
+  // findings. Capacity climbs a ladder whose every rung is 7/3 of the last (loft#752), so two runs can
+  // differ by 133% having stored the same records — and two others can differ by ZERO having stored
+  // twice as many. Verified here: 250 000, 300 000 and 400 000 roads all persist to exactly 91 419 400
+  // bytes, and 91419400/39179744 is 7/3 to four figures.
+  //
+  // This cost a wrong finding. A 2.33x "ordering penalty" was measured, written up, filed upstream and
+  // read as "feeding keys in order is worse on every axis" — it was one rung. `store_reclaim` returns
+  // the slack, which is what makes the number downstream mean content again; the real ordering effect
+  // survives it at ~1.3x and is interior fragmentation (@PLN123 arc B), not capacity.
+  freed = store_reclaim(idx);
+  println("#B mode={mode} order={order} roads={nr} steps={ns} tiles={ntile} persist={ok} reclaimed={freed}");
+}

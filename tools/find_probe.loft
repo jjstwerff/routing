@@ -1,0 +1,30 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// ONE `find`, FROM A GIVEN CAMERA — the thin probe behind the cross-border half of `name_gate`.
+//
+// `name_probe.loft` owns the Enschede fixtures and asserts them itself. This one asserts nothing: it
+// takes a camera and a query, runs the kernel's own `do_find`, and prints what came back, so a gate can
+// state its cases in the shell instead of recompiling loft to add one.
+//
+//   loft --native --lib lib tools/find_probe.loft <names.store> <cam_lat> <cam_lon> <query> [limit]
+#cwd
+
+use basemap::NameRec;
+use map_kernel::do_find;
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 4 { println("usage: find_probe <names.store> <cam_lat> <cam_lon> <query> [limit]"); return; }
+  names: hash<NameRec[id]> = [];
+  if !store_load(names, a[0] ?? "") { println("#F FAIL store_load {a[0] ?? \"\"}"); return; }
+  n = 0;
+  for r in names { n += 1; }
+  // Non-vacuity, first: every assertion a caller makes is over what this returns, so an empty store
+  // would let a gate pass by finding nothing and calling it "correctly nothing".
+  if n < 100 { println("#F FAIL vacuous — {n} names is not a store anyone could search"); return; }
+  println("#F store {n} names");
+  do_find(names, a[3] ?? "", (a[1] ?? "") as float ?? 0.0, (a[2] ?? "") as float ?? 0.0,
+          (a[4] ?? "") as integer ?? 8);
+}

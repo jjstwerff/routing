@@ -197,6 +197,7 @@ tracking here: it is the reason this plan's §2 was written against a read path 
 | **D8** | **Overpass fallback stays** for outside-coverage sketches. | it is the only thing that makes a partial rollout usable — and every rung of §6b is a partial rollout |
 | **D9** | **The refresh runs on the maintainer's machine or a self-hosted runner**, resumably; CI validates the manifest and the published index but does not build the data. | ~30 GB of source and hours of CPU against Actions' ~14 GB disk / 6 h job (§7 R10) |
 | **D10** | **Coverage grows by RUNGS (§6b), each one live and revertible by an index flip**, and the refresh loop runs from the first rung. | a wall found at 1 block costs a day; the same wall found at 40 blocks costs the dataset |
+| **D12** | **Roads are cut as a disjoint PARTITION; the base map as an overlapping COVER.** Every cell belongs to exactly one roads block, while base blocks carry a 0.10° margin and deliberately overlap. **The read decides which, not the geography:** a route corridor is *unbounded* — it follows the route — so a duplicated road is read twice and matches a **different** route (wrong, not slow); a viewport is *bounded* to about 0.1°, so a duplicated margin removes the seam and is never read twice. Named 2026-08-03 while asking why a country border needs more care than a region border: it does not — **the layer** does. Consequence: a neighbouring country needs its ROADS trimmed to unowned cells, not the continent re-tiled (`plans/51-coverage-past-nl/`). | the four NL regions already ship both rules; this states the one that was implicit. It is also why raw Geofabrik per-country extracts are not a mistake to route around — they do the base-map thing (duplicate enough to be whole) to data we consume the roads way |
 | **D11** | ⏸ **RETIRED 2026-07-30 (kept until loft#678 reaches `main`, since a fresh install from `main` still lacks the fix).** Until the browser can page (S1), coverage grows on SMALL WHOLE-FILE blocks — city-sized, ~20–50 MB, the app loading the one or two its viewport needs — and switches to working-set reads the day `store_load_key` compiles for `--html`, with no format change (same stores, same keys). | it is the only honest interim: the block SIZE is the only lever a whole-file loader has, and it costs block count and index rows, not a codec. ⚠ It does NOT reach C4/C5 — a phone cannot whole-file its way through WE — so it buys coverage growth and pipeline experience while the upstream ask lands, and the plan's end state still depends on it |
 
 ---
@@ -976,10 +977,29 @@ accumulates the entire store in memory, writing it once with `store_persist_bind
     NL base:  17.29 M features  →  ~6 GB RSS   ≈ 350 bytes/feature, linear
     WE base:  390–780 M features (§1's 44–88 GB at ~113 B/feature payload)  →  130–270 GB RSS
 
-Nothing tunes out of that. Two ways past it:
+> ⚠ **THE 130–270 GB IS A `store_persist_bind`-LAST NUMBER, and that is no longer the only option
+> (2026-08-03).** It measures a generator that accumulates an unbound `hash` — anonymous heap, which the
+> kernel cannot reclaim. **Binding the store FIRST and inserting into it is 2.8–5.3× cheaper, and its
+> pages are file-backed and evictable**: under a cgroup cap with swap disabled, a bind-first build
+> completes in half its own uncapped RSS while a bind-last build of the same data is OOM-killed. So
+> dataset size sets a *throughput* cost for a bound store, not a memory requirement.
+>
+> This § predates that. It was written against loft 2026.8.0 md5 `0849e437…`, where
+> [loft#746](https://github.com/loft-lang/loft/issues/746) broke the bind-first insert path outright — and
+> the plan that reported it ([@51](plans/51-coverage-past-nl/README.md)) had the direction *backwards* as a
+> result. The measurement is now `tools/bind_order_gate.sh`, re-runnable against whichever binary is
+> installed.
+>
+> **What this does NOT settle:** WE itself. The gate measured to 1.6 M features; WE is ~390–780 M. The
+> floor is real (400 k completes at 48 MB, dies at 32) and capping costs ~2× wall. So the region structure
+> below stays — it is still how this gets built — but it is now a *throughput and CI* choice rather than
+> the only way the data can exist. `PLAN-SCALE` should not be re-planned around one gate run.
 
-* **make the store writable incrementally** — a real capability, an upstream ask on `loft-lang/loft`, and
-  an unknown timeline;
+Nothing tunes out of that *for a generator that binds last*. Two ways past it:
+
+* **make the store writable incrementally** — ✅ **it already is** ([loft#747](https://github.com/loft-lang/loft/issues/747);
+  bind first, then insert). What remains open upstream is only an eviction *hint* — a way to say "this
+  tile is finished" — which turns the cap's throughput cliff into a curve;
 * **never build a store that big.**
 
 The second needs nothing from anyone, and it is not a workaround: **C4/C5 already specify 10–16 roads
@@ -2111,6 +2131,59 @@ This is the part that has no natural forcing function, so it gets an explicit ta
 oldest block in the index is inside the target; a single stale region is one block's work to fix; and no
 step in doing any of that required a codec of our own.
 
+### 8b. One cadence for every region stops working before the world does (2026-08-03)
+
+Everything above assumes **one** target for every block, and that is right up to Western Europe: ~40
+blocks on a 14-day cycle is ~3 blocks a day, which one machine sustains. It is not right for the world,
+which is roughly another order of magnitude on top of WE's 44–88 GB of base map.
+
+**Two decisions, and they are different.** The world as *coverage* is a hosting-and-funding question —
+Pages is out well before it, and the maintainer's position is recorded: **Western Europe as a recurring
+build is fine; the world needs funding and probably a dedicated host, and is not something to absorb
+quietly.** Nothing in this plan should be designed as if it were free. The world as a *refresh cadence*
+is the engineering half, and it is the cheaper problem: refresh less where less has changed.
+
+#### ⚠ "Sparse" is the wrong key, and this repo already has the measurement that says so
+
+The obvious rule is *refresh sparse regions less often*. It conflates two different axes, and @51 phase A
+measured them apart:
+
+| | by road ways | by base-map bytes |
+|---|---|---|
+| Belgium vs the Netherlands | 53% | **44%** |
+| Luxembourg vs the Netherlands | 6% | **2.6%** |
+
+Density predicts a region's **SIZE**. It says nothing about its **CHANGE RATE**. Keying cadence on
+density starves a sparse region that is being actively mapped — exactly where a new path is most likely to
+be the thing a router gets wrong — while rebuilding a dense but stable one every fortnight for nothing.
+The same error in miniature is `PLAN-PERF` §7h: an aggregate that wins on average and loses on the
+interaction anyone actually performs.
+
+#### The key is measured change, and it costs no build to read
+
+OSM publishes what moved. Geofabrik ships per-region diffs with change counts, so *"how much of this
+region changed since the snapshot we shipped"* is a download of kilobytes and no generation at all — the
+same shape as `tools/tiling_probe.py`, which answers a tiling question in **8.4 s against a 25-minute
+build** and is trusted precisely because it was validated against real blocks before being believed.
+
+So the design is: **a region's target is derived from its own measured change rate, and the alarm keys on
+the region's own target rather than one global number.** The machinery is mostly present —
+`refresh-region.sh <id>` has always been per region, so nothing forces a global refresh; what is missing
+is a cadence field in the manifest and something that sets it.
+
+Three things to get right when it is built, each of which is a failure this repo has already paid for
+somewhere else:
+
+1. **The measurement must be a gate, not a script someone runs.** A cadence chosen by a probe nobody
+   re-runs is a cadence frozen at the day it was picked (`tools/bind_order_gate.sh` is the standing
+   example of what that costs).
+2. **A region that has never been measured must read as URGENT, not as fresh.** Absent evidence is not
+   evidence of stability — the same rule that makes `heldGroundFor` gate on what a view actually
+   RETURNED rather than on an extent that claims to cover it.
+3. **Publish the cadence, not just the age.** §8 already says the app shows the age of the data under the
+   cursor; if the target varies per region, the age alone is unreadable — 20 days is fine in the Ardennes
+   and late in Amsterdam.
+
 ---
 
 ## 9. Still open — with the instrument named
@@ -2123,7 +2196,7 @@ step in doing any of that required a codec of our own.
 | 3b | Which builtins are missing on the browser target? | ✅ **ASK IT: `loft targets wasm`** (loft#680, shipped 2026-07-30 — derived from rustc, so it cannot drift from the cfgs). Today it answers *"every stdlib builtin is available here"* |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
-| 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9. ⚠ **Less urgent than it looked**: GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (measured 2026-08-01 against the live site), so a second Pages site is a free CORS host for NL-sized data. A bucket is still the answer at WE scale — 44–88 GB is 45–90 Pages repos — so this becomes a cost question at C4/C5, not at C2 |
+| 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9. ⚠ **Less urgent than it looked**: GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (measured 2026-08-01 against the live site), so a second Pages site is a free CORS host for NL-sized data. ⚠ **CORRECTED 2026-08-03 — `ACAO: *` is NOT enough, and a second Pages repo is a free host only while it is the SAME ORIGIN.** Pages sends `access-control-allow-origin: *` and a real `content-range`, but no **`access-control-expose-headers`** — and `Content-Range` is not CORS-safelisted, so genuinely cross-origin JS reads it as `null`, cannot learn the store's size, and stops after two `bytes=0-0` probes with no console error and no failed request. It works today because the app (`jjstwerff.github.io/routing`) and its data (`jjstwerff.github.io/routing-data-nl-*`) are different PATHS on ONE origin. Any consumer on another origin — a custom domain, an Android app, a second site — gets nothing. `cors_host_gate`'s header already stated both required headers; the 2026-08-01 measurement checked only the first. A bucket is still the answer at WE scale — 44–88 GB is 45–90 Pages repos — so this becomes a cost question at C4/C5, not at C2 |
 | 7 | ~~`oneway=` is still dropped by the store~~ | ✅ **CARRIED 2026-08-03.** `nets` moving to its own u16 (PLAN-LAYERS §3) freed bits 8–15 of `flags`, and direction now uses four of them: two for `oneway=` and a two-bit FIELD for `oneway:bicycle`, because a signed contraflow (`oneway=yes` **and** `oneway:bicycle=no`, 597 of them in the Enschede fixture alone) is the case one bit cannot express. `oneway_flags`/`oneway_tags` live beside each other in routing_kernel so the generator does not know the layout. The ROUTER never needed changing — `dir_allowed` has honoured direction since the matcher was written; it was fed `""` by every stored way, so this was a storage gap, not a matcher one. Regenerated fixture: **5345 / 1 / 597 / 51** for yes / -1 / bike-contraflow / bike-forward, matching the source export exactly, against **0 of each** before. A/B on one sketch: `driving_fastest` 27 pts 1062.2 m → 28 pts 1048.3 m, `walking_paved` **identical** (the control — foot ignores direction by design). ⚠ **The published blocks do not carry it until the next regeneration**; the code is inert on a block whose bits are zero. Old note follows | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
 | 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
 | 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |

@@ -190,6 +190,7 @@ test: check
 	@LOFT_BIN="$(LOFT)" ./tools/elevation_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/routes_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
+	@./tools/derived_scope_gate.sh
 	@echo "  ALL OFFLINE GATES PASS"
 
 test-native: check-rustc
@@ -211,6 +212,7 @@ test-native: check-rustc
 	@./tools/block_overlap_gate.sh
 	@./tools/height_gate.sh
 	@./tools/loft_bug_gate.sh
+	@./tools/bind_order_gate.sh
 	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \
 	  echo "$$out" | grep -E '^stores|^identity|^invariance|^#C'; \
 	  echo "$$out" | grep -q '^#C ALL PASS' \

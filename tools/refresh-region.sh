@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Jurjen Stellingwerff
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# ONE COMMAND for a whole region refresh — acquire → roads → networks → heights → names → base → cut → index.
+# ONE COMMAND for a whole region refresh — acquire → roads → networks → heights → names → base → cut →
+# DERIVED → index.
 #
 # Every step here already existed as its own script; what did not exist was the ORDER, and the order is
 # where the mistakes live. Doing it by hand on 2026-08-01 produced four of them, each of which passed the
@@ -59,10 +60,10 @@ done
 step() { echo; echo "########## $* ##########"; }
 die()  { echo "FAIL: $*" >&2; exit 1; }
 
-step "1/7 roads — acquire, filter, export, join networks, generate"
+step "1/8 roads — acquire, filter, export, join networks, generate"
 "$here/tools/build-blocks.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-blocks"
 
-step "2/7 heights — sample terrain into TStep.h (PLAN-RESTORE R2)"
+step "2/8 heights — sample terrain into TStep.h (PLAN-RESTORE R2)"
 # BEFORE the cut, deliberately: `split_block.loft` already carries `h` through, so sampling the country
 # once gives all four regions their heights. Doing it after would be four passes over four terrain grids
 # for the same answer.
@@ -77,25 +78,25 @@ elif ! "$here/tools/bake-heights.sh" "$out/$id.roads.store" "${TERRAIN_ZOOM:-12}
   echo "    Re-run on the built block when the terrain is reachable: tools/bake-heights.sh $out/$id.roads.store"
 fi
 
-step "3/7 names — street + place search index (PLAN-RESTORE R4)"
+step "3/8 names — street + place search index (PLAN-RESTORE R4)"
 "$loft" --native-release --lib "$here/lib" "$here/tools/gen-names.loft" \
   "$out/$id.names.store" "$work/$id.geojsonseq" "$work/$id.places.geojsonseq" \
   || die "gen-names"
 
 if [ "$do_base" = 1 ]; then
-  step "4/7 base map — landcover, buildings, lines, labels, pois"
+  step "4/8 base map — landcover, buildings, lines, labels, pois"
   "$here/tools/build-base.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-base"
 else
-  step "4/7 base map — SKIPPED (--no-base)"
+  step "4/8 base map — SKIPPED (--no-base)"
 fi
 
 if [ "$do_regions" = 1 ]; then
-  step "5/7 cut into the regions data/coverage.toml names"
+  step "5/8 cut into the regions data/coverage.toml names"
   # The cut, its bounds, its two opposite rules and its conservation checks all live in one place —
   # see the header of that script for why they may not live here as well.
   SKIP_BASE="$([ "$do_base" = 1 ] && echo 0 || echo 1)" "$here/tools/cut-regions.sh" "$id" || die "cut-regions"
 elif [ -n "$split_lon" ]; then
-  step "5/7 split at ${split_lon}°E"
+  step "5/8 split at ${split_lon}°E"
   # ⚠ CONSERVATION IS CHECKED HERE, not at the end. A split that loses a tile produces two blocks that
   # each look fine and a country with a hole in it; the only moment the whole and the parts can be
   # compared is right now, while both exist.
@@ -118,7 +119,28 @@ elif [ -n "$split_lon" ]; then
   [ "$((we + ea))" = "$wh" ] || die "the split lost $((wh - we - ea)) ways — do not publish this"
 fi
 
-step "6/7 index"
+# ⚠ THE DERIVED BLOCKS WERE MISSING FROM THIS SEQUENCE ENTIRELY, and only `data-refresh.yml` built them
+# (it calls `build-derived.sh netherlands` as its own step). So a refresh run BY HAND produced fresh
+# regions and left the overview and the middle zooms describing the previous snapshot — the exact silent
+# staleness `build-derived.sh`'s own header exists to prevent, one level up, and nothing reported it
+# because `publish-release.sh` uploads whatever `blocks/` holds that the manifest names.
+#
+# It goes BEFORE the index, and that ordering is not cosmetic: `build_index.sh` opens every block the
+# manifest names to read its real extent, so a derived block that does not exist yet fails the index.
+if [ "$do_base" = 1 ]; then
+  step "6/8 derived blocks — the overview and the middle zooms"
+  # Scoped to this country: the blocks it feeds get rebuilt, the ones it does not are left alone, and
+  # the overview is rebuilt either way because it reads every region (tools/derived_scope_gate.sh).
+  "$here/tools/build-derived.sh" "$id" || die "build-derived"
+else
+  # ⚠ NOT a silent skip. A derived block is a function of the region BASE stores, so with --no-base there
+  # is nothing new to derive from and rebuilding would only re-persist the previous snapshot under a
+  # fresh mtime. That is what the workflow does deliberately — it runs --no-base here and builds the base
+  # and the derived blocks in a later job, where the disk for them exists.
+  step "6/8 derived blocks — SKIPPED (--no-base); run tools/build-derived.sh $id after the base map"
+fi
+
+step "7/8 index"
 # The version and the release tag are ONE decision. Set them apart and index_fresh_gate rejects the
 # result — which is right, and is why this takes the tag rather than inventing a date.
 ver="${DATASET_VERSION:-v$(date -u +%Y-%m-%d)}"
@@ -127,7 +149,7 @@ if grep -q 'base_url_base\|url_base' "$here/data/coverage.toml"; then
 fi
 DATASET_VERSION="$ver" "$here/tools/build_index.sh" || die "build_index"
 
-step "7/7 what is left, and why it is not automatic"
+step "8/8 what is left, and why it is not automatic"
 cat <<EOF
   Built into $out. NOT published — publishing replaces data other people may be reading, so it stays a
   deliberate act:

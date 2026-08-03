@@ -75,7 +75,16 @@ if [ -s "$pbf" ]; then
   echo "  have $(basename "$pbf") ($(du -h "$pbf" | cut -f1)) — checking it is still current"
   remote="$(curl -sIL "$url" | grep -i '^content-length' | tail -1 | tr -dc '0-9')"
   local_sz="$(stat -c%s "$pbf")"
-  if [ -z "$remote" ] || [ "$remote" = "$local_sz" ]; then need=0
+  # ⚠ A BLOCKED NETWORK ANSWERS THIS CHECK. Inside the Claude Code command sandbox (and behind any
+  # intercepting proxy) the HEAD returns an ERROR PAGE with its own content-length — a few kB, which is
+  # never the local size, so "upstream changed" fires and a good cache is re-fetched into a failure.
+  # A country extract is never under 1 MB, so a tiny "remote size" means we cannot see upstream, not that
+  # upstream shrank. Trust the cache and say why. (The download itself still verifies md5, so a real
+  # change is still caught the moment the network is actually reachable.)
+  if [ -n "$remote" ] && [ "$remote" -lt 1000000 ]; then
+    echo "  cannot reach upstream (HEAD returned $remote bytes — a proxy or error page); using the cache"
+    need=0
+  elif [ -z "$remote" ] || [ "$remote" = "$local_sz" ]; then need=0
   else echo "  upstream changed ($local_sz → $remote) — re-fetching to $(basename "$part")"; fi
 fi
 
@@ -194,8 +203,17 @@ echo "  extent lat $(python3 -c "print(f'{$1/1e7:.4f}..{$3/1e7:.4f}')") lon $(py
 # saying "I know how small this is meant to be" rather than the check being deleted.
 [ "$5" -ge "${MIN_TILES:-100}" ] || { echo "FAIL: only $5 tiles (floor ${MIN_TILES:-100}) — the block is empty or the filter dropped everything"; exit 1; }
 # A paged spot check: the read path the client uses, on the block it will actually read.
-LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" 2>&1 \
+#
+# ⚠ THE VIEWPORT COMES FROM THIS BLOCK'S OWN EXTENT. It used to be hardcoded to Enschede inside the
+# probe, so every other region asked 42 keys, loaded 0, and this line printed a pass — measured on the
+# first Belgium block. A 0.03° box at the extent's centre is a realistic viewport wherever the block is.
+pv_cla=$(( ($1 + $3) / 2 )); pv_clo=$(( ($2 + $4) / 2 ))
+LOFT_LOADER_STATS=1 "$loft" --native --lib "$here/lib" "$here/tools/page_locality_probe.loft" "$store" \
+  $((pv_cla - 300000)) $((pv_clo - 400000)) $((pv_cla + 300000)) $((pv_clo + 400000)) 2>&1 \
   | grep -E '^store_load_keys|^asked' | sed 's/^/  /'
+# A spot check that loads NOTHING is not a pass. It means the viewport missed the data — which is what a
+# hardcoded one did for every region but the first.
+'
 
 # The box the block was cut from, recorded BESIDE it. Without this, nothing downstream can tell whether a
 # source export and a block describe the same ground — and a count comparison between two different boxes

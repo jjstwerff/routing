@@ -41,12 +41,27 @@ fn match_with(ways: vector<Way>, trace: vector<GeoPoint>) -> vector<GeoPoint> {
 fn main() {
   a: vector<text> = [];
   for x in arguments() { a += [x]; }
-  if len(a) < 3 { println("usage: cross_block_probe <whole.store> <west.store> <east.store>"); return; }
+  if len(a) < 3 { println("usage: cross_block_probe <whole.store> <a.store> <b.store> [\"lat,lon;lat,lon;…\"]"); return; }
 
   // A sketch that genuinely crosses the seam at 6.88°E — west of it, east of it, and back.
   trace: vector<GeoPoint> = [GeoPoint { lat: 52.2000, lon: 6.8500 },
                              GeoPoint { lat: 52.2200, lon: 6.9000 },
                              GeoPoint { lat: 52.2400, lon: 6.9200 }];
+  // ⚠ THE SEAM IS AN ARGUMENT NOW, because @51 phase D asks the same question at a real BORDER and the
+  // sketch above is Enschede's. The manufactured seam keeps its default so `cross_block_gate` is
+  // unchanged; a caller that names a trace is testing a different seam with the identical instrument,
+  // which is the point — a border route and a split-block route must be checkable by one probe or the
+  // two results are not comparable.
+  if len(a) >= 4 && (a[3] ?? "") != "" {
+    trace = [];
+    for tok in (a[3] ?? "").split(';') {
+      xy = tok.split(',');
+      if len(xy) == 2 {
+        trace += [GeoPoint { lat: (xy[0] ?? "") as float ?? 0.0, lon: (xy[1] ?? "") as float ?? 0.0 }];
+      }
+    }
+    if len(trace) < 2 { println("#X FAIL the trace argument parsed to {len(trace)} point(s)"); return; }
+  }
   margin = corridor_margin(trace);
 
   // --- the reference: one block holding everything

@@ -1,0 +1,82 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// RECOVER A BLOCK WHOSE SIDECAR NAMES A WRAPPER STRUCT — the repair for the `store_persist_bind` trap.
+//
+// WHAT WENT WRONG, so this is recognisable when it happens again. `store_persist_bind` records the
+// BINDING PROGRAM'S OWN ROOT SHAPE in the `.dschema`. A tool that binds through
+// `struct Block { roads: hash<TTile[tkey]> }` therefore rewrites the sidecar to name `Block` and changes
+// its schema hash — and loft#705 then makes every tool that binds a bare `hash<TTile[tkey]>` (which is
+// all of them: gen-tiles, split_block, store_extent, cell_diff, trim_cells, merge_blocks) fail to load
+// the block outright.
+//
+// ⚠ THE RECORDS ARE NOT DAMAGED. Only the sidecar is, which is what makes it survivable — and what makes
+// it invisible, because the tool that caused it can still read its own output perfectly. `gen_heights`
+// filled 289 117 of 289 117 steps on a fixture it had just made unloadable by everything else.
+//
+//   loft --native --lib lib tools/reseat_schema.loft <in.store> <out.store>
+//
+// Reads through the wrapper, writes from a bare local, so the output carries the schema every other tool
+// expects. The heights (or whatever the binding tool wrote) come across untouched.
+//
+// ⚠ IT IS A REPAIR, NOT A STEP. Nothing in the pipeline should need it: `gen_heights.loft` binds a bare
+// local now, so it no longer causes this. Keep this for a block that already has the damage, and for the
+// next tool that learns the lesson the expensive way.
+#cwd
+
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, TRoute, TRLink);
+
+// The shape the DAMAGED sidecar names. It has to be spelled exactly as the tool that wrote it spelled it,
+// or the load fails for the same reason it fails without this tool at all.
+struct Block { roads: hash<TTile[tkey]> }
+
+fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
+  dst += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
+  t = dst[src.tkey];
+  n = 0;
+  if t != null {
+    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, nets: r.nets, steps: r.steps }]; n += 1; }
+    // `h` comes across here, which is the whole point of the repair — the heights are in the records and
+    // only the sidecar was wrong.
+    for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
+    for b in src.barriers { t.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
+    for rt in src.routes { t.routes += [TRoute { rid: rt.rid, kind: rt.kind, level: rt.level, flags: rt.flags,
+                                                colour: rt.colour, rref: rt.rref, name: rt.name }]; }
+    for rl in src.rlinks { t.rlinks += [TRLink { road: rl.road, route: rl.route }]; }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 2 { println("usage: reseat_schema <in.store> <out.store>"); return; }
+  in_path = a[0] ?? "";
+  out_path = a[1] ?? "";
+  if file(out_path).exists() {
+    println("#S FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
+    return;
+  }
+
+  src = Block { roads: [] };
+  if !store_load(src.roads, in_path) {
+    println("#S FAIL cannot load {in_path} through the wrapper either — this is not the damage this repairs");
+    return;
+  }
+
+  out: hash<TTile[tkey]> = [];
+  tin = 0; win = 0; hn = 0;
+  for t in src.roads {
+    tin += 1;
+    win += copy_into(out, t);
+    // Count the steps that carry a height, because "the repair kept the heights" is the one property
+    // worth asserting: a copier that dropped `h` would produce a perfectly readable, perfectly wrong block.
+    for s2 in t.steps { if (s2.h as integer) != 0 { hn += 1; } }
+  }
+  ok = store_persist_bind(out, out_path);
+  tout = 0; wout = 0;
+  for t2 in out { tout += 1; wout += len(t2.roads); }
+  println("#S in {tin} cells / {win} ways · out {tout} cells / {wout} ways · {hn} step(s) carry a height · persist {ok}");
+  if tout != tin || wout != win { println("#S FAIL the copy lost data"); return; }
+  println("#S ALL PASS — same records, schema every tool can read");
+}

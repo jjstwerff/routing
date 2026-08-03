@@ -368,10 +368,55 @@ is ready, and the elevation sampler is the long pole that decides that.
    surface preference, not more.
 2. **Which networks count for which profile.** `rwn`+`lwn` for walking is obvious; whether `nwn`
    (national, often long-distance) should pull a 5 km errand is not.
-3. **Elevation resolution.** Terrarium z12–13 is ~10–20 m ground sampling; finer costs generation time
-   and block bytes for a gradient nobody feels.
+3. ~~**Elevation resolution.**~~ **ANSWERED 2026-08-03 — z12, and z13 is not worth adopting.** See the
+   measurement below. (The half of this that said "block bytes" was always wrong: `TStep.h` costs its
+   four bytes at any zoom, so resolution trades generation time only.)
 4. **Whether the old client stays.** It is the only thing that still exercises `server/server.loft` and
    its sync/elevation/geocode gates. Deleting it would silently retire those tests.
+
+---
+
+### Elevation resolution, measured (2026-08-03)
+
+`fetch-terrain.sh` says *"a hillier country is the reason to raise it"*, which is a recommendation, not a
+measurement. Belgium and Luxembourg were baked BOTH ways and compared **step by step within each cell** —
+`tools/height_diff.loft`, because an aggregate (min/max/mean over a country) survives almost any
+resampling and would report "no change" for a grid that had moved every sample:
+
+| | steps changed | mean \|Δ\| over changed | max | ≥5 m | ≥20 m |
+|---|---|---|---|---|---|
+| Belgium, 10 206 729 steps | 2 712 430 (26.6%) | **1.15 m** | 86 m | 6 756 | **5** |
+| Luxembourg, 1 115 440 steps | 554 026 (49.7%) | **1.41 m** | 28 m | 5 438 | **3** |
+
+**Half of Luxembourg's steps moved, by an average of 1.4 m, and the elevation RANGE is identical —
+568 m at both zooms.** Luxembourg is the hilliest ground in the dataset and sits entirely in the Ardennes;
+if a finer grid were going to show up anywhere it is there. Belgium's 86 m outlier is bathymetry, not
+terrain — z13's minimum is −127 m, which is the Scheldt seabed under a bridge (§ the terrarium note).
+
+**Cost:** 6 750 + 513 tiles, 561 MB of cache and an 885 MB packed grid for Belgium alone — ~4× z12 for
+~1 m. At Western Europe scale that is the whole argument, and it does not survive its own evidence.
+
+⚠ **And it refuted the hypothesis it was raised to test.** The obvious policy is *sample by terrain, not
+by country* — z13 where it is hilly. The hilliest block is exactly where z13 changed the range least. Do
+not re-open this without a routing decision that measurably turns on sub-2 m detail; @50 is where such a
+measurement would come from.
+
+#### The 0.8% that looked like a resolution problem and was a PADDING bug
+
+Belgium at z12 filled 99.2% of its steps and at z13 filled 100%, which reads as "the finer grid covers
+more". It does not. **A block's extent is not the ground its steps stand on**: a way is keyed at its first
+vertex and never clipped, so its later steps overhang — `tile_overhang.loft` measured up to 16 cells
+(0.32°). Sampled against an unpadded grid those steps fall outside it and keep `h = 0`, and z13 only
+reached them because its rounding happened to land further out. Luck, not coverage.
+
+`bake-heights.sh` now pads the grid box by **0.35°** (`TERRAIN_PAD`), and z12 then fills **100.0%** with
+min/max −128/701 m against z13's −127/701. Belgium goes 1748 → 2700 tiles; the terrain cache is fetched
+once, ever, so the trade is not close.
+
+⚠ **The recovered steps are at ~0 m, so no route's profile changes** — they are coastal, around the
+Scheldt mouth. What changes is what `h == 0` MEANS: sea level, rather than "we never looked". That
+distinction is exactly the one @50's gradient cost depends on, which is why the padding is worth having
+even though it moves no height.
 
 ---
 

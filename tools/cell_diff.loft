@@ -1,0 +1,143 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// WHICH CELLS DOES A SET OF BLOCKS FAIL TO COVER? — the completeness half of `block_overlap.loft`.
+//
+// `block_overlap` proves no cell is held TWICE; this proves none is held ZERO times. Both are needed and
+// neither implies the other: a banded build of Belgium came out provably disjoint and still four ways
+// short, because one cell was in no band at all (plans/51-coverage-past-nl). A sum that is "almost right"
+// is exactly the shape that survives a review, so the answer has to be the KEY, not the count.
+//
+// The cell key is invertible, so a missing cell can name its own location:
+//
+//     tkey = (ty + 4501) * 18003 + (tx + 9001)   with tx = floor(lon / 0.02), ty = floor(lat / 0.02)
+//
+// which is the packing `routing_kernel` uses and the reason this can report a longitude to look at rather
+// than an opaque integer.
+//
+//   loft --native --lib lib tools/cell_diff.loft <reference.store> <part.store> [more…]
+//
+// Reports four things, and the middle one is why a cell-set diff alone was not enough:
+//
+//   MISSING  a reference cell no part holds
+//   SHORT    a cell every part holds, carrying FEWER ways than the reference — invisible to a set diff
+//   OVER     the same cell carrying more (a duplicate, or a way keyed differently by a clipped extract)
+//   extra    a part reaching outside what it was cut from — the opposite defect, and just as wrong
+#cwd
+
+use routing_kernel::TTile;
+
+const TKEY_ROW = 18003;
+const BIAS_X = 9001;
+const BIAS_Y = 4501;
+
+// `ways` is the reference's count for this cell; `part_ways` the sum the parts actually produced. A cell
+// can be PRESENT in a part and still short — which is the case that a cell-set diff alone cannot see, and
+// the one that was actually losing ways.
+struct Cell { const k: integer, ways: integer, part_ways: integer, held: integer }
+
+fn cell_lon(k: integer) -> float {
+  tx = (k % TKEY_ROW) - BIAS_X;
+  (tx as float) * 0.02
+}
+
+fn cell_lat(k: integer) -> float {
+  ty = (k / TKEY_ROW) - BIAS_Y;
+  (ty as float) * 0.02
+}
+
+fn main() {
+  paths: vector<text> = [];
+  want_matches = false;
+  // `--matches` names the cells both sides hold IDENTICALLY. A completeness run does not want them (they
+  // are the desired state, and there are twelve thousand of them); a border trim does, because a tie has
+  // no natural owner and has to be assigned deliberately rather than left out of both drop lists.
+  for x in arguments() {
+    if x == "--matches" { want_matches = true; } else { paths += [x]; }
+  }
+  if len(paths) < 2 {
+    println("usage: cell_diff [--matches] <reference.store> <part.store> [more…]");
+    return;
+  }
+
+  ref_path = paths[0] ?? "";
+  cells: hash<Cell[k]> = [];
+
+  // The reference. Walked by INDEX inside each tile: `for r in t.roads` copies every road, and the
+  // reference block is a whole country (CLAUDE.md — iterating a loft collection copies its heap).
+  rtiles: hash<TTile[tkey]> = [];
+  store_load(rtiles, ref_path);
+  nref = 0;
+  for t in rtiles {
+    nref += 1;
+    cells += Cell { k: t.tkey, ways: len(t.roads), part_ways: 0, held: 0 };
+  }
+  println("  reference: {nref} cells  ({ref_path})");
+
+  // Every part marks the cells it holds. `held` counts, so a cell held twice is visible too — that is
+  // block_overlap's question, but a diff tool that could not see it would be lying by omission.
+  extra = 0;
+  for pi in 1..len(paths) {
+    p = paths[pi] ?? "";
+    ptiles: hash<TTile[tkey]> = [];
+    store_load(ptiles, p);
+    n = 0;
+    for t in ptiles {
+      n += 1;
+      c = cells[t.tkey];
+      if c == null {
+        extra += 1;
+        println("#C FAIL extra cell {t.tkey} at lon {cell_lon(t.tkey)} lat {cell_lat(t.tkey)} — held by {p}, absent from the reference");
+      } else {
+        c.held = c.held + 1;
+        c.part_ways = c.part_ways + len(t.roads);
+      }
+    }
+    println("  part {pi}: {n} cells  ({p})");
+  }
+
+  missing = 0;
+  lost_ways = 0;
+  short_cells = 0;
+  short_ways = 0;
+  over_cells = 0;
+  match_cells = 0;
+  // `mc`, not `c`: loft does not block-scope loop variables and `c` is the hash lookup above — the same
+  // rename block_overlap.loft carries, and the compiler catches it either way.
+  for mc in cells {
+    if mc.held == 0 {
+      missing += 1;
+      lost_ways += mc.ways;
+      // Both bounds, because the whole point is to see WHICH edge it fell off.
+      lo = cell_lon(mc.k); la = cell_lat(mc.k);
+      println("#C MISSING cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  holds {mc.ways} way(s)");
+    } else if mc.part_ways != mc.ways {
+      lo = cell_lon(mc.k); la = cell_lat(mc.k);
+      if mc.part_ways < mc.ways {
+        short_cells += 1;
+        short_ways += mc.ways - mc.part_ways;
+        println("#C SHORT   cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  reference {mc.ways} ways, parts {mc.part_ways}");
+      } else {
+        over_cells += 1;
+        println("#C OVER    cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  reference {mc.ways} ways, parts {mc.part_ways}");
+      }
+    } else {
+      // MATCH — held by a part, with the same way count. Silent in the completeness reading (it is the
+      // desired state, and a conservation check does not want 12 000 lines saying so), but it is the one
+      // case a BORDER trim has to see: when two blocks hold a cell equally, neither is the obvious owner,
+      // and a caller assigning cells one way or the other needs the ties named rather than inferred from
+      // a count that came out seven short. Off by default for exactly the reason above.
+      match_cells += 1;
+      if want_matches {
+        lo = cell_lon(mc.k); la = cell_lat(mc.k);
+        println("#C MATCH   cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  both hold {mc.ways} ways");
+      }
+    }
+  }
+
+  if missing == 0 && extra == 0 && short_cells == 0 && over_cells == 0 {
+    println("#C ALL PASS — all {nref} reference cells are held, and every one carries the same way count as the reference");
+  } else {
+    println("#C FAIL — {missing} cell(s) held by NO part ({lost_ways} ways); {short_cells} cell(s) SHORT ({short_ways} ways); {over_cells} cell(s) OVER; {match_cells} cell(s) MATCH; {extra} cell(s) outside the reference");
+  }
+}

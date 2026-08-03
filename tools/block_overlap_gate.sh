@@ -2,7 +2,14 @@
 # Copyright (c) 2026 Jurjen Stellingwerff
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# PLAN-SCALE C2 — within one index, no two road blocks may hold the same cell.
+# PLAN-SCALE C2 — within one index, no two road blocks may hold the same cell (DISJOINT), and a set of
+# regions still adds up to the block it was cut from (COMPLETE).
+#
+# ⚠ THE TWO HALVES DO NOT IMPLY EACH OTHER, and assuming they did hid a real defect. A banded Belgium
+# build passed the disjointness half — 0 shared cells over 10 373 — while four ways were missing, because
+# the cell holding them was PRESENT and merely under-filled. A cell-SET comparison cannot see that; only
+# comparing the way count per cell can. `tools/cell_diff.loft` is the second half and reports MISSING (a
+# cell no part holds) / SHORT (a cell every part holds, with fewer ways) / OVER / outside-the-reference.
 #
 # WHY IT IS A GATE. A corridor names every block whose extent it touches and reads the same cell window
 # from each, so a cell held by two blocks it can name together delivers its roads TWICE. That is not a
@@ -37,16 +44,31 @@ manifest="$here/data/coverage.toml"
 # resolving each block wherever it actually lives: beside the app (committed, small) or in blocks/
 # (generated, published).
 declare -A group_paths
+declare -A cut_paths        # cut_from source id -> the parts cut from it
 missing=()
-ubase=""; roads=""
+ubase=""; roads=""; cfrom=""
 flush() {
   [ -n "$roads" ] || return 0
   local key="${ubase:-__site__}" found=""
   for cand in "$here/_site/$roads" "$here/browser/$roads" "$here/blocks/$(basename "$roads")"; do
     [ -f "$cand" ] && { found="$cand"; break; }
   done
-  if [ -n "$found" ]; then group_paths[$key]="${group_paths[$key]:-} $found"; else missing+=("$roads"); fi
-  ubase=""; roads=""
+  if [ -n "$found" ]; then
+    # ⚠ A STAGED REGION IS IN NO INDEX, so it is not part of this invariant — which is "within one index",
+    # and a block nothing resolves to cannot be read beside anything. Grouping it with the site index made
+    # this gate fail the moment Belgium was added as a derivation source, and failing was CORRECT for the
+    # question it was asking; the question was just the wrong one for a block that does not ship.
+    #
+    # It is NOT dropped, though. The overlap it has with the live index is real and is exactly what @51
+    # phase C must trim, so it moves to its own section below that REPORTS without failing. Silently
+    # excluding it would delete the only measurement of the work that is outstanding.
+    if [ "${stg:-false}" = "true" ]; then staged_paths="${staged_paths:-} $found"
+    else
+      group_paths[$key]="${group_paths[$key]:-} $found"
+      [ -n "$cfrom" ] && cut_paths[$cfrom]="${cut_paths[$cfrom]:-} $found"
+    fi
+  else missing+=("$roads"); fi
+  ubase=""; roads=""; cfrom=""; stg=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -58,6 +80,8 @@ while IFS= read -r line; do
     # and reported "the site index: 1 block" — a pass by not looking.
     *base_url_base*=*) ;;
     *url_base*=*)  ubase="$(echo "$line" | cut -d'"' -f2)" ;;
+    cut_from*=*)   cfrom="$(echo "$line" | cut -d'"' -f2)" ;;
+    staged*=*)     stg="$(echo "$line" | tr -d ' "' | cut -d= -f2)" ;;
   esac
 done < <(grep -v '^\s*#' "$manifest")
 flush
@@ -81,6 +105,69 @@ for key in "${!group_paths[@]}"; do
   echo "$out" | grep -q '^#O ALL PASS' || rc=1
 done
 
+# --- STAGED blocks: how much would have to be trimmed before they could ship? --------------------------
+#
+# Reported, never failed. A staged block is in no index, so it breaks no invariant today — but the number
+# below IS the outstanding work (@51 phase C), and it is the only place it gets measured. When phase C
+# trims these and the flag comes off, they join C2 above and this section goes quiet on its own.
+if [ -n "${staged_paths:-}" ]; then
+  echo "== staged blocks: not in any index, so not part of C2 — this is the TRIM LIST =="
+  read -r -a live <<< "${group_paths[__site__]:-}"
+  for sp in ${staged_paths}; do
+    if [ ${#live[@]} -eq 0 ]; then echo "  $(basename "$sp"): nothing live to compare against"; continue; fi
+    sout="$("$loft" --native --lib "$here/lib" "$here/tools/block_overlap.loft" "${live[@]}" "$sp" 2>&1)"
+    shared="$(echo "$sout" | grep -oP 'PARTIALLY overlap: \K[0-9]+' | paste -sd+ | bc 2>/dev/null || echo 0)"
+    if [ "${shared:-0}" = 0 ]; then
+      echo "  ✔ $(basename "$sp"): disjoint from the live index already — it could ship as roads today"
+    else
+      echo "  · $(basename "$sp"): ${shared} cells shared with the live index — phase C trims these"
+    fi
+  done
+fi
+
+# --- the COMPLETENESS half: do the regions still add up to the block they were cut from? ---------------
+# Only runs where a `cut_from` source is present locally. It is a generated artifact and deliberately not
+# committed (a country block is hundreds of MB), so on a fresh clone this reports SKIP rather than passing
+# by not looking — the distinction the disjointness half already makes for absent blocks.
+echo "== C2b: the regions still add up to the block they were cut from =="
+complete_checked=0
+for srcid in "${!cut_paths[@]}"; do
+  ref="$here/blocks/$srcid.roads.store"
+  read -r -a parts <<< "${cut_paths[$srcid]}"
+  if [ ! -f "$ref" ]; then
+    echo "  $srcid: source block not present locally — SKIP (${#parts[@]} part(s) unchecked)"
+    continue
+  fi
+  complete_checked=$((complete_checked + 1))
+  # ⚠ EVERY BLOCK IN THE INDEX IS A PART, not only the ones cut from this source — because after a BORDER
+  # TRIM a cell that leaves the Netherlands has not vanished, it has MOVED. @51 phase C gave 200 cells to
+  # Belgium (it held more of each), and against the `cut_from` set alone those read as MISSING and the
+  # gate failed on a dataset that conserves perfectly. Conservation is a property of the INDEX, not of one
+  # country's cut, and it stopped being the same thing the moment coverage crossed a border.
+  read -r -a allparts <<< "${group_paths[__site__]:-}"
+  for extra in "${allparts[@]}"; do
+    case " ${parts[*]} " in *" $extra "*) ;; *) parts+=("$extra") ;; esac
+  done
+  echo "  $srcid -> ${#parts[@]} part(s) (every roads block in the index):"
+  cout="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$ref" "${parts[@]}" 2>&1)" \
+    || { echo "$cout"; echo "FAIL — the completeness probe did not run"; exit 1; }
+  # MISSING and SHORT are still hard failures: a source cell held by nobody, or held with FEWER ways than
+  # the source, is data lost. OVER is expected and reported — a trimmed cell is held by the neighbour that
+  # held MORE of it, which is the rule the trim applied and therefore its fingerprint.
+  miss="$(echo "$cout" | grep -oP '^#C FAIL — \K[0-9]+' || echo 0)"
+  shrt="$(echo "$cout" | grep -oP 'SHORT \(\K[0-9]+' || echo 0)"
+  over="$(echo "$cout" | grep -oP '; \K[0-9]+(?= cell\(s\) OVER)' || echo 0)"
+  if echo "$cout" | grep -q '^#C ALL PASS'; then
+    echo "$cout" | grep -E '^#C ALL' | sed 's/^/    /'
+  elif [ "${miss:-0}" = 0 ] && [ "${shrt:-0}" = 0 ]; then
+    echo "    every cell of $srcid is held, none with fewer ways — ${over:-0} reassigned to a neighbour by the border trim"
+  else
+    echo "$cout" | grep -E '^#C' | head -12 | sed 's/^/    /'
+    echo "    MISSING=${miss:-?} SHORT=${shrt:-?} — a cell held by nobody, or with fewer ways than the source, is data LOST"
+    rc=1
+  fi
+done
+
 # …and prove the check can still FAIL, on every run. Since nesting became an allowed outcome (a city block
 # inside a country block shares all its cells by design), "no partial overlap" is a verdict this gate can
 # reach by not looking hard enough — so it manufactures a pair it MUST reject. Two splits of the same
@@ -100,6 +187,25 @@ if [ -f "$src" ]; then
     echo "$self" | grep -E '^#O' | sed 's/^/       /'
     exit 1
   fi
+
+  # The completeness half needs its own self-check, and for a sharper reason: on a fresh clone the real
+  # check above SKIPs, so without this the gate would report a green C2b having compared nothing. One
+  # split of a committed block gives all three verdicts from data already in the repo.
+  t2="$(mktemp -d)"
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t2/w" "$t2/e" 6.85 >/dev/null 2>&1
+  both="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" "$t2/e" 2>&1)"
+  half="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" 2>&1)"
+  # Handing the SAME half twice: its cells are held twice (OVER — the way-count comparison firing) and the
+  # other half's are held not at all (MISSING). That is what proves C2b's per-cell count is live, which is
+  # exactly the comparison a cell-SET diff lacks and the one the banded build needed.
+  dupe="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" "$t2/w" 2>&1)"
+  rm -rf "$t2"
+  cfail=0
+  echo "$both" | grep -q '^#C ALL PASS' || { echo "FAIL — two halves of one block no longer add up to it:"; echo "$both" | grep -E '^#C' | sed 's/^/       /'; cfail=1; }
+  echo "$half" | grep -q '^#C MISSING' || { echo "FAIL — a half block handed alone is no longer reported as MISSING cells"; cfail=1; }
+  echo "$dupe" | grep -q '^#C OVER'    || { echo "FAIL — a doubled half no longer trips the per-cell WAY COUNT (OVER)"; cfail=1; }
+  [ "$cfail" = 0 ] || exit 1
+  echo "  self-check: two halves add up; one half is caught MISSING ($(echo "$half" | grep -c '^#C MISSING') cells); a doubled half is caught OVER"
 fi
 
 if [ "$checked" -eq 0 ]; then
@@ -112,4 +218,7 @@ if [ $rc -ne 0 ]; then
   echo "       rather than from per-country extracts, which overlap at every border."
   exit 1
 fi
-echo "PASS — every index's road blocks are disjoint by cell"
+if [ "$complete_checked" -eq 0 ]; then
+  echo "  (no cut_from source present locally — C2b checked only its self-check)"
+fi
+echo "PASS — every index's road blocks are disjoint by cell, and every cut set adds up to its source"

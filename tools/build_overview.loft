@@ -43,11 +43,21 @@ use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
               area_debut, line_debut, label_debut, poi_debut, DEBUT_NEVER);
 use routing_kernel::(TTile, TRoad, TStep, NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE);
 
-// Metres per pixel at zoom 0 (256-px tiles) and the latitude factor for the Netherlands. A single cos(lat)
-// for one country is right for a generalisation tolerance and wrong by a few percent at its ends.
+// Metres per pixel at zoom 0 (256-px tiles), and the two constants that turn degrees into metres.
 MPP0 = 156543.03;
-COSLAT = 0.6157;
 MPD = 111320.0;        // metres per degree of latitude
+DEG2RAD = 0.017453292519943295;
+
+// Metres per degree of LONGITUDE at a latitude, as a fraction of MPD.
+//
+// This was one constant — `COSLAT = 0.6157`, i.e. cos(52°), the Netherlands — with a comment saying a
+// single cos(lat) is "right for a generalisation tolerance and wrong by a few percent at its ends".
+// That held while the dataset was one country. Benelux spans 49.45–53.75°N, where cos runs 0.650 to
+// 0.591: a 5.5% spread, and all of it in the direction that over-decimates the south. Deriving it from
+// the ring's own tile origin costs one `cos` per ring and is exact wherever the data actually is.
+fn coslat_at(oy: integer) -> float {
+  cos(((oy as float) / 10000000.0) * DEG2RAD)
+}
 
 // --- the renderer's debut rules (browser/map.mjs), ported verbatim ------------------------------------
 
@@ -60,15 +70,23 @@ MPD = 111320.0;        // metres per degree of latitude
 // `dp_mask` works in planar METRES, which is also what makes the tolerance honest: a pixel is a fixed
 // number of metres on the ground at a given zoom, where a fixed number of DEGREES would be 1.62x too
 // generous in latitude at 52°N (Mercator's screen-y slope is 1/cos(lat)).
-fn decimate(ring: vector<Coord>, ox: integer, oy: integer, eps: float) -> vector<Coord> {
+fn decimate(ring: vector<Coord>, ox: integer, oy: integer, sc: float) -> vector<Coord> {
   out: vector<Coord> = [];
   if len(ring) <= 2 {
     for c0 in ring { out += [Coord { x: c0.x, y: c0.y }]; }
     return out;
   }
+  // ⚠ THE TOLERANCE AND THE PROJECTION SHARE ONE cos(lat), so they are computed HERE, together, from the
+  // same number. `eps` is one pixel at `zmax` in metres on the ground (Mercator: MPP0·cos(lat)/2^z) and
+  // `xs` is degrees of longitude converted at the same latitude. Held apart — the tolerance from a global
+  // constant, the projection from local data — they drift, and "one pixel" quietly means a different
+  // number of pixels at each end of the dataset. `sc` is 2^zmax; the caller no longer computes a metre
+  // tolerance at all, because there is no single latitude at which one would be right.
+  clat = coslat_at(oy);
+  eps = ((MPP0 * clat) / sc) ?? 1.0;
   xs: vector<float> = []; ys: vector<float> = [];
   for c in ring {
-    xs += [(((ox + (c.x as integer)) as float) / 10000000.0) * MPD * COSLAT];
+    xs += [(((ox + (c.x as integer)) as float) / 10000000.0) * MPD * clat];
     ys += [(((oy + (c.y as integer)) as float) / 10000000.0) * MPD];
   }
   mask = dp_mask(xs, ys, eps);
@@ -160,7 +178,7 @@ fn ring_slice(ring: vector<Coord>, from: integer, to: integer) -> vector<Coord> 
   r
 }
 
-fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, mintier: integer, c: Counts) {
+fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, sc: float, mintier: integer, c: Counts) {
   for a in src.areas {
     if area_debut(a.ring) <= zmax {
       // ⚠ DECIMATE EACH RING SEPARATELY. Douglas-Peucker over the concatenated `ring` would simplify the
@@ -176,7 +194,7 @@ fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, min
         to = len(a.ring);
         if ri < nrings - 1 { qv = a.parts[ri]; if qv != null { to = qv as integer; } }
         if to <= from { continue; }
-        d = decimate(ring_slice(a.ring, from, to), src.ox, src.oy, eps);
+        d = decimate(ring_slice(a.ring, from, to), src.ox, src.oy, sc);
         // A ring that decimates below a triangle has no area left at this zoom — dropping it is right,
         // and dropping a HOLE simply fills it, which is the honest outcome when it is sub-pixel.
         if len(d) >= 3 {
@@ -195,10 +213,10 @@ fn take_areas(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, min
   }
 }
 
-fn take_lines(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, eps: float, mintier: integer, c: Counts) {
+fn take_lines(src: PTile, dst: hash<PTile[tkey]>, zmax: integer, sc: float, mintier: integer, c: Counts) {
   for l in src.lines {
     if line_debut(l.kind) <= zmax {
-      g = decimate(l.geom, src.ox, src.oy, eps);
+      g = decimate(l.geom, src.ox, src.oy, sc);
       if len(g) >= 2 {
         pl = ring_place(g, src.ox, src.oy, mintier);
         k = want_tile(dst, pl.key, pl.ox, pl.oy);
@@ -432,7 +450,9 @@ fn main() {
   sc = 1.0;
   zk = 0;
   while zk < zmax { sc = sc * 2.0; zk += 1; }
-  eps = ((MPP0 * COSLAT) / sc) ?? 1.0;
+  // `sc` alone travels; the metre tolerance is derived per ring from its own latitude (see `decimate`),
+  // because across Benelux there is no single latitude at which one number is right.
+  epsref = ((MPP0 * coslat_at(515000000)) / sc) ?? 1.0;   // reported at 51.5°N, mid-Benelux
 
   out: hash<PTile[tkey]> = [];
   c = Counts { areas: 0, lines: 0, labels: 0, pois: 0, coords_in: 0, coords_out: 0, spine: 0, spine_coords: 0 };
@@ -448,8 +468,8 @@ fn main() {
         for _l in t.lines { srcf += 1; }
         for _k in t.labels { srcf += 1; }
         for _p in t.pois { srcf += 1; }
-        take_areas(t, out, zmax, eps, mintier, c);
-        take_lines(t, out, zmax, eps, mintier, c);
+        take_areas(t, out, zmax, sc, mintier, c);
+        take_lines(t, out, zmax, sc, mintier, c);
         take_labels(t, out, zmax, mintier, c);
         take_pois(t, out, zmax, mintier, c);
       }
@@ -548,7 +568,7 @@ fn main() {
         ring += [Coord { x: ((cx[xi] ?? 0) - ox) as i32? ?? (0 as i32),
                          y: ((cy[xi] ?? 0) - oy) as i32? ?? (0 as i32) }];
       }
-      g = decimate(ring, ox, oy, eps);
+      g = decimate(ring, ox, oy, sc);
       if len(g) >= 2 {
         k2 = want_tile(out, key, ox, oy);
         t2 = out[k2];
@@ -575,5 +595,5 @@ fn main() {
     for k3 in t3.labels { nf += 1; nc += len(k3.line); }
     for _p3 in t3.pois { nf += 1; nc += 1; }
   }
-  println("#O out zmax={zmax} mintier={mintier} eps={eps:1.1}m · persist {ok} load {lok} verify {vok} · {nt} tiles {nf} features {nc} coords · {file(out_path).size} bytes");
+  println("#O out zmax={zmax} mintier={mintier} eps@51.5N={epsref:1.1}m · persist {ok} load {lok} verify {vok} · {nt} tiles {nf} features {nc} coords · {file(out_path).size} bytes");
 }

@@ -151,16 +151,27 @@ fn main() {
   outpath = a[0] ?? "";
   roads = a[1] ?? "";
   places = a[2] ?? "";
-  if outpath == "" { println("usage: gen-names <out.names.store> <roads.geojsonseq> [places.geojsonseq]"); return; }
+  if outpath == "" { println("usage: gen-names <out.names.store> <roads.geojsonseq[,…]> [places.geojsonseq[,…]]"); return; }
 
   out: hash<NameRec[id]> = [];
   seen: hash<Seen[k]> = [];
   next = 0;
   nstreet = 0; nplace = 0;
 
-  if roads != "" { scan(roads, out, seen, next, NK_STREET, nstreet); }
+  // ⚠ BOTH INPUTS TAKE A COMMA-SEPARATED SET, and search needs it for the reason the base map needed a
+  // covering set at §6f F3 — one country hid the problem. `NAMES` is resolved ONCE at boot from the
+  // camera's block, `store_load_url_trusted` ADOPTS an image rather than adding to one, and every store
+  // numbers its records from `next = 0` — so two name stores can neither be loaded together nor keyed
+  // together. A user in Breda searching "Turnhout" got nothing: 18 km away, across a border their names
+  // store stops at.
+  //
+  // The fix is the one the OVERVIEW already uses for the identical constraint: a single whole-file store
+  // spanning the whole coverage, built from every region's input. `scan` was already shaped for it — it
+  // threads a running `next` and one shared `seen`, so dedup works ACROSS inputs and ids stay unique by
+  // construction.
+  for rp in roads.split(',') { if rp != "" { scan(rp, out, seen, next, NK_STREET, nstreet); } }
   streets_kept = next;
-  if places != "" { scan(places, out, seen, next, NK_PLACE, nplace); }
+  for pp in places.split(',') { if pp != "" { scan(pp, out, seen, next, NK_PLACE, nplace); } }
 
   println("names: streets {streets_kept} of {nstreet} named features · places {next - streets_kept} of {nplace}");
   ok = store_persist_bind(out, outpath);
