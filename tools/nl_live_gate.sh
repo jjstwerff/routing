@@ -35,7 +35,50 @@ command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; 
 # gate that fails for the wrong reason.
 # Written into `$site`, not just `browser/` — the page reads the one in the site, and other gates
 # (cors_host_gate) legitimately rewrite it for their own run.
-"$here/tools/build_index.sh" "$site/coverage.json" >/dev/null \
+# ⚠ THE BASE BLOCKS MUST BE SERVED FROM THIS GATE'S OWN ORIGIN, and inheriting the published URLs is a
+# configuration that exists NOWHERE in production. In production the app is `jjstwerff.github.io/routing`
+# and its base data `jjstwerff.github.io/routing-data-nl-*` — different PATHS on ONE origin, so no CORS is
+# involved. This gate serves the app from 127.0.0.1, so those absolute URLs make the read genuinely
+# cross-origin, and it then fails on GitHub's CORS policy rather than on anything the app does: Pages
+# sends `access-control-allow-origin: *` but NOT `access-control-expose-headers: content-range`, and
+# Content-Range is not CORS-safelisted — so the paged reader cannot learn the store's size and gives up
+# after two `bytes=0-0` probes, drawing nothing.
+#
+# Measured 2026-08-03, three ways: the same block served locally draws 252 450 features in ~5 s; served
+# from Pages it makes 3 requests and stops; served from Pages with `--disable-web-security` it draws the
+# identical 252 450. `cors_host_gate` owns the cross-origin question and states the two headers a real
+# CORS host must send. This gate is about the APP, so it serves the base the way production does.
+work_mf="$(mktemp -d)"; trap 'rm -rf "$work_mf"' EXIT
+python3 - "$here" "$work_mf/coverage.toml" <<'PY'
+import pathlib, sys
+here, out = sys.argv[1], sys.argv[2]
+src = pathlib.Path(here, "data/coverage.toml").read_text().splitlines(keepends=True)
+regions, cur = [], []
+for line in src:
+    if line.startswith("[[region]]") and cur:
+        regions.append(cur); cur = []
+    cur.append(line)
+regions.append(cur)
+kept = 0
+res = []
+for r in regions:
+    rid = next((l.split('"')[1] for l in r if l.strip().startswith("id")), "")
+    local = pathlib.Path(here, "blocks", f"{rid}.base.store").exists()
+    # Drop the remote base host ONLY where the block is present locally; otherwise leave the URL alone,
+    # so a region we cannot serve keeps failing honestly instead of 404ing against our own origin.
+    if local:
+        kept += 1
+        r = [l for l in r if not l.strip().startswith(("base_url_base", "base_cors"))]
+    res.extend(r)
+pathlib.Path(out).write_text("".join(res))
+print(f"  serving {kept} base block(s) from this gate's own origin, as production does (one origin, different paths)")
+PY
+for b in "$here"/blocks/*.base.store; do
+  [ -e "$b" ] || continue
+  ln -sfn "$b" "$site/stores/$(basename "$b")"
+  [ -f "$b.dschema" ] && ln -sfn "$b.dschema" "$site/stores/$(basename "$b").dschema"
+done
+COVERAGE_MANIFEST="$work_mf/coverage.toml" "$here/tools/build_index.sh" "$site/coverage.json" >/dev/null \
   || { echo "  FAIL: could not build the coverage index"; exit 1; }
 
 srv=""; chr=""

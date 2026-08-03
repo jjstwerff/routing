@@ -106,11 +106,17 @@ else console.log(`  ✓ routed on the country block: ${pts[1]} route points`);
 //
 // What matters is the session total: did this page ever read nl-west by range, and did it stay far below
 // downloading the thing?
-const reads = after.rangeReads ?? 0;
-const mb = (after.rangeBytes ?? 0) / 1e6;
+// ⚠ ATTRIBUTED TO THE ROADS BLOCK, not the session. The base map now rides the app's own origin (the way
+// production does — one host, different paths), so its pages land in the same session counter and a
+// roads-block budget measured on the total fails on base-map bytes. The claim here is about the roads
+// block, so it reads the roads block's own row.
+const per = after.perStore || {};
+const roadsKey = Object.keys(per).find((k) => k.endsWith('.roads.store'));
+const reads = roadsKey ? per[roadsKey].reads : (after.rangeReads ?? 0);
+const mb = (roadsKey ? per[roadsKey].bytes : (after.rangeBytes ?? 0)) / 1e6;
 if (reads <= 0) fail(`no RANGE reads at all — the 222.4 MB block was fetched whole`);
 else {
-  console.log(`  \u2713 read BY RANGE: ${reads} reads, ${mb.toFixed(1)} MB of a 222.4 MB block (${(mb / 222.4 * 100).toFixed(1)}%)`);
+  console.log(`  \u2713 read BY RANGE: ${reads} reads, ${mb.toFixed(1)} MB of a 222.4 MB block (${(mb / 222.4 * 100).toFixed(1)}%) [${roadsKey || 'session total'}]`);
   if (mb > 60) fail(`${mb.toFixed(0)} MB fetched — that is not a paged read of one camera and one corridor`);
 }
 // The match itself needing no NEW pages is the incremental path working, so it is reported, not judged.
