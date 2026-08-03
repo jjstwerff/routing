@@ -87,7 +87,7 @@ is the route the whole region gives**.
 |---|---|---|---|
 | **A** — re-cost C3 against the halved blocks. Nothing is built; this decides whether C3 is one neighbour or two. | S | a size table in this README, from `store_compact_probe` on a real second-country block | ✅ **MEASURED 2026-08-03** — see § below |
 | **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner LIST replaces the 62-bit mask. Proven at **70 blocks** (2 415 nested pairs = 70 choose 2 on identical copies), where the old code refused outright. The gate still rejects a manufactured overlap (39 shared cells), so it is not vacuous. It is also *faster*: the mask forced an O(blocks²) scan per cell — 3 844 iterations at 62 blocks — where almost every cell has ONE owner, so the check is now linear in cells rather than cells × blocks² |
-| **C** — publish ONE neighbour (BE first — A's numbers decided it). **It is a TRIM, not a re-tiling**: roads trimmed to cells the live index does not own; the base map may keep overlapping, because a viewport is bounded. Belgium needs ~2 base hosts. | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | **Unblocked** — A done |
+| **C** — publish ONE neighbour (BE first — A's numbers decided it). ~~roads trimmed to cells the live index does not own~~ — **that trim was measured to be WRONG, see below**. | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | **TRIMMED AND VERIFIED 2026-08-03, NOT PUBLISHED** — `tools/trim-borders.sh` |
 | **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | Blocked on C |
 | **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | Blocked on D |
 
@@ -295,3 +295,68 @@ while returning `true`, so band 1 reported 4 ways it had not built from a byte-i
   viewport, so `build-blocks.sh` printed `asked=42 loaded=0 roads=0` for Belgium and carried on — a pass,
   for a read path that fetched nothing. It now derives the viewport from the block's own extent:
   **42/42 keys, 8 491 roads** on the same block. It would have read as a pass for every country C3 adds.
+
+---
+
+## Phase C, done and NOT published (2026-08-03) — and the specified trim was wrong
+
+**The Benelux roads are a valid partition: 6 blocks, 23 299 cells, 0 overlapping.** Produced by
+`tools/trim-borders.sh`, verified by `block_overlap.loft` on the RESULT rather than argued from the drop
+lists. The blocks sit in `blocks/trim/`; the originals are untouched and still what the index resolves to.
+
+### ⚠ The trim this plan specified would have put a hole in the border
+
+Phase A wrote: *"it needs its roads trimmed to cells the live index does not already own"*. That assumes
+the 377 shared cells are Dutch cells Belgium's extract reached into. `cell_diff` says they are **both
+directions at once**:
+
+| | cells | Belgium holds | the NL regions hold |
+|---|---|---|---|
+| Belgium holds more | 200 | **22 635 ways** | 5 428 |
+| the Netherlands holds more | 170 | 5 441 | **23 294 ways** |
+| equal | 7 | — | — |
+
+One cell at 4.80–4.82°E / 51.46°N carries **183 ways in Belgium and 1 in the Netherlands**; another at
+5.00–5.02°E / 51.48°N carries **1 in Belgium and 87** in the Netherlands. Both extracts keep whole ways,
+so each country's file holds clipped fragments of the other.
+
+**Dropping all 377 from Belgium therefore deletes 22 635 Belgian ways along the northern border** and
+leaves a 5 428-way fragment in their place — a hole exactly where a cross-border route goes, which is the
+one thing this rung exists to prove. It would have passed `block_overlap_gate` and failed phase D.
+
+### The rule used instead, and what it costs
+
+**Every shared cell goes to whichever block actually holds more of it; ties go to the higher-priority
+block, and LIVE regions outrank staged ones** so nothing published moves without cause.
+
+| | before | after | given up |
+|---|---|---|---|
+| the four NL regions | 2 785 476 ways | 2 780 048 | 5 428 (200 cells) |
+| Belgium | 1 480 755 | 1 473 174 | 7 581 (247 cells) |
+| Luxembourg | 139 566 | 138 438 | 1 128 (56 cells) |
+
+**14 137 ways of 4 405 797 — 0.32%** — against ~28 500 lost one-sidedly by the specified trim, and lost
+from the side that held *less* of each cell rather than from Belgium regardless.
+
+⚠ **It is not lossless and cannot be.** `TRoad` carries no way id, so two blocks' versions of a cell
+cannot be merged and deduplicated — there is no key to dedupe on. Majority assignment loses whatever the
+minority side held that the winner did not. If `TRoad` ever gains a way id this becomes a merge.
+
+### Two things this found that nothing had asked
+
+* **Luxembourg is disjoint from the live index but NOT from Belgium** — 126 shared cells. The staged
+  section of `block_overlap_gate` compares each staged block against the LIVE index only, so
+  "Luxembourg could ship today" was true as scoped and wrong as a conclusion the moment Belgium ships
+  too. The trim is pairwise over the whole set for that reason.
+* **The script is the deliverable, not the blocks.** The first run of this was a sequence of commands in
+  a shell, which HANDOFF §2 says is not a pipeline — and it is the same failure that had
+  `data-refresh.yml` cutting two halves against a four-region manifest. Re-running `trim-borders.sh` from
+  scratch reproduces every one of the twelve per-block cell and way counts. (Not byte-identical: a
+  persisted store's size is an allocation artifact — `docs/loft-feedback.md` 2026-07-31, and now the 7/3
+  capacity ladder of loft#752 as well.)
+
+### What publishing it would cost, which is why it is not published
+
+It changes **four PUBLISHED Netherlands blocks**, so it needs a dataset version, a release upload and a
+re-index — and the switch is the MERGE, not the publish. Phase D (the cross-border route) can be measured
+against `blocks/trim/` without publishing anything.
