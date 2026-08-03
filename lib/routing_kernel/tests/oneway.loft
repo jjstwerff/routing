@@ -1,0 +1,82 @@
+// `oneway=` survives the store's flags bits (PLAN-SCALE §9 item 7, PLAN-RESTORE §4).
+//   loft --tests lib/routing_kernel/tests/oneway.loft --lib lib
+//
+// The router has honoured direction since the matcher was written — `dir_allowed` reads
+// `oneway`/`oneway:bicycle` and the Overpass path has always supplied them. What did not survive was
+// STORAGE: a tile-sourced way came back with both as "", so every one-way street in every block routed
+// as two-way. These tests are on the encode/decode pair, because that is the half that was missing and
+// the half a regeneration bakes in — get the bits wrong and every block has to be built again.
+use routing_kernel::(oneway_flags, oneway_tags,
+                     RF_OW_FWD, RF_OW_REV, RF_OWB_UNIT, RF_CYCLEWAY, RF_SVC_LOCAL,
+                     OWB_BOTH, OWB_FWD, OWB_REV);
+
+// Every state, through the bits and back. The pair is the contract; anything that reads a stored way
+// sees only what comes out of `oneway_tags`.
+fn test_oneway_round_trips() {
+  cases: vector<text> = ["", "yes", "-1"];
+  for c in cases {
+    r = oneway_tags(oneway_flags(c, ""));
+    assert(r.0 == c);
+    assert(r.1 == "");
+  }
+  bikes: vector<text> = ["", "no", "yes", "-1"];
+  for b in bikes {
+    rb = oneway_tags(oneway_flags("", b));
+    assert(rb.0 == "");
+    assert(rb.1 == b);
+  }
+}
+
+// The case a single bit could not express, and the reason there are four: a Dutch one-way street with a
+// signed bicycle contraflow is `oneway=yes` AND `oneway:bicycle=no` at once. The two must survive
+// together — a scheme that stored "one-way" as one fact would have to drop one of them.
+fn test_contraflow_keeps_both() {
+  f = oneway_flags("yes", "no");
+  r = oneway_tags(f);
+  assert(r.0 == "yes");
+  assert(r.1 == "no");
+  // …and they are genuinely different bits, not one value overwriting the other.
+  assert((f & RF_OW_FWD) == RF_OW_FWD);
+  assert((f & (OWB_BOTH * RF_OWB_UNIT)) == OWB_BOTH * RF_OWB_UNIT);
+}
+
+// The bits store the MEANING, not the spelling. `true`/`1`/`reverse` are spellings `dir_allowed` already
+// treats identically, so they come back canonicalised — asserted rather than left to be discovered.
+fn test_spellings_canonicalise() {
+  assert(oneway_tags(oneway_flags("true", "")).0 == "yes");
+  assert(oneway_tags(oneway_flags("1", "")).0 == "yes");
+  assert(oneway_tags(oneway_flags("reverse", "")).0 == "-1");
+  // An unknown value is NOT a restriction. `oneway=alternating` must route both ways, not one.
+  assert(oneway_tags(oneway_flags("alternating", "")).0 == "");
+}
+
+// The direction bits must not disturb the tag bits that share the field — this is one `u16`, and the
+// access bits below bit 8 decide whether a way is legal at all.
+fn test_bits_do_not_collide_with_the_tag_bits() {
+  low = RF_CYCLEWAY + RF_SVC_LOCAL;
+  f = low + oneway_flags("-1", "yes");
+  assert((f & 255) == low);                       // the tag byte is untouched
+  r = oneway_tags(f);
+  assert(r.0 == "-1");
+  assert(r.1 == "yes");
+  // …and a way with no direction tags adds nothing at all, so an existing block's flags are unchanged
+  // in value even before it is regenerated.
+  assert(oneway_flags("", "") == 0);
+}
+
+// Every distinct combination lands on a distinct encoding. If two ever collided, a regeneration would
+// silently make one of them mean the other — the kind of defect that only shows up as a route going the
+// wrong way down a street, months later.
+fn test_all_combinations_are_distinct() {
+  ows: vector<text> = ["", "yes", "-1"];
+  bikes2: vector<text> = ["", "no", "yes", "-1"];
+  seen: vector<integer> = [];
+  for o in ows {
+    for b2 in bikes2 {
+      f2 = oneway_flags(o, b2);
+      for i in 0..len(seen) { assert((seen[i] ?? 0 - 1) != f2); }
+      seen += [f2];
+    }
+  }
+  assert(len(seen) == 12);
+}
