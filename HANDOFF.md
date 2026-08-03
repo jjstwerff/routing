@@ -182,6 +182,12 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **Iterating a loft collection yields COPIES** (C86). A per-tile route scan written as
   `for x in t.routes` copied three text fields per candidate and left a country build inside one function
   after 12 minutes of CPU. Walk by index — `t.routes[i]` is a live view.
+* **`ACAO: *` is not enough for a ranged cross-origin read — `Content-Range` must be EXPOSED.** It is not
+  a CORS-safelisted response header, so without `access-control-expose-headers` a cross-origin reader gets
+  `null` for the store size and draws nothing, with **no console error and no failed request**. GitHub
+  Pages does not send it; the four base-data repos work only because they share the app's origin
+  (different paths, one host). This cost a day looking for an app bug — the block, the schema sidecar and
+  the bytes were all identical, and `--disable-web-security` drew the same 252 450 features.
 * **Only a GET measures a range.** GitHub Pages answers a ranged HEAD with `200` and no `content-range`,
   so a check built on HEAD reports a correct file as broken and a poll on it never terminates. A release
   download also 302s, so a status check without `-L` fails every asset.

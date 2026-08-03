@@ -61,9 +61,13 @@ Three known constraints, each already written down and none yet load-bearing:
 2. **Geofabrik extracts overlap deliberately.** Blocks cut from one extract are disjoint by
    construction; blocks from per-country extracts are not, and `block_overlap_gate.sh` is the check that
    says which kind you have — *before* a continent is generated on the wrong one.
-3. **Each base block needs its own CORS host.** Measured 2026-08-01: GitHub Pages sends
-   `access-control-allow-origin: *` with a real 206, so a second Pages repo is a free one. That answers
-   C3; it does not answer 45–90 repos at C5.
+3. **Each base block needs its own host — and "free CORS host" was too strong.** GitHub Pages sends
+   `access-control-allow-origin: *` with a real 206, so a second Pages repo answers C3 and does not
+   answer 45–90 repos at C5. ⚠ **But it is a free host only because it is the SAME ORIGIN**: Pages sends
+   no `access-control-expose-headers`, and `Content-Range` is not CORS-safelisted, so a genuinely
+   cross-origin reader gets `null` for the store size and draws nothing — silently. It works because
+   `…/routing` and `…/routing-data-nl-*` are paths on one origin. A custom domain or a native app is a
+   different origin and would need a real CORS host (`cors_host_gate` states the two headers).
 
 ## Invariant gate
 
