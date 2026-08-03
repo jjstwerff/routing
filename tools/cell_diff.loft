@@ -48,9 +48,15 @@ fn cell_lat(k: integer) -> float {
 
 fn main() {
   paths: vector<text> = [];
-  for x in arguments() { paths += [x]; }
+  want_matches = false;
+  // `--matches` names the cells both sides hold IDENTICALLY. A completeness run does not want them (they
+  // are the desired state, and there are twelve thousand of them); a border trim does, because a tie has
+  // no natural owner and has to be assigned deliberately rather than left out of both drop lists.
+  for x in arguments() {
+    if x == "--matches" { want_matches = true; } else { paths += [x]; }
+  }
   if len(paths) < 2 {
-    println("usage: cell_diff <reference.store> <part.store> [more…]");
+    println("usage: cell_diff [--matches] <reference.store> <part.store> [more…]");
     return;
   }
 
@@ -95,6 +101,7 @@ fn main() {
   short_cells = 0;
   short_ways = 0;
   over_cells = 0;
+  match_cells = 0;
   // `mc`, not `c`: loft does not block-scope loop variables and `c` is the hash lookup above — the same
   // rename block_overlap.loft carries, and the compiler catches it either way.
   for mc in cells {
@@ -114,12 +121,23 @@ fn main() {
         over_cells += 1;
         println("#C OVER    cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  reference {mc.ways} ways, parts {mc.part_ways}");
       }
+    } else {
+      // MATCH — held by a part, with the same way count. Silent in the completeness reading (it is the
+      // desired state, and a conservation check does not want 12 000 lines saying so), but it is the one
+      // case a BORDER trim has to see: when two blocks hold a cell equally, neither is the obvious owner,
+      // and a caller assigning cells one way or the other needs the ties named rather than inferred from
+      // a count that came out seven short. Off by default for exactly the reason above.
+      match_cells += 1;
+      if want_matches {
+        lo = cell_lon(mc.k); la = cell_lat(mc.k);
+        println("#C MATCH   cell {mc.k}  lon {lo}..{lo + 0.02}  lat {la}..{la + 0.02}  both hold {mc.ways} ways");
+      }
     }
   }
 
   if missing == 0 && extra == 0 && short_cells == 0 && over_cells == 0 {
     println("#C ALL PASS — all {nref} reference cells are held, and every one carries the same way count as the reference");
   } else {
-    println("#C FAIL — {missing} cell(s) held by NO part ({lost_ways} ways); {short_cells} cell(s) SHORT ({short_ways} ways); {over_cells} cell(s) OVER; {extra} cell(s) outside the reference");
+    println("#C FAIL — {missing} cell(s) held by NO part ({lost_ways} ways); {short_cells} cell(s) SHORT ({short_ways} ways); {over_cells} cell(s) OVER; {match_cells} cell(s) MATCH; {extra} cell(s) outside the reference");
   }
 }

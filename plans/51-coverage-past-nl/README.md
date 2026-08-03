@@ -230,11 +230,18 @@ Three limits, so this does not become the next stale premise:
    `MemorySwapMax=0` is what separates eviction from swapping — the gate sets it, and the two orders come
    apart the moment it does.
 
-**A new finding the old measurement had backwards: KEY ORDER IS NOT NEUTRAL.** Feeding tiles in key order
-costs *more* than scattering them — 1.4× the RSS at both scales, and at 400 k a **2.3× bigger file** (213
-against 91 MB) for byte-for-byte the same logical content, verified by read-back. That is the opposite of
-the intuition the old section was built on, and it is worth knowing before any generator is "improved" by
-sorting its input.
+**Key order costs ~1.4× the RSS, and the ~~2.3× file~~ was RETRACTED the same day.** Feeding tiles in key
+order does cost more than scattering them, but the headline number was wrong: **a bound store's file is
+its CAPACITY**, on a ladder whose every rung is 7/3 of the last, and ordered insertion had merely tipped
+one rung ([loft#752](https://github.com/loft-lang/loft/issues/752)). Reproduced here — 250 k, 300 k and
+400 k roads all persist to *exactly* 91 419 400 bytes. After `store_reclaim` the real difference is
+**132 against 83 MB**, interior fragmentation rather than capacity.
+
+⚠ **So "stream the input in cell order" is still the right advice**, and this plan came within one commit
+of recording the opposite. Order it for locality if you were going to, and call `store_reclaim` at the
+end. The write-up is in `docs/loft-feedback.md`; the rule it leaves is that **two `store_persist_bind`
+outputs may never be compared by `stat`** — under 133% any difference may be one rung, and any equality
+may be hiding a doubling.
 
 **Building less at a time is now a THROUGHPUT choice, not a necessity.**
 `tools/build-base-chunked.sh` already did this for the base map; `tools/build-blocks-banded.sh` (new)

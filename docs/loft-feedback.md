@@ -2119,45 +2119,51 @@ no height — so `loft_bug_gate.sh` now FAILS on a regression instead of reporti
 
 ---
 
-## 2026-08-03 — key ORDER changes a bound store's bytes by 2.3× for identical content
+## 2026-08-03 — ~~key ORDER changes a bound store's bytes by 2.3×~~ RETRACTED: a store's FILE is its CAPACITY
 
-**loft 2026.8.0**, md5 `276cf8f9aed6dee49c28494afd297a82` (2026-08-03 19:06), `--native`. Found while
-re-measuring [loft#747](https://github.com/loft-lang/loft/issues/747) with `tools/bind_order_gate.sh`.
+**This finding was wrong, and the way it was wrong is the useful part.** Filed on
+[loft#747](https://github.com/loft-lang/loft/issues/747), refuted by the maintainer within the hour, and
+reproduced here before being written down again.
 
-Binning 400 000 roads into 40 000 tiles — `hash<TTile[tkey]>`, each tile appending to inner
-`vector<TRoad>` / `vector<TStep>` — the only difference between these two runs is the ORDER the keys
-arrive in. `scattered` revisits every tile round-robin; `ordered` fills tile 0 completely, then tile 1:
+### The claim, and the refutation
 
-| | peak RSS | file | read-back |
-|---|---|---|---|
-| scattered, bind first | 85 MB | **91 MB** | tiles=40000 roads=400000 steps=4000000 |
-| ordered, bind first | 117 MB | **213 MB** | tiles=40000 roads=400000 steps=4000000 |
-| scattered, bind last | 292 MB | 83 MB | identical |
-| ordered, bind last | 622 MB | 132 MB | identical |
+Binning 400 000 roads into 40 000 tiles, the same records either way, `scattered` keys produced a 91 MB
+file and `ordered` keys a 213 MB one — a **2.33×** "ordering penalty", which read as *feeding a generator
+its input in key order is worse on every axis*. A sorting stage was about to be removed from a plan on
+the strength of it.
 
-**The stores hold the same records** — verified by reading each back and counting, not by inspection —
-and the ordered one is **2.3× larger on disk and 1.4× more expensive to build**. At 1.6 M / 160 k the
-RSS gap persists (458 vs 273 MB) while the files converge (497 MB both), so it is not a fixed overhead.
+**A bound store's file size is its CAPACITY, not its content**, quantized to a ladder whose every rung is
+**7/3** of the last. Sweeping the feature count with order held FIXED, measured here:
 
-### Why this is worth a note rather than a shrug
+| roads | file (bytes) |
+|---|---|
+| 200 000 | 39 179 744 |
+| 250 000 | **91 419 400** |
+| 300 000 | **91 419 400** |
+| 400 000 | **91 419 400** |
 
-The intuition every generator author has is the opposite one: *feed the input in key order so each tile
-is finished before the next begins, and the store can let go of it.* That is exactly what this tree
-believed, wrote into a plan, and was about to build a sorting stage for. Measured, ordering the input is
-the **worse** of the two on every axis.
+Doubling the data changes the file by **zero bytes**, and 91419400 / 39179744 = 2.3333. Ordered insertion
+used marginally more capacity than scattered and **tipped one rung** — and a rung is 133%. The 2.33× was
+the ladder, not the input order. Upstream filed it as
+[loft#752](https://github.com/loft-lang/loft/issues/752), because loft#710 already decided a store's size
+must follow its content and fixed only the image-write path; the bind-FIRST path is the one it missed.
 
-It is the same family as *"a persisted store's SIZE is an allocation artifact"* (2026-07-31) — growth
-slack decided by allocation pattern rather than content — but it is sharper here, because the pattern is
-chosen by the CONSUMER and there is no signal that one choice costs 2.3× the other.
+### `store_reclaim` makes the number mean content again
 
-### What would help the formal definition
+Calling it before measuring, same shape: ordered 132 MB against scattered 83 MB. So the **real** effect of
+ordering is **~1.6× on this shape** (the maintainer measures 1.30× on theirs) and it is interior
+fragmentation — growing one tile's vectors to completion before starting the next — which `DATABASE.md`
+records as open under @PLN123 arc B. Real, worth knowing, and nothing like the conclusion it was carrying.
 
-A stated relationship between insert order and persisted size, even a loose one ("bytes are within k× of
-content, independent of order"). Today a generator cannot reason about the size of what it is writing:
-the same records in a different order give a different file, and nothing in the language says so.
+### The rule this leaves behind
 
-### What this tree does about it
+**Never compare two `store_persist_bind` outputs by `stat`.** Any size difference under 133% may be a
+single rung, and any equality may be hiding a doubling. Call `store_reclaim` first, or the comparison is
+not a measurement. `tools/bind_order_probe.loft` now calls it before the gate reads the file, and
+`tools/bind_order_gate.sh` labels the column `content` rather than `file` — the maintainer asked for
+exactly that, having made the same mistake in their own table on the same issue.
 
-Nothing yet — `gen-tiles.loft` already feeds scattered keys, which is the cheaper side by accident of how
-OSM extracts are ordered. The finding is recorded so the "obvious" optimisation is not attempted twice;
-`tools/bind_order_gate.sh` is the re-runnable form of it.
+The general form is already `CLAUDE.md`'s and this cost a second instance of it: *a number is not a
+measurement until you know what it is attributed to.* A file size looks like the most concrete number
+available, which is precisely why it was believed without asking what produced it.
+

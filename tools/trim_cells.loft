@@ -1,0 +1,102 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// DROP A NAMED SET OF CELLS FROM A ROADS BLOCK — @51 phase C, the border trim.
+//
+// WHY IT IS NOT `split_block`. That tool cuts at a MERIDIAN, which is the right shape for carving one
+// country into regions and the wrong one for a border: the Netherlands and Belgium meet along a line no
+// meridian follows, and the cells they share are scattered along it. The set is the unit here, and
+// `block_overlap.loft` already computes it.
+//
+//   loft --native --lib lib tools/trim_cells.loft <in.store> <out.store> <keys.txt>
+//
+// `keys.txt` is one `tkey` per line; anything that does not parse as an integer is skipped, so the file
+// may carry comments. A key the block does not hold is not an error — the caller is naming a set it
+// wants gone, and a set that is already gone is the desired state.
+//
+// ⚠ IT DROPS WHOLE CELLS, NEVER PART OF ONE, and that is what keeps it safe. `TRLink.road` is an index
+// into its own tile's `roads` vector, so a copier that FILTERED roads would have to remap every link —
+// `split_block.loft` carries the same warning. Taking the tile or leaving it needs no remapping at all.
+//
+// ⚠ AND A DROPPED CELL'S WAYS ARE GONE, not moved. This is only correct when another block in the same
+// index holds that cell more completely, which is a fact about the pair and is NOT checked here:
+// `block_overlap_gate` (no cell twice) and `cell_diff` (which side holds more) are what establish it.
+// This tool executes a decision; it does not make one.
+#cwd
+
+use routing_kernel::(TTile, TBarrier, TRoad, TStep, TRoute, TRLink);
+
+// A hash must be a struct field, so the drop set gets a wrapper. Keyed rather than scanned because the
+// caller's set is hundreds of cells and the block is tens of thousands: a linear probe per tile turns a
+// filter into a quadratic one for no reason.
+// ⚠ THE BLOCK IS LOADED INTO A BARE LOCAL, NOT A STRUCT FIELD, and that is not a style choice.
+// loft#705 gates `store_load` on the layout the store was WRITTEN with, and `gen-tiles.loft` writes from
+// a local `hash<TTile[tkey]>`. Wrapping it in a `struct Block { roads: … }` here changed the layout hash
+// and every load failed outright with "cannot load" — the honest failure, and a confusing one when the
+// file is plainly there. `split_block.loft` has always done it this way; copy that, not the hash-must-be-
+// a-struct-field habit (which is about hashes generally, not about a store's own root).
+struct Drop    { const k: integer }
+struct DropSet { const keys: hash<Drop[k]> }
+
+// Verbatim, every collection. ⚠ A copier that omits a field does not fail — it produces a smaller,
+// wronger block, which is the trap `split_block.loft` records after barriers were added to `TTile`
+// without it. If `TTile` gains a collection, it gains a line here.
+fn copy_into(dst: hash<TTile[tkey]>, src: TTile) -> integer {
+  dst += TTile { tkey: src.tkey, ox: src.ox, oy: src.oy, oh: src.oh, roads: [], steps: [] };
+  t = dst[src.tkey];
+  n = 0;
+  if t != null {
+    for r in src.roads { t.roads += [TRoad { tp: r.tp, flags: r.flags, nets: r.nets, steps: r.steps }]; n += 1; }
+    for s in src.steps { t.steps += [TStep { x: s.x, y: s.y, h: s.h }]; }
+    for b in src.barriers { t.barriers += [TBarrier { x: b.x, y: b.y, flags: b.flags }]; }
+    for rt in src.routes { t.routes += [TRoute { rid: rt.rid, kind: rt.kind, level: rt.level, flags: rt.flags,
+                                                colour: rt.colour, rref: rt.rref, name: rt.name }]; }
+    for rl in src.rlinks { t.rlinks += [TRLink { road: rl.road, route: rl.route }]; }
+  }
+  n
+}
+
+fn main() {
+  a: vector<text> = [];
+  for x in arguments() { a += [x]; }
+  if len(a) < 3 { println("usage: trim_cells <in.store> <out.store> <keys.txt>"); return; }
+  in_path = a[0] ?? "";
+  out_path = a[1] ?? "";
+  key_path = a[2] ?? "";
+
+  // ⚠ `store_persist_bind` over an existing file ADOPTS the old image and returns true, so a re-run
+  // without this reports fresh counts over the previous run's bytes (HANDOFF §2).
+  if file(out_path).exists() {
+    println("#T FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
+    return;
+  }
+  if !file(key_path).exists() { println("#T FAIL no key file at {key_path}"); return; }
+
+  ds = DropSet { keys: [] };
+  nkeys = 0;
+  for ln in file(key_path).lines() {
+    k = ln as integer?;
+    if k != null && ds.keys[k] == null { ds.keys += Drop { k: k }; nkeys += 1; }
+  }
+  if nkeys == 0 { println("#T FAIL {key_path} named no cell — refusing to write an unchanged copy"); return; }
+
+  src: hash<TTile[tkey]> = [];
+  if !store_load(src, in_path) { println("#T FAIL cannot load {in_path}"); return; }
+
+  out: hash<TTile[tkey]> = [];
+  tin = 0; win = 0; tdrop = 0; wdrop = 0; tout = 0; wout = 0;
+  for t in src {
+    tin += 1;
+    nw = len(t.roads);
+    win += nw;
+    if ds.keys[t.tkey] != null { tdrop += 1; wdrop += nw; }
+    else { wout += copy_into(out, t); tout += 1; }
+  }
+  ok = store_persist_bind(out, out_path);
+  // The arithmetic, printed rather than asserted: this tool is told what to remove, so "did it remove the
+  // right thing" is the caller's question. What it CAN prove is that nothing else moved.
+  println("#T in {tin} cells / {win} ways · asked {nkeys} keys · dropped {tdrop} cells / {wdrop} ways · out {tout} cells / {wout} ways · persist {ok}");
+  if tin != tout + tdrop { println("#T FAIL cells do not add up: {tout} + {tdrop} != {tin}"); return; }
+  if win != wout + wdrop { println("#T FAIL ways do not add up: {wout} + {wdrop} != {win}"); return; }
+  println("#T ALL PASS — every cell is either kept or dropped, and the ways follow their cell");
+}

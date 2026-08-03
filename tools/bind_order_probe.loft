@@ -112,5 +112,17 @@ fn main() {
   bound_last = false;
   if mode != "first" { bound_last = store_persist_bind(idx, path); }
   ok = bound_first || bound_last;
-  println("#B mode={mode} order={order} roads={nr} steps={ns} tiles={ntile} persist={ok}");
+
+  // ⚠ A BOUND STORE'S FILE SIZE IS ITS CAPACITY, NOT ITS CONTENT, and comparing raw sizes manufactures
+  // findings. Capacity climbs a ladder whose every rung is 7/3 of the last (loft#752), so two runs can
+  // differ by 133% having stored the same records — and two others can differ by ZERO having stored
+  // twice as many. Verified here: 250 000, 300 000 and 400 000 roads all persist to exactly 91 419 400
+  // bytes, and 91419400/39179744 is 7/3 to four figures.
+  //
+  // This cost a wrong finding. A 2.33x "ordering penalty" was measured, written up, filed upstream and
+  // read as "feeding keys in order is worse on every axis" — it was one rung. `store_reclaim` returns
+  // the slack, which is what makes the number downstream mean content again; the real ordering effect
+  // survives it at ~1.3x and is interior fragmentation (@PLN123 arc B), not capacity.
+  freed = store_reclaim(idx);
+  println("#B mode={mode} order={order} roads={nr} steps={ns} tiles={ntile} persist={ok} reclaimed={freed}");
 }

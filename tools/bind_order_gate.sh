@@ -17,6 +17,12 @@
 #
 #   tools/bind_order_gate.sh [roads] [tiles] [steps-per-road]
 #
+# ⚠ THE SIZE COLUMN IS CONTENT, NOT `stat -c%s`, and the difference cost a wrong finding filed upstream.
+# A bound store's FILE is its CAPACITY, quantized to a ladder whose every rung is 7/3 of the last
+# (loft#752): 250 000, 300 000 and 400 000 roads all persist to exactly 91 419 400 bytes, while a single
+# rung tip looks like a 133% regression. The probe calls `store_reclaim` before this reads the file, so
+# the column means what it says. Never compare raw store sizes without it.
+#
 # It FAILS only on a wrong result — a store whose read-back disagrees with what the generator says it
 # built. A generator that used less memory because it wrote less is not a cheaper generator, and peak RSS
 # alone cannot tell those apart. The RSS numbers themselves are reported, never asserted: they are a
@@ -55,7 +61,7 @@ printf '   warming the compile cache … '
 echo "done"
 echo
 
-printf '   %-8s %-10s %10s %12s %10s  %s\n' mode order "peak RSS" "file" wall result
+printf '   %-8s %-10s %10s %12s %10s  %s\n' mode order "peak RSS" "content" wall result
 fail=0
 declare -A rss_of
 for order in scattered ordered; do
