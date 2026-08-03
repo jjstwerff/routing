@@ -82,7 +82,10 @@ measured and phase B done.
 * ✅ **`tools/cell_diff.loft` (new) is what found that**, and a cell-set diff alone could not have: the
   four missing ways were in a cell that was *present but under-filled*. It reports MISSING / **SHORT** /
   OVER / outside-the-reference. `block_overlap` proves no cell is held twice; this proves none is held
-  zero times — neither implies the other.
+  zero times — neither implies the other. **It is now the C2b half of `block_overlap_gate.sh`**, and the
+  live dataset passes it for the first time: all **12 483** cells of `netherlands.roads.store` are held
+  by exactly one of the four shipped `nl-*` regions, each with the same way count. The manifest gained
+  `cut_from` to record that parentage, which until now lived only in `cut-regions.sh`'s argument.
 
 ## 1. What is open
 
@@ -198,6 +201,7 @@ make test-map      # the browser gates, headless Chromium               (~10 min
 tools/match_parity.sh          # the route is byte-identical, 5 cases
 tools/network_gate.sh          # sidecar + block + the router's network A/B
 tools/conservation_gate.sh     # 49 categories, none empty
+tools/block_overlap_gate.sh    # C2 no cell held twice · C2b the regions still ADD UP to their source
 tools/height_gate.sh           # every step has the terrain's own height, at no cost in bytes
 tools/loft_bug_gate.sh         # are loft#739's two bugs still there? (says when a workaround can go)
 ```

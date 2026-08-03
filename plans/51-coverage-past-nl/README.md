@@ -234,8 +234,9 @@ bbox, not of the banding** — the whole-country block has them for the same acc
 
 **Verdict: the banded build is exact where it is asked to be.** All 10 372 cells inside the bbox match the
 whole-country block in cell *and* way count. What a banded build changes is which border artifacts come
-along, and those are anchored outside the area by definition. Check a banded sum with `cell_diff` against
-a reference when one exists; when one does not — which is the whole point of banding — the sum against
+along, and those are anchored outside the area by definition. `cell_diff` is now the **C2b** half of `block_overlap_gate.sh`, so a cut set is checked against its
+source (named by the manifest's new `cut_from`) on every run — the live four-region NL dataset passes it
+at 12 483 cells. When no reference exists — which is the whole point of banding — the sum against
 `<block>.srccount` plus a `block_overlap` pass is the check.
 
 ⚠ Two traps this cost, both already in HANDOFF §2. Its outer edges are NOT seams — trimming the region's
