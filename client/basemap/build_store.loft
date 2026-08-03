@@ -83,10 +83,14 @@ fn ring_of(t: PTile, pts: vector<LL>) -> vector<Coord> {
   r
 }
 
-fn bin_area(idx: hash<PTile[tkey]>, cover: text, pts: vector<LL>) {
+fn bin_area(idx: hash<PTile[tkey]>, cover: text, pts: vector<LL>, starts: vector<integer>) {
   if len(pts) < 3 { return; }
   t = idx[ensure_tile(idx, pts)];
-  if t != null { t.areas += [Area { cover: cover, ring: ring_of(t, pts) }]; }
+  if t != null {
+    ps: vector<i32> = [];
+    for st in starts { ps += [st as i32? ?? (0 as i32)]; }
+    t.areas += [Area { cover: cover, ring: ring_of(t, pts), parts: ps }];
+  }
 }
 
 fn bin_building(idx: hash<PTile[tkey]>, name: text, pts: vector<LL>) {
@@ -137,6 +141,43 @@ fn bin_poi(idx: hash<PTile[tkey]>, kind: text, name: text, at: LL) {
 // the chunk, whatever the file, which is what a country-sized base map needs.
 //
 // Layers: 0 areas · 1 buildings · 2 places · 3 streets · 4 lines · 5 pois.
+// EVERY ring of an area feature, flattened, with where each ring after the first begins.
+//
+// `feature_pts` below keeps `cs.item(0).item(0)` — the first polygon's OUTER ring — and drops the rest.
+// For a LineString or a Point that is the whole feature; for an area it silently discards interior rings
+// and any further polygons, which is how a moat came to fill the garden it encloses (basemap::Area).
+struct Rings { pts: vector<LL>, starts: vector<integer> }
+
+fn ring_pts(ring: JsonValue, out: Rings) {
+  for i in 0..len(ring) {
+    pt = ring.item(i);
+    out.pts += [LL { lat: pt.item(1).as_number(), lon: pt.item(0).as_number() }];
+  }
+}
+
+fn feature_rings(geom: JsonValue) -> Rings {
+  out = Rings { pts: [], starts: [] };
+  gt = atag(geom, "type");
+  cs = geom.field("coordinates");
+  if gt == "MultiPolygon" {
+    for pi in 0..len(cs) {
+      poly = cs.item(pi);
+      for ri in 0..len(poly) {
+        if len(out.pts) > 0 { out.starts += [len(out.pts)]; }
+        ring_pts(poly.item(ri), out);
+      }
+    }
+  } else if gt == "Polygon" {
+    for ri2 in 0..len(cs) {
+      if len(out.pts) > 0 { out.starts += [len(out.pts)]; }
+      ring_pts(cs.item(ri2), out);
+    }
+  } else {
+    ring_pts(cs, out);
+  }
+  out
+}
+
 fn feature_pts(geom: JsonValue) -> vector<LL> {
   pts: vector<LL> = [];
   gt = atag(geom, "type");
@@ -191,7 +232,10 @@ fn bin_feature(idx: hash<PTile[tkey]>, layer: integer, line: text) {
   if layer == 0 {
     cover = area_use(atag(props, "landuse"), atag(props, "natural"), atag(props, "leisure"),
                      atag(props, "amenity"), atag(props, "aeroway"));
-    bin_area(idx, cover, pts);
+    // EVERY ring, not just the outer one — see basemap::Area. `pts` above is still the outer ring and
+    // stays the label/centre anchor; the fill needs the holes too.
+    rings = feature_rings(root.field("geometry"));
+    bin_area(idx, cover, rings.pts, rings.starts);
     // A designation is drawn as an outline, so its NAME is the only thing that says what the outline is.
     // It rides the existing label collection (no schema change) at the ring's bbox centre — a place
     // label sits at one point, and a designation's first vertex is an arbitrary corner of it.
@@ -294,7 +338,10 @@ fn build_store(areas_osm: text, buildings_osm: text, places_osm: text, streets_o
                          atag(tags, "amenity"), atag(tags, "aeroway"));
         pts: vector<LL> = [];
         for j in 0..m { g = geom.item(j); pts += [LL { lat: g.field("lat").as_number(), lon: g.field("lon").as_number() }]; }
-        bin_area(idx, cover, pts);
+        // Overpass `geometry` is a FLAT node list for one way — there are no inner rings to carry, so
+        // this path passes none. It is the fixture/Overpass route, not the one the country is built on.
+        nostarts: vector<integer> = [];
+        bin_area(idx, cover, pts, nostarts);
         aname = atag(tags, "name");
         if (cover == "reserve" || cover == "site") && aname != "" {
           bin_place(idx, aname, cover, if cover == "reserve" { 3 } else { 2 }, ring_centre(pts));
