@@ -7,9 +7,19 @@
 # loft-lang/loft#739 — two symptoms of what looks like one fault: a type-id table shifted by declaring a
 # `hash<T[key]>` over a library-imported struct. Both found while building PLAN-RESTORE R2.
 #
-# loft-lang/loft#757 — `store_persist_bind` records the CALLER'S root shape, so binding through a wrapper
-# struct rewrites the sidecar and makes the store unloadable by every other tool. Found by baking heights
-# into Belgium and Luxembourg, which left both blocks readable only by the tool that broke them.
+# loft-lang/loft#757 — binding through a wrapper struct writes a file no bare-local reader can load. Found
+# by baking heights into Belgium and Luxembourg, which left both blocks readable only by the tool that
+# wrote them.
+#
+# ⚠ WE FILED THIS AS A BUG AND WERE REFUTED — the behaviour below is BY DESIGN, and the probe is a
+# CONTRACT GUARD, not a defect watch. `store_persist_bind` binds the whole store the collection lives in;
+# a keyed FIELD shares its container's store, a keyed LOCAL owns one. So a field bind genuinely writes a
+# container-rooted file — siblings included — and `store_load` into a bare collection returning false is an
+# HONEST REFUSAL. The alternative we asked for would have made that load SUCCEED and read the container
+# record's bytes as a hash root: silent corruption in place of a clean failure. Upstream fixed the two real
+# faults — a doc that claimed each keyed local OR FIELD owns a store, and the silence at the call site
+# (the compiler now emits `advice` on a field bind, both backends). So this check must never be read as
+# "still broken": it pins that a field bind stays DISTINGUISHABLE from a local one.
 #
 # ⚠ #739's TWO ARE `--native` ONLY. The interpreter answers correctly, so every gate that runs interpreted
 # stays green while the generator-side tools break — which is exactly why this gate exists. #757 is not:
@@ -82,21 +92,27 @@ else
 fi
 
 echo
-echo "-- store_persist_bind through a wrapper struct (loft#757; workaround: bind a bare local)"
+echo "-- store_persist_bind through a wrapper struct (loft#757 — BY DESIGN; rule: bind a bare local)"
 # ⚠ NOT a --native-only bug, unlike the two above: it reproduces on the interpreter too, which is why the
 # probe takes no library and this check does not care which backend ran it.
 out3="$("$loft" --native "$here/tools/loft_schema_probe.loft" "$work/schema.store" 2>&1)"
 if grep -q '^#P FIXED' <<<"$out3"; then
-  echo "   ✅ FIXED — a wrapper bind leaves the store readable by its original shape."
-  echo "      tools/reseat_schema.loft (the repair) and gen_heights' bare-local note can go."
+  # ⚠ NOT the good news it reads as. Upstream declined to make a keyed field its own store — that is an
+  # allocation-model change, deliberately not forced. So a bare-local reader accepting a field-bound file
+  # means the ALLOCATION MODEL MOVED, and the honest refusal we rely on is gone. Re-read loft#757 before
+  # deleting anything: reseat_schema and gen_heights' bare-local note stay until that is confirmed upstream.
+  echo "   ⚠ CHANGED — a wrapper bind is now readable by a bare-local reader."
+  echo "      This is an allocation-model change, not a bug fix. Confirm upstream before trusting it."
   fixed=$((fixed + 1))
 elif grep -q '^#P BUG PRESENT' <<<"$out3"; then
-  # Reported, NOT failed. Every tool here already binds a bare local, so nothing in the tree is broken by
-  # this being present — unlike loft#739 above, whose workarounds are gone. What it guards is the next
-  # editor written the natural way, which is how gen_heights acquired it.
-  echo "   bug present — $(grep '^#P BUG PRESENT' <<<"$out3" | sed 's/^#P //')"
-  echo "      Bind a BARE LOCAL, never a struct field. This corrupted every Belgian and Dutch"
-  echo "      block's sidecar on 2026-08-03; the records survived, nothing else could read them."
+  # The probe's own wording predates the refutation; the STATUS is "contract holds". Every tool here binds
+  # a bare local, which is what the compiler now recommends at the call site.
+  # The probe's marker still spells "BUG PRESENT" (it is the wire protocol two greps above depend on);
+  # strip that half for display, because the STATUS is "contract holds", not "defect found".
+  echo "   ✅ by design — $(grep '^#P BUG PRESENT' <<<"$out3" | sed 's/^#P BUG PRESENT — //')"
+  echo "      Bind a BARE LOCAL, never a struct field: a field bind writes a CONTAINER-rooted file"
+  echo "      (siblings included), so this refusal is honest. gen_heights did it the other way on"
+  echo "      2026-08-03 and left Belgium and Luxembourg readable only by itself — records intact."
 else
   echo "   ⚠ UNKNOWN — the probe reported neither:"; sed 's/^/     /' <<<"$out3" | tail -3
 fi
@@ -108,10 +124,11 @@ if [ "$bad" -gt 0 ]; then
   exit 1
 fi
 if [ "$fixed" -gt 0 ]; then
-  echo "$fixed of 3 fixed. #739's two are regression guards now — their workarounds are gone, so the gate"
-  echo "FAILS if either returns. #757 is reported only: every tool here already binds a bare local, so"
-  echo "nothing is broken while it stands. What it guards is the next in-place editor written the obvious"
-  echo "way, which is exactly how gen_heights acquired it."
+  echo "$fixed of 2 bugs fixed, plus one contract held. #739's two are regression guards — their"
+  echo "workarounds are gone, so the gate FAILS if either returns. #757 is NOT a bug: we filed it, upstream"
+  echo "refuted it, and a field bind writing a container-rooted file is the design. What the probe guards is"
+  echo "that a field bind stays DISTINGUISHABLE from a local one — and the next in-place editor written the"
+  echo "obvious way, which is exactly how gen_heights acquired it."
 else
   echo "⚠ No probe reported a clear status — treat this run as NO information, not as a pass."
 fi

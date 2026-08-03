@@ -87,7 +87,7 @@ Each cost a wrong claim that was already written down or about to be:
 | **loft#739** | ✅ fixed; **both workarounds deleted**. `loft_bug_gate` FAILS if either returns |
 | **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
 | **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
-| **loft#757** | **filed by us**: `store_persist_bind` records the CALLER'S root shape (§2) |
+| **loft#757** | **filed by us, then REFUTED and closed** — the sidecar is honest; the rule survives (§2) |
 
 ### New tools, all gated
 
@@ -117,8 +117,9 @@ Each cost a wrong claim that was already written down or about to be:
 7. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
    survivable. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`.
-8. **[loft#757](https://github.com/loft-lang/loft/issues/757)** open upstream; nothing here is blocked on
-   it — every tool binds a bare local — and `loft_bug_gate` reports when it changes.
+8. ~~**loft#757** open upstream~~ — **closed 2026-08-03 as answered, and our reading was wrong** (§2).
+   Nothing here is blocked on it, and nothing changes in the tree: every tool already binds a bare local,
+   which is what the compiler now recommends in so many words.
 
 ## 2. Rules that still bite
 
@@ -159,6 +160,10 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   an error instead of a glob.
 * **`ps | grep <pattern>` matches its own grep.** Cost 12 minutes on a wait loop that could never end,
   after two `pgrep -f` false positives reported dead processes as alive. Use `grep "[p]attern"`.
+  ⚠ **And the bracket trick is not enough.** It hides `grep`'s own process, not the **wrapper shell whose
+  command line contains the pattern** — `bash -c '… pgrep -f "[l]oft_bug_gate" …'` matches ITSELF and
+  reports the gate as running when nothing is (hit again 2026-08-03, while waiting to edit that very
+  script). Confirm a hit with `pgrep -af` and look at what matched before believing it.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
@@ -166,16 +171,31 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   changed twice mid-session while printing the same string — and did it AGAIN on 2026-08-03 08:52, mid-
   session, halfway through a bug hunt: two narrowing results from the same hour contradict each other
   because they ran on different binaries. It moved a THIRD time the same day at 19:06. Today it is
-  **2026.8.0, md5 `276cf8f9aed6dee49c28494afd297a82`** (was `0849e437f5…`, before that `ea0486770b…`) —
-  three distinct binaries, one version string. `tools/loft_bug_gate.sh` and `tools/bind_order_gate.sh`
+  **2026.8.0, md5 `601806ef0aa3bcbb8980f51487e4bd3e`** — installed **23:29**, the FOURTH distinct binary of
+  the day behind one version string (`276cf8f9…` 19:06, `0849e437f5…`, `ea0486770b…` before it), and it
+  landed *while the four suites were being run for the PR*. That install was **coherent** — binary,
+  `libloft.rlib`, all 267 `deps/` rlibs and both wasm targets replaced within the same second — which is the
+  safe case; a half-swap is what breaks `--native`. It is also byte-identical to `../loft/target/release/loft`,
+  so the sibling tree's dev build is what got installed. `tools/loft_bug_gate.sh` and `tools/bind_order_gate.sh`
   both print md5 + mtime for exactly this reason, and a finding without one is not re-runnable.
 * **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
   schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
   fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
 * **BIND A BARE LOCAL, NEVER A STRUCT FIELD** ([loft#757](https://github.com/loft-lang/loft/issues/757),
-  filed 2026-08-03). The sidecar records the CALLER'S root shape, not the bound collection's — so
-  `store_persist_bind(w.recs, …)` through a `struct Wrap { recs: … }` writes a sidecar naming `Wrap`, and
-  every tool that binds a bare `hash<TTile[tkey]>` then fails to load the block. That is all of them.
+  filed 2026-08-03 — **and our reading of it was REFUTED the same day; the rule survives, the reason
+  changes**). We reported that the sidecar records the CALLER'S root shape. It does not: `store_persist_bind`
+  binds **the whole store the collection lives in**, and a keyed *field* shares its container's store while a
+  keyed *local* owns one. So `store_persist_bind(w.recs, …)` through a `struct Wrap { recs: …, other: … }`
+  genuinely writes a `Wrap`-rooted file — **with the sibling collection `other` inside it, which the caller
+  never mentioned**. The sidecar naming `Wrap` is therefore honest, and `store_load` into a bare
+  `hash<TTile[tkey]>` returning `false` is an **honest refusal, not corruption**. Had it done what we asked,
+  the load would have SUCCEEDED and read the `Wrap` record's bytes as a hash root — silent corruption in
+  place of a clean failure. Upstream fixed the two things that were actually wrong: loft's own doc claimed
+  each keyed local *or field* is its own dedicated store (false for a field), and nothing said so at the
+  call — **the compiler now emits `advice` on a field bind**, on both backends (verified here on md5
+  `601806ef`). Making a keyed field its own store is an allocation-model change and was deliberately not
+  forced. Every tool that binds a bare `hash<TTile[tkey]>` still fails to load a field-bound block, and that
+  is all of them.
   `gen_heights` did this and left Belgium and Luxembourg readable only by itself. **The records are never
   damaged — only the sidecar** — so `tools/reseat_schema.loft` repairs it without regenerating anything
   (10 128 191 heights recovered). ⚠ And the tool that causes it can still read its own output perfectly,
