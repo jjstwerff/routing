@@ -2,7 +2,14 @@
 # Copyright (c) 2026 Jurjen Stellingwerff
 # SPDX-License-Identifier: LGPL-3.0-or-later
 #
-# PLAN-SCALE C2 — within one index, no two road blocks may hold the same cell.
+# PLAN-SCALE C2 — within one index, no two road blocks may hold the same cell (DISJOINT), and a set of
+# regions still adds up to the block it was cut from (COMPLETE).
+#
+# ⚠ THE TWO HALVES DO NOT IMPLY EACH OTHER, and assuming they did hid a real defect. A banded Belgium
+# build passed the disjointness half — 0 shared cells over 10 373 — while four ways were missing, because
+# the cell holding them was PRESENT and merely under-filled. A cell-SET comparison cannot see that; only
+# comparing the way count per cell can. `tools/cell_diff.loft` is the second half and reports MISSING (a
+# cell no part holds) / SHORT (a cell every part holds, with fewer ways) / OVER / outside-the-reference.
 #
 # WHY IT IS A GATE. A corridor names every block whose extent it touches and reads the same cell window
 # from each, so a cell held by two blocks it can name together delivers its roads TWICE. That is not a
@@ -37,16 +44,20 @@ manifest="$here/data/coverage.toml"
 # resolving each block wherever it actually lives: beside the app (committed, small) or in blocks/
 # (generated, published).
 declare -A group_paths
+declare -A cut_paths        # cut_from source id -> the parts cut from it
 missing=()
-ubase=""; roads=""
+ubase=""; roads=""; cfrom=""
 flush() {
   [ -n "$roads" ] || return 0
   local key="${ubase:-__site__}" found=""
   for cand in "$here/_site/$roads" "$here/browser/$roads" "$here/blocks/$(basename "$roads")"; do
     [ -f "$cand" ] && { found="$cand"; break; }
   done
-  if [ -n "$found" ]; then group_paths[$key]="${group_paths[$key]:-} $found"; else missing+=("$roads"); fi
-  ubase=""; roads=""
+  if [ -n "$found" ]; then
+    group_paths[$key]="${group_paths[$key]:-} $found"
+    [ -n "$cfrom" ] && cut_paths[$cfrom]="${cut_paths[$cfrom]:-} $found"
+  else missing+=("$roads"); fi
+  ubase=""; roads=""; cfrom=""
 }
 while IFS= read -r line; do
   case "$line" in
@@ -58,6 +69,7 @@ while IFS= read -r line; do
     # and reported "the site index: 1 block" — a pass by not looking.
     *base_url_base*=*) ;;
     *url_base*=*)  ubase="$(echo "$line" | cut -d'"' -f2)" ;;
+    cut_from*=*)   cfrom="$(echo "$line" | cut -d'"' -f2)" ;;
   esac
 done < <(grep -v '^\s*#' "$manifest")
 flush
@@ -81,6 +93,27 @@ for key in "${!group_paths[@]}"; do
   echo "$out" | grep -q '^#O ALL PASS' || rc=1
 done
 
+# --- the COMPLETENESS half: do the regions still add up to the block they were cut from? ---------------
+# Only runs where a `cut_from` source is present locally. It is a generated artifact and deliberately not
+# committed (a country block is hundreds of MB), so on a fresh clone this reports SKIP rather than passing
+# by not looking — the distinction the disjointness half already makes for absent blocks.
+echo "== C2b: the regions still add up to the block they were cut from =="
+complete_checked=0
+for srcid in "${!cut_paths[@]}"; do
+  ref="$here/blocks/$srcid.roads.store"
+  read -r -a parts <<< "${cut_paths[$srcid]}"
+  if [ ! -f "$ref" ]; then
+    echo "  $srcid: source block not present locally — SKIP (${#parts[@]} part(s) unchecked)"
+    continue
+  fi
+  complete_checked=$((complete_checked + 1))
+  echo "  $srcid -> ${#parts[@]} part(s):"
+  cout="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$ref" "${parts[@]}" 2>&1)" \
+    || { echo "$cout"; echo "FAIL — the completeness probe did not run"; exit 1; }
+  echo "$cout" | grep -E '^#C' | head -12 | sed 's/^/    /'
+  echo "$cout" | grep -q '^#C ALL PASS' || rc=1
+done
+
 # …and prove the check can still FAIL, on every run. Since nesting became an allowed outcome (a city block
 # inside a country block shares all its cells by design), "no partial overlap" is a verdict this gate can
 # reach by not looking hard enough — so it manufactures a pair it MUST reject. Two splits of the same
@@ -100,6 +133,25 @@ if [ -f "$src" ]; then
     echo "$self" | grep -E '^#O' | sed 's/^/       /'
     exit 1
   fi
+
+  # The completeness half needs its own self-check, and for a sharper reason: on a fresh clone the real
+  # check above SKIPs, so without this the gate would report a green C2b having compared nothing. One
+  # split of a committed block gives all three verdicts from data already in the repo.
+  t2="$(mktemp -d)"
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t2/w" "$t2/e" 6.85 >/dev/null 2>&1
+  both="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" "$t2/e" 2>&1)"
+  half="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" 2>&1)"
+  # Handing the SAME half twice: its cells are held twice (OVER — the way-count comparison firing) and the
+  # other half's are held not at all (MISSING). That is what proves C2b's per-cell count is live, which is
+  # exactly the comparison a cell-SET diff lacks and the one the banded build needed.
+  dupe="$("$loft" --native --lib "$here/lib" "$here/tools/cell_diff.loft" "$src" "$t2/w" "$t2/w" 2>&1)"
+  rm -rf "$t2"
+  cfail=0
+  echo "$both" | grep -q '^#C ALL PASS' || { echo "FAIL — two halves of one block no longer add up to it:"; echo "$both" | grep -E '^#C' | sed 's/^/       /'; cfail=1; }
+  echo "$half" | grep -q '^#C MISSING' || { echo "FAIL — a half block handed alone is no longer reported as MISSING cells"; cfail=1; }
+  echo "$dupe" | grep -q '^#C OVER'    || { echo "FAIL — a doubled half no longer trips the per-cell WAY COUNT (OVER)"; cfail=1; }
+  [ "$cfail" = 0 ] || exit 1
+  echo "  self-check: two halves add up; one half is caught MISSING ($(echo "$half" | grep -c '^#C MISSING') cells); a doubled half is caught OVER"
 fi
 
 if [ "$checked" -eq 0 ]; then
@@ -112,4 +164,7 @@ if [ $rc -ne 0 ]; then
   echo "       rather than from per-country extracts, which overlap at every border."
   exit 1
 fi
-echo "PASS — every index's road blocks are disjoint by cell"
+if [ "$complete_checked" -eq 0 ]; then
+  echo "  (no cut_from source present locally — C2b checked only its self-check)"
+fi
+echo "PASS — every index's road blocks are disjoint by cell, and every cut set adds up to its source"

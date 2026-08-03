@@ -181,6 +181,11 @@ base_cors     = true
 # policy shared by every region rather than a fact about any one of them (PLAN-SCALE §6f F3).
 [[region]]
 id        = "nl-west"
+# `cut_from` names the block these regions were CUT FROM, so the completeness half of
+# block_overlap_gate can check they still add up to it. It existed only as an argument to
+# cut-regions.sh — i.e. only in a shell history, which HANDOFF §2 says is not a pipeline. Nothing
+# published reads it: build_index ignores unknown keys, exactly as it already ignores cut_lon_*.
+cut_from  = "netherlands"
 name      = "Netherlands (west of 4.70°E)"
 cut_lon_max = 4.70
 zoom_min  = 14
@@ -193,6 +198,7 @@ base_cors     = true
 
 [[region]]
 id        = "nl-midwest"
+cut_from  = "netherlands"
 name      = "Netherlands (4.70–5.40°E)"
 cut_lon_min = 4.70
 cut_lon_max = 5.40
@@ -206,6 +212,7 @@ base_cors     = true
 
 [[region]]
 id        = "nl-mideast"
+cut_from  = "netherlands"
 name      = "Netherlands (5.40–5.90°E)"
 cut_lon_min = 5.40
 cut_lon_max = 5.90
@@ -219,6 +226,7 @@ base_cors     = true
 
 [[region]]
 id        = "nl-east"
+cut_from  = "netherlands"
 name      = "Netherlands (east of 5.90°E)"
 cut_lon_min = 5.90
 zoom_min  = 14
