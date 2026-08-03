@@ -14,10 +14,11 @@
 #                          (`find called on non-collection type: <varies> (db=128)`)
 #   loft_seek_probe        one of the sized binary reads (`f#read as u16`/`as i16`) returns NULL
 #
-# ⚠ THIS GATE IS NOT "the bugs must stay". It reports their status and always exits 0 on the bug being
-# PRESENT, because the tree already routes around both. It exists so the workarounds are DELETED when
-# upstream fixes them, rather than outliving the reason for them: `tools/gen_heights.loft` iterates
-# instead of looking up, and reads two bytes instead of one u16, and both carry a comment pointing here.
+# ⚠ IT DID ITS JOB, AND THAT FLIPPED ITS EXIT CODE (2026-08-03). Both bugs are fixed upstream and both
+# workarounds are DELETED — `gen_heights.loft` reads one `i16` again, and nothing forbids a keyed lookup
+# any more. So the tree no longer routes around either, and a bug coming back is not a status report, it
+# is a REGRESSION that breaks the height pipeline: this gate now FAILS on one being present. It used to
+# exit 0 either way, which was right only while the workarounds existed.
 #
 # A probe outside a gate is a comment (CLAUDE.md), which is exactly why these two are in one.
 #
@@ -36,9 +37,10 @@ echo "== upstream bug status =="
 echo "   loft $("$loft" --version 2>&1 | head -1) · md5 $(md5sum "$loft" | cut -c1-32) · $(stat -c%y "$loft" | cut -d. -f1)"
 
 fixed=0
+bad=0
 
 echo
-echo "-- keyed lookup on a bound store (workaround: iterate; gen_heights.loft)"
+echo "-- keyed lookup on a bound store (loft#739; workaround deleted 2026-08-03)"
 # ⚠ ON A COPY, never the committed fixture. `store_persist_bind` rewrites the `.dschema` sidecar to name
 # the binding program's own wrapper struct and changes the schema hash — which loft#705 gates `store_load`
 # on. A gate that merely READS a block must not be able to make it unloadable.
@@ -48,31 +50,40 @@ out="$("$loft" --native --lib "$here/lib" "$here/tools/loft_store_key_probe.loft
 if grep -q '^#P SKIP' <<<"$out"; then
   echo "   SKIP — $(grep '^#P SKIP' <<<"$out" | head -1)"
 elif grep -q 'find called on non-collection type' <<<"$out"; then
-  echo "   bug PRESENT — $(grep -o 'find called on non-collection type: .*' <<<"$out" | head -1)"
+  echo "   ⛔ REGRESSION — $(grep -o 'find called on non-collection type: .*' <<<"$out" | head -1)"
+  echo "      Fixed upstream and the workaround removed — the tree no longer routes around this."
+  bad=$((bad + 1))
 elif grep -q '^#P FIXED' <<<"$out"; then
-  echo "   ✅ FIXED — a keyed lookup no longer aborts. Delete the iterate-only workaround in gen_heights.loft."
+  echo "   ✅ still fixed — a keyed lookup does not abort. (Regression guard; nothing to remove.)"
   fixed=$((fixed + 1))
 else
   echo "   ⚠ UNKNOWN — the probe neither aborted nor reported FIXED:"; sed 's/^/     /' <<<"$out" | tail -5
 fi
 
 echo
-echo "-- sized binary reads (workaround: two u8 reads; gen_heights.loft)"
+echo "-- sized binary reads (loft#739; workaround deleted 2026-08-03)"
 out2="$("$loft" --native --lib "$here/lib" "$here/tools/loft_seek_probe.loft" "$work/probe.bin" 2>&1)"
 if grep -q '^#S BUG PRESENT' <<<"$out2"; then
-  echo "   bug PRESENT — $(grep '^#S BUG PRESENT' <<<"$out2" | head -1 | sed 's/^#S //')"
+  echo "   ⛔ REGRESSION — $(grep '^#S BUG PRESENT' <<<"$out2" | head -1 | sed 's/^#S //')"
   grep '^#S as' <<<"$out2" | sed 's/^/     /'
+  echo "      gen_heights.loft reads one i16 again — a null here gives every step no height, silently."
+  bad=$((bad + 1))
 elif grep -q '^#S FIXED' <<<"$out2"; then
-  echo "   ✅ FIXED — every sized read is correct. Delete the two-byte read in gen_heights.loft's grid_h."
+  echo "   ✅ still fixed — every sized read is correct. (Regression guard; nothing to remove.)"
   fixed=$((fixed + 1))
 else
   echo "   ⚠ UNKNOWN — the probe reported neither:"; sed 's/^/     /' <<<"$out2" | tail -5
 fi
 
 echo
+if [ "$bad" -gt 0 ]; then
+  echo "FAIL — $bad upstream bug(s) are back, and the workarounds for them are gone."
+  echo "       tools/height_gate.sh is what breaks next; git log tools/gen_heights.loft has the old shape."
+  exit 1
+fi
 if [ "$fixed" -gt 0 ]; then
-  echo "$fixed workaround(s) can now be removed — see the lines above. (Still exit 0: nothing is broken.)"
+  echo "Both fixed, both workarounds removed. This gate is a regression guard now, not a to-do list."
 else
-  echo "Both bugs still present; the workarounds stay. docs/loft-feedback.md 2026-08-03 has the write-up."
+  echo "⚠ Neither probe reported a clear status — treat this run as NO information, not as a pass."
 fi
 exit 0

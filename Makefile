@@ -211,6 +211,7 @@ test-native: check-rustc
 	@./tools/block_overlap_gate.sh
 	@./tools/height_gate.sh
 	@./tools/loft_bug_gate.sh
+	@./tools/bind_order_gate.sh
 	@out="$$($(LOFT) --native --lib lib tools/corridor_scale_probe.loft browser/stores/enschede.roads.store 500)"; \
 	  echo "$$out" | grep -E '^stores|^identity|^invariance|^#C'; \
 	  echo "$$out" | grep -q '^#C ALL PASS' \

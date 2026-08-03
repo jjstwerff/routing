@@ -204,11 +204,11 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **`store_persist_bind` REWRITES THE `.dschema` SIDECAR**, and a program that dies mid-bind leaves the
   schema hash changed — which loft#705 gates `store_load` on. A probe pointed at the committed Enschede
   fixture made it unloadable by the app. Anything that binds a shipped block must work on a COPY.
-* ✅ **[loft#739](https://github.com/loft-lang/loft/issues/739) is FIXED** (2026-08-03), and
-  `tools/loft_bug_gate.sh` says so against the installed binary: the keyed lookup on a bound store no
-  longer aborts and every sized `f#read` is correct. **Both workarounds in `tools/gen_heights.loft` can
-  be deleted** — the iterate-only lookup and the two-byte read in `grid_h`. The gate is what to trust
-  here, not this line: it re-checks on whatever binary is installed.
+* ✅ **[loft#739](https://github.com/loft-lang/loft/issues/739) is FIXED and both workarounds are GONE**
+  (2026-08-03). `grid_h` reads one `i16` again instead of recombining two `u8`s, and nothing forbids a
+  keyed lookup on a bound store. ⚠ **`tools/loft_bug_gate.sh` therefore FAILS now** where it used to
+  report and exit 0 — the tree no longer routes around either bug, so their return is a regression that
+  breaks the height pipeline rather than a status line. `height_gate` is what breaks next.
 * **A CAP WITHOUT `MemorySwapMax=0` MEASURES SWAP, NOT EVICTION.** Testing whether a bound store's pages
   are reclaimable under `systemd-run -p MemoryMax=96M` had BOTH bind orders "completing" — this box has
   8 GB of swap and the unbound heap simply paged out. Adding `-p MemorySwapMax=0` separated them

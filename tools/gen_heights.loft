@@ -62,16 +62,16 @@ fn grid_h(f: File, g: Grid, lat: float, lon: float) -> integer? {
   if sx < 0 { sx = 0; }
   if sy < 0 { sy = 0; }
   f#next = (HDR_BYTES + g.cols * g.rows + (ti * TILE_PX * TILE_PX + sy * TILE_PX + sx) * 2) as integer;
-  // ⚠ TWO `u8` READS, NOT ONE `as i16` — loft-lang/loft#739. In a `--native` program that declares a hash
-  // over a library-imported struct (which this one must, to bind the block) exactly one sized read width
-  // comes back NULL, silently, and here that width is `i16`. It read as "0 of 289 117 steps got a height"
-  // against a grid whose header the same handle had just parsed correctly. `u8` is sound, so the two bytes
-  // are recombined by hand. `tools/loft_bug_gate.sh` says when this can go back to one read.
-  lo = f#read as u8;
-  hi = f#read as u8;
-  if lo == null || hi == null { return null; }
-  v = (hi as integer) * 256 + (lo as integer);
-  if v >= 32768 { v = v - 65536; }      // little-endian int16, sign-corrected
+  // One signed little-endian 2-byte sample, which is what the grid stores. `#format` above makes the
+  // endianness the handle's business and `i16` sign-extends, so neither is done by hand here.
+  //
+  // This was two `u8` reads recombined until 2026-08-03: loft#739 made exactly one sized read width come
+  // back NULL, silently, in a `--native` program declaring a hash over a library-imported struct — which
+  // this one must, to bind the block — and that width was `i16`. It read as "0 of 289 117 steps got a
+  // height" against a grid whose header the same handle had just parsed correctly. Fixed upstream;
+  // `tools/loft_bug_gate.sh` is what re-checks it, per binary.
+  v = f#read as i16;
+  if v == null { return null; }
   v
 }
 
@@ -91,15 +91,15 @@ fn main() {
   bound = store_persist_bind(b.roads, path);
   if !bound { println("#H FAIL could not bind {path}"); return; }
 
-  // ⚠ ITERATE — DO NOT LOOK UP BY KEY. `b.roads[k]` on a store bound with `store_persist_bind` PANICS the
-  // runtime (`find called on non-collection type: … (db=…)`, src/database/search.rs:229) — it is not a
-  // slow path or a wrong answer, it aborts. Filed in docs/loft-feedback.md with a 12-line repro.
+  // ⚠ ITERATE, and the reason is the WRITE, not a bug. The loop variable of a bound store's own hash is a
+  // LIVE VIEW, so `t.steps[i] = …` writes through to the file — which is what makes this an in-place edit
+  // rather than a copier. Proven directly: a step written in one run reads back changed in the next.
+  // (Narrower than it sounds — the "iteration yields copies" rule (loft C86) still bites on an inner
+  // collection walked for its scalar and text fields. Here the record's vector is shared, so it lands.)
   //
-  // Iterating is also what makes this an in-place edit rather than a copier: the loop variable of a bound
-  // store's own hash is a LIVE VIEW, so `t.steps[i] = …` writes through to the file. Proven directly —
-  // a step written in one run reads back changed in the next. (That is narrower than it sounds: the
-  // "iteration yields copies" rule (loft C86) still bites on an inner collection walked for its scalar
-  // and text fields. Here the record's vector is shared, so the write lands.)
+  // This comment used to forbid a keyed lookup outright, because `b.roads[k]` on a bound store ABORTED
+  // the runtime (loft#739, `src/database/search.rs:229`). That is fixed as of 2026-08-03, so the
+  // prohibition is gone — but nothing here wants a lookup anyway: every tile is visited.
   g = Grid { zoom: 0, x0: 0, y0: 0, cols: 0, rows: 0, present: [] };
   ntiles2 = 0;
   total = 0;

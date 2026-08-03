@@ -2105,10 +2105,17 @@ far as this consumer got; the repro is one file plus this public repo.
 
 ### What this tree does about it
 
-`tools/gen_heights.loft` iterates instead of looking up, and reads **two `u8`s and recombines them**
-instead of one `u16` — both with a comment pointing at `tools/loft_bug_gate.sh`, which reports when each
-workaround can go. The gate exits 0 either way: it is there to make the workarounds die when their reason
-does, not to fail a build over someone else's bug.
+`tools/gen_heights.loft` iterated instead of looking up, and read **two `u8`s and recombined them**
+instead of one `i16` — both with a comment pointing at `tools/loft_bug_gate.sh`.
+
+**✅ FIXED UPSTREAM the same day, and both workarounds are deleted (2026-08-03).** Turnaround was hours:
+filed against md5 `0849e437…`, fixed in `fd93a5ff`, verified here on md5 `276cf8f9…`. `grid_h` reads one
+`i16` again and `height_gate` reports the same 289 117/289 117 steps at 10–88 m, so the simplification is
+behaviour-identical.
+
+⚠ **That flipped the gate's exit code.** It used to exit 0 on the bug being present, which was right only
+while the tree routed around it. With the workarounds gone, either bug returning silently gives every step
+no height — so `loft_bug_gate.sh` now FAILS on a regression instead of reporting one.
 
 ---
 
