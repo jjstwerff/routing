@@ -13,7 +13,8 @@
 
 use routing_kernel::(GeoPoint, Way, Barrier, parse_ways, parse_way_feature, parse_barrier_feature,
                      TStep, TRoad, TTile, TBarrier, TRoute, TRLink, cell_ix, tile_cell_key,
-                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL);
+                     RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL,
+                     oneway_flags);
 
 // One way that carries at least one signposted route, from `tools/route_networks.py`'s sidecar.
 // A struct because loft keys a hash by a FIELD.
@@ -137,6 +138,9 @@ fn flags_of(w: Way) -> integer {
   else if ft == "yes" || ft == "designated" || ft == "permissive" { f = f + RF_FOOT_YES; }
   sv = w.svc;
   if sv == "driveway" || sv == "alley" || sv == "parking_aisle" { f = f + RF_SVC_LOCAL; }
+  // Direction, in bits 8–11 (PLAN-SCALE §9 item 7). The encoding lives in routing_kernel beside the
+  // decoder that reads it back, so the two cannot drift — the generator does not know the bit layout.
+  f = f + oneway_flags(w.oneway, w.onewaybike);
   f
 }
 CELL = 200000;   // must equal routing_kernel's TILE_CELL — cell_ix/tile_cell_key are keyed to it

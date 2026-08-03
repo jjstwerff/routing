@@ -118,6 +118,13 @@
 # the four regions: the app would ask 454 867 keys of each detailed block, and a `whole` block and a
 # `paged` one cannot share one working set anyway. `zoom_max`/`zoom_min` make the two sets EXCLUSIVE —
 # below the handover the map is the overview alone, above it the regions alone.
+#
+# ⚠ `build_zmax` / `build_min_tier` are what DERIVES it, and they are not the same numbers as the zoom
+# band above. `zoom_max` is where the app hands over to the next block; `build_zmax` is the zoom whose
+# own `minZoom` rules decide which features survive and how far the geometry is decimated. They differ by
+# design (10 vs 12 here), so neither can be computed from the other — and a derived block that is not
+# rebuilt with its regions describes the previous snapshot while the routes underneath describe the new
+# one, with nothing to report it. `tools/build-derived.sh` reads these.
 [[region]]
 id        = "nl-overview"
 name      = "Netherlands — overview"
@@ -125,6 +132,8 @@ base      = "stores/nl-overview.base.store"
 names     = "stores/nl.names.store"
 read_mode = "whole"
 zoom_max  = 12
+build_zmax = 10
+build_min_tier = 2
 
 # PLAN-SCALE §6i O3b — THE MIDDLE ZOOMS. The overview is z<=10 content and the detailed regions cost
 # ~1.4 GB of keys at z12, so z12–z13 had neither: instant but coarse. This block is the country at z<=12
@@ -149,6 +158,8 @@ read_mode = "paged"
 tier_floor = 1
 zoom_min  = 12
 zoom_max  = 14
+build_zmax = 12
+build_min_tier = 1
 # HOSTED ON ITS OWN PAGES DATA REPO, like the region base maps and for the same reason: 213 MB beside the
 # app took the site to 816 MB of a 950 MB budget (86%), and the block is a picture the browser reads by
 # range rather than something the app's own origin must serve. Verified on publication — a cross-origin
@@ -156,9 +167,22 @@ zoom_max  = 14
 base_url_base = "https://jjstwerff.github.io/routing-data-nl-mid"
 base_cors     = true
 
+# ⚠ `cut_lon_min` / `cut_lon_max` are the one thing here that is an INPUT rather than a fact about data.
+#
+# The rest of this manifest deliberately declares no geometry — a block's extent is what its data turned
+# out to be, so it is derived by `build_index.sh` opening the block. A CUT is the opposite: it is an
+# instruction to the generator, there is nothing to derive it from, and until 2026-08-03 it lived only in
+# a person's shell history. `data-refresh.yml` was still cutting the country into the TWO halves that
+# preceded F3 and could not run at all. `tools/cut-regions.sh` reads these, so the manifest stays the one
+# place a region enters coverage — bounds included.
+#
+# Absent on a side = unbounded there. The bands must MEET (no gap, no overlap) and the ends must be open;
+# cut-regions.sh checks all three before it cuts anything. The 0.10° base margin is NOT here: it is one
+# policy shared by every region rather than a fact about any one of them (PLAN-SCALE §6f F3).
 [[region]]
 id        = "nl-west"
 name      = "Netherlands (west of 4.70°E)"
+cut_lon_max = 4.70
 zoom_min  = 14
 roads     = "stores/nl-west.roads.store"
 base      = "stores/nl-west.base.store"
@@ -170,6 +194,8 @@ base_cors     = true
 [[region]]
 id        = "nl-midwest"
 name      = "Netherlands (4.70–5.40°E)"
+cut_lon_min = 4.70
+cut_lon_max = 5.40
 zoom_min  = 14
 roads     = "stores/nl-midwest.roads.store"
 base      = "stores/nl-midwest.base.store"
@@ -181,6 +207,8 @@ base_cors     = true
 [[region]]
 id        = "nl-mideast"
 name      = "Netherlands (5.40–5.90°E)"
+cut_lon_min = 5.40
+cut_lon_max = 5.90
 zoom_min  = 14
 roads     = "stores/nl-mideast.roads.store"
 base      = "stores/nl-mideast.base.store"
@@ -192,6 +220,7 @@ base_cors     = true
 [[region]]
 id        = "nl-east"
 name      = "Netherlands (east of 5.90°E)"
+cut_lon_min = 5.90
 zoom_min  = 14
 roads     = "stores/nl-east.roads.store"
 base      = "stores/nl-east.base.store"

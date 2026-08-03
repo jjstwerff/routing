@@ -37,7 +37,7 @@ Override the toolchain location with `LOFT=/path/to/loft` (or `LOFT_BIN=…`).
 - `lib/{web,server,imaging}/` — **vendored** loft-libs (LGPL); don't edit here, upstream is
   [loft-libs-net](https://github.com/loft-lang/loft-libs-net).
 - `PLAN-*.md` — design + plan of record (`PLAN`, `PLAN-BROWSER`, `PLAN-TILES`, `PLAN-MATCH`,
-  `PLAN-ROUTING`, `PLAN-APP`); `DESIGN.md` — the north-star design.
+  `PLAN-APP`; and `plans/` for new multi-phase work); `DESIGN.md` — the north-star design.
 
 ## Coding style
 

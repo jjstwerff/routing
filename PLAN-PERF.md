@@ -2152,3 +2152,78 @@ of the ways, already landed and inert). It is not a new work item.
 the ticks aren't what bounds the gap"*. That measurement was taken on the contaminated instrument, so it
 may have been reading a cold rebuild it did not know it had. Re-run it against the fixed probes before
 relying on it either way — I am not asserting it is wrong, only that it is unanchored.
+
+---
+
+## The 2026.8.0 store fixes — what they cost and what they bought
+
+⚠ **Anchored to the binary, per CLAUDE.md.** `/usr/local/bin/loft` is **2026.8.0**, md5
+`ea0486770b1ed2d703f4a5187d3b1b0f`, dated **2026-08-02 12:50** — and it is **byte-identical** to
+`../loft/target/release/loft`, whose log carries loft#729 (three commits), #730 and #731, landed
+10:10–12:36 the same day. It is **not** the binary HANDOFF describes (md5 `13311104…`): that one moved
+under us.
+
+> **INHERITED AND RE-MEASURED HERE, 2026-08-02.** The kernel was rebuilt on this binary
+> (`browser/store-kernel.wasm`, sources hash unchanged at `221ac6fbd28d…` — the toolchain is the only
+> variable) and two of upstream's claims were re-run on this box, on our own data:
+>
+> | claim | measured here |
+> |---|---|
+> | run coalescing removes round-trips, byte-neutral | the app's paged roads read: **33 → 29 range reads for the same 2.0 MB** (`map_render_gate`, old wasm vs new, same store) |
+> | binding a block compacts it, content unchanged | `nl-east.roads.store` **161 793 096 → 81 271 776 (1.99×)**, 5 008 tiles / 822 452 roads read back, and a full `census` of **all 23 categories is identical** (`tools/store_compact_probe.loft`) |
+> | the upgrade changes no route | `match_parity.sh` **byte-identical on all 5 cases, 3 distinct routes**; the browser gate's route is unchanged (`len=12428.0m`, 199 pts) on both wasms |
+>
+> ⚠ **Anything that binds a block now rewrites it, smaller.** That is the fix working, not a hazard — but
+> it means the next generator run over `blocks/` silently halves those files, and a *published* block
+> only shrinks when it is re-bound and re-uploaded. The blocks in this tree are **not** re-bound yet.
+
+Everything below is upstream's own measurement **on our own `nl-east.roads.store`**; the rows not marked
+above still need re-measuring here before they are written into any status doc.
+
+| upstream change | measured on our block |
+|---|---|
+| **#729** read a record's body in one fetch (not 4 bytes at a time) | 1 073 065 resolve calls → **832**; a wide viewport loads **0.32 s → 0.16 s**; bytes identical |
+| **#729** one request per **run** of pages | 42-key viewport **89 → 56 requests**, same bytes |
+| **#729** a working set is sized by what it holds, not what it grew to | 42-tile working set **4.89 MB → 2.20 MB (2.22×)** — browser memory, per viewport |
+| **#730** compaction at bind, automatically | file **161.8 → 81.3 MB (1.99×)**; 42-key viewport 4.92 → 3.67 MB (69 → 52 req); **wide viewport 31.1 → 22.3 MB, 466 → 332 req** |
+| **#729** page size is now a real choice | 16 KiB: **−19% bytes and −8% requests** on a 42-key viewport; the wide viewport trades 46% fewer bytes for 35% more requests. Default stays 64 KiB — *the consumer's own viewport mix decides it, and that consumer is us* |
+| **#731** a collection declared **and** iterated inside an `else if` compiles on `--native` | the mode-driven generator shape (`if mode == "write" … else if mode == "load" …`) is writable again |
+
+**What it means for this design.**
+
+* **The floor got cheaper to hold** — a working set is 2.2× denser, so §5's resident index competes with
+  less pressure, and the fine layer costs less to re-page after the pan the floor is covering.
+* **The pan itself got cheaper** — a wide viewport is 332 requests instead of 466 and 22.3 MB instead of
+  31.1, before anything in this plan is built.
+* **`LOFT_PAGE_BYTES` is now ours to choose.** The app's mix is *many small viewports* (a pan) plus *one
+  wide one* (a band crossing) — precisely the two rows that disagree in the table. It is a measurement
+  step, not a knob to guess: §7 P6.
+* **⚠ Two conditions, or none of it lands.** The reader fixes live in the **wasm runtime**, so
+  `browser/store-kernel.wasm` must be rebuilt with this binary; the file-size half only appears when the
+  blocks are **re-bound and republished**. A green gate on an old wasm proves nothing about either.
+* **⚠ It does NOT change the whole-vs-paged rule.** Nothing in #729–#731 touches how a working set is
+  composed, so §5's falsified alternative stays falsified and the resident floor stands on its own.
+
+**Out of scope here, worth costing after step 13:** the blocks halving moves the ceiling that
+Western-Europe publishing runs into (§6f / D2 — the site outgrows Pages before the read path breaks).
+That is a re-costing, not a design change, and it belongs in PLAN-SCALE.
+
+---
+
+### What it did to the published data (2026-08-02)
+
+Applied to the regenerated country, compaction at bind more than pays for the route table the same
+regeneration added:
+
+| region | v1 published | v2 raw | v2 compacted |
+|---|---|---|---|
+| nl-west | 99.4 MB | 104.0 MB | **53.6 MB** |
+| nl-midwest | 122.9 MB | 129.1 MB | **62.6 MB** |
+| nl-mideast | 102.0 MB | 108.5 MB | **55.2 MB** |
+| nl-east | 154.3 MB | 166.0 MB | **84.2 MB** |
+| **total** | **478.6 MB** | 507.6 MB | **255.5 MB — 0.53×** |
+
+⚠ **Anything that binds a block now rewrites it, smaller.** That is the fix working, not a hazard — but
+the next generator run over `blocks/` silently halves those files, and a PUBLISHED block only shrinks when
+it is re-bound and re-uploaded. `tools/store_compact_probe.loft` is the measurement, and it REWRITES what
+it is given: point it at a copy.

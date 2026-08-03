@@ -2,7 +2,15 @@
 
 `routing` is a bicycle/pedestrian route-matcher written in **loft** (a bespoke Rust-like language).
 It doubles as the **consumer test-bed** for loft, which is being given a formal language definition.
-Start with **`HANDOFF.md`** (resume state) and the **`PLAN-*.md`** / `DESIGN.md` docs (plan of record).
+Start with **`HANDOFF.md`** (resume state — short by design; its dated rungs are in
+`docs/handoff-archive.md`) and the **`PLAN-*.md`** / `DESIGN.md` docs (plan of record). `HANDOFF.md` §4
+says which plan owns what.
+
+**New multi-phase work goes in `plans/`**, one directory per `jjstwerff/routing` issue, the same
+convention `../loft`, `../crawler` and `../moros` use — `plans/README.md` is the binding, and it names
+the lightest workflow for work that is *not* a plan (most of it). The 16 root-level `PLAN-*.md` predate
+this; they stay, and migrate opportunistically or not at all. **Claim the issue before you name the
+directory** — the number is the identity, and scanning the tree for a free one mints collisions.
 
 These notes carry context that isn't obvious from the code, so it survives across machines. (They
 mirror the maintainer's agent memory — keep both in sync when one changes.)
@@ -101,6 +109,30 @@ session's design work and each would have sent the work at the wrong target:
 - **Attribute per command, not in aggregate.** `view` loads layout+roads; `match` loads roads only. One
   probe that loaded both charged `match` 91 ms it never pays and hid the structural fact the whole design
   turns on (the 20 MB layout store is view-only).
+
+## The map's layer model — read `PLAN-LAYERS.md` before touching what draws
+
+The app's layers (which block answers a viewport, which mark draws at which zoom, and what a signposted
+route looks like) are governed by **two invariants**, and they are deliberately NOT one:
+
+> **R (render)** — a mark draws when its OWN layer says so; never because of the class it rides on.
+> **C (coverage)** — every viewport reads a layer that covers it; a finer layer draws only over ground it
+> actually holds.
+
+Four things there that will otherwise cost you a day each:
+
+- **The store schema is v2** (`TRoad.nets`, a per-tile `TRoute` table, sparse `TRLink`s). loft#705 gates
+  `store_load` on the layout a store was written with, so a v2 kernel meeting a v1 block FAILS. Any block
+  older than 2026-08-02 must be regenerated. **Order: code → regenerate → publish → merge**, and a dataset
+  is staged BESIDE the live one rather than clobbering it — the deploy verifies bytes + sha256 per block.
+- **Iterating a loft collection copies its heap.** A per-tile scan written `for x in t.routes` copied three
+  `text` fields per candidate and left a country build inside one function after 12 minutes of CPU. Walk by
+  index. (`docs/loft-feedback.md`, 2026-08-03.)
+- **Only a GET measures a range.** Pages answers a ranged HEAD `200` with no `content-range`; a release
+  download 302s. A check built on either reports a correct file as broken.
+- **Wait for the view to CHANGE before measuring it.** A stability window alone returns before a cold paged
+  view has started (~18 s live) and reports the previous store's numbers as this camera's. Re-learned three
+  times in one day.
 
 ## Accepted design decisions
 

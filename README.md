@@ -107,7 +107,7 @@ tools/                test harnesses
 - **[HANDOFF.md](HANDOFF.md)** — resume state: what's done, external (loft) blockers, how to regenerate
   the data, environment setup, and the next steps. **Start here to pick the project up.**
 - **Plans of record:** [PLAN-BROWSER](PLAN-BROWSER.md) (serverless), [PLAN-TILES](PLAN-TILES.md) (data
-  format), [PLAN-MATCH](PLAN-MATCH.md) (the matcher), [PLAN-ROUTING](PLAN-ROUTING.md) (get-me-there),
+  format), [PLAN-MATCH](PLAN-MATCH.md) (the matcher), [@50](plans/50-get-me-there/README.md) (get-me-there),
   [PLAN-APP](PLAN-APP.md) (the standalone Western-Europe app).
 
 Sibling consumer of the loft language (expected at `../loft`).

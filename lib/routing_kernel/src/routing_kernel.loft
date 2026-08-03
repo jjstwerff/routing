@@ -467,8 +467,8 @@ fn tile_hw(tp: integer) -> text {
 // `access=no` + `foot=yes` (3 such ways in that same box) means "closed to traffic, walkers welcome",
 // and a store that kept only ACCESS_NO would ban the walk that is explicitly signed legal.
 //
-// All 8 bits are now spoken for, which is why `oneway=` is still dropped — it needs a wider field and
-// a regeneration of every block. Filed rather than half-done (§ PLAN-SCALE open).
+// The low 8 bits are those tags. `oneway=` used to be dropped because they were all there was; it is
+// carried in bits 8–11 now (below).
 pub const RF_CYCLEWAY  = 1;    // cycleway=lane|track, or cyclestreet=yes
 pub const RF_UNPAVED   = 2;    // an unpaved surface
 pub const RF_ACCESS_NO = 4;    // access=no|private        — closed to general traffic
@@ -477,6 +477,59 @@ pub const RF_BIKE_YES  = 16;   // bicycle=yes|designated|permissive
 pub const RF_FOOT_NO   = 32;   // foot=no|private
 pub const RF_FOOT_YES  = 64;   // foot=yes|designated|permissive
 pub const RF_SVC_LOCAL = 128;  // service=driveway|alley|parking_aisle — not a through-route
+
+// --- `oneway=`, at last (PLAN-SCALE §9 item 7) ---------------------------------------------------
+// `nets` moving out to its own u16 (PLAN-LAYERS §3) left bits 8–15 of `flags` empty, and this is what
+// they were being kept for. The ROUTER has honoured direction since the matcher was written —
+// `dir_allowed` below reads `oneway`/`oneway:bicycle` and is exercised by the Overpass path — but a
+// tile-sourced way arrived with both as `""`, so every one-way street in every block routed as
+// two-way. It was never a matcher gap; it was a storage gap.
+//
+// FOUR bits, not one, because reconstructing `dir_allowed` EXACTLY needs two independent facts: the
+// general restriction, and the bicycle override that can contradict it. A signed contraflow
+// (`oneway:bicycle=no` on a one-way street) is the common Dutch case, and it is the one a single bit
+// cannot express — it has to say "both directions" *against* a `oneway=yes` that is still true for cars.
+pub const RF_OW_FWD  = 256;    // oneway=yes|true|1     — travel the digitised sense only
+pub const RF_OW_REV  = 512;    // oneway=-1|reverse     — travel against it only
+
+// Bits 10–11 are a two-bit FIELD, not two flags: `oneway:bicycle` has four states and a pair of
+// independent bits could not tell "absent" from "no" (they mean opposite things — inherit the general
+// restriction, versus override it to both ways).
+pub const RF_OWB_UNIT = 1024;  // 1 << 10
+pub const RF_OWB_MASK = 3072;  // 3 << 10
+pub const OWB_NONE = 0;
+pub const OWB_BOTH = 1;        // oneway:bicycle=no   — signed contraflow, both directions legal
+pub const OWB_FWD  = 2;        // oneway:bicycle=yes
+pub const OWB_REV  = 3;        // oneway:bicycle=-1
+
+// The `flags` bits for a way's direction tags. One definition, imported by the generator, so the
+// encoder and the decoder below cannot drift — the two-numbering dance `nets` used to require is
+// exactly the mistake this avoids.
+pub fn oneway_flags(oneway: text, onewaybike: text) -> integer {
+  f = 0;
+  if oneway == "yes" || oneway == "true" || oneway == "1" { f = f + RF_OW_FWD; }
+  else if oneway == "-1" || oneway == "reverse" { f = f + RF_OW_REV; }
+  if onewaybike == "no" { f = f + OWB_BOTH * RF_OWB_UNIT; }
+  else if onewaybike == "yes" || onewaybike == "true" || onewaybike == "1" { f = f + OWB_FWD * RF_OWB_UNIT; }
+  else if onewaybike == "-1" || onewaybike == "reverse" { f = f + OWB_REV * RF_OWB_UNIT; }
+  f
+}
+
+// …and back. Returns the two tag values `dir_allowed` reads. Not every spelling survives the round trip
+// (`true` comes back as `yes`), which is deliberate: the bits store the MEANING, and `dir_allowed`
+// treats those spellings identically — a round trip that preserved the text would be storing the
+// spelling, which no consumer reads.
+pub fn oneway_tags(flags: integer) -> (text, text) {
+  ow = "";
+  if (flags & RF_OW_FWD) == RF_OW_FWD { ow = "yes"; }
+  else if (flags & RF_OW_REV) == RF_OW_REV { ow = "-1"; }
+  owb = "";
+  v = (flags & RF_OWB_MASK) / RF_OWB_UNIT ?? 0;
+  if v == OWB_BOTH { owb = "no"; }
+  else if v == OWB_FWD { owb = "yes"; }
+  else if v == OWB_REV { owb = "-1"; }
+  (ow, owb)
+}
 
 // --- curated recreational networks (PLAN-TILES §Future, PLAN-RESTORE R3, PLAN-LAYERS §3) --------------
 // Membership of a signposted network, resolved at ingest from the OSM route RELATIONS the Waymarkedtrails
@@ -743,12 +796,16 @@ fn append_tile_ways(t: TTile, out: &vector<Way>) {
     }
     o = o + cnt;
     if hw != "" && len(coords) >= 2 {
+      // Direction, decoded from bits 8–11. Until this landed both came back `""` and `dir_allowed`
+      // therefore said "both ways" for every stored road — a matcher that honoured one-way streets
+      // perfectly, fed data that never had any.
+      dirs = oneway_tags(fl);
       // The network bits pass through UNDECODED — unlike the access bits above, they stand for no tag,
       // so there is nothing to turn them back into. `net` is the one member of a reconstructed Way that
       // is a value rather than a tag string. Read from `nets` since PLAN-LAYERS §3; the numbering is the
       // NET_* one end to end, so nothing is translated on the way through.
       out += [Way { highway: hw, surface: surf, tracktype: "", bicycle: bike, access: acc, foot: ft,
-                    oneway: "", onewaybike: "", svc: sv, cycleway: cw, cyclestreet: "", name: "",
+                    oneway: dirs.0, onewaybike: dirs.1, svc: sv, cycleway: cw, cyclestreet: "", name: "",
                     net: r.nets as integer, coords: coords }];
     }
   }

@@ -399,7 +399,17 @@ ephemeral. (In **server mode** the route's working state is already continuously
 
 ---
 
-## 12. Maritime routes — evaluated, NOT planned (2026-07-03)
+## 12. Maritime routes — evaluated 2026-07-03, and PLANNED since 2026-08-03
+
+> **Stage 1 of the staged path below is now a plan:
+> [`plans/49-nautical-navigation/`](plans/49-nautical-navigation/README.md)
+> ([routing#49](https://github.com/jjstwerff/routing/issues/49))** — kayak/canoe on mapped waterways.
+> Stages 2 and 3 are still unplanned and the plan says why stage 2 got *more* expensive, not less.
+>
+> ⚠ **Two premises below have moved and the plan carries the corrections**: the app routes over its own
+> blocks rather than Overpass (so the corridor-query change is a pipeline change), and it renders its own
+> base map rather than swapping Leaflet layers (so a nautical overlay is no longer a drop-in). The
+> evaluation and the staging still stand — read them here, read the corrections there.
 
 Sailing (with keel draft) and paddling (kayak/canoe) were evaluated as future activities. The verdict:
 **feasible, but held off deliberately.** We will not touch this until the existing tool is thoroughly

@@ -624,7 +624,7 @@ export function orientBarriers(barriers, F) {
 // emit_stretch). The INDEX is carried rather than implied because a warm edit replays every stretch —
 // including the cached ones (routing_kernel's update_state) — so a slot, not an append, is what makes a
 // re-match redraw correctly rather than concatenate onto the previous route.
-// PLAN-LAYERS §5c — THE SKETCH SURVIVES A RELOAD, because the kernel does not always survive one.
+// PLAN-EDIT E9 — THE SKETCH SURVIVES A RELOAD, because the kernel does not always survive one.
 //
 // What is saved is the POINTS THE USER PLACED, not the matched route: the sketch is the work, the route
 // is derived from it. Restoring the sketch re-matches; restoring a route would give you a line you can
@@ -669,7 +669,7 @@ export function sketchFromJson(text) {
   return out;
 }
 
-// PLAN-LAYERS §5b — the matched route's length, as LOFT measured it.
+// PLAN-EDIT E8 — the matched route's length, as LOFT measured it.
 //
 // Parsed out of the summary, never recomputed. `emit_route` (map_kernel.loft) prints
 // `len=<metres>m` from `path_length_m` — a geodesic length over the matched geometry — for every match,
@@ -692,7 +692,7 @@ export function formatDistance(m) {
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 
-// PLAN-LAYERS §5b — the matched route as a GPX 1.1 document.
+// PLAN-EDIT E8 — the matched route as a GPX 1.1 document.
 //
 // The SAME document `routing_kernel::gpx_export` writes, so a file from this app and a file from the
 // server client are the same format rather than two dialects of it. The one difference is `<ele>`, and

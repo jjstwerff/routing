@@ -37,7 +37,7 @@ ptr=$(grep -cE "addEventListener\('(pointerdown|pointerup|pointermove|pointercan
 # So chrome receivers are exempt BY NAME, and the exemptions are printed. That keeps the property the
 # rule is really asserting ("no second road into the sketch") while making each exception a deliberate
 # line in this file rather than something a grep happened not to see.
-# `routeGpxBtn` is the GPX download button in the route bar (PLAN-LAYERS §5b) — named chrome that turns
+# `routeGpxBtn` is the GPX download button in the route bar (PLAN-EDIT E8) — named chrome that turns
 # the route already on screen into a file, and touches the sketch not at all.
 chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel|routeGpxBtn)\\."
 stray=$(grep -nE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" \
@@ -51,7 +51,7 @@ elif [ "$ptr" -lt 4 ]; then
 else
   echo "  ✓ every MAP pointer listener is in rough.mjs ($ptr of them, one dispatcher); $exempt chrome listener(s) exempt"
 fi
-# PLAN-LAYERS §5c — EVERY CDP DRIVER MUST CLEAR local storage before it navigates.
+# PLAN-EDIT E9 — EVERY CDP DRIVER MUST CLEAR local storage before it navigates.
 #
 # The app autosaves the sketch there, and every gate launches chromium with a PERSISTENT
 # `--user-data-dir`, so one run's sketch restores into the next run's assertions — a restored sketch

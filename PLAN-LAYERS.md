@@ -1,10 +1,14 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-LAYERS — the network you can follow, and the ground that is always there
 
-**Status (2026-08-02): DESIGN, nothing implemented.** Written from three probes against the **live
-site** (`https://jjstwerff.github.io/routing/`, index `v2026-08-02`, headless chromium 1000×700), not
-from reading the code. Reported by the maintainer as *"the inner paths disappear under 15 but a lot of
-them also don't"* at `#17.24/52.07561/6.42878` (Zelhem, Achterhoek).
+**Status (2026-08-03): SHIPPED and live** — steps 1–10 and 12 done, **11 deferred** with its reason in
+§5, on dataset `v2026-08-02c`. Written from three probes against the live site rather than from reading
+the code, and revised four times by measurements that contradicted it; every one of those is recorded in
+place rather than edited away, because the design being wrong in a specific way is the useful part.
+
+Reported by the maintainer as *"the inner paths disappear under 15 but a lot of them also don't"* at
+`#17.24/52.07561/6.42878` (Zelhem, Achterhoek) — and verified fixed at that same camera, live: 241 of 241
+signposted ways whole at z14.6, where 137 of 241 survived before.
 
 It answers three asks with two invariants:
 
@@ -13,6 +17,20 @@ It answers three asks with two invariants:
 | add the Waymarkedtrails path parameters (cycling, MTB, and the rest) | §3 | **R** |
 | make them show up consistently | §4 | **R** |
 | show the NL map when no other data is available on panning | §5 | **C** |
+
+Two later asks were folded in and have since moved to the docs that own them: the route's **distance and
+GPX** and the **sketch autosave** are `PLAN-EDIT` §E8/§E9, and what loft 2026.8.0's store fixes bought is
+`PLAN-PERF` § "the 2026.8.0 store fixes".
+
+**What the design got wrong, and the measurement that said so** — the four are the reason to read §3–§5
+rather than this table:
+
+| assumed | measured |
+|---|---|
+| "thousands" of route relations | **83 762**, and names are the RARE case (8.5%) — the identity is the `ref` (97%) |
+| a per-way `rids` vector | 17% of ways carry a route, so links are **sparse and per tile** — a nested vector is 2.78M heap records for 945 000 memberships |
+| level thins the map at every zoom | 92% of relations are `regional`; level thins only the **outer** zoom, and filtering the middle one hid the ordinary walking network |
+| the floor keeps the map from ever being empty | the country's data ends at **7.0955°E** — past it nothing can be drawn, so the app says so instead |
 
 > **R (render).** A mark draws when **its own layer** says so at this zoom — never because of the class
 > it rides on, and never because of which store it arrived in.
@@ -579,139 +597,17 @@ writes a feature in a 0.10° margin twice), so the real figure is higher by an u
 
 ---
 
-## §5b — L4: the route as an object you can read and take away
+## §5b, §5c — MOVED to `PLAN-EDIT.md` §E8/§E9
 
-Two asks, one theme, and both are **smaller than they look because the work is already done** — which is
-the finding, and the reason this § is short rather than protocol-heavy.
+The route's **distance and GPX export**, and the **sketch autosave**, were designed here because they were
+asked for in the same breath as the layers. They are not layer work: one is about the route as an object
+you can read and carry away, the other about the sketch surviving a session. Both now live with the
+editor that owns them, in `PLAN-EDIT.md`.
 
-**The distance already exists and is already on screen — as kernel debug text.** `emit_route`
-(`map_kernel.loft:312`) prints `SUMMARY ways=N route_pts=M len=X.Xm profile=P` for *every* match,
-including the streamed session path, and `len` is `path_length_m` — loft's geodesic length over the
-matched geometry, not a browser approximation of it. The app then does `hud.textContent = sum`
-(`store-app.mjs:555`), so the user is shown the raw line. Nothing needs computing; the distance needs
-**presenting**: metres → `8.2 km`, in its own element, cleared when the route is.
+## §6 — MOVED to `PLAN-PERF.md`
 
-⚠ **Do not recompute it in JS.** A haversine over `map.route` would be a second answer to a question
-loft already answers, and the two would drift the moment either changes — the shape this repo has paid
-for repeatedly (six copies of one ladder). The kernel's number is the number; JS parses and formats it.
-
-**GPX is already written — in loft, for the client that had a server.** `routing_kernel.loft:2185`
-`gpx_export(points, elevs, name)` is the format of record, and `server/server.loft:329` serves it over
-the websocket. The deployed app has **no server**, so the old path (`gpx.js` → `ws.requestExport`) cannot
-be reached at all. The route is already in the browser (`map.route`), so the export is a **document, not
-a request**: build the same GPX 1.1 document JS-side and hand it to a `Blob` download.
-
-* **No `<ele>`.** `gpx_export` omits the element when the elevation is `ELEV_NONE`, and the serverless app
-  has no elevation source — so it takes that branch for every point, which is a *shape the format already
-  defines* rather than a variant of it.
-* **The two writers must agree**, and the gate is a comparison, not a promise: same points in → same
-  document out as `gpx_export`, modulo the elevation branch.
-* **Import is not in this step.** `gpx.js`'s reader needs `clean_track`/`retrace_m` from the kernel
-  (`server.loft:332`), which is a kernel command, not a DOM change. Named here so it is a decision, not an
-  omission.
-
-**Where the code goes** — the pure half in `map.mjs` (`formatDistance`, `routeDistanceM`, `routeGpx`),
-unit-tested in `map.test.mjs`; the DOM half in `store-app.mjs`. The browser assert belongs in
-`cdp_verify_store.mjs`, beside the match it already drives: **after a match, the bar reads a distance and
-the GPX document holds one `<trkpt>` per route point.**
-
----
-
-## §5c — L5: the sketch survives, because the session does not always
-
-**Reported from the live site:** a route was drawn, the page was reloaded, and the points were gone — and
-the kernel had stopped answering in that same session, so there was no way to draw them again either.
-Two faults, and they compose into "no way to progress": one destroyed the work, the other removed the
-means to redo it.
-
-**What is saved is the points the USER PLACED, not the matched route.** The sketch is the work; the route
-is derived from it. Restoring the sketch re-matches and gives back an editable sketch; restoring the
-route would give back a line you can look at and cannot edit — and if the two ever disagreed, the derived
-one would be the lie. (Being able to export a route the kernel can no longer produce is a *separate*
-want; it is not this one, and conflating them is how the wrong thing gets stored.)
-
-| | |
-|---|---|
-| **key** | `routing.sketch.v1` — one record, overwritten. A recovery net, not a document store |
-| **cadence** | one write per **10 s**, **leading and trailing** — leading so the first point is protected the instant it exists, trailing so the last state of a burst is what lands |
-| **also flushed on** | `pagehide` (reload, navigation, close) and `visibilitychange`→hidden (a phone switching away, where a tab is discarded without another event) |
-| **restored** | after the first view, before `ready` — `setPoints` commits, which posts a match, and a match queued *ahead* of the first view would make the app's first act a corridor read for a route nobody is looking at yet |
-| **cap** | 5 000 points (~150 kB); beyond it the save is **refused, not truncated** — half a sketch restored as if whole is worse than none |
-
-⚠ **A reader of persisted state must treat it as hostile**, the same rule `cameraFromHash` is written
-under: a corrupt, truncated, hand-edited or future-version record degrades to *no sketch*, never to a
-boot at NaN. A malformed *entry* condemns the whole record, because a sketch missing its 4th point is a
-**different sketch**, silently.
-
-⚠ **This re-opens the trap the camera comment closed, and it is closed differently.** `store-app.mjs`
-says the camera rides the URL rather than localStorage partly because every gate's chromium reuses a
-persistent `--user-data-dir`, so saved state leaks from one run into the next — and it names the cure's
-weak point: *"staying deterministic would have meant clearing storage in all seven, with the eighth
-forgetting to."* A leaked sketch is not cosmetic here: it re-matches at boot, which moves the range-read
-and match counters other gates assert on. So every CDP driver clears local storage before it navigates,
-and **`map_render_gate` fails if one does not** — the eighth-forgetting case is closed by a check rather
-than by discipline. That check is the load-bearing part of this section.
-
-**What this does NOT do.** The kernel dying mid-session is a real fault and is *not* fixed here — this
-makes it **survivable** (reload, and your points are back), not absent. Chasing it needs what the session
-that hit it saw: a `kernel job "…" failed` line, a wasm trap, or a stalled range fetch.
-
----
-
-## §6 — what the newly installed loft changes
-
-⚠ **Anchored to the binary, per CLAUDE.md.** `/usr/local/bin/loft` is **2026.8.0**, md5
-`ea0486770b1ed2d703f4a5187d3b1b0f`, dated **2026-08-02 12:50** — and it is **byte-identical** to
-`../loft/target/release/loft`, whose log carries loft#729 (three commits), #730 and #731, landed
-10:10–12:36 the same day. It is **not** the binary HANDOFF describes (md5 `13311104…`): that one moved
-under us.
-
-> **INHERITED AND RE-MEASURED HERE, 2026-08-02.** The kernel was rebuilt on this binary
-> (`browser/store-kernel.wasm`, sources hash unchanged at `221ac6fbd28d…` — the toolchain is the only
-> variable) and two of upstream's claims were re-run on this box, on our own data:
->
-> | claim | measured here |
-> |---|---|
-> | run coalescing removes round-trips, byte-neutral | the app's paged roads read: **33 → 29 range reads for the same 2.0 MB** (`map_render_gate`, old wasm vs new, same store) |
-> | binding a block compacts it, content unchanged | `nl-east.roads.store` **161 793 096 → 81 271 776 (1.99×)**, 5 008 tiles / 822 452 roads read back, and a full `census` of **all 23 categories is identical** (`tools/store_compact_probe.loft`) |
-> | the upgrade changes no route | `match_parity.sh` **byte-identical on all 5 cases, 3 distinct routes**; the browser gate's route is unchanged (`len=12428.0m`, 199 pts) on both wasms |
->
-> ⚠ **Anything that binds a block now rewrites it, smaller.** That is the fix working, not a hazard — but
-> it means the next generator run over `blocks/` silently halves those files, and a *published* block
-> only shrinks when it is re-bound and re-uploaded. The blocks in this tree are **not** re-bound yet.
-
-Everything below is upstream's own measurement **on our own `nl-east.roads.store`**; the rows not marked
-above still need re-measuring here before they are written into any status doc.
-
-| upstream change | measured on our block |
-|---|---|
-| **#729** read a record's body in one fetch (not 4 bytes at a time) | 1 073 065 resolve calls → **832**; a wide viewport loads **0.32 s → 0.16 s**; bytes identical |
-| **#729** one request per **run** of pages | 42-key viewport **89 → 56 requests**, same bytes |
-| **#729** a working set is sized by what it holds, not what it grew to | 42-tile working set **4.89 MB → 2.20 MB (2.22×)** — browser memory, per viewport |
-| **#730** compaction at bind, automatically | file **161.8 → 81.3 MB (1.99×)**; 42-key viewport 4.92 → 3.67 MB (69 → 52 req); **wide viewport 31.1 → 22.3 MB, 466 → 332 req** |
-| **#729** page size is now a real choice | 16 KiB: **−19% bytes and −8% requests** on a 42-key viewport; the wide viewport trades 46% fewer bytes for 35% more requests. Default stays 64 KiB — *the consumer's own viewport mix decides it, and that consumer is us* |
-| **#731** a collection declared **and** iterated inside an `else if` compiles on `--native` | the mode-driven generator shape (`if mode == "write" … else if mode == "load" …`) is writable again |
-
-**What it means for this design.**
-
-* **The floor got cheaper to hold** — a working set is 2.2× denser, so §5's resident index competes with
-  less pressure, and the fine layer costs less to re-page after the pan the floor is covering.
-* **The pan itself got cheaper** — a wide viewport is 332 requests instead of 466 and 22.3 MB instead of
-  31.1, before anything in this plan is built.
-* **`LOFT_PAGE_BYTES` is now ours to choose.** The app's mix is *many small viewports* (a pan) plus *one
-  wide one* (a band crossing) — precisely the two rows that disagree in the table. It is a measurement
-  step, not a knob to guess: §7 P6.
-* **⚠ Two conditions, or none of it lands.** The reader fixes live in the **wasm runtime**, so
-  `browser/store-kernel.wasm` must be rebuilt with this binary; the file-size half only appears when the
-  blocks are **re-bound and republished**. A green gate on an old wasm proves nothing about either.
-* **⚠ It does NOT change the whole-vs-paged rule.** Nothing in #729–#731 touches how a working set is
-  composed, so §5's falsified alternative stays falsified and the resident floor stands on its own.
-
-**Out of scope here, worth costing after step 13:** the blocks halving moves the ceiling that
-Western-Europe publishing runs into (§6f / D2 — the site outgrows Pages before the read path breaks).
-That is a re-costing, not a design change, and it belongs in PLAN-SCALE.
-
----
+What loft 2026.8.0's store fixes cost and bought, measured on our own blocks, is a performance and
+toolchain question rather than a layer one. It lives in `PLAN-PERF.md` § "the 2026.8.0 store fixes".
 
 ## §7 — probes, with the prediction written down first
 

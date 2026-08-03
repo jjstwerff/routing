@@ -60,7 +60,7 @@ implements all nine — `walking_paved|trail`, `running_fast|trail`, `cycling_ro
 
 **The designs are written. Do not redesign them** — including the one for the *unbuilt* half: `DESIGN.md` §6 (the profile matrix) and §7 (overlay
 toggle), `PLAN.md` step 8 (done 2026-07-01, with its acceptance check), `PLAN-MATCH.md` §9 (mode ×
-intent), `PLAN-ROUTING.md`, and **`PLAN-TILES.md` §Future (292–300) for the network membership itself**.
+intent), [`plans/50-get-me-there/`](plans/50-get-me-there/README.md), and **`PLAN-TILES.md` §Future (292–300) for the network membership itself**.
 Commits: `bf5220b`, `fdf59d6`, `c76a915`, `1744cba`, `bcd28df`.
 
 ---
@@ -116,7 +116,40 @@ footpath-vs-road choice, from the UI. The gate asserts the routes DIFFER, not me
 options: a selector that sets a variable and nothing else passes every weaker test, and did, until it was
 caught passing `map.points` (point objects) where `requestMatch` destructures [lat, lon] pairs.
 
-### R2 · Bake ELEVATION into the blocks — now the most expensive remaining step
+### R2 · Bake ELEVATION into the blocks — ✅ DONE 2026-08-03
+
+Built as four tools with one gate, and it turned out **not** to cost a regeneration of its own after all:
+`TStep.h` was already in the schema and already occupied its four bytes, so filling it changes no layout
+and no file size, and `tools/bake-heights.sh` runs over a block that already exists. That inverts this
+step's whole cost note below — kept because the reasoning about bundling is still right, and because the
+`oneway=` half of the bundle DID land in the same change.
+
+| piece | where |
+|---|---|
+| terrain, once | `tools/fetch-terrain.sh` — terrarium PNGs for a bbox, incremental; terrain does not change between OSM snapshots |
+| the grid | `tools/pack_terrain.py` — the cache to one flat i16 grid **plus a presence table**, because 0 is both "unsampled" and a real height at sea level |
+| the sampler | `tools/gen_heights.loft` — binds a block, gives every step its height; a seek and two byte reads |
+| the order | `tools/bake-heights.sh` — extent (from the BLOCK, not the manifest) → terrain → pack → sample |
+| the gate | `tools/height_gate.sh`, in `make test` |
+
+**Measured** on the fixture: 289 117 of 289 117 steps, 10–88 m, block **4 627 448 → 4 627 448 bytes**, three
+stored heights checked against the grid itself. Heights survive `split_block`, so the country is sampled
+once and all four regions inherit theirs. `refresh-region.sh` step 2/7 does it, and it is **not fatal** —
+terrain is a third-party download and a refresh that cannot reach it still produces routable blocks.
+
+⚠ **Two upstream bugs came out of this** ([loft#739](https://github.com/loft-lang/loft/issues/739)), both
+`--native` only, both worked around and both watched by `tools/loft_bug_gate.sh` so the workarounds die
+when the bugs do. And one hazard worth its own line: **`store_persist_bind` REWRITES the `.dschema`
+sidecar**, and a program that dies mid-bind leaves the schema hash changed — which loft#705 gates
+`store_load` on. A probe pointed at the committed fixture made it unloadable.
+
+*Still open from this step:* the router does not yet COST the gradient. `way_penalty` can now see one —
+that is what R2 was the prerequisite for — but spending it is [@50](plans/50-get-me-there/README.md)'s, and a preference weight is
+a routing-quality choice with the corpus as its instrument (§5 decision 1).
+
+<details><summary>The original note, written when this looked like the expensive step</summary>
+
+### R2 (original) · Bake ELEVATION into the blocks — now the most expensive remaining step
 
 ⚠ **It missed the bundled regeneration** (see §4). R3's `u16` widening forced a full country rebuild on
 2026-08-01 and R2 was not ready to ride along, so R2 now pays its own: ~35 min for NL via
@@ -127,7 +160,7 @@ waiting on a regeneration, so R2 sets that schedule — worth knowing before it 
 profile came from the server fetching AWS terrarium PNGs per request. Under the rule, height belongs in
 the block: **one number per stored step**, sampled at generation.
 
-This is also the prerequisite for the gradient/climb work `PLAN-ROUTING` describes — a bike profile that
+This is also the prerequisite for the gradient/climb work [@50](plans/50-get-me-there/README.md) describes — a bike profile that
 avoids a 12% ramp cannot be written against `h = 0`.
 
 *Observable:* a route's elevation profile drawn from the block alone, with the network off; and
@@ -135,6 +168,8 @@ avoids a 12% ramp cannot be written against `h = 0`.
 *Gate:* conservation — `count steps.with_height` must be ~100% of steps in a region with terrain data,
 and a fixture climb reports a known ascent.
 *Note:* terrarium tiles are fetched **at generation, on the build machine**, never by the app.
+
+</details>
 
 ### R3 · Ingest the curated networks — the big one ✅ DONE 2026-07-31
 

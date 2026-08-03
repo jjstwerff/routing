@@ -1443,7 +1443,7 @@ console.log('\nbarrier marks:');
   ok(netForProfile('driving_fastest') === 0 && netForProfile('') === 0, 'driving asks for no network');
 }
 
-// --- PLAN-LAYERS §5b — the route as an object: its length, and its GPX ------------------------------
+// --- PLAN-EDIT E8 — the route as an object: its length, and its GPX ------------------------------
 console.log('L4 · the matched route reports its distance and exports as GPX');
 {
   // The length is LOFT's, taken off the summary line `emit_route` prints. Parsing is the whole of it —
@@ -1540,7 +1540,7 @@ console.log('L1 · the view carries a route table, and a route knows its colour 
      'a road whose ids do not parse carries none, and still draws');
 }
 
-// --- PLAN-LAYERS §5c — the sketch autosave record --------------------------------------------------
+// --- PLAN-EDIT E9 — the sketch autosave record --------------------------------------------------
 console.log('L5 · the sketch the user placed round-trips, and a bad record degrades to nothing');
 {
   const pts = [[52.2412299, 6.8834496], [52.2694705, 6.9164085]];

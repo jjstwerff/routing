@@ -326,7 +326,8 @@ here time and distance *are* the objective, exactly what §1/§7 bars for the sk
 Investment order: foot/cycle sketch-faithful first, scenic driving next, then a **data-differentiated
 get-me-there** (bike + elevation-aware) — with only plain fastest-car being genuine commodity. The
 get-me-there family (its data needs — speed / `h` / oneway — and the "fast known routes" route
-hierarchy) is speced separately in **PLAN-ROUTING**; this doc only reserves the fork.
+hierarchy) is speced separately in **[`plans/50-get-me-there/`](plans/50-get-me-there/README.md)** (promoted from
+`PLAN-ROUTING.md`, 2026-08-03); this doc only reserves the fork.
 
 So the family is chosen by **intent, not mode** — and a car spans both:
 
