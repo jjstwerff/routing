@@ -311,6 +311,14 @@ zoom_min  = 12
 zoom_max  = 14
 build_zmax = 12
 build_min_tier = 1
+# HOSTED ON ITS OWN PAGES DATA REPO, for the same reason `nl-mid` is: 149.3 MB beside the app held the
+# site at 814.2 MB of a 950 MB budget (86%), and `site_size_gate`'s own margin note said the next region
+# added is what crosses it. Moving one block that the browser reads BY RANGE — a picture, not something
+# the app's origin must serve — takes the site to 664.9 MB (70%) and changes nothing about how it is read.
+# Verified on publication: a cross-origin ranged GET answers 206 with `access-control-allow-origin: *` at
+# exactly 149 281 720 bytes.
+base_url_base = "https://jjstwerff.github.io/routing-data-be-mid"
+base_cors     = true
 
 [[region]]
 id        = "lu-mid"
