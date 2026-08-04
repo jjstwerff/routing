@@ -236,6 +236,27 @@ then why the ring does not hold, and only then batching round trips.
 
 ## 9. The chunk graph — an index that pages itself and knows its neighbours
 
+⚠ **FIRST, THE PROPERTY EVERYTHING ELSE RESTS ON: THE DATA DOES NOT MOVE.** The `.store` files on Pages
+stay byte-for-byte as they are. The index is a **new, small, separately published file** that holds
+nothing but *pointers into the stores we already uploaded* — page offsets and neighbour offsets. It is
+~150 kB against an 812 MB block, 0.018%.
+
+Three consequences, and they are the reason to build it this way rather than to re-cut the stores:
+
+* **Nothing is regenerated and nothing is re-uploaded.** Not the 812 MB block, not the 3 GB of base maps
+  on their own Pages repos, not the release. The published dataset is untouched, so this cannot break
+  what is live — the failure mode of an index is a *missed prefetch*, not a wrong map (§5.2).
+* **The index is CHEAP TO ITERATE, and the data is not.** Chunk size, how many pages a chunk names,
+  whether `UP`/`DOWN` are worth their bytes — every one of those is a different 150 kB file over the
+  *same* store. We can publish half a dozen variants and measure them against the live blocks in an
+  afternoon. Re-cutting a store to test the same questions is a day per variant and a full re-upload.
+* **It is separately versioned**, so it can be wrong without being dangerous — provided the sha256 check
+  of §5.1 sits at the chokepoint. An index that does not match its block must be *ignored*, not trusted.
+
+That is what makes "upload a custom index and test it" a real experiment rather than a rehearsal: the
+thing under test is the only thing that changes.
+
+
 The index must not be one file the client fetches whole; at Western Europe scale that is the same
 mistake one level down. It is **chunked spatially**, and *cheap adjacency is simply each chunk recording
 where its neighbours are* — no Morton order, no key arithmetic, no dependence on how `tkey` happens to be
