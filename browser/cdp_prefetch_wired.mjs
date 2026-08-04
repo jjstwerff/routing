@@ -32,8 +32,8 @@ import { launch } from './cdp_transport.mjs';
 // injecting only the round trip models the first half and leaves over-fetching FREE, so a prefetch that
 // pulled 643 MB to serve 75 MB scored 2.9x here and lost live. Defaults are this box's measured link to
 // GitHub Pages: 82 Mbps sustained, 45 ms for a 1-byte range (docs/prefetch-index-design.md §0).
-const [profile, base, cam = '14/52.3702/4.8952', floorPct = '80', pad = '',
-       mbps = '82', rtt = '45'] = process.argv.slice(2);
+const [profile, base, cam = '14/52.3702/4.8952', floorPct = '70', pad = '',
+       mbps = '82', rtt = '45', usedPct = '60'] = process.argv.slice(2);
 if (!profile || !base) {
   console.log('usage: cdp_prefetch_wired.mjs <profile-dir> <base-url> [camera] [hit-floor-pct]');
   process.exit(2);
@@ -161,6 +161,13 @@ ok(B.hits > 0, `the kernel's reads were answered from the buffer (${B.hits} hits
 const rate = B.vhits + B.vmiss ? (100 * B.vhits) / (B.vhits + B.vmiss) : 0;
 const sess = B.hits + B.miss ? (100 * B.hits) / (B.hits + B.miss) : 0;
 ok(rate >= Number(floorPct), `the VIEW's hit rate ${rate.toFixed(1)}% ≥ ${floorPct}% — the index names the pages the kernel asks for (§5.3)`);
+// ⚠ THE OTHER HALF OF §5.3, AND THE ONE THAT WAS MISSING. The hit rate asks "of the READS, how many were
+// served"; a prefetch that fetches ten times the screen scores perfectly on it and loses on any real
+// link. This asks the inverse — of the pages FETCHED, how many were used — and it is what turned the live
+// site from 0.70x to 1.31x when the pad came down.
+const usedRate = B.batch && B.batch.pages ? (100 * B.hits) / B.batch.pages : 0;
+ok(usedRate >= Number(usedPct),
+   `it USED ${usedRate.toFixed(1)}% of what it fetched ≥ ${usedPct}% — bytes fetched and never read are the cost that a localhost harness cannot see`);
 console.log(`      session hit rate ${sess.toFixed(1)}% (view + the ring behind it)`);
 // ⚠ THE MAP MUST BE THE SAME MAP. This is the check a timing cannot make.
 ok(A.view === B.view, `the same view summary either way  ${JSON.stringify(B.view)}${A.view === B.view ? '' : `\n      A: ${JSON.stringify(A.view)}`}`);

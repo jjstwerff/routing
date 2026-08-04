@@ -27,7 +27,7 @@ chromium="${CHROMIUM_BIN:-chromium}"
 profile="$here/scratch/chromium-prefetch"
 httpport="${HTTPPORT:-8163}"
 cam="${1:-14/52.3702/4.8952}"
-floor="${2:-80}"
+floor="${2:-70}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
@@ -54,4 +54,4 @@ rc="$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-15' "http://127.
 [ "$rc" = "206" ] || { echo "FAIL: the harness server does not honour Range on the index (got $rc)"; exit 1; }
 
 echo "== the page index, wired: $(stat -c%s "$here/_site/coverage.pagesx") bytes over $(ls "$here"/_site/stores/*.store 2>/dev/null | wc -l) stores, link emulated in the browser =="
-CHROMIUM_BIN="$chromium" node "$here/browser/cdp_prefetch_wired.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" "$cam" "$floor" "${PREFETCH_PAD:-}" "${LINK_MBPS:-82}" "${LINK_RTT:-45}"
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_prefetch_wired.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" "$cam" "$floor" "${PREFETCH_PAD:-}" "${LINK_MBPS:-82}" "${LINK_RTT:-45}" "${USED_FLOOR:-60}"
