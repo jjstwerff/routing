@@ -578,7 +578,7 @@ const prefetchStats = { batches: 0, ms: 0, pages: 0, requests: 0 };
 // hit rate (which asks "of the READS, how many were served") but its inverse — of the pages FETCHED, how
 // many were used — and nothing measured that until the live run refused to reproduce.
 // Settable before load, like `__readMode`, so a sweep can measure the trade rather than argue it.
-const PREFETCH_PAD = window.__prefetchPad ?? 1600000;   // 0.16 deg in fixed-point 1e-7
+const PREFETCH_PAD = window.__prefetchPad ?? 200000;   // 0.02 deg in fixed-point 1e-7
 
 // The `covers` test lives INSIDE the job, so it is judged when the view actually runs rather than when it
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.

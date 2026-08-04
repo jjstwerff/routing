@@ -240,11 +240,12 @@ both backends. **Two of our three upstream findings this week were corrected by 
    1.7 kB before it plans anything.
 
    ⚠ **The first number this was shipped with — 2.29× — was measured by a harness with INFINITE
-   BANDWIDTH, and the live site refused to reproduce it.** `docs/prefetch-index-design.md` §12 is the
-   account. The honest figure on this box's measured link (82 Mbps, 45 ms) is **1.53× to the view and
-   1.48× to a settled session**, and getting there needed a real fix: the ring was re-buying pages the
-   view had already paid for — the buffer DRAINS on consume, so "in the bag" is not "already fetched" —
-   which cost **9 811 pages fetched to serve 1 331**. Deduped: 1 156 pages, 643 → 75.8 MB.
+   BANDWIDTH, and the live site refused to reproduce it twice.** `docs/prefetch-index-design.md` §12 is
+   the account. Two real defects were behind it: the ring **re-bought pages the view had already paid
+   for** (the buffer DRAINS on consume, so "in the bag" is not "already fetched"), and the **0.16° pad
+   made the query ~40× the screen**, which on dense ground fetched 434.8 MB to serve 204 MB and made the
+   deployed app **0.70×, a real regression**. Fixed: dedup + a 0.02° pad, both measured against the live
+   site. **Live now: 1.31× to the view, 1.42× to a settled session, 79% of fetched pages used.**
 
    ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
    **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
@@ -329,10 +330,11 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   scored 2.29×; the live site scored 0.94× and did not settle. What the harness could not see:
   **9 811 pages fetched to serve 1 331**, because the buffer DRAINS on consume and the ring therefore
   re-bought the ground the view had just paid for. Deduped, 1 156 pages and 75.8 MB instead of 643 MB; the
-  honest ratio on the real link (82 Mbps, 45 ms — re-measured, unchanged since the design) is **1.53×**.
-  ⚠ **The instrument now emulates throughput as well as latency**, and the missing number was not the hit
-  rate (*"of the READS, how many were served"*) but its inverse — **of the pages FETCHED, how many were
-  used**. When a change trades one resource for another, a harness that is generous with one of them is
+  honest ratio on the real link (82 Mbps, 45 ms — re-measured, unchanged since the design) is **1.31×
+  live**, and getting there took a smaller pad as well as the dedup.
+  ⚠ **The instrument now emulates throughput as well as latency, and the gate asserts the number that was
+  missing**: not the hit rate (*"of the READS, how many were served"* — an over-fetch scores perfectly on
+  it) but its inverse, **of the pages FETCHED, how many were read**, floor 60%. When a change trades one resource for another, a harness that is generous with one of them is
   not a slower version of reality; it is a different question. Same family as the ranged HEAD and the
   missing `MemorySwapMax=0`.
 * **AN OPTIMISATION THAT CAN ONLY COST TIME WILL FAIL SILENTLY, SO GATE IT ON ITS OUTPUT.** The page

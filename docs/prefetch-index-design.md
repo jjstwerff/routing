@@ -476,9 +476,22 @@ harness never charged anyone for.
   with the view's hit rate unchanged at 84.3% (the view is the first batch; nothing is deduped away from
   it). A page wanted again after being consumed simply misses and is read normally — a round trip, never
   a wrong byte.
-* **The pad is most of the rest**, and it is a genuine trade rather than a defect. It stays at 0.16° for
-  now because after the dedup its byte cost is modest and it buys the best hit rate; the table above is
-  what to re-run before changing it.
+* ⚠ **THE PAD WAS MOST OF THE REST, AND ON A DENSE CITY IT WAS STILL A NET LOSS.** With the dedup in and
+  0.16° still the default, the deployed app on Amsterdam z14 fetched **6 635 pages / 434.8 MB to serve a
+  204 MB session — 34.9% used — and the view went 35.0 s → 50.2 s, i.e. 0.70×**. A 0.16° pad around a
+  z14 screen is ~40× its area, and dense ground fills that with real cells. **The default is 0.02° now**,
+  measured live by injecting the pad into the deployed page (n=2, counts identical):
+
+  | live, Amsterdam z14 | pad 0.16° | **pad 0.02°** |
+  |---|---|---|
+  | pages fetched | 6 635 · 434.8 MB | **2 627 · 172.2 MB** |
+  | used | 34.9% | **79.0%** |
+  | view hit rate | 91.6% | 81.3% |
+  | to the view | **0.70× (slower)** | **1.23× / 1.31×** |
+  | to a settled session | 1.04× | **1.31× / 1.42×** |
+
+  Ten points of hit rate bought a 2.5× cut in bytes and turned a regression into a win. The pad is not a
+  constant anyone should tune without re-running BOTH columns.
 
 ### With the link modelled honestly
 
@@ -487,13 +500,18 @@ defaulting to this box's measured 82 Mbps / 45 ms), and the server-side latency 
 do not double-count:
 
 ```
-82 Mbps · 45 ms, Luxembourg z14, dedup on
-  A  26.3 s to the view ·  99.5 s to settled · 113.2 MB
-  B  17.2 s to the view ·  67.4 s to settled · 113.2 MB + 75.8 MB prefetched
-  ⇒ 1.53× to the view, 1.48× to a settled session, identical map
+82 Mbps · 45 ms, Luxembourg z14, dedup on, pad 0.02°
+  A  26.5 s to the view ·  99.7 s to settled · 113.2 MB
+  B  14.0 s to the view ·  68.2 s to settled · 113.2 MB + 52.5 MB prefetched (88.6% of it used)
+  ⇒ 1.89× to the view, 1.46× to a settled session, identical map
 ```
 
-**1.53×, not 2.29×.** The smaller number is the one that describes a user.
+**And live, on the real thing: 1.31× to the view, 1.42× to a settled session.** Not the 2.29× this was
+first shipped with. The smaller number is the one that describes a user.
+
+**Both halves of §5.3 are gated now.** The hit rate alone cannot fail an over-fetch — a prefetch that
+pulls ten screens scores perfectly on it — so `prefetch_gate` asserts the inverse as well: **of the pages
+FETCHED, at least 60% must be read.** That is the assertion that would have caught this on the first run.
 
 ### The rule this leaves behind
 
