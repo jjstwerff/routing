@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # The prefetch index — turning 764 round trips into one batch
 
-**Status: BUILT and MEASURED, not published — §11 is the state; §0–§10 are how it was reached.**
+**Status: BUILT, PUBLISHED and LIVE — §11 is the state; §0–§10 are how it was reached; §12 is the
+measurement that caught the harness lying and cut the claim from 2.29× to 1.53×.**
 
 The design half was written BEFORE the code, because the failure paths are where the invariant surfaces
 (`design-protocol`), and because this is an exact-invariant domain — byte ranges, caching, round trips —
@@ -328,18 +329,19 @@ spoke v1 while the builder wrote v3, and until that was closed nothing in the br
 
 | | |
 |---|---|
-| hand-fed a capture, one store fully covered | **26.0 s → 5.4 s · 4.79×** |
+| hand-fed a capture, one store fully covered | 26.0 s → 5.4 s · 4.79× |
 | wired, v1 per-store, one of three stores indexed | 15.5 s → 7.5 s · 2.06× |
-| **wired, v3, all 15 stores, the ring planned too** | **to the view 14.5 → 6.3 s · 2.29×** · **to a settled session 54.1 → 18.8 s · 2.87×** |
+| ~~wired, v3, latency-only harness~~ | ~~14.5 → 6.3 s · 2.29×~~ ⚠ **the harness had infinite bandwidth — see §12** |
+| **wired, v3, 82 Mbps + 45 ms emulated (this box's measured link)** | **to the view 26.3 → 17.2 s · 1.53×** · **to a settled session 99.5 → 67.4 s · 1.48×** |
 
 Measured `tools/prefetch_gate.sh`, camera `14/49.6116/6.1319` (Luxembourg — both its stores are paged and
-indexed), 26 ms injected RTT, **quiet box, n=3 a side**, medians. Spreads: the unprefetched arm is
-**1.02×** across its three runs, the prefetched one **1.26×**, so the per-run ratio ranges 1.93–2.41 (view)
-and 2.61–2.94 (settled).
+indexed), quiet box. **The counts are identical run to run**: 1 751 range reads, 743 answered out of the
+buffer, 174 chunk reads for 870 kB of index — and the same map either way, `R=12242 G=1381 T=59` with
+per-layer counts equal.
 
-**The counts are IDENTICAL on every run**, which is the part worth trusting: 1 751 range reads, **1 331
-answered out of the buffer**, 174 chunk reads for 870 kB of index, 2 sub-directories — and the same map
-either way, `R=12242 G=1381 T=59` with per-layer counts equal.
+⚠ **The 2.29× above is struck through because the harness was measuring the wrong link.** §12 is what
+happened; the short version is that it injected the round trip and not the ceiling, so fetching pages
+nobody reads was free in it and is not free anywhere else.
 
 **Building the reader turned up three defects, and every one was silent by construction.**
 
@@ -417,18 +419,90 @@ sub-directory and one to four chunks.
 
 1. ✅ ~~Generation is unfinished~~ — **all 15 stores are indexed** (2026-08-04): `nl-mideast.base` and
    `nl-east.base` were the last two, 143 304 cells between them.
-2. **Nothing is published.** The index is in `blocks/` (gitignored) and staged into a local `_site`.
-   `tools/fetch-site-blocks.sh` fetches `coverage.pagesx` from the DATASET's release tag, so publishing is
-   one `gh release upload` onto `data-v2026-08-03d` — and it cannot break what is live: a release without
-   it builds a site that reads exactly as it does today, and a stale one is refused per store by the
-   sha256 check at the reader (§5.1).
-3. **`PREFETCH_PAD` (0.16°) is a guess** standing in for the feature-overhang extent `PTile` carries
-   properly. It costs **58 of the view's 371 buffer decisions** — they degrade to normal fetches, so it is
-   a tuning number, not a correctness one, and it is most of the 15.7% the view's hit rate is short of 100.
+2. ✅ ~~Nothing is published~~ — **`coverage.pagesx` is live** on `data-v2026-08-03d`, fetched by
+   `tools/fetch-site-blocks.sh` and served from the app's own origin with a real 206.
+3. **`PREFETCH_PAD` (0.16°) is a guess**, and §12 measured what it costs: at z14 it makes the QUERY box
+   ~40× the area of the screen, so the pad and not the viewport decides what is fetched. The sweep is in
+   §12 — smaller pads waste less and hit less, and the trade depends on the LINK, which is why it is not
+   a constant anyone should tune without re-measuring both.
 4. ✅ ~~The overview should probably not be indexed at all~~ — **answered by the app instead of by the
    builder.** It is not that the overview must not be *indexed*; it is that a `whole` store must not be
    *prefetched*, which is one test at the one place that knows the read mode. The overview is still in the
    index and costs nothing there.
+
+---
+
+## 12. ⚠ THE HARNESS HAD INFINITE BANDWIDTH, AND IT SCORED THE WRONG DESIGN
+
+The local A/B injected the round trip (26 ms, then 45) and nothing else. A localhost server has no
+throughput ceiling, so **fetching pages nobody reads was free in the harness** — and the number it
+produced, 2.29× to the view, was real about that link and wrong about every other one.
+
+**The live site refused to reproduce it**, and that is what exposed the instrument:
+
+```
+live, deployed, camera 14/52.3702/4.8952 (Amsterdam)
+  A  prefetch off   31.2 s to the view · 88.4 s to settled · 204.1 MB
+  B  prefetch on    33.2 s to the view · did NOT settle in 120 s
+     …with a 91.6% view hit rate and a byte-identical map
+```
+
+The index was working perfectly. The premise was still true — re-measured against the live host the same
+hour: **1 B → 45 ms, 64 kB → 48 ms, 512 kB → 97 ms, 2 MB → 238 ms, 82 Mbps sustained**, i.e. still
+latency-bound, still ~the numbers §0 recorded eight weeks earlier. So bandwidth was not scarce; it was
+being *spent*.
+
+### What it was spent on: 86% of the prefetch was never read
+
+The hit rate could not see this. It asks *"of the READS, how many were served from the buffer"* — a
+question about reads. Nobody was asking the inverse, *"of the PAGES FETCHED, how many were used"*:
+
+| pad | pages fetched | ever read | **used** | view hit rate |
+|---|---|---|---|---|
+| 0.16° | 9 811 | 1 331 | **13.6%** | 84.3% |
+| 0.04° | 5 141 | 1 300 | 25.3% | 80.8% |
+| 0.01° | 2 417 | 1 223 | 50.6% | 72.4% |
+| 0.0025° | 1 867 | 1 111 | 59.5% | 63.1% |
+
+9 811 pages is **643 MB**, to serve a session that reads 113 MB. At 82 Mbps that is 63 s of transfer the
+harness never charged anyone for.
+
+**Two independent causes, and one of them was free to fix:**
+
+* ⚠ **THE RING RE-BOUGHT WHAT THE VIEW HAD ALREADY PAID FOR.** The buffer *drains* on consume (§5.4, to
+  bound memory), so "is this page in the bag" is not the question "have we fetched this page" — and the
+  ring's eight cells, each padded by 0.16°, ask for nearly the same ground nine times. `prefetch()` now
+  skips any page this session already fetched: **9 811 → 1 156 pages, 643 → 75.8 MB, used 13.6% → 64.3%**,
+  with the view's hit rate unchanged at 84.3% (the view is the first batch; nothing is deduped away from
+  it). A page wanted again after being consumed simply misses and is read normally — a round trip, never
+  a wrong byte.
+* **The pad is most of the rest**, and it is a genuine trade rather than a defect. It stays at 0.16° for
+  now because after the dedup its byte cost is modest and it buys the best hit rate; the table above is
+  what to re-run before changing it.
+
+### With the link modelled honestly
+
+`cdp_prefetch_wired.mjs` now emulates **throughput as well as latency** (`Network.emulateNetworkConditions`,
+defaulting to this box's measured 82 Mbps / 45 ms), and the server-side latency injection is off so the two
+do not double-count:
+
+```
+82 Mbps · 45 ms, Luxembourg z14, dedup on
+  A  26.3 s to the view ·  99.5 s to settled · 113.2 MB
+  B  17.2 s to the view ·  67.4 s to settled · 113.2 MB + 75.8 MB prefetched
+  ⇒ 1.53× to the view, 1.48× to a settled session, identical map
+```
+
+**1.53×, not 2.29×.** The smaller number is the one that describes a user.
+
+### The rule this leaves behind
+
+*An emulator that models one cost and not the other does not measure a trade-off — it picks a winner.*
+The harness modelled the cost prefetching REMOVES (round trips) and not the cost it ADDS (bytes), so no
+result it produced could have argued against prefetching more. Same family as the ranged-HEAD trap and the
+missing `MemorySwapMax=0`: the instrument answered the question next to the one being asked.
+
+---
 
 ### And the framing that has not changed
 

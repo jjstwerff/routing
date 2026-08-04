@@ -27,7 +27,13 @@
 //   node browser/cdp_prefetch_wired.mjs <profile-dir> <base-url> [camera] [hit-floor-pct]
 import { launch } from './cdp_transport.mjs';
 
-const [profile, base, cam = '14/52.3702/4.8952', floorPct = '80'] = process.argv.slice(2);
+// ⚠ THE LINK IS EMULATED, LATENCY *AND* THROUGHPUT — and leaving the second one out is what made this
+// harness disagree with the live site. A localhost server has ~0 RTT and effectively infinite bandwidth;
+// injecting only the round trip models the first half and leaves over-fetching FREE, so a prefetch that
+// pulled 643 MB to serve 75 MB scored 2.9x here and lost live. Defaults are this box's measured link to
+// GitHub Pages: 82 Mbps sustained, 45 ms for a 1-byte range (docs/prefetch-index-design.md §0).
+const [profile, base, cam = '14/52.3702/4.8952', floorPct = '80', pad = '',
+       mbps = '82', rtt = '45'] = process.argv.slice(2);
 if (!profile || !base) {
   console.log('usage: cdp_prefetch_wired.mjs <profile-dir> <base-url> [camera] [hit-floor-pct]');
   process.exit(2);
@@ -57,10 +63,17 @@ async function arm(on) {
   try {
     await call('Page.enable'); await call('Runtime.enable'); await call('Network.enable');
     await call('Network.setCacheDisabled', { cacheDisabled: true });
+    if (Number(mbps) > 0) {
+      const bps = (Number(mbps) * 1e6) / 8;
+      await call('Network.emulateNetworkConditions',
+                 { offline: false, latency: Number(rtt), downloadThroughput: bps, uploadThroughput: bps });
+    }
     await call('Storage.clearDataForOrigin', { origin: new URL(base).origin, storageTypes: 'local_storage,cache_storage' });
 
     // Boot on a DIFFERENT camera, so the store under test is not already resident when the timed view
     // begins — and so the index's session read is paid in the boot, where a visitor pays it too.
+    // The pad is read at module scope, so it has to be in place BEFORE the app's script runs.
+    if (pad) await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__prefetchPad = ${Number(pad)};` });
     await call('Page.navigate', { url: `${base}#8/52.1/5.3` });
     for (let i = 0; i < 900; i++) { await sleep(100); if (await ev(call, '!!(window.__storeApp&&window.__storeApp.viewSeq)')) break; }
     if (!await settle(call)) return { error: 'the boot view never settled' };
@@ -91,22 +104,25 @@ async function arm(on) {
     const app = await json(call, 'window.__storeApp') || {};
     const st = await json(call, 'window.__perfHooks.kernelStats()') || {};
     const ix = await json(call, 'window.__perfHooks.pageIndexStats()') || {};
+    const pf = await json(call, 'window.__perfHooks.prefetchStats()') || {};
     const d = (a, b, k) => (a[k] || 0) - (b[k] || 0);
     return {
       ms, settled, settleMs,
       view: app.view || '', layers: app.layerCounts || {},
       reads: d(st, st0, 'rangeReads'), bytes: d(st, st0, 'rangeBytes'),
       hits: d(st, st0, 'prefetchHits'), miss: d(st, st0, 'prefetchMiss'),
+      dl: d(st, st0, 'prefetchDownloadBytes'),
       // The VIEW alone — everything above also carries the ring that ran after it.
       vreads: st1 ? d(st1, st0, 'rangeReads') : 0,
       vhits: st1 ? d(st1, st0, 'prefetchHits') : 0,
       vmiss: st1 ? d(st1, st0, 'prefetchMiss') : 0,
-      index: ix,
+      index: ix, batch: pf,
     };
   } finally { browser.close(); }
 }
 
 console.log(`\n=== WIRED PREFETCH — the app plans its own viewport, camera #${cam}`);
+console.log(`    link: ${mbps} Mbps · ${rtt} ms RTT (emulated) · pad ${pad || 'default'}`);
 const A = await arm(false);
 const B = await arm(true);
 let fails = 0;
@@ -118,6 +134,15 @@ for (const [n, r] of [['A', A], ['B', B]]) {
               `${String(r.reads).padStart(5)} range reads · ${(r.bytes / 1e6).toFixed(1)} MB · buffer hits ${r.hits}, misses ${r.miss}`);
   console.log(`         the VIEW alone: ${r.vreads} reads · ${r.vhits} hits, ${r.vmiss} misses` +
               `   · the ring after it: ${r.reads - r.vreads} reads, ${r.miss - r.vmiss} of them unprefetched`);
+  if (r.batch && r.batch.batches) {
+    console.log(`         the BATCHES: ${r.batch.batches} of them, ${r.batch.ms} ms total, ` +
+                `${r.batch.pages} pages in ${r.batch.requests} request(s)` +
+                `  ← this is time the view WAITS FOR, before the kernel runs`);
+    const used = r.batch.pages ? (100 * r.hits) / r.batch.pages : 0;
+    console.log(`         USED ${used.toFixed(1)}% of what it fetched (${r.hits} of ${r.batch.pages} pages, ` +
+                `${(r.dl / 1e6).toFixed(1)} MB down the wire)` +
+                `  ← waste is free on localhost and is NOT free on a real link`);
+  }
 }
 const ix = B.index || {};
 console.log(`      index: ${(ix.stores || []).length} stores · ${ix.cells || 0} cells · ${ix.leaves || 0} leaves · ` +

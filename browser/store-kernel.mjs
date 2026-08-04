@@ -75,6 +75,10 @@ export async function createKernel(wasmUrl) {
   // Page-granular storage serves any request shape that its pages cover, which is what the page-set model
   // said all along.
   const prefetched = new Map();          // url -> Map<pageNo, Uint8Array>
+  // Which pages this session has ALREADY paid for, per store — not what it still holds. The bag drains
+  // on consume, so without this the ring re-buys the ground the view just read.
+  const fetchedOnce = new Map();         // url -> Set<pageNo>
+  let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
   const prefetchTotals = new Map();
   const PFPAGE = 65536;
@@ -367,7 +371,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchDownloadBytes, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
@@ -378,7 +382,16 @@ export async function createKernel(wasmUrl) {
       const key = url.split('?')[0];
       if (!prefetched.has(key)) prefetched.set(key, new Map());
       const bag = prefetched.get(key);
-      const sorted = [...new Set(pages)].sort((a, b) => a - b);
+      // ⚠ NEVER FETCH A PAGE THIS SESSION HAS ALREADY FETCHED. The buffer DRAINS on consume (above), so
+      // "is it in the bag" is not the same question as "have we paid for it" — and the ring asks nine
+      // overlapping batches for nearly the same ground. Measured on one Luxembourg screen: 9 811 pages
+      // fetched against 1 331 ever read, and the repeats were most of it. A page the kernel wants again
+      // after consuming it simply misses and is read normally, which is a round trip rather than a wrong
+      // byte: the buffer's job is to front-run the FIRST read of a page, not to be a cache.
+      if (!fetchedOnce.has(key)) fetchedOnce.set(key, new Set());
+      const seen = fetchedOnce.get(key);
+      const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
+      for (const p of sorted) seen.add(p);
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -397,11 +410,16 @@ export async function createKernel(wasmUrl) {
             if (cr) { const t = cr.split('/').pop(); if (t && t !== '*') prefetchTotals.set(url, Number(t)); }
             const b0 = new Uint8Array(await res.arrayBuffer());
             const b = res.status === 206 ? b0 : b0.subarray(off, off + n);
+            prefetchDownloadBytes += b.length;
             for (let q = 0; q * PFPAGE < b.length; q++) {
               bag.set(off / PFPAGE + q, b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
             }
             ok++;
-          } catch { failed++; }
+          } catch {
+            failed++;
+            // A page that did not arrive was not paid for, so let a later batch try it again.
+            for (let q = 0; q * PFPAGE < n; q++) fetchedOnce.get(key)?.delete(off / PFPAGE + q);
+          }
         }
       };
       const t0 = performance.now();
