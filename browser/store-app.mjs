@@ -9,7 +9,7 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
          routeDistanceM, formatDistance, routeGpx,
          SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
-import { pagesFor, indexStats } from './page-index.mjs';
+import { pagesFor, indexStats, configureIndex, openIndex } from './page-index.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
@@ -101,6 +101,22 @@ const NAMES = coverage.block.names ? new URL(coverage.block.names.url, INDEX_URL
 // supported state, not a crash: the per-command covering set names the roads a view or a match needs, and
 // this is only the single-block default it collapses to.
 const ROADS  = coverage.block.roads ? new URL(coverage.block.roads.url, INDEX_URL).href : '';
+
+// docs/prefetch-index-design.md — WHICH PAGES DOES THIS VIEWPORT NEED, over every store at once.
+//
+// One file beside `coverage.json`, read by range: the app pays ~1.4 kB per session for the header and
+// the root directory, then a sub-directory and a few chunks per screen. Its absence is not an error —
+// `pagesFor` returns [] and every read takes today's path — so a site published without it works exactly
+// as it did, only slower.
+//
+// The hashes come from the coverage index, which is the same number the deploy verifies each block's
+// bytes against. That is what makes a STALE index safe: it is refused per store at the reader's
+// chokepoint rather than believed into naming pages of data that has moved (design §5.1).
+const PAGES_URL = new URL('./coverage.pagesx', INDEX_URL).href;
+configureIndex(PAGES_URL, (coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
+  .filter((s) => s && s.url && s.sha256)
+  .map((s) => [new URL(s.url, INDEX_URL).href, s.sha256])));
+openIndex();          // one session read, warmed here so it is not on the first view's critical path
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 // ⚠ THE VIEW'S ROADS ARE ZOOM-BANDED; A MATCH'S ARE NOT. Below the handover the overview answers the
@@ -515,12 +531,23 @@ initSearch();
 // `baseFor`/`roadsFor` return the covering set the kernel is about to read, so this asks the same
 // question of the same stores — there is no second notion of "which block" to drift out of step.
 let prefetchOn = true;
+// ⚠ ONLY WHAT WILL BE READ BY RANGE. A `whole` store is one request for the entire file — there are no
+// pages to plan, and asking the index about it is worse than useless: at z8 the country-wide viewport
+// covers nearly every leaf, so the app read 3.6 MB of index (575 chunks) to prefetch a store it was about
+// to download in one go. Measured on the boot camera, before this line existed. The overview is exactly
+// that store, and it is the fastest step in a journey precisely because it is whole (design §8.2).
+const isPaged = (m) => String(m || '').startsWith('paged');
 async function prefetchFor(box, zoom) {
   if (!prefetchOn || !kernel.prefetch) return null;
   const b = { mnlo: Math.round(box.mnlo * 1e7), mnla: Math.round(box.mnla * 1e7),
               mxlo: Math.round(box.mxlo * 1e7), mxla: Math.round(box.mxla * 1e7) };
-  const urls = [...new Set([...(baseFor(box, zoom) || '').split(' '),
-                            ...(roadsFor(box, zoom) || '').split(' ')].filter((u) => u && u.endsWith('.store')))];
+  // ⚠ THE COVERING SET IS COMMA-SEPARATED (`coverage.mjs` joins with ','), and splitting it on a SPACE
+  // silently disabled the prefetch for every multi-block viewport: "a.store,b.store" is one token that
+  // still ends in `.store`, so it passed the filter and then matched no store in the index. A border
+  // screen — the case the covering set exists for — prefetched nothing at all.
+  const urls = [...new Set([...(isPaged(baseModeFor(box, zoom)) ? (baseFor(box, zoom) || '').split(/[,\s]+/) : []),
+                            ...(isPaged(roadsModeFor(box, zoom)) ? (roadsFor(box, zoom) || '').split(/[,\s]+/) : [])]
+                          .filter((u) => u && u.endsWith('.store')))];
   const out = [];
   await Promise.all(urls.map(async (u) => {
     try {
@@ -747,6 +774,14 @@ function postRingStep(gen, screen, zoom, i) {
     }
     const t0 = performance.now();
     try {
+      // The ring pays the SAME serial round trips the view used to, and there are eight of them: measured
+      // on one Luxembourg screen, the view read 455 ranges and the ring behind it read 1 296. So a cell
+      // plans its pages first, exactly as the view does — the index is already open, the cell is one
+      // screen, and its chunks are usually the ones the view just read (design §5.5).
+      //
+      // ⚠ It stays BEHIND the critical path by construction: the ring is chained, one cell at a time,
+      // and this runs inside a cell's own job. Nothing here can be issued before the screen is drawn.
+      await prefetchFor(cell, zoom);
       await kernel.runKernel(viewCmd(bboxOf(cell), roadsFor(cell, zoom), 'view', baseFor(cell, zoom), cell, zoom));
     } catch (err) {
       // A ring cell that fails is a prefetch that did not happen — never a broken map. The screen is

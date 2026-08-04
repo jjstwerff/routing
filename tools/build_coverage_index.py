@@ -51,10 +51,53 @@ import json, struct, sys, os, glob
 
 MAGIC = b'LPGX'
 VERSION = 3
+# ⚠ THE HEADER LENGTH IS DERIVED FROM THE FORMAT, NEVER WRITTEN TWICE. It was a literal 40 beside a
+# 36-byte `struct.pack`, so every sub-directory and chunk offset in the file pointed 4 bytes past its
+# own data — a whole index that parsed as garbage, and silently: a wrong page number costs bytes, not
+# correctness (§5.2), so nothing would have failed loudly. `struct.calcsize` cannot disagree with the
+# writer, and `verify()` below re-reads the finished file rather than trusting either.
+HDR = '<4sIHHIIiiiI'
 # Western Europe's box, so every block's chunks land on the SAME grid and compose without translation.
 ORIGIN_LO, ORIGIN_LA = -110000000, 340000000        # -11.0°E, 34.0°N
 ROOT = 10000000                                     # 1.0° level-0 tiles
 MAX_LEVEL = 12
+
+def verify(path, leaves):
+    """Re-read the finished file the way the BROWSER will, and walk every leaf to its last byte.
+
+    The writer computing an offset and the reader trusting it are two different claims, and the 4-byte
+    header slip proved they can disagree without anything failing: a chunk read at the wrong offset yields
+    plausible nonsense, and a wrong page number only costs bytes. So this parses the file back out of
+    `path` — never out of the in-memory structures that produced it — and asserts every leaf's cell count
+    and byte length against what was meant to be written. Returns a message on the first disagreement.
+    """
+    b = open(path, 'rb').read()
+    magic, ver, nstores, _maxlevel, nroot, ncells, _olo, _ola, _root, nleaf = struct.unpack_from(HDR, b, 0)
+    if magic != MAGIC or ver != VERSION: return f'magic/version: {magic!r} v{ver}'
+    o = struct.calcsize(HDR)
+    if struct.unpack_from('<H', b, o)[0] != nstores: return 'store table does not start where the header ends'
+    o += 2
+    for _ in range(nstores):
+        _page, ul = struct.unpack_from('<IH', b, o); o += 6 + ul + 32
+    seen = 0
+    for i in range(nroot):
+        _rx, _ry, sub_off, sub_n, _r = struct.unpack_from('<hhIII', b, o + i * 16)
+        for j in range(sub_n):
+            key, coff, clen = struct.unpack_from('<QII', b, sub_off + j * 16)
+            lvl, x, y = key >> 56, (key >> 28) & 0xFFFFFFF, key & 0xFFFFFFF
+            want = leaves.get((lvl, x, y))
+            if want is None: return f'leaf {(lvl, x, y)} in the directory is not a leaf that was built'
+            n = struct.unpack_from('<I', b, coff)[0]
+            if n != len(want): return f'leaf {(lvl, x, y)}: {n} cells at offset {coff}, {len(want)} written'
+            p = coff + 4
+            for _ in range(n):
+                _sid, _ox, _oy, np_ = struct.unpack_from('<HiiH', b, p); p += 12 + 4 * np_
+            if p != coff + clen: return f'leaf {(lvl, x, y)}: walked to {p}, chunk ends at {coff + clen}'
+            seen += n
+    if seen != ncells: return f'{seen} cells reachable through the directory, header says {ncells}'
+    if nleaf != len(leaves): return f'header says {nleaf} leaves, {len(leaves)} built'
+    return None
+
 
 def main():
     out = 'blocks/coverage.pagesx'
@@ -84,6 +127,16 @@ def main():
                 cells.append((xy[k][0], xy[k][1], sid, pages))
     if not cells:
         print('FAIL: no cells — build and coordinate the per-store indexes first'); return 1
+
+    # ⚠ A CELL WEST OR SOUTH OF THE ORIGIN CANNOT BE KEYED, so it is dropped LOUDLY rather than packed.
+    # The leaf key is `level << 56 | x << 28 | y` over unsigned tile coordinates; a negative x or y would
+    # wrap into another tile's key and hand that tile someone else's pages. Ireland and Portugal are inside
+    # the -11°E / 34°N origin, so this should stay at zero — if it ever does not, the ORIGIN moved, and
+    # that is a rebuild of every index rather than a cell to skip.
+    outside = [c for c in cells if c[0] < ORIGIN_LO or c[1] < ORIGIN_LA]
+    if outside:
+        print(f'   ⚠ {len(outside)} cell(s) outside the {ORIGIN_LO/1e7:.1f}E/{ORIGIN_LA/1e7:.1f}N origin — DROPPED')
+        cells = [c for c in cells if c[0] >= ORIGIN_LO and c[1] >= ORIGIN_LA]
 
     # Quadtree over the fixed global grid. A tile splits only while it holds more than `max_cells`, so a
     # chunk is bounded by work; empty tiles are never created, so ocean costs nothing.
@@ -115,7 +168,7 @@ def main():
     for st in stores:
         u = st['url'].encode()
         store_tbl += struct.pack('<IH', st['page'], len(u)) + u + bytes.fromhex(st['sha256'])
-    header_len = 40
+    header_len = struct.calcsize(HDR)
     rootdir_len = len(roots) * 16
     subdir_len = sum(len(v) * 16 for v in roots.values())
     base = header_len + len(store_tbl) + rootdir_len + subdir_len
@@ -134,15 +187,18 @@ def main():
             body += chunk
 
     with open(out, 'wb') as f:
-        f.write(struct.pack('<4sIHHIIiiiI', MAGIC, VERSION, len(stores), MAX_LEVEL,
+        f.write(struct.pack(HDR, MAGIC, VERSION, len(stores), MAX_LEVEL,
                             len(rootents), len(cells), ORIGIN_LO, ORIGIN_LA, ROOT, len(leaves)))
         f.write(store_tbl)
         for rx, ry, o, n in rootents: f.write(struct.pack('<hhIII', rx, ry, o, n, 0))
         f.write(subblobs)
         f.write(body)
 
-    sizes = [len(v) for grp in roots.values() for _, v in grp]
-    sizes = [16 + sum(18 + 4*len(pg) for _, _, _, pg in g) for grp in roots.values() for _, g in grp]
+    bad = verify(out, leaves)
+    if bad:
+        print(f'FAIL: {bad}'); return 1
+
+    sizes = [16 + sum(12 + 4*len(pg) for _, _, _, pg in g) for grp in roots.values() for _, g in grp]
     lv = {}
     for (lvl, _, _) in leaves: lv[lvl] = lv.get(lvl, 0) + 1
     total = os.path.getsize(out)
@@ -154,9 +210,7 @@ def main():
     subs = [len(v) * 16 for v in roots.values()]
     print(f'     sub-directory  median {sorted(subs)[len(subs)//2]} B · max {max(subs)} B  ← ONE read per tile')
     print(f'     chunk  min {min(sizes)} · median {sorted(sizes)[len(sizes)//2]} · max {max(sizes)} B')
-    print(f'     total  {total/1024:.0f} kB')
-    per = sum(os.path.getsize(p) for p in glob.glob("blocks/*.pagesx") if not p.endswith("coverage.pagesx"))
-    if per: print(f'     against {per/1024:.0f} kB of per-store indexes ({total/per*100:.0f}%)')
+    print(f'     total  {total/1024:.0f} kB — read by RANGE, never whole')
     return 0
 
 if __name__ == '__main__':

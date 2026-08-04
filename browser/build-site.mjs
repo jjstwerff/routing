@@ -104,6 +104,17 @@ if (existsSync(blocks)) {
     n += 1; bytes += statSync(p).size;
   }
   if (n) console.log(`build-site: ${n} generated block file(s), ${(bytes / 1e6).toFixed(1)} MB (linked)`);
+  // docs/prefetch-index-design.md — the page index, beside `coverage.json` because it is one index over
+  // EVERY store (v3) rather than a sidecar of any one of them. It is read by range and never whole, so
+  // its size on the site is not its cost to a session; and its absence is not an error, only the old
+  // 764-round-trip read path. Staged here rather than by `finish_page_indexes.sh --stage` so that a
+  // rebuilt `_site` always has the current one — a gate serves `_site`, and an index staged into the
+  // previous build reaches nothing (HANDOFF §2).
+  const px = join(blocks, 'coverage.pagesx');
+  if (existsSync(px)) {
+    try { linkSync(px, join(site, 'coverage.pagesx')); } catch { cpSync(px, join(site, 'coverage.pagesx')); }
+    console.log(`build-site: coverage.pagesx (${(statSync(px).size / 1e6).toFixed(1)} MB page index)`);
+  }
 }
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);
 

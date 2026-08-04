@@ -9,15 +9,17 @@
 #
 #   1. SPATIAL KEYS (`add_cell_coords.sh`) — JS works in bounding boxes and never computes a tkey, so
 #      without each cell's ox/oy the index is unusable from the only place that needs it.
-#   2. CHUNKING (`chunk_page_index.py`) — `nl-east.base`'s index is 7.9 MB whole; fetching that to
-#      prefetch a 43 MB viewport is an 18% overhead that eats the win. Chunked, a viewport reads the
-#      header plus one to four chunks.
+#   2. ONE INDEX OVER EVERY STORE (`build_coverage_index.py`) — a viewport is answered by three scales
+#      plus roads, so a per-store index made the browser open four of them to plan one screen. v3 is a
+#      single quadtree over every coordinated store, read by range: a session pays ~1.4 kB of header and
+#      root directory, then a sub-directory and a few chunks per screen.
 #
 # ⚠ SAFE TO RE-RUN WHILE GENERATION IS STILL GOING. It skips any index whose store is currently being
 # generated (the .pages.json is written only at the end, so a missing one is simply not ready) and any
-# that already has coordinates. Run it again when the rest land.
+# that already has coordinates. Run it again when the rest land — the coverage index is rebuilt from
+# whatever is coordinated at that moment, and a store that is not in it simply reads the old way.
 #
-#   tools/finish_page_indexes.sh [--stage]      # --stage also copies .pagesx into _site/stores/
+#   tools/finish_page_indexes.sh [--stage]      # --stage also copies coverage.pagesx into _site/
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 stage=0; [ "${1:-}" = "--stage" ] && stage=1
@@ -37,17 +39,22 @@ for idx in "${idxs[@]}"; do
   else
     echo "   coordinates already present"
   fi
-  python3 "$here/tools/chunk_page_index.py" "$idx" 2>&1 | sed 's/^/  /' || { echo "  FAIL: chunk"; continue; }
-  if [ "$stage" = 1 ] && [ -f "$here/blocks/$name.pagesx" ]; then
-    if [ -d "$here/_site/stores" ]; then
-      cp "$here/blocks/$name.pagesx" "$here/_site/stores/$name.pagesx"
-      echo "   staged -> _site/stores/$name.pagesx"
-    else
-      echo "   ⚠ no _site/stores — run node browser/build-site.mjs first"
-    fi
-  fi
   done_n=$((done_n+1))
 done
+
+# The index the browser actually reads, over every store that HAS coordinates by now. Rebuilt from
+# scratch each time rather than appended to: it is a few seconds over the .pages.json files, and an index
+# assembled incrementally is the one thing that could disagree with the data it names.
 echo
-echo "== $done_n finished =="
-du -ch "$here"/blocks/*.pagesx 2>/dev/null | tail -1 | sed 's/^/   chunked total: /'
+echo "== one index over every coordinated store =="
+( cd "$here" && python3 tools/build_coverage_index.py ) || { echo "  FAIL: coverage index"; exit 1; }
+if [ "$stage" = 1 ]; then
+  if [ -d "$here/_site" ]; then
+    cp "$here/blocks/coverage.pagesx" "$here/_site/coverage.pagesx"
+    echo "   staged -> _site/coverage.pagesx"
+  else
+    echo "   ⚠ no _site — run node browser/build-site.mjs first (it stages the index itself)"
+  fi
+fi
+echo
+echo "== $done_n coordinated =="
