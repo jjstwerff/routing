@@ -33,10 +33,11 @@ two and two data repos of its own. It draws from the overview below z12 and `be-
 above that it is roads on a plain background — a state `store-app.mjs` handles as a product, not a
 fallback. Luxembourg's base is 70.6 MB and ships, so it has a complete map. **Asymmetric on purpose.**
 
-⚠ **The site is LIVE at 814.1 MB of 950 (86%)** — this is now a property of production, not of a branch.
-Passing, and tighter than it should stay: `site_size_gate`'s own margin note says the next region added is
-what crosses it. The relief that needs no new decision is moving **`be-mid` (149.3 MB)** to its own Pages
-repo, as `nl-mid` already is: that lands it near 70%. **Do it before adding anything, not after.**
+**The site is at 664.9 MB of 950 (70%), and the headroom is real again.** It was live at 814.2 MB (86%),
+where `site_size_gate`'s own margin note said the next region added is what crosses it. **`be-mid`
+(149.3 MB) now serves from its own Pages repo**, `jjstwerff.github.io/routing-data-be-mid`, as `nl-mid`
+and the four region base maps already did — same origin as the app, a different PATH, so no CORS is in
+play. Nothing about how the block is READ changed: same bytes, same sha256, still paged by range.
 
 ### ⚠ The store schema is v2, and older blocks are unreadable
 
@@ -161,11 +162,15 @@ both backends. **Two of our three upstream findings this week were corrected by 
 
 **Benelux is deployed. Nothing is half-landed — what remains is headroom and one design decision.**
 
-1. ⚠ **THE SITE IS LIVE AT 86% of its 950 MB budget**, and this is the one that binds. Move **`be-mid`
-   (149.3 MB)** to its own Pages repo (`tools/publish-pages-data.sh`), as `nl-mid` already is — that lands
-   it near 70%. It needs no new decision and nothing else can be added until it happens.
+1. ~~**THE SITE IS AT 86% of its 950 MB budget**~~ — **done 2026-08-04: `be-mid` moved, 86% → 70%.**
+   The pattern to copy for the next one is in `data/coverage.toml`: publish with
+   `tools/publish-pages-data.sh`, then give the region `base_url_base` + `base_cors` and REGENERATE the
+   index. ⚠ **Rebuild `_site` before believing `site_size_gate`** — the gate is computed from the index
+   plus the built site, so a stale `_site` keeps the moved block on disk and the gate reclassifies it into
+   "app shell" instead of dropping it: it reported the same 814.2 MB total with the correct index.
 2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
-   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
+   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14. **This
+   is what item 1's headroom was bought for**, and at 70% there is now room to land the halves.
 3. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
    first search; Western Europe extrapolates to ~500 MB. It is one store because `NAMES` is resolved once
    at boot, `store_load_url_trusted` ADOPTS, and every store numbers records from 0 — a covering set is
