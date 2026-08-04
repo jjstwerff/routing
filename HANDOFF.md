@@ -206,21 +206,29 @@ both backends. **Two of our three upstream findings this week were corrected by 
    headline is not about Western Europe at all: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at
    ~1 000 sessions/month**, which binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91) and
    the code to move already exists; one measurement stands between the recommendation and paying for it.
-5. ⚠ **`nl_live_gate` TRAPS in wasm, and it is the match a real Amsterdam visitor performs.**
-   `RuntimeError: unreachable` in N3's `matchSpec`. It reproduces on **unmodified `main`** on a quiet box,
-   so nothing on the ring branch caused it — but it appeared partway through 2026-08-03/04 and the gate
-   passed at the start of that session. **Four suspects are ruled out, each with a verified instrument:**
-   the **toolchain** (the committed wasm, deployed into `_site` properly, traps — and so does one built on
-   the newest binary); the **data** (all 20 shipped blocks verify by size + sha256 against the index, and
-   no `.dschema` was rewritten — every sidecar predates the session); the **matcher** (a native whole-load
-   match on `nl-midwest` returns the exact expected route, 29 pts / 1531.9 m); and the **paged path**
-   itself (a FRESH browser session does the same paged match on the same block successfully, 1533 ms,
-   same route, kernel alive).
-   **What is left is the gate's ACCUMULATED SESSION** — N1/N2 walk z8 → z12 → z11 → z16 across 10 locally
-   served base blocks before N3 matches. The leading hypothesis is wasm memory (the profile shows a 531 MB
-   working set for a much lighter session, and a `memory.grow` that cannot be satisfied aborts exactly like
-   this), but it is a HYPOTHESIS. **The next probe:** replay N1/N2, report `kernelStats().wasmBytes` before
-   N3, and bisect which step arms it.
+5. ⚠ **`nl_live_gate`'s wasm trap is now A/B'd TO ITS TRIGGER, and the memory hypothesis is REFUTED.**
+   `RuntimeError: unreachable` in N3's `matchSpec`. **It is the SERIAL PAGED READ that arms it, and
+   prefetching the pages removes it** — one variable, same box, same binary (`4e31dbe8`, loft 2026.8.0),
+   same committed wasm (Chromium module `00592962`), same blocks:
+
+   | | |
+   |---|---|
+   | `main` | **TRAPS** (1/1) |
+   | branch, `prefetchOn = false` — the ONLY edit | **TRAPS** (3/3) |
+   | branch, prefetch on | **PASSES** (4/4) |
+
+   ⚠ **`wasmBytes` is 41.0 MB in BOTH arms immediately before the trapping call**, so *"a `memory.grow`
+   that cannot be satisfied"* — which this file named as the leading hypothesis — is not what is happening;
+   the arm that dies is not the bigger one. (The 531 MB in an older profile was a different session.) What
+   differs is how many reads SUSPENDED wasm: **764 with none prefetched, against 64 real ones when 699 of
+   763 came out of the buffer.** The trapping arm also ran one more kernel command (2 vs 1), so the arms
+   are not identical in work — that is the loose end in this A/B.
+   **So the app no longer trips it, and the DEFECT IS NOT FIXED**: a page the index does not name still
+   falls through to a real read (58 per view), and `nl-east.base` / `nl-mideast.base` have no index at all
+   — a camera over them takes the old path in full. **The next probe:** hold the work identical and vary
+   only the suspend COUNT (prefetch the view but not the ring, and the reverse), then symbolise
+   `wasm-function[531]` against a debug build. `browser/cdp_nl_live.mjs` prints the session state before
+   the match now, which is how these numbers exist at all — every counter used to be read *after* it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
 6b. **THE MAP IS SLOW BECAUSE OF ROUND TRIPS, AND THE FIX IS WIRED AND GATED — but not published.**
    A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured

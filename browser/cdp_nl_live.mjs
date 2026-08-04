@@ -77,6 +77,14 @@ if (!c.hasBase) fail(`${c.id} reports NO base map — the site index must name i
 if (c.outside) fail('Amsterdam reported as OUTSIDE coverage');
 
 const before = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())'));
+// ⚠ PRINTED BEFORE THE MATCH, BECAUSE THE MATCH IS WHERE THIS GATE DIES. `matchSpec` here trapped with
+// `RuntimeError: unreachable` all through 2026-08-03/04 (HANDOFF §1 item 5), and every counter that could
+// explain it was read AFTER the match — i.e. never, on the run that mattered. The session state at the
+// moment of the crash is the evidence: `wasmBytes` for the memory-growth hypothesis (a `memory.grow` that
+// cannot be satisfied aborts exactly like this), and the read counters for how much of the walk was
+// SERIAL — prefetching the pages is what makes this gate pass, so the two are worth seeing side by side.
+console.log(`  before the match: wasm ${(before.wasmBytes / 1e6).toFixed(1)} MB · ${before.rangeReads} range reads` +
+            ` · ${before.prefetchHits || 0} of them from the prefetch buffer · ${before.commands} commands`);
 const m = JSON.parse(await ev(`(async () => JSON.stringify(await window.__perfHooks.matchSpec(${JSON.stringify(SPEC)})))()`));
 const after = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())'));
 
