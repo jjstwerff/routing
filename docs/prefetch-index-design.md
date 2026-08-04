@@ -506,8 +506,14 @@ do not double-count:
   ⇒ 1.89× to the view, 1.46× to a settled session, identical map
 ```
 
-**And live, on the real thing: 1.31× to the view, 1.42× to a settled session.** Not the 2.29× this was
-first shipped with. The smaller number is the one that describes a user.
+**And live, on the deployed app: 1.10–1.31× to the view and 1.20–1.42× to a settled session**, n=3, B
+ahead every time. Not the 2.29× this was first shipped with. The smaller number is the one that describes
+a user.
+
+⚠ **Only the RATIO is comparable across live runs.** The unprefetched arm measured 11.6, 12.3, 33.0 and
+35.0 s for the same camera on the same afternoon — the link and the CDN's state move by 3× — so an
+absolute live number means nothing without its pair, and a single arm proves nothing at all. What IS
+stable is the counts: **2 627 pages, 172.2 MB, 79.0% used, 81.3% view hit rate**, identical on every run.
 
 **Both halves of §5.3 are gated now.** The hit rate alone cannot fail an over-fetch — a prefetch that
 pulls ten screens scores perfectly on it — so `prefetch_gate` asserts the inverse as well: **of the pages
