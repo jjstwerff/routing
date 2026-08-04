@@ -13,7 +13,12 @@ import http.server, socketserver, sys, os, re, time, urllib.parse
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "."
+# ⚠ A PATH TO APPEND EVERY RANGED READ TO — not a switch. `RANGE_LOG=1` reads like "logging on" and is
+# taken literally: one gate set it that way and quietly grew a file named `1` in whatever directory it ran
+# from, which was the repo root. A relative value is therefore refused rather than obeyed.
 RANGE_LOG = os.environ.get("RANGE_LOG", "")
+if RANGE_LOG and not os.path.isabs(RANGE_LOG):
+    sys.exit(f"range_server: RANGE_LOG must be an absolute PATH to log to, not {RANGE_LOG!r}")
 # LATENCY_MS injects a fixed per-request delay. A local server has ~0 RTT, which is exactly the variable
 # that dominates a real paged read (measured against GitHub Pages: 26 ms TTFB on a reused connection, and
 # a 64 kB range costs the same as one byte). Without this an A/B of prefetching measures nothing, because

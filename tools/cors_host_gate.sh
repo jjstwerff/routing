@@ -79,7 +79,11 @@ python3 -m http.server "$appport" --directory "$site" >/dev/null 2>&1 &
 app=$!
 # The data origin MUST serve Range and CORS; range_server.py does both. `python -m http.server` on the app
 # side is fine — the page itself is not range-read.
-RANGE_LOG=1 python3 "$here/tools/range_server.py" "$dataport" "$site" /dev/null >"$work/data.log" 2>&1 &
+# ⚠ `RANGE_LOG` IS A PATH, NOT A SWITCH. It read `RANGE_LOG=1` here, which the server took literally and
+# appended every ranged read to a file named `1` — in whatever directory the gate ran from, i.e. the repo
+# root, where it was eventually committed. Nothing consumed it either: the assertions below read the
+# server's STDOUT (`data.log`), not this. A path inside `$work` costs nothing and dies with the run.
+RANGE_LOG="$work/ranges.log" python3 "$here/tools/range_server.py" "$dataport" "$site" /dev/null >"$work/data.log" 2>&1 &
 data=$!
 sleep 1
 code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://127.0.0.1:'"$appport" -H 'Range: bytes=0-99' \
