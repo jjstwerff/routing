@@ -253,8 +253,27 @@ if (res.stats) {
               (ok ? '✅ one session' : '❌ NOT a session — state cannot survive'));
   const sl = res.stats.storeLoads;
   console.log('  store fetches: ' + sl + ' for ' + res.stats.commands + ' commands  ' +
-              (sl <= 2 ? '✅ each store loaded ONCE (step 6)' : '❌ ' + sl + ' loads — the session is re-decoding'));
+              (sl <= 2 ? '✅ each store BODY loaded at most ONCE (step 6)' : '❌ ' + sl + ' loads — the session is re-decoding'));
   console.log('    (pre-step-6 this was 2 per command: every click re-decoded a 20MB image)');
+  // Sidecars are reported, never asserted. A paged block's BODY never comes through this bridge, so the
+  // count above used to be entirely `.dschema` fetches and read as a re-decode on every run — including
+  // runs with nothing wrong. They are ~1.3 kB each and one rides along with every command that names a
+  // store, so the honest statement is a request count, not a re-decode warning.
+  if (res.stats.sidecarLoads) {
+    console.log('  schema sidecars: ' + res.stats.sidecarLoads + ' fetch(es) (~1.3 kB each) — one per command that names a store, not a decode');
+  }
+  // WHICH stores, whenever the count is above the invariant. The total alone cannot tell a re-decode
+  // (one store fetched five times — the defect step 6 removed) from a wider covering set (five stores
+  // fetched once each — not a defect at all), and those want opposite fixes.
+  const wl = res.stats.wholeLoads || {};
+  const wlKeys = Object.keys(wl);
+  if (sl > 2 && wlKeys.length) {
+    const repeats = wlKeys.filter((k) => wl[k] > 1);
+    console.log('    by store: ' + wlKeys.sort((a, b) => wl[b] - wl[a]).map((k) => `${k}×${wl[k]}`).join(' · '));
+    console.log('    → ' + (repeats.length
+      ? `RE-DECODE: ${repeats.length} store(s) fetched more than once (${repeats.map((k) => `${k}×${wl[k]}`).join(', ')})`
+      : `${wlKeys.length} DISTINCT stores, each once — a wider covering set, not a re-decode`));
+  }
   if (res.stats.wasmBytes) console.log('  wasm memory: ' + (res.stats.wasmBytes / 1048576).toFixed(1) + ' MB working set');
 }
 if (res.stream) {

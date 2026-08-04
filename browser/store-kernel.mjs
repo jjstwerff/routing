@@ -45,6 +45,12 @@ export async function createKernel(wasmUrl) {
   const ctrl = { ac: null, httpBytes: null, httpTotal: -1 };
   const exposed = new Map();   // tag -> { storeBase, rec, pos, typeId, desc } from expose() (step 9)
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
+  // SIDECARS ARE NOT STORE BODIES, and conflating them made the session invariant report a re-decode that
+  // was not happening. `storeLoads` is the load-bearing count ("each store decoded ONCE"), but every
+  // command naming a store also fetches its ~1.3 kB `.dschema`, and once blocks became PAGED the bodies
+  // stopped coming through this bridge at all — so the whole count was sidecars, and the ❌ fired on both
+  // sides of every comparison. Counted apart, `storeLoads` means what it says again.
+  let sidecarLoads = 0;
   // PLAN-SCALE C1b: a working-set read is only a working set if you can SEE what it fetched.
   let rangeReads = 0, rangeBytes = 0, rangeAsked = 0;
   // Per STORE, not just the session total. A gate that says "48% of a 222.4 MB block" has to be able to
@@ -52,6 +58,8 @@ export async function createKernel(wasmUrl) {
   // the app's own origin its pages joined the same counter, and a roads-block budget started failing on
   // base-map bytes. The url is right here, so attribution costs one Map.
   const perStore = new Map();
+  // Whole-file loads by store filename — the attribution half of `storeLoads` (see loft_host_http_get).
+  const wholeLoads = new Map();
   const rangeFails = [];
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
@@ -107,7 +115,15 @@ export async function createKernel(wasmUrl) {
       loft_host_http_get: (ptr, len) => {
         if (ctrl.ac && ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return ctrl.httpBytes ? ctrl.httpBytes.length : 0xFFFFFFFF; }
         const url = dec.decode(new Uint8Array(mem.buffer, ptr, len));
-        storeLoads++;              // counted on the UNWIND pass only — the rewind above returns early
+        // Counted on the UNWIND pass only — the rewind above returns early.
+        // WHICH store, not just how many. `storeLoads` is the session's load-bearing invariant ("each
+        // store loaded ONCE"), and when it climbs the total says nothing about WHY: five whole-file loads
+        // is fine if they are five different stores and a defect if they are one store five times. Range
+        // reads have had per-store attribution since the roads budget failed on base-map bytes; this is
+        // the same rule applied to the other counter, and it is what tells a re-decode from a wider set.
+        const wk = url.split('?')[0].split('/').pop() || url;
+        wholeLoads.set(wk, (wholeLoads.get(wk) || 0) + 1);
+        if (wk.endsWith('.dschema')) sidecarLoads++; else storeLoads++;
         ctrl.httpBytes = null;
         const back = (b) => { ctrl.httpBytes = b; wake('fetch'); };
         fetch(url).then(async (res) => back(res.ok ? new Uint8Array(await res.arrayBuffer()) : null))
@@ -275,7 +291,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads) }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,
