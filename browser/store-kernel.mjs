@@ -50,7 +50,9 @@ export async function createKernel(wasmUrl) {
   // command naming a store also fetches its ~1.3 kB `.dschema`, and once blocks became PAGED the bodies
   // stopped coming through this bridge at all — so the whole count was sidecars, and the ❌ fired on both
   // sides of every comparison. Counted apart, `storeLoads` means what it says again.
-  let sidecarLoads = 0;
+  let sidecarLoads = 0, sidecarHits = 0;
+  // url -> bytes, sidecars only. See loft_host_http_get for why this is safe and why it stops there.
+  const schemaCache = new Map();
   // PLAN-SCALE C1b: a working-set read is only a working set if you can SEE what it fetched.
   let rangeReads = 0, rangeBytes = 0, rangeAsked = 0;
   // Per STORE, not just the session total. A gate that says "48% of a 222.4 MB block" has to be able to
@@ -122,10 +124,35 @@ export async function createKernel(wasmUrl) {
         // reads have had per-store attribution since the roads budget failed on base-map bytes; this is
         // the same rule applied to the other counter, and it is what tells a re-decode from a wider set.
         const wk = url.split('?')[0].split('/').pop() || url;
+        const isSidecar = wk.endsWith('.dschema');
+        // A SIDECAR CANNOT CHANGE UNDER A SESSION, so fetch each one once.
+        //
+        // Every command naming a store re-fetched its `.dschema`: 15 requests for 2 distinct files in a
+        // 109-command profile, and the ring made it worse by issuing eight more views per view. The
+        // content is immutable for the session — it describes the layout the block was WRITTEN with, and
+        // loft#705 refuses the store outright if that ever disagrees — so a second fetch can only return
+        // the bytes already held.
+        //
+        // A hit answers SYNCHRONOUSLY: return the length and let `..._get_copy` take the bytes, with no
+        // fetch, no asyncify unwind and no round trip. That is the same shape as the no-asyncify path,
+        // and it is safe precisely because nothing suspends — there is no rewind to get wrong.
+        //
+        // ⚠ SIDECARS ONLY, deliberately. The same cache over a store BODY would hold a 20 MB image in JS
+        // beside the copy already in wasm memory, which is the opposite of what a paged read is for.
+        if (isSidecar) {
+          const hit = schemaCache.get(url);
+          if (hit) { sidecarHits++; ctrl.httpBytes = hit; return hit.length; }
+        }
+        // Counted on the UNWIND pass only — the rewind above returns early.
+        // WHICH store, not just how many. `storeLoads` is the session's load-bearing invariant ("each
+        // store loaded ONCE"), and when it climbs the total says nothing about WHY: five whole-file loads
+        // is fine if they are five different stores and a defect if they are one store five times. Range
+        // reads have had per-store attribution since the roads budget failed on base-map bytes; this is
+        // the same rule applied to the other counter, and it is what tells a re-decode from a wider set.
         wholeLoads.set(wk, (wholeLoads.get(wk) || 0) + 1);
-        if (wk.endsWith('.dschema')) sidecarLoads++; else storeLoads++;
+        if (isSidecar) sidecarLoads++; else storeLoads++;
         ctrl.httpBytes = null;
-        const back = (b) => { ctrl.httpBytes = b; wake('fetch'); };
+        const back = (b) => { ctrl.httpBytes = b; if (isSidecar && b) schemaCache.set(url, b); wake('fetch'); };
         fetch(url).then(async (res) => back(res.ok ? new Uint8Array(await res.arrayBuffer()) : null))
                   .catch(() => back(null));
         if (ctrl.ac) { waiting = 'fetch'; ctrl.ac.suspend(); }
@@ -291,7 +318,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads) }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

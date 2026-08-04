@@ -259,8 +259,10 @@ if (res.stats) {
   // count above used to be entirely `.dschema` fetches and read as a re-decode on every run — including
   // runs with nothing wrong. They are ~1.3 kB each and one rides along with every command that names a
   // store, so the honest statement is a request count, not a re-decode warning.
-  if (res.stats.sidecarLoads) {
-    console.log('  schema sidecars: ' + res.stats.sidecarLoads + ' fetch(es) (~1.3 kB each) — one per command that names a store, not a decode');
+  if (res.stats.sidecarLoads || res.stats.sidecarHits) {
+    const f = res.stats.sidecarLoads || 0, h = res.stats.sidecarHits || 0;
+    console.log(`  schema sidecars: ${f} fetch(es) (~1.3 kB each) + ${h} served from cache  ` +
+                (h && f <= 2 ? '✅ each sidecar fetched ONCE' : h ? '' : '(uncached)'));
   }
   // WHICH stores, whenever the count is above the invariant. The total alone cannot tell a re-decode
   // (one store fetched five times — the defect step 6 removed) from a wider covering set (five stores
