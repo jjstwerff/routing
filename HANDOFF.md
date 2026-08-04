@@ -249,10 +249,14 @@ both backends. **Two of our three upstream findings this week were corrected by 
    makes the bag forget and the wire does not, so Amsterdam thrashed (361.8 MB for 172.2 MB of distinct
    pages, settle **0.90×**). Both records are kept: a page is bought at most once per session. Eviction is
    forced by a gate (`window.__prefetchCap`) because no camera that fits under the cap runs that path.
-   ⚠ **The next knob is named by the instrument, not by guesswork:** 650 of Amsterdam's misses were
-   EVICTED (the 64 MB cap is under its working set) against 379 never named (the pad). Raising the cap
-   buys those 650 for more JS memory beside wasm — the buffer already peaks at 68.7 MB — so it is a trade
-   to measure on a phone, not to assume.
+   **The cap was then swept and now FOLLOWS THE DEVICE** — `clamp(navigator.deviceMemory × 16 MB, 32,
+   128 MB)`. Live on Amsterdam, 64 → 128 MB takes the view **1.19× → 1.71×** and the settle
+   **1.48× → 2.41×** for **+55 MB of JS heap on a ~440 MB tab** (wasm alone is 202.6 MB there), which is
+   why a 2 GB phone must not get the same number as a laptop. Returns flatten at ~0.9× the session's
+   distinct prefetch bytes. ⚠ Two defects only eviction could show: it **ate the in-flight batch**
+   (a 16 MB cap made the view 0.82×, i.e. slower than no prefetch — the filling batch is exempt now), and
+   a retained page **pinned its whole coalesced fetch** because it was a `subarray` (copied on store now,
+   so eviction actually frees). The gate reports the tab's real heap for exactly that reason.
 
    ⚠ **The first number this was shipped with — 2.29× — was measured by a harness with INFINITE
    BANDWIDTH, and the live site refused to reproduce it twice.** `docs/prefetch-index-design.md` §12 is

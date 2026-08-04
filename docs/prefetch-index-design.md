@@ -559,6 +559,29 @@ The buffer drained to bound memory (§5.4). **A cap does that directly**, so pag
 | to a settled session | 1.46× | **3.22×** |
 | peak buffer | — | 52.5 MB, 0 evictions |
 
+### The cap, swept — and it follows the DEVICE
+
+`PFCAP` started at a flat 64 MB. Sweeping it (`window.__prefetchCap`, injectable into the deployed page,
+so no guess had to be shipped to learn this) says the cap is worth real time *and* real memory:
+
+| live, Amsterdam z14 · working set 172.2 MB | cap 64 MB | **cap 128 MB** |
+|---|---|---|
+| to the view | 1.19× | **1.71×** |
+| to a settled session | 1.48× | **2.41×** |
+| misses that were EVICTED | 777 | **168** |
+| reads per page fetched | 0.72 | **0.96** |
+| JS heap | 239.9 MB | 294.9 MB |
+| wasm, either way | 202.6 MB | 202.6 MB |
+
+**+55 MB of heap on a ~440 MB tab bought 1.48× → 2.41×.** Neither free nor negligible — and on a 2 GB
+phone that same 55 MB is the difference between running and being killed. So the cap is
+**`clamp(navigator.deviceMemory × 16 MB, 32 MB, 128 MB)`**: 32 MB on a 2 GB phone, 64 MB on a 4 GB one,
+128 MB at 8 GB and above, with a conservative 4 GB assumed where the browser does not say.
+
+And the local curve is what makes that extrapolation legitimate rather than a hope: returns flatten at
+**~0.9× the session's distinct prefetch bytes**, and Amsterdam at 64 MB is 0.37× pressure, which the curve
+put at ~1.5× settle before it was measured at 1.48×.
+
 **Live, deployed, Amsterdam z14 — the camera that evicts:**
 
 ```
@@ -579,6 +602,20 @@ would buy those 650, at the price of more JS memory beside wasm on a phone; the 
 never runs that path and untested eviction is how a buffer starts serving pages it no longer holds. Forced
 to 8 MB: 2 793 pages evicted, peak 9.2 MB, **the map byte-identical**, and the gate FAILS its quality
 floors while naming the knob — `1015 were EVICTED by the cap (raise it)`. Degradation, not breakage.
+
+⚠ **And the sweep found two defects that only eviction can show**, neither visible at a cap the session
+fits inside:
+
+* **Eviction took pages out of the IN-FLIGHT batch.** Oldest-first targets the pages that arrived first,
+  which during a large batch is that same batch — so the view paid for pages thrown away before it could
+  read them. At a 16 MB cap the view was **0.82×, slower than not prefetching at all**; exempting the
+  filling batch made it **1.51×**. When one batch exceeds the cap, the cap is exceeded until it is
+  consumed, and the peak reports that rather than hiding it.
+* **A retained page pinned its whole fetch.** Pages were `subarray`s, which share the parent ArrayBuffer —
+  up to 24 pages per coalesced range — so evicting one page of a run freed *nothing* and the cap bounded a
+  number that was not the memory. Copied on store now, one 64 kB copy against the round trip that fetched
+  it. This is also why the gate reports the tab's OWN heap: our accounting said 52.5 MB while the heap
+  knew better.
 
 ### The rule this leaves behind
 

@@ -85,11 +85,25 @@ export async function createKernel(wasmUrl) {
   // `PFCAP` bytes, then evict the oldest. An evicted page becomes buyable again — eviction removes it
   // from the bag, and the bag IS the record of what we hold, so `prefetch` skipping what is in the bag
   // is the whole dedup. Nothing else has to remember anything.
+  // ⚠ THE CAP FOLLOWS THE DEVICE, because the whole point is that a phone cannot afford what a laptop
+  // can. Measured live on Amsterdam (working set 172.2 MB), the cap is worth real time and real memory:
+  //
+  //     cap 64 MB   view 1.19x  settle 1.48x   JS heap 239.9 MB
+  //     cap 128 MB  view 1.71x  settle 2.41x   JS heap 294.9 MB   (beside 202.6 MB of wasm)
+  //
+  // So it is neither free nor negligible: +55 MB of heap on a ~440 MB tab bought 1.48x -> 2.41x. On a
+  // 2 GB phone that same 55 MB is the difference between running and being killed, and the tab is not
+  // ours alone. `navigator.deviceMemory` is the browser's own estimate in GB (Chrome reports it, capped
+  // at 8; other engines do not, hence the conservative fallback), and 16 MB per GB lands on 32 MB for a
+  // 2 GB phone, 64 MB for a 4 GB one and 128 MB for anything at 8 GB or above.
+  //
   // Settable before load so a gate can force EVICTION on a small session — the path is otherwise
   // untested on any camera that fits under the cap, and untested eviction is how a buffer starts
   // returning pages it no longer holds.
-  const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap) || 64 * 1024 * 1024;
-  let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0;
+  const deviceGB = (typeof navigator !== 'undefined' && navigator.deviceMemory) || 4;
+  const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap)
+    || Math.max(32, Math.min(128, deviceGB * 16)) * 1024 * 1024;
+  let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0, prefetchMaxBatchBytes = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
   let prefetchMissDrained = 0, prefetchMissUnknown = 0;
@@ -424,7 +438,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
@@ -447,6 +461,7 @@ export async function createKernel(wasmUrl) {
       const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
       for (const p of sorted) seen.add(p);
       inFlight = { key, pages: new Set(sorted) };
+      let batchBytes = 0;
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -475,6 +490,7 @@ export async function createKernel(wasmUrl) {
               const pg = new Uint8Array(b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
               bag.set(off / PFPAGE + q, pg);
               prefetchHeldBytes += pg.length;
+              batchBytes += pg.length;
             }
             if (prefetchHeldBytes > prefetchPeakBytes) prefetchPeakBytes = prefetchHeldBytes;
             evict();
@@ -489,6 +505,9 @@ export async function createKernel(wasmUrl) {
       const t0 = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
       inFlight = null;
+      // The peak can exceed the cap only by one in-flight batch (see `evict`), so recording the largest
+      // batch gives that excess an exact bound instead of a guessed constant in a gate.
+      if (batchBytes > prefetchMaxBatchBytes) prefetchMaxBatchBytes = batchBytes;
       evict();                    // the batch is complete and readable; NOW the cap applies to it too
       return { pages: sorted.length, requests: ranges.length, ok, failed,
                ms: Math.round(performance.now() - t0), held: bag.size };
