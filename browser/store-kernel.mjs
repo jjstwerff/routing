@@ -75,13 +75,44 @@ export async function createKernel(wasmUrl) {
   // Page-granular storage serves any request shape that its pages cover, which is what the page-set model
   // said all along.
   const prefetched = new Map();          // url -> Map<pageNo, Uint8Array>
-  // Which pages this session has ALREADY paid for, per store — not what it still holds. The bag drains
-  // on consume, so without this the ring re-buys the ground the view just read.
-  const fetchedOnce = new Map();         // url -> Set<pageNo>
+  // ⚠ PAGES ARE RETAINED AFTER CONSUME NOW, UP TO A CAP — the buffer used to DRAIN, and that was the
+  // single largest cost left in a session. Measured on one Luxembourg screen: of 722 reads that missed
+  // the buffer, 663 were pages this session had already fetched and then dropped, because the ring reads
+  // the same ground the view just read. Dropping them made the dedup refuse to re-buy them (rightly) and
+  // the read went serial (expensively).
+  //
+  // The drain existed to bound memory (design §5.4), which a CAP does directly: hold pages until
+  // `PFCAP` bytes, then evict the oldest. An evicted page becomes buyable again — eviction removes it
+  // from the bag, and the bag IS the record of what we hold, so `prefetch` skipping what is in the bag
+  // is the whole dedup. Nothing else has to remember anything.
+  // Settable before load so a gate can force EVICTION on a small session — the path is otherwise
+  // untested on any camera that fits under the cap, and untested eviction is how a buffer starts
+  // returning pages it no longer holds.
+  const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap) || 64 * 1024 * 1024;
+  let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
+  let prefetchMissDrained = 0, prefetchMissUnknown = 0;
   const prefetchTotals = new Map();
   const PFPAGE = 65536;
+  // Which pages the cap threw away, per store — so a later miss can say WHY (evicted, or never named).
+  const evictedPages = new Map();        // url -> Set<pageNo>
+  // Oldest-first eviction. A Map iterates in insertion order, so the first key is the oldest page held;
+  // that is FIFO rather than LRU, and it matches how these are used — a page is read shortly after the
+  // batch that fetched it, and the ring moves outward, so age tracks distance from the screen.
+  const evict = () => {
+    if (prefetchHeldBytes <= PFCAP) return;
+    for (const [u, m] of prefetched) {
+      for (const [pno, pg] of m) {
+        if (prefetchHeldBytes <= PFCAP) return;
+        m.delete(pno);
+        prefetchHeldBytes -= pg.length;
+        prefetchEvicted++;
+        if (!evictedPages.has(u)) evictedPages.set(u, new Set());
+        evictedPages.get(u).add(pno);
+      }
+    }
+  };
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
 
@@ -218,7 +249,7 @@ export async function createKernel(wasmUrl) {
                 outb.set(pg.subarray(from, to), w); w += to - from;
               }
             }
-            for (let p = p0; p <= p1; p++) bag.delete(p);     // DRAIN: consumed once, then gone
+            // RETAINED, not drained — see PFCAP above. A page the ring asks for next is already here.
             prefetchHits++; prefetchBytes += outb.length;
             ctrl.httpBytes = outb;
             ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
@@ -229,6 +260,18 @@ export async function createKernel(wasmUrl) {
             return outb.length;
           }
           prefetchMiss++;
+          // ⚠ WHY it missed, because the two causes need opposite fixes. A page we DID fetch and then
+          // drained on consume is a RETENTION failure — the ring wants the ground the view just read, and
+          // the dedup rightly refuses to buy it twice, so the read goes serial. A page never fetched at
+          // all is an INDEX failure — the query did not name it. Counting them together says only "some
+          // reads were not in the buffer", which is what the last live run left unexplained.
+          // With retention, a miss is either a page never named for this viewport or one the cap
+          // evicted. `evictedPages` is what tells them apart, and the split decides whether to widen the
+          // query or to raise the cap — opposite fixes, as ever.
+          const ev = evictedPages.get(url.split('?')[0]);
+          let evicted = false;
+          for (let p = p0; p <= p1; p++) if (ev && ev.has(p)) evicted = true;
+          if (evicted) prefetchMissDrained++; else prefetchMissUnknown++;
         }
         fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
           .then(async (res) => {
@@ -371,7 +414,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchDownloadBytes, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
@@ -382,16 +425,11 @@ export async function createKernel(wasmUrl) {
       const key = url.split('?')[0];
       if (!prefetched.has(key)) prefetched.set(key, new Map());
       const bag = prefetched.get(key);
-      // ⚠ NEVER FETCH A PAGE THIS SESSION HAS ALREADY FETCHED. The buffer DRAINS on consume (above), so
-      // "is it in the bag" is not the same question as "have we paid for it" — and the ring asks nine
-      // overlapping batches for nearly the same ground. Measured on one Luxembourg screen: 9 811 pages
-      // fetched against 1 331 ever read, and the repeats were most of it. A page the kernel wants again
-      // after consuming it simply misses and is read normally, which is a round trip rather than a wrong
-      // byte: the buffer's job is to front-run the FIRST read of a page, not to be a cache.
-      if (!fetchedOnce.has(key)) fetchedOnce.set(key, new Set());
-      const seen = fetchedOnce.get(key);
-      const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
-      for (const p of sorted) seen.add(p);
+      // ⚠ NEVER FETCH A PAGE WE ALREADY HOLD. The ring asks nine overlapping batches for nearly the same
+      // ground — 9 811 pages fetched against 1 331 ever read, before this. Since pages are RETAINED to a
+      // cap, "in the bag" now answers both "do we have it" and "have we paid for it", so the bag is the
+      // only record needed; a page the cap evicted is buyable again, which is exactly right.
+      const sorted = [...new Set(pages)].filter((p) => !bag.has(p)).sort((a, b) => a - b);
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -412,14 +450,14 @@ export async function createKernel(wasmUrl) {
             const b = res.status === 206 ? b0 : b0.subarray(off, off + n);
             prefetchDownloadBytes += b.length;
             for (let q = 0; q * PFPAGE < b.length; q++) {
-              bag.set(off / PFPAGE + q, b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
+              const pg = b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length));
+              bag.set(off / PFPAGE + q, pg);
+              prefetchHeldBytes += pg.length;
             }
+            if (prefetchHeldBytes > prefetchPeakBytes) prefetchPeakBytes = prefetchHeldBytes;
+            evict();
             ok++;
-          } catch {
-            failed++;
-            // A page that did not arrive was not paid for, so let a later batch try it again.
-            for (let q = 0; q * PFPAGE < n; q++) fetchedOnce.get(key)?.delete(off / PFPAGE + q);
-          }
+          } catch { failed++; }   // nothing was stored, so nothing has to be un-remembered
         }
       };
       const t0 = performance.now();
