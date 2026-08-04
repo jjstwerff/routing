@@ -28,8 +28,9 @@ strands, in the order they were done:
 3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
    **The browser reads the one coverage index now** (v3: a quadtree over every store, read by range), the
    RING plans its pages too, and both halves are gated — `browser/page-index.test.mjs` in `make test` for
-   the format, `tools/prefetch_gate.sh` for the wired path. **~2× to the same map**, and the gate asserts
-   the map as well as the clock. Nothing is published yet; §1 item 6b says what is left.
+   the format, `tools/prefetch_gate.sh` for the wired path. **PUBLISHED and LIVE** — `coverage.pagesx` is
+   on `data-v2026-08-03d` and merged (PR #59). **1.53× to the view on a real link**, and the gate asserts
+   the map as well as the clock. ⚠ The 2.29× it first shipped with was a harness artefact — §1 item 6b.
 
 **READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
 Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
@@ -234,15 +235,16 @@ both backends. **Two of our three upstream findings this week were corrected by 
    A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured
    against the live host, a 64 kB range costs the same as one byte (41 ms), so `764 × 26 ms ≈ 20 s` IS
    the wait. The browser now reads ONE coverage index (v3) and prefetches the pages a viewport needs as
-   one batch, and the ring plans its cells too. Measured on a QUIET box, n=3 a side, 26 ms injected RTT:
-   **to the view 14.5 → 6.3 s (2.29×)**, **to a settled session 54.1 → 18.8 s (2.87×)**, 1 331 of 1 751
-   reads answered out of the buffer, and the same map either way. **All 15 stores are indexed** — the
-   index is 8.5 MB, of which a viewport reads 870 kB and a session 1.7 kB.
-   `docs/prefetch-index-design.md` §11 is the state. **One thing remains: PUBLISHING.**
-   `tools/fetch-site-blocks.sh` pulls `coverage.pagesx` from the DATASET's release tag, so it is one
-   `gh release upload` onto `data-v2026-08-03d`, then the merge. ⚠ It cannot break what is live: with no
-   index the app reads exactly as it does today, and a STALE one is refused per store by the sha256 check
-   at the reader.
+   one batch, and the ring plans its cells too. **All 15 stores are indexed and `coverage.pagesx` is
+   PUBLISHED and live** on `data-v2026-08-03d` — 8.5 MB, of which a viewport reads 870 kB and a session
+   1.7 kB before it plans anything.
+
+   ⚠ **The first number this was shipped with — 2.29× — was measured by a harness with INFINITE
+   BANDWIDTH, and the live site refused to reproduce it.** `docs/prefetch-index-design.md` §12 is the
+   account. The honest figure on this box's measured link (82 Mbps, 45 ms) is **1.53× to the view and
+   1.48× to a settled session**, and getting there needed a real fix: the ring was re-buying pages the
+   view had already paid for — the buffer DRAINS on consume, so "in the bag" is not "already fetched" —
+   which cost **9 811 pages fetched to serve 1 331**. Deduped: 1 156 pages, 643 → 75.8 MB.
 
    ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
    **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
@@ -320,6 +322,19 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
+* **AN EMULATOR THAT MODELS ONE COST AND NOT THE OTHER DOES NOT MEASURE A TRADE-OFF — IT PICKS A WINNER.**
+  `prefetch_gate` injected the round trip and nothing else, because round trips are what prefetching
+  removes. A localhost server has no throughput ceiling, so the cost prefetching ADDS — bytes — was free
+  in the harness, and **no result it could produce would ever have argued against prefetching more**. It
+  scored 2.29×; the live site scored 0.94× and did not settle. What the harness could not see:
+  **9 811 pages fetched to serve 1 331**, because the buffer DRAINS on consume and the ring therefore
+  re-bought the ground the view had just paid for. Deduped, 1 156 pages and 75.8 MB instead of 643 MB; the
+  honest ratio on the real link (82 Mbps, 45 ms — re-measured, unchanged since the design) is **1.53×**.
+  ⚠ **The instrument now emulates throughput as well as latency**, and the missing number was not the hit
+  rate (*"of the READS, how many were served"*) but its inverse — **of the pages FETCHED, how many were
+  used**. When a change trades one resource for another, a harness that is generous with one of them is
+  not a slower version of reality; it is a different question. Same family as the ranged HEAD and the
+  missing `MemorySwapMax=0`.
 * **AN OPTIMISATION THAT CAN ONLY COST TIME WILL FAIL SILENTLY, SO GATE IT ON ITS OUTPUT.** The page
   index degrades by design — a page number is a fetch HINT, and a wrong one costs bytes, never a wrong
   map. That is the property that makes it safe to publish, and it is exactly why a broken one is

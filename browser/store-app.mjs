@@ -549,19 +549,36 @@ async function prefetchFor(box, zoom) {
                             ...(isPaged(roadsModeFor(box, zoom)) ? (roadsFor(box, zoom) || '').split(/[,\s]+/) : [])]
                           .filter((u) => u && u.endsWith('.store')))];
   const out = [];
+  const t0 = performance.now();
   await Promise.all(urls.map(async (u) => {
     try {
       const pages = await pagesFor(u, b, PREFETCH_PAD);
       if (pages.length) out.push({ url: u, ...(await kernel.prefetch(u, pages)) });
     } catch { /* an index that will not read is not a reason to fail the view */ }
   }));
+  // ⚠ WHAT THE BATCH COST, SEPARATELY FROM THE VIEW IT PRECEDES. Without this a prefetch that fetches
+  // FAR MORE than the viewport needs is indistinguishable from one that fetches exactly right — both
+  // land in "the view took N ms". Against the live host the prefetched arm took 33 s with 699 of 763
+  // reads served from the buffer, and those two numbers alone cannot say where the time went.
+  prefetchStats.batches++;
+  prefetchStats.ms += Math.round(performance.now() - t0);
+  for (const o of out) { prefetchStats.pages += o.pages || 0; prefetchStats.requests += o.requests || 0; }
   return out;
 }
+const prefetchStats = { batches: 0, ms: 0, pages: 0, requests: 0 };
 // A feature is keyed by its FIRST VERTEX and never clipped, so it overhangs its cell — PLAN-PERF §7g
 // measured up to 16 cells, which is why `PTile` carries a sealed extent rather than being screened by
 // ox/oy. The index is keyed by ox/oy, so a padded query is the cheap approximation of that extent: too
 // small and some pages miss (they are then fetched normally), too large and bytes are wasted.
-const PREFETCH_PAD = 1600000;   // 0.16 deg in fixed-point 1e-7
+// ⚠ AND IT IS THE WHOLE COST, NOT A MARGIN. A z14 viewport is ~0.05 deg tall; padding it by 0.16 deg on
+// every side makes the QUERY box ~40x the area of the screen, so the pad — not the viewport — decides
+// what is fetched. Measured on one Luxembourg screen at 0.16: 9 811 pages prefetched against 1 331 ever
+// read, i.e. 86% waste. On a localhost harness that is free and the arm still wins on latency; against
+// the live host it is 640 MB at 82 Mbps and the win disappears. The number that exposes it is not the
+// hit rate (which asks "of the READS, how many were served") but its inverse — of the pages FETCHED, how
+// many were used — and nothing measured that until the live run refused to reproduce.
+// Settable before load, like `__readMode`, so a sweep can measure the trade rather than argue it.
+const PREFETCH_PAD = window.__prefetchPad ?? 1600000;   // 0.16 deg in fixed-point 1e-7
 
 // The `covers` test lives INSIDE the job, so it is judged when the view actually runs rather than when it
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
@@ -1075,6 +1092,8 @@ window.__perfHooks = {
   // The wired path, for a gate to drive and assert on rather than infer from timings.
   prefetchFor: (box, zoom) => prefetchFor(box || viewportBox(VIEW_PAD), zoom ?? map.camera.zoom),
   pageIndexStats: () => indexStats(),
+  // What the batches themselves cost — the view's own wait, attributed away from the kernel loop.
+  prefetchStats: () => ({ ...prefetchStats }),
   setPrefetch: (on) => { prefetchOn = !!on; return prefetchOn; },
   // HAS THE APP SETTLED? Every counter a gate asserts on — range reads, bytes, the expose bracket — is
   // only meaningful about a session that has stopped working. The ring keeps paging after the view that

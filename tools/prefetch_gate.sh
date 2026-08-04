@@ -47,11 +47,11 @@ mkdir -p "$here/scratch"; rm -rf "$profile"-A "$profile"-B
 srv=""
 cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
-LATENCY_MS="${LATENCY_MS:-26}" python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
+LATENCY_MS="${LATENCY_MS:-0}" python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
 srv=$!
 for _ in $(seq 40); do curl -s -o /dev/null "http://127.0.0.1:$httpport/index.html" 2>/dev/null && break; sleep 0.3; done
 rc="$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-15' "http://127.0.0.1:$httpport/coverage.pagesx")"
 [ "$rc" = "206" ] || { echo "FAIL: the harness server does not honour Range on the index (got $rc)"; exit 1; }
 
-echo "== the page index, wired: $(stat -c%s "$here/_site/coverage.pagesx") bytes over $(ls "$here"/_site/stores/*.store 2>/dev/null | wc -l) stores, ${LATENCY_MS:-26} ms injected RTT =="
-CHROMIUM_BIN="$chromium" node "$here/browser/cdp_prefetch_wired.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" "$cam" "$floor"
+echo "== the page index, wired: $(stat -c%s "$here/_site/coverage.pagesx") bytes over $(ls "$here"/_site/stores/*.store 2>/dev/null | wc -l) stores, link emulated in the browser =="
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_prefetch_wired.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" "$cam" "$floor" "${PREFETCH_PAD:-}" "${LINK_MBPS:-82}" "${LINK_RTT:-45}"
