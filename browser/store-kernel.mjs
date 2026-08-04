@@ -63,6 +63,14 @@ export async function createKernel(wasmUrl) {
   // Whole-file loads by store filename — the attribution half of `storeLoads` (see loft_host_http_get).
   const wholeLoads = new Map();
   const rangeFails = [];
+  // ⚠ A PREFETCH BUFFER, NOT A CACHE — the distinction the sidecar comment above turns on. A cache
+  // RETAINS, which would hold a second copy of a 20 MB image in JS beside wasm's. This is DRAINED: each
+  // range is deleted the moment loft consumes it, so peak JS memory is the in-flight batch and not the
+  // store. Filled by `__perfHooks.prefetch`, which issues the whole batch CONCURRENTLY — that is the
+  // entire point, because the reads are latency-bound (a 64 kB range costs the same as one byte, so 764
+  // serial round trips are ~20 s of pure waiting). See docs/prefetch-index-design.md.
+  const prefetched = new Map();          // `${url}|${off}|${n}` -> Uint8Array
+  let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0, prefetchTotals = new Map();
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
 
@@ -177,6 +185,22 @@ export async function createKernel(wasmUrl) {
         rangeAsked++;                                         // attempts, so a blocked read is visible
         ctrl.httpBytes = null; ctrl.httpTotal = -1;
         const last = off + n - 1;
+        // The prefetch hit: answer SYNCHRONOUSLY, with no fetch and no asyncify unwind. Safe for exactly
+        // the reason the sidecar hit is — nothing suspends, so there is no rewind to get wrong.
+        const pk = `${url}|${off}|${n}`;
+        const hit = prefetched.get(pk);
+        if (hit) {
+          prefetched.delete(pk);                              // DRAIN: consumed once, then gone
+          prefetchHits++; prefetchBytes += hit.length;
+          ctrl.httpBytes = hit;
+          ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
+          rangeReads++; rangeBytes += hit.length;
+          const shk = url.split('?')[0].split('/').pop() || url;
+          const pse = perStore.get(shk) || { reads: 0, bytes: 0 };
+          pse.reads++; pse.bytes += hit.length; perStore.set(shk, pse);
+          return hit.length;
+        }
+        if (prefetched.size || prefetchHits) prefetchMiss++;   // only meaningful once a batch exists
         fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
           .then(async (res) => {
             // The total rides on Content-Range (`bytes a-b/TOTAL`), so size() needs no second round trip.
@@ -318,7 +342,30 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchHeld: prefetched.size }),
+    // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
+    // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
+    // reproduce exactly the serial depth it exists to remove.
+    prefetch: async (url, ranges, concurrency = 24) => {
+      let i = 0, ok = 0, failed = 0;
+      const worker = async () => {
+        while (i < ranges.length) {
+          const [off, n] = ranges[i++];
+          try {
+            const res = await fetch(url, { headers: { Range: `bytes=${off}-${off + n - 1}` } });
+            if (!res.ok) { failed++; continue; }
+            const cr = res.headers.get('Content-Range');
+            if (cr) { const t = cr.split('/').pop(); if (t && t !== '*') prefetchTotals.set(url, Number(t)); }
+            const b = new Uint8Array(await res.arrayBuffer());
+            prefetched.set(`${url}|${off}|${n}`, res.status === 206 ? b : b.subarray(off, off + n));
+            ok++;
+          } catch { failed++; }
+        }
+      };
+      const t0 = performance.now();
+      await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+      return { asked: ranges.length, ok, failed, ms: Math.round(performance.now() - t0), held: prefetched.size };
+    },
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

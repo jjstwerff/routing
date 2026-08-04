@@ -996,6 +996,11 @@ window.__rough = rough;
 window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // docs/prefetch-index-design.md — hand the bridge the pages a viewport needs, ALL AT ONCE, so the
+  // kernel's reads become synchronous buffer hits instead of 764 serial round trips. Exposed as a probe
+  // rather than wired into the view: the app cannot compute a cell key (JS works in bboxes, loft in
+  // tkeys), so a real integration needs the index re-keyed spatially. This proves the CLAIM first.
+  prefetch: (url, ranges, c) => kernel.prefetch(url, ranges, c),
   // HAS THE APP SETTLED? Every counter a gate asserts on — range reads, bytes, the expose bracket — is
   // only meaningful about a session that has stopped working. The ring keeps paging after the view that
   // scheduled it has finished and reported its milliseconds, so "the last view completed" no longer

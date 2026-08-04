@@ -30,7 +30,8 @@ port="${PAGEIDX_PORT:-8477}"; PAGE=65536
 command -v python3 >/dev/null || { echo "SKIP: python3"; exit 2; }
 
 w="$(mktemp -d)"; trap 'rm -rf "$w"; [ -n "${srv:-}" ] && kill "$srv" 2>/dev/null; return 0 2>/dev/null || true' EXIT
-cp "$block" "$w/b.store"; [ -f "$block.dschema" ] && cp "$block.dschema" "$w/b.store.dschema"
+# Served from blocks/ in place: copying a 796 MB store per run is pure waste, and the sidecar has to
+# sit beside it, which it already does.
 sha="$(sha256sum "$block" | cut -d' ' -f1)"
 bytes="$(stat -c%s "$block")"
 
@@ -41,7 +42,7 @@ bytes="$(stat -c%s "$block")"
 # browser gate here; it now logs what was ASKED FOR under RANGE_LOG, so the recording cannot drift from
 # what the app actually experiences.
 : > "$w/reads.log"
-RANGE_LOG="$w/reads.log" python3 "$here/tools/range_server.py" "$port" "$w" /dev/null >/dev/null 2>&1 &
+RANGE_LOG="$w/reads.log" python3 "$here/tools/range_server.py" "$port" "$here/blocks" /dev/null >/dev/null 2>&1 &
 srv=$!
 sleep 1
 
@@ -52,10 +53,11 @@ use basemap::PTile;
 use routing_kernel::TTile;
 fn main() {
   ws: hash<$kind[tkey]> = [];
-  store_load(ws, "b.store");
+  store_load(ws, "BLOCKPATH");
   for t in ws { println("K {t.tkey}"); }
 }
 LOFT
+sed -i "s|BLOCKPATH|$here/blocks/$name|" "$w/keys.loft"
 mapfile -t keys < <(cd "$w" && "$loft" --native --lib "$here/lib" keys.loft 2>/dev/null | sed -n 's/^K //p')
 [ "${#keys[@]}" -gt 0 ] || { echo "FAIL: no cells read out of $name (wrong record type? tried $kind)"; exit 1; }
 echo "== page index for $name =="
@@ -73,7 +75,7 @@ fn main() {
   _ = store_load_key(ws, a[0]? , k);
 }
 LOFT
-url="http://127.0.0.1:$port/b.store"
+url="http://127.0.0.1:$port/$name"
 ( cd "$w" && "$loft" --native --lib "$here/lib" one.loft "$url" "${keys[0]}" >/dev/null 2>&1 )  # warm the build cache
 
 python3 - "$w" "$url" "$out" "$name" "$sha" "$bytes" "$PAGE" "$here" "$loft" "$kind" "${keys[@]}" <<'PY'
@@ -82,13 +84,30 @@ w, url, out, name, sha, nbytes, PAGE, here, loft, kind = sys.argv[1:11]
 keys = sys.argv[11:]
 PAGE = int(PAGE); nbytes = int(nbytes)
 logp = os.path.join(w, 'reads.log')
+# ⚠ ATTRIBUTED BY `?k=` IN THE URL, NOT BY POSITION IN THE LOG. Sequential runs could be attributed by
+# reading the log between them; parallel ones cannot, because their lines interleave. Carrying the key in
+# the query string makes every logged line self-identifying, so N workers can share one server. The
+# server strips the query before translating the path, so the same file is served either way.
+NPROC = max(1, min(int(os.environ.get('PAGEIDX_JOBS', '0')) or (os.cpu_count() or 4) - 2, 16))
 idx, whole, total_refs, probes = {}, 0, 0, 0
-for i, k in enumerate(keys):
-    before = os.path.getsize(logp)
-    subprocess.run([loft, '--native', '--lib', os.path.join(here, 'lib'), 'one.loft', url, k],
+def run_one(k):
+    subprocess.run([loft, '--native', '--lib', os.path.join(here, 'lib'), 'one.loft', f'{url}?k={k}', k],
                    cwd=w, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    with open(logp) as f:
-        f.seek(before); lines = f.read().splitlines()
+    return k
+print(f"   {NPROC} workers", flush=True)
+from concurrent.futures import ThreadPoolExecutor
+done_n = 0
+with ThreadPoolExecutor(max_workers=NPROC) as ex:
+    for _ in ex.map(run_one, keys):
+        done_n += 1
+        if done_n % 500 == 0: print(f"   {done_n}/{len(keys)} cells", flush=True)
+with open(logp) as f: all_lines = f.read().splitlines()
+per = {}
+for ln in all_lines:
+    m = re.search(r'\?k=(\d+)', ln)
+    if m: per.setdefault(m.group(1), []).append(ln)
+for k in keys:
+    lines = per.get(k, [])
     pages = set()
     for ln in lines:
         # ⚠ ONLY A WHOLE READ OF THE STORE IS A FALLBACK. The `.dschema` sidecar is ALWAYS fetched
@@ -108,8 +127,6 @@ for i, k in enumerate(keys):
         if off == 0 and last == 0: probes += 1; continue
         for pg in range(off // PAGE, last // PAGE + 1): pages.add(pg)
     idx[k] = sorted(pages); total_refs += len(pages)
-    if (i + 1) % 25 == 0 or i + 1 == len(keys):
-        print(f"   {i+1}/{len(keys)} cells · {total_refs} page refs", flush=True)
 
 allp = sorted({p for v in idx.values() for p in v})
 doc = {'block': name, 'sha256': sha, 'bytes': nbytes, 'page': PAGE,
