@@ -107,11 +107,13 @@ def main():
         elif not a.startswith('--'): out = a
 
     cov = json.load(open('browser/coverage.json'))
-    url_of = {}
+    url_of, sha_of = {}, {}
     for b in cov['blocks']:
         for k in ('roads', 'base'):
             s = b.get(k)
-            if s and s.get('url'): url_of[s['url'].split('/')[-1]] = s['url']
+            if s and s.get('url'):
+                url_of[s['url'].split('/')[-1]] = s['url']
+                if s.get('sha256'): sha_of[s['url'].split('/')[-1]] = s['sha256']
 
     stores, cells = [], []          # cells: (ox, oy, store_id, pages)
     for f in sorted(glob.glob('blocks/*.pages.json')):
@@ -197,6 +199,21 @@ def main():
     bad = verify(out, leaves)
     if bad:
         print(f'FAIL: {bad}'); return 1
+
+    # ⚠ DOES THIS INDEX DESCRIBE THE DATASET THE SITE PUBLISHES? Each entry carries the sha256 of the
+    # block it was recorded against, and the reader refuses a store whose hash disagrees with
+    # `coverage.json` (design §5.1) — silently, and correctly, because naming pages into bytes that have
+    # moved is the one way an index can do harm. That refusal is invisible at the reader, so the same
+    # comparison is made HERE, where it is a line of output instead of a mystery.
+    stale = [s['url'].split('/')[-1] for s in stores
+             if sha_of.get(s['url'].split('/')[-1], s['sha256']) != s['sha256']]
+    missing = sorted(set(sha_of) - {s['url'].split('/')[-1] for s in stores})
+    if stale:
+        print(f'   ⚠ {len(stale)} store(s) do NOT match coverage.json and will be REFUSED at the reader:')
+        for n in stale: print(f'       {n} — re-run tools/build_page_index.sh on the published block')
+    if missing:
+        print(f'   {len(missing)} published store(s) have no index; they read as they did before one existed:')
+        for n in missing: print(f'       {n}')
 
     sizes = [16 + sum(12 + 4*len(pg) for _, _, _, pg in g) for grp in roots.values() for _, g in grp]
     lv = {}

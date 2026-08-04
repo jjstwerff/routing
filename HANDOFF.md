@@ -234,14 +234,15 @@ both backends. **Two of our three upstream findings this week were corrected by 
    A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured
    against the live host, a 64 kB range costs the same as one byte (41 ms), so `764 × 26 ms ≈ 20 s` IS
    the wait. The browser now reads ONE coverage index (v3) and prefetches the pages a viewport needs as
-   one batch — **~2×** to the same map, wired, and the ring plans its cells too (85.3% of a session's
-   reads come out of the buffer). `docs/prefetch-index-design.md` §11 is the state. **Two things remain:**
-   * **Generation for `nl-mideast.base` and `nl-east.base`** — 13 of 15 stores are indexed and those two
-     are ~half the Benelux cells. An unindexed store simply reads the old way.
-   * **Publishing.** `tools/fetch-site-blocks.sh` pulls `coverage.pagesx` from the DATASET's release tag,
-     so it is one `gh release upload` onto `data-v2026-08-03d`. ⚠ It cannot break what is live: with no
-     index the app reads exactly as it does today, and a STALE one is refused per store by the sha256
-     check at the reader. Publish the index, then merge — same order as the data.
+   one batch, and the ring plans its cells too. Measured on a QUIET box, n=3 a side, 26 ms injected RTT:
+   **to the view 14.5 → 6.3 s (2.29×)**, **to a settled session 54.1 → 18.8 s (2.87×)**, 1 331 of 1 751
+   reads answered out of the buffer, and the same map either way. **All 15 stores are indexed** — the
+   index is 8.5 MB, of which a viewport reads 870 kB and a session 1.7 kB.
+   `docs/prefetch-index-design.md` §11 is the state. **One thing remains: PUBLISHING.**
+   `tools/fetch-site-blocks.sh` pulls `coverage.pagesx` from the DATASET's release tag, so it is one
+   `gh release upload` onto `data-v2026-08-03d`, then the merge. ⚠ It cannot break what is live: with no
+   index the app reads exactly as it does today, and a STALE one is refused per store by the sha256 check
+   at the reader.
 
    ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
    **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the

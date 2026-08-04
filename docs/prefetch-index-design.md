@@ -330,13 +330,16 @@ spoke v1 while the builder wrote v3, and until that was closed nothing in the br
 |---|---|
 | hand-fed a capture, one store fully covered | **26.0 s → 5.4 s · 4.79×** |
 | wired, v1 per-store, one of three stores indexed | 15.5 s → 7.5 s · 2.06× |
-| **wired, v3, 13 stores, the ring planned too** | **15.2 s → 8.1 s · 1.88× to the view, 57.5 s → 24.7 s · 2.33× to a settled session** |
+| **wired, v3, all 15 stores, the ring planned too** | **to the view 14.5 → 6.3 s · 2.29×** · **to a settled session 54.1 → 18.8 s · 2.87×** |
 
 Measured `tools/prefetch_gate.sh`, camera `14/49.6116/6.1319` (Luxembourg — both its stores are paged and
-indexed), 26 ms injected RTT, **load average ~20**: the ratios are one-session pairs and the spread across
-four runs is **1.88–2.41×**, so read them as "about twice", not as three digits. What is exact is the
-count: **1 751 range reads, 1 331 of them answered out of the buffer**, and the same map either way —
-`R=12242 G=1381 T=59`, per-layer counts identical.
+indexed), 26 ms injected RTT, **quiet box, n=3 a side**, medians. Spreads: the unprefetched arm is
+**1.02×** across its three runs, the prefetched one **1.26×**, so the per-run ratio ranges 1.93–2.41 (view)
+and 2.61–2.94 (settled).
+
+**The counts are IDENTICAL on every run**, which is the part worth trusting: 1 751 range reads, **1 331
+answered out of the buffer**, 174 chunk reads for 870 kB of index, 2 sub-directories — and the same map
+either way, `R=12242 G=1381 T=59` with per-layer counts equal.
 
 **Building the reader turned up three defects, and every one was silent by construction.**
 
@@ -384,12 +387,20 @@ unread writer beside a live reader is the survivor that looks authoritative.
 
 ### v3, and why it is shaped that way
 
+The whole Benelux, every store, complete:
+
 ```
-12 stores · 80 704 cells · 447 leaf chunks · levels L0=11 L1=16 L2=118 L3=78 L4=224
-root tiles 26 · header+stores+rootdir 1 354 B   ← ONE read per SESSION
-sub-directory  median 160 B · max 1 792 B       ← ONE read per tile
-chunk          median 6 314 B · max 18 796 B
+15 stores · 275 177 cells · 1 369 leaf chunks · levels L0=8 L1=12 L2=75 L3=138 L4=1136
+root tiles 26 · header+stores+rootdir 1 677 B   ← ONE read per SESSION
+sub-directory  median 256 B · max 3 760 B       ← ONE read per tile
+chunk          median 5 464 B · max 18 480 B
+total 8.5 MB — a viewport reads ~870 kB of it, a session 1.7 kB before it plans anything
 ```
+
+⚠ **The file more than doubled (4.2 → 8.5 MB) when the last two base stores were indexed, and what a
+VIEWPORT costs did not move at all** — still 174 chunks and 870 kB on the same camera, because a chunk is
+bounded by CELL COUNT and the new cells are somewhere else. That is the property the quadtree was chosen
+for, observed rather than argued.
 
 * **A quadtree, not a grid.** Measured density spans **4 to 6 297 cells/deg²**, so a uniform grid is
   either too coarse for the Randstad or absurd over the North Sea. Bounding a chunk by CELL COUNT took
@@ -404,9 +415,8 @@ sub-directory and one to four chunks.
 
 ### What is NOT done
 
-1. **Generation is unfinished** — 13 of 15 stores; `nl-mideast.base` and `nl-east.base` remain, and they
-   are ~half the Benelux cells. `tools/build_all_page_indexes.sh` for those two, then
-   `tools/finish_page_indexes.sh --stage` (which now builds the coverage index itself).
+1. ✅ ~~Generation is unfinished~~ — **all 15 stores are indexed** (2026-08-04): `nl-mideast.base` and
+   `nl-east.base` were the last two, 143 304 cells between them.
 2. **Nothing is published.** The index is in `blocks/` (gitignored) and staged into a local `_site`.
    `tools/fetch-site-blocks.sh` fetches `coverage.pagesx` from the DATASET's release tag, so publishing is
    one `gh release upload` onto `data-v2026-08-03d` — and it cannot break what is live: a release without
