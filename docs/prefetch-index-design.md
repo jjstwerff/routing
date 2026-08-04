@@ -198,7 +198,84 @@ in one request / 0.6 s. Paging it must not make the country view slower to serve
 
 ---
 
-## 8. What is measured vs. assumed
+## 8. ⚠ A MOVING SESSION SAYS SOMETHING ELSE — and it retires §7's proposal
+
+Everything above measures a **cold deep link**. That is the worst case and an unrepresentative one: *a
+session is never a teleport.* Replaying a walk instead (`browser/cdp_journey.mjs`, live, CPU 4×, n=1):
+
+```
+step                     kind               ms   reqs      MB
+entry (cold deep link)   —               37450    764    52.3
+pan  ¼ screen            in-ring         16753    436    28.6
+pan  ¼ screen again      in-ring          6799    100     6.4
+pan  1 screen            past-ring       12045    386    25.3
+zoom out z13             same block      22879    457    29.9
+zoom out z12  →nl-mid    SCALE CHANGE    11933    486    31.8
+zoom out z11  →overview  SCALE CHANGE     4627      0    13.5
+zoom in  z14  →detail    SCALE CHANGE    27548    778    52.4
+zoom in  z16             same block     >40000   1356    88.9
+```
+
+Three things fall out, and the second one **retires §7**:
+
+1. **Panning is not free.** A quarter-screen nudge costs 436 requests. The ring exists to make that a
+   redraw and on a moving session it is not delivering.
+2. ⚠ **THE FASTEST STEP MADE ZERO RANGE REQUESTS.** z11 loads `overview` **whole** — 13.5 MB, one fetch,
+   **4.6 s** — beating every paged step, including ones that fetched *less data*. **§7 proposed paging
+   the overview; on this evidence that would make the fastest step in the journey slower.** The
+   generalisation that survives is not "page everything", it is **fewer, larger requests win** — which is
+   the same conclusion §0's `1 B == 64 kB == 41 ms` reached from the other end.
+3. **Returning to a scale re-fetches everything.** Coming back to z14 costs 778 requests / 52.4 MB —
+   *more than the original cold entry*. The working set is discarded on a scale change, so "zoom out for
+   bearings, zoom back in" pays full price twice. On a journey this is the dominant cost.
+
+**So the ranking for a walk is not the ranking for a landing:** retention across scale changes first,
+then why the ring does not hold, and only then batching round trips.
+
+---
+
+## 9. The chunk graph — an index that pages itself and knows its neighbours
+
+The index must not be one file the client fetches whole; at Western Europe scale that is the same
+mistake one level down. It is **chunked spatially**, and *cheap adjacency is simply each chunk recording
+where its neighbours are* — no Morton order, no key arithmetic, no dependence on how `tkey` happens to be
+encoded. A chunk is self-describing:
+
+```
+chunk {
+  pages[]            the 64 kB pages the cells in this chunk need
+  N, S, E, W         byte offset + length of the four adjacent chunks
+  UP, DOWN           byte offset + length of the chunk covering the same ground
+                     at the coarser / finer scale
+}
+```
+
+Six pointers, and each is just an offset into the same index file — so following one is a ranged read of
+a few kB, not a lookup that must first be discovered.
+
+**Why this shape answers each measured problem:**
+
+| measured | what the chunk graph does |
+|---|---|
+| 764 serial round trips on cold entry (§0) | one chunk read yields the whole page list ⇒ one parallel batch |
+| a ¼-screen pan costs 436 requests (§8.1) | `N/S/E/W` are already known ⇒ the neighbour's pages prefetch with no discovery step |
+| returning to a scale re-fetches everything (§8.3) | `UP`/`DOWN` make the coarser chunk one hop, and its pages are retained rather than rediscovered |
+| whole-load beat paged (§8.2) | chunk size is the tuning knob — size a chunk so its page batch is few, large requests |
+
+**The retention rule is the load-bearing half, and it is separate from the index.** An index that makes
+pages *findable* does nothing if the pages are *dropped* on every scale change. §8.3 is a cache-lifetime
+defect, not an indexing one, and it must be fixed on its own terms — the index makes the refetch cheap,
+retention makes it unnecessary.
+
+⚠ **Open, and it decides the chunk size:** what does a scale change actually discard, and why? The app
+must not pull a foreign store into a session whose layout store is exposed — that *traps* (`store-app.mjs`,
+and the ring's fourth rule). If the discard is that constraint rather than an eviction policy, then
+retention across scales needs the session to hold several stores at once, which is a bigger change than
+an index. **Probe before designing further: instrument what is released on a scale change.**
+
+---
+
+## 10. What is measured vs. assumed
 
 | claim | status |
 |---|---|
@@ -211,4 +288,8 @@ in one request / 0.6 s. Paging it must not make the country view slower to serve
 | pages are independent of accumulation, key order, block, zoom | **unproven** — §6 |
 | a three-scale page map is ~215 kB | **derived** from the three blocks' sizes ÷ page size |
 | the floor cannot front a first paint today because it is whole-read | **read from the code** — `store-app.mjs`, `coverage.json` `readMode: "whole"` |
-| first pixels reach ~0.3 s with a paged overview | **predicted** — needs the §7 trade measured, not assumed |
+| ~~first pixels reach ~0.3 s with a paged overview~~ | ⚠ **RETIRED by §8.2** — the whole-loaded overview is the FASTEST step measured (4.6 s, 0 range requests); paging it would make it slower |
+| a ¼-screen pan costs 436 requests / 16.7 s | **measured**, journey, n=1 |
+| returning to a scale re-fetches everything (778 reqs) | **measured**, journey, n=1 |
+| six pointers per chunk make adjacency and scale change cheap | **design** — nothing built, nothing measured |
+| what a scale change discards, and whether it is policy or the expose constraint | **UNKNOWN — probe first** (§9) |
