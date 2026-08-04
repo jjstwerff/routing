@@ -62,6 +62,7 @@ async function arm(on) {
   const { call } = browser;
   try {
     await call('Page.enable'); await call('Runtime.enable'); await call('Network.enable');
+    try { await call('Performance.enable'); } catch { /* heap reporting is optional */ }
     await call('Network.setCacheDisabled', { cacheDisabled: true });
     if (Number(mbps) > 0) {
       const bps = (Number(mbps) * 1e6) / 8;
@@ -107,6 +108,13 @@ async function arm(on) {
     const app = await json(call, 'window.__storeApp') || {};
     const st = await json(call, 'window.__perfHooks.kernelStats()') || {};
     const ix = await json(call, 'window.__perfHooks.pageIndexStats()') || {};
+    // ⚠ THE REAL HEAP, NOT OUR OWN ACCOUNTING. The buffer's cap counts page bytes; what the DEVICE cares
+    // about is what the tab holds. Reported beside wasm's working set so the two are comparable.
+    // `performance.memory` is Chrome's own number for the tab, read the same way as every other value
+    // here. `Performance.getMetrics` was tried first and returned a differently-shaped envelope through
+    // this transport, which reported a silent 0 — a heap of zero is not a plausible reading, and printing
+    // it would have been worse than not measuring.
+    const heap = Number(await ev(call, '(performance.memory && performance.memory.usedJSHeapSize) || 0')) || 0;
     const pf = await json(call, 'window.__perfHooks.prefetchStats()') || {};
     const d = (a, b, k) => (a[k] || 0) - (b[k] || 0);
     return {
@@ -117,6 +125,7 @@ async function arm(on) {
       dl: d(st, st0, 'prefetchDownloadBytes'),
       missDrained: d(st, st0, 'prefetchMissDrained'), missUnknown: d(st, st0, 'prefetchMissUnknown'),
       peak: st.prefetchPeakBytes || 0, evicted: d(st, st0, 'prefetchEvicted'),
+      heap, wasm: st.wasmBytes || 0,
       // The VIEW alone — everything above also carries the ring that ran after it.
       vreads: st1 ? d(st1, st0, 'rangeReads') : 0,
       vhits: st1 ? d(st1, st0, 'prefetchHits') : 0,
@@ -171,6 +180,8 @@ ok(B.hits > 0, `the kernel's reads were answered from the buffer (${B.hits} hits
 // own. Retention is bounded by a cap; this is the assertion that the cap is real.
 ok(B.peak <= 80e6, `the buffer peaked at ${(B.peak / 1e6).toFixed(1)} MB, under the 64 MB cap + one batch` +
    ` (${B.evicted} page(s) evicted)`);
+console.log(`      the tab holds: JS heap ${(B.heap / 1e6).toFixed(1)} MB (A: ${(A.heap / 1e6).toFixed(1)}) ` +
+            `+ wasm ${(B.wasm / 1e6).toFixed(1)} MB — the phone's number, not the cap's`);
 // ⚠ ASSERTED ON THE VIEW, REPORTED FOR THE SESSION. The index's claim is about the viewport it was
 // asked to plan; the ring that follows pages eight more screens and asks for nothing in advance, so a
 // session-wide rate measures the ring's policy, not the index's accuracy.

@@ -102,11 +102,19 @@ export async function createKernel(wasmUrl) {
   // Oldest-first eviction. A Map iterates in insertion order, so the first key is the oldest page held;
   // that is FIFO rather than LRU, and it matches how these are used — a page is read shortly after the
   // batch that fetched it, and the ring moves outward, so age tracks distance from the screen.
+  // ⚠ NEVER EVICT THE BATCH THAT IS STILL BEING FETCHED. The batch is filled immediately before the
+  // kernel reads it, so a page from it is the single most certain future read in the session — and
+  // oldest-first eviction targets exactly the pages that arrived first, i.e. that same batch. Measured at
+  // a 16 MB cap on a ~50 MB batch: the view got SLOWER than not prefetching at all (0.82x), because it
+  // paid for pages that were thrown away before it could read them. When one batch exceeds the cap the
+  // cap is exceeded until it is consumed, and `prefetchPeakBytes` says so rather than hiding it.
+  let inFlight = null;                   // { key, pages: Set<pageNo> } while a batch is filling
   const evict = () => {
     if (prefetchHeldBytes <= PFCAP) return;
     for (const [u, m] of prefetched) {
       for (const [pno, pg] of m) {
         if (prefetchHeldBytes <= PFCAP) return;
+        if (inFlight && inFlight.key === u && inFlight.pages.has(pno)) continue;
         m.delete(pno);
         prefetchHeldBytes -= pg.length;
         prefetchEvicted++;
@@ -438,6 +446,7 @@ export async function createKernel(wasmUrl) {
       const seen = fetchedOnce.get(key);
       const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
       for (const p of sorted) seen.add(p);
+      inFlight = { key, pages: new Set(sorted) };
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -458,7 +467,12 @@ export async function createKernel(wasmUrl) {
             const b = res.status === 206 ? b0 : b0.subarray(off, off + n);
             prefetchDownloadBytes += b.length;
             for (let q = 0; q * PFPAGE < b.length; q++) {
-              const pg = b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length));
+              // ⚠ COPIED, NOT A SUBARRAY. A `subarray` shares its parent ArrayBuffer, so a retained page
+              // pins the WHOLE coalesced fetch it came from — up to 24 pages — and evicting one page of
+              // that run frees nothing at all. The cap would then bound a number that is not the memory:
+              // `prefetchHeldBytes` counts page lengths while the heap holds parents. One 64 kB copy per
+              // page is cheap beside the round trip that fetched it, and it makes eviction actually free.
+              const pg = new Uint8Array(b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
               bag.set(off / PFPAGE + q, pg);
               prefetchHeldBytes += pg.length;
             }
@@ -474,6 +488,8 @@ export async function createKernel(wasmUrl) {
       };
       const t0 = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+      inFlight = null;
+      evict();                    // the batch is complete and readable; NOW the cap applies to it too
       return { pages: sorted.length, requests: ranges.length, ok, failed,
                ms: Math.round(performance.now() - t0), held: bag.size };
     },
