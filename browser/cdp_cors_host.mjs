@@ -9,20 +9,12 @@
 // and the whole file. So the browser has only ever read blocks same-origin, and "a CORS host would work"
 // has been an assumption. This turns it into a test a candidate host either passes or fails.
 //
-//   node browser/cdp_cors_host.mjs <host:port> <app-url> <data-origin>
-const [target, pageUrl, dataOrigin] = process.argv.slice(2);
+//   node browser/cdp_cors_host.mjs <profile-dir> <app-url> <data-origin>
+import { launch } from './cdp_transport.mjs';
+const [profile, pageUrl, dataOrigin] = process.argv.slice(2);
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 120000);
-const list = await (await fetch(`http://${target}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
-});
-await new Promise((r) => ws.addEventListener('open', r));
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in

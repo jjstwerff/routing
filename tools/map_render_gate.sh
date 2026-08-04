@@ -12,7 +12,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9233}"
+profile="$here/scratch/chromium-map_render"
 httpport="${HTTPPORT:-8137}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
@@ -228,22 +228,22 @@ echo "  ✓ coverage index: $(grep -oP '"id":"\K[^"]+' "$here/_site/coverage.jso
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 
 # 3. Serve _site + drive it in headless Chromium.
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-srv=""; chr=""; rc=0
-cleanup() { kill "$chr" "$srv" 2>/dev/null; }
+rm -rf "$profile"; mkdir -p "$here/scratch"
+srv=""; rc=0
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 # PLAN-SCALE C1b: the kernel reads its roads block by BYTE RANGE now, and `python3 -m http.server` does
 # not implement Range at all — it would answer every page request with the whole 3.5 MB file. The shim
 # slices a 200 so the answer stays correct, but the gate would be measuring the wrong thing entirely.
 python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
 srv=$!
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
 echo "== PLAN-BUILD store-app gate (view <bbox> + match, headless HTTP) =="
-node "$here/browser/cdp_verify_store.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" || rc=1
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_verify_store.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" || rc=1
 
 # 4. The deployed artifact must be self-contained (all modules inlined — no external .mjs to trip Pages MIME).
 if grep -qE 'src="\./[A-Za-z0-9_-]+\.mjs"' "$here/_site/index.html"; then

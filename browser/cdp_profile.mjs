@@ -8,25 +8,17 @@
 // PHONE IS THE TARGET DEVICE, and a desktop profile flatters us — worse, it can flatter the phases
 // UNEQUALLY, so the ranking itself may not survive. `rate` applies CDP CPU throttling (4–6x ≈ a
 // mid-range phone) so the design is judged on the device it ships to.
-//   node browser/cdp_profile.mjs <devtools host:port> <app url> [cpuThrottleRate]
-const [dt, app, rateArg] = process.argv.slice(2);
+//   node browser/cdp_profile.mjs <profile-dir> <app url> [cpuThrottleRate]
+import { launch } from './cdp_transport.mjs';
+const [profile, app, rateArg] = process.argv.slice(2);
 const RATE = Number(rateArg || 1);
 // Generous, and overridable: at CPU_THROTTLE=4 the probe does ~6 cold matches (~6 s each) plus six
 // full views that now include the store read. 180 s used to be ample and stopped being so the moment
 // step 13 moved the layout into JS — a hard timeout is a measurement input, not a constant.
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, Number(process.env.PROFILE_TIMEOUT_MS || 600000));
 
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
-});
-await new Promise((r) => ws.addEventListener('open', r));
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in

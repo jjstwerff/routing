@@ -11,11 +11,11 @@
 // swaps the page's own coverage index for one naming both — so the SAME sketch is matched twice, once
 // against the whole block and once against two, and the routes must agree.
 //
-//   node browser/cdp_cross_block.mjs <host:port> <page-url>
-const [target, pageUrl] = process.argv.slice(2);
-if (!target || !pageUrl) { console.log('usage: cdp_cross_block.mjs <host:port> <url>'); process.exit(2); }
+//   node browser/cdp_cross_block.mjs <profile-dir> <page-url>
+import { launch } from './cdp_transport.mjs';
+const [profile, pageUrl] = process.argv.slice(2);
+if (!profile || !pageUrl) { console.log('usage: cdp_cross_block.mjs <profile-dir> <url>'); process.exit(2); }
 
-const listTargets = async () => (await (await fetch(`http://${target}/json/list`)).json());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // A sketch that straddles 6.90°E — west of the seam, east of it, and east again — so the corridor
@@ -23,26 +23,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SPEC = '52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554';
 const SEAM_LON = 6.90;
 
-let ws, id = 0;
-const pending = new Map();
-const send = (method, params = {}) => new Promise((resolve, reject) => {
-  const msg = { id: ++id, method, params };
-  pending.set(msg.id, { resolve, reject });
-  ws.send(JSON.stringify(msg));
-});
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+// `send` resolves with the CDP RESULT here, not the whole message — the transport offers both, and this
+// driver was written against the result.
+const send = browser.callResult;
 const ev = async (expr) => {
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'eval threw');
   return r.result?.value;
 };
-
-const t = (await listTargets()).find((x) => x.type === 'page');
-ws = new WebSocket(t.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-ws.addEventListener('message', (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id).resolve(d.result); pending.delete(d.id); }
-});
 
 await send('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium

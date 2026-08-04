@@ -29,7 +29,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9243}"
+profile="$here/scratch/chromium-cors_host"
 appport="${APPPORT:-8143}"     # the app's origin
 dataport="${DATAPORT:-8144}"   # a DIFFERENT origin for the blocks — same host, different port, which is
                                # a distinct origin to the browser and enough to require CORS
@@ -39,8 +39,8 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 [ -f "$site/stores/enschede.roads.store" ] || { echo "SKIP: no built site (run tools/map_render_gate.sh first)"; exit 2; }
 
-app=""; data=""; chr=""
-cleanup() { kill "$chr" "$app" "$data" 2>/dev/null; rm -rf "$work"; }
+app=""; data=""
+cleanup() { kill "$app" "$data" 2>/dev/null; rm -rf "$work"; }
 trap cleanup EXIT
 
 echo "== D2: the app on one origin, its blocks on another =="
@@ -88,13 +88,13 @@ acao="$(curl -sI -H 'Origin: http://127.0.0.1:'"$appport" "http://127.0.0.1:$dat
 echo "  data origin: HTTP $code, ACAO header present: $acao"
 [ "$code" = "206" ] && [ "$acao" -ge 1 ] || { echo "  FAIL: the data origin is not a CORS+Range host"; exit 1; }
 
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
-node "$here/browser/cdp_cors_host.mjs" "127.0.0.1:$dtport" \
+rm -rf "$profile"; mkdir -p "$here/scratch"
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_cors_host.mjs" "$profile" \
   "http://127.0.0.1:$appport/index.html" "http://127.0.0.1:$dataport"
 rc=$?
 [ $rc -eq 0 ] || { echo "  --- data-origin requests that did not return 2xx ---"; grep -vE " (200|204|206) " "$work/data.log" | tail -5 | sed "s/^/  /"; }

@@ -14,18 +14,11 @@
 // descriptor without materialising the element, and steps 11-13 use it to reject off-viewport tiles. If
 // it silently disagreed with the full walk the filter would drop the wrong tiles.
 //
-//   usage: node browser/cdp_deliver.mjs <devtools host:port> <app url>
-const [dt, app] = process.argv.slice(2);
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
-});
-await new Promise((r) => ws.addEventListener('open', r));
+//   usage: node browser/cdp_deliver.mjs <profile dir> <app url>
+import { launch } from './cdp_transport.mjs';
+const [profile, app] = process.argv.slice(2);
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
@@ -37,7 +30,7 @@ const ev = async (x) => {
   if (r.result?.exceptionDetails) return { __err: JSON.stringify(r.result.exceptionDetails).slice(0, 400) };
   return r.result?.result?.value;
 };
-const die = (msg) => { console.log('FAIL — ' + msg); ws.close(); process.exit(1); };
+const die = (msg) => { console.log('FAIL — ' + msg); browser.close(); process.exit(1); };
 
 // ⚠ THE CAMERA IS PINNED, not inherited. `DEFAULT_CAM` opens on the whole country (PLAN-SCALE §6i O1),
 // which resolves to the OVERVIEW block — so a gate that navigated bare would measure a generalised
@@ -106,5 +99,5 @@ if (af.length) die(af.join('\n  FAIL — '));
 console.log('PASS — store-read areas match loft\'s text areas: count, cover, ring length, geometry to print precision');
 // Exit explicitly — the open WebSocket would otherwise keep node alive forever on the success path
 // (the trap that hid in cdp_expose.mjs until step 9 made it pass for the first time).
-ws.close();
+browser.close();
 process.exit(0);

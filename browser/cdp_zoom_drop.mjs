@@ -21,16 +21,13 @@
 // hypothetical in this repo — the area debut ladder lived in six copies and the consolidation left the
 // path that DRAWS on the old rule, with every test green (HANDOFF §0).
 //
-//   node browser/cdp_zoom_drop.mjs <dt-host:port> <http-url>
-const [dt, app] = process.argv.slice(2);
+//   node browser/cdp_zoom_drop.mjs <profile-dir> <http-url>
+import { launch } from './cdp_transport.mjs';
+const [profileDir, app] = process.argv.slice(2);
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 300000);
 
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
-await new Promise((r) => ws.addEventListener('open', r));
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profileDir });
+const { call } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in

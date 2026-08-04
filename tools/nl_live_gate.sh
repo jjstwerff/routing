@@ -20,7 +20,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9243}"
+profile="$here/scratch/chromium-nl_live"
 httpport="${HTTPPORT:-8143}"
 site="$here/_site"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
@@ -81,19 +81,19 @@ done
 COVERAGE_MANIFEST="$work_mf/coverage.toml" "$here/tools/build_index.sh" "$site/coverage.json" >/dev/null \
   || { echo "  FAIL: could not build the coverage index"; exit 1; }
 
-srv=""; chr=""
-cleanup() { kill "$chr" "$srv" 2>/dev/null; }
+srv=""
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 
 echo "== N3: a visitor outside Enschede, on the country block =="
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
+rm -rf "$profile"; mkdir -p "$here/scratch"
 # Range, because a 222 MB block is read paged — python's own http.server answers every page request with
 # the whole file, and the gate would be grading something else entirely.
 python3 "$here/tools/range_server.py" "$httpport" "$site" /dev/null >/dev/null 2>&1 &
 srv=$!
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
-node "$here/browser/cdp_nl_live.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html"
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_nl_live.mjs" "$profile" "http://127.0.0.1:$httpport/index.html"

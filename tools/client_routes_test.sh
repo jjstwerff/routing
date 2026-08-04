@@ -10,21 +10,19 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$here/../loft/target/release/loft}"
 chromium="${CHROMIUM_BIN:-chromium}"
 port=18080
-dtport=9223
+profile="$here/scratch/chromium-client_routes"
 url="http://127.0.0.1:$port"
 
 [ -x "$loft" ] || { echo "SKIP: loft not found at $loft (set LOFT_BIN)"; exit 2; }
 command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; }
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 
-fuser -k "$port"/tcp 2>/dev/null || true
 sleep 1
-rm -rf "$here/scratch/chromium-9223"   # hermetic: localStorage (dock/profile/goals) must not leak between runs
+rm -rf "$profile"   # hermetic: localStorage (dock/profile/goals) must not leak between runs
 echo "building + starting server (loft --native)…"
 ( cd "$here" && LOFT_TIMEOUT=0 "$loft" --native server/server.loft --lib "$here/lib" >"$here/scratch/srv_croutes.log" 2>&1 ) &
 srv=$!
-chr=""
-cleanup() { kill "$srv" "$chr" 2>/dev/null; fuser -k "$port"/tcp 2>/dev/null; }
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 
 for i in $(seq 1 120); do
@@ -34,9 +32,11 @@ for i in $(seq 1 120); do
 done
 
 echo "== headless chromium (CDP) =="
-"$chromium" --headless=new --disable-gpu --no-sandbox --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port=$dtport "$url/" >/dev/null 2>&1 &
-chr=$!
-sleep 4
-node "$here/tools/cdp_routes.mjs" "127.0.0.1:$dtport" "$url" \
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
+CHROMIUM_BIN="$chromium" node "$here/tools/cdp_routes.mjs" "$profile" "$url" \
   && echo "ALL PASS — panel save/list/open/delete + reload restores the working sketch." \
   || { echo "FAILURES"; exit 1; }

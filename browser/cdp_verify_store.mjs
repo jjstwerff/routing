@@ -3,25 +3,17 @@
 // Headless-Chromium gate for the standalone store app (browser/index.html, PLAN-BUILD): loads the site over
 // HTTP (the app fetches its stores by URL, so same-origin http, not file://), proves `view <bbox>` renders
 // the region on load, then drives a `match` and proves the route draws.
-//   node browser/cdp_verify_store.mjs <dt-host:port> <http-url>
-const [dt, app] = process.argv.slice(2);
+//   node browser/cdp_verify_store.mjs <profile-dir> <http-url>
+import { launch } from './cdp_transport.mjs';
+const [profile, app] = process.argv.slice(2);
 // 90 s was enough while this gate's index held one 4 MB city block. Since the four-region index landed
 // it also names country road blocks, which the app now correctly PAGES — many more round trips, all of
 // them real work. The budget is a deadlock guard, not a performance assertion; tools/map_profile.sh is
 // where timing is measured.
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 240000);
 
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
-});
-await new Promise((r) => ws.addEventListener('open', r));
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in

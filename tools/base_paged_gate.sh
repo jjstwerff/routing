@@ -22,7 +22,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9251}"
+profile="$here/scratch/chromium-base_paged"
 httpport="${HTTPPORT:-8159}"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
@@ -39,9 +39,9 @@ SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
 layout="$here/_site/stores/enschede.layout.store"
 [ -f "$layout" ] || { echo "SKIP: no layout store at $layout"; exit 2; }
 
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-srv=""; chr=""
-cleanup() { kill "$chr" "$srv" 2>/dev/null; }
+rm -rf "$profile"; mkdir -p "$here/scratch"
+srv=""
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 python3 "$here/tools/range_server.py" "$httpport" "$here/_site" "$here/scratch/.base-paged-report" >/dev/null 2>&1 &
 srv=$!
@@ -49,14 +49,14 @@ for _ in $(seq 20); do curl -s -o /dev/null "http://127.0.0.1:$httpport/index.ht
 rc="$(curl -s -o /dev/null -w '%{http_code}' -H 'Range: bytes=0-15' "http://127.0.0.1:$httpport/stores/enschede.layout.store")"
 [ "$rc" = "206" ] || { echo "FAIL: the harness server does not honour Range (got $rc) — a 'paged' run would silently be a whole one"; exit 1; }
 
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
 echo "== PLAN-SCALE §6f F1/F2: the base map read by RANGE, one viewport at a time =="
 echo "  block: $(stat -c%s "$layout") bytes of layout store, served with real 206 Range"
-node "$here/browser/cdp_base_paged.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html"
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_base_paged.mjs" "$profile" "http://127.0.0.1:$httpport/index.html"
 rc=$?
 [ $rc -ne 0 ] && { echo "       (F2's stated fallback if the cost GROWS is JS reading pages directly — never a decoder of our own.)"; exit $rc; }
 
@@ -160,7 +160,7 @@ echo "  blocks: $(du -ch "$here"/blocks/nl-*.base.store | tail -1 | cut -f1) of 
 # per-viewport cost is dominated by how many bytes each viewport FETCHES, not by the size of the working
 # set being re-exposed. Phase 1 is the clean measurement of the re-expose question: uniform pans, uniform
 # fetch, one variable.
-node "$here/browser/cdp_base_paged.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" \
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_base_paged.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" \
   '{"mode":"paged","start":{"lat":52.22355,"lon":6.90427,"zoom":13.68},
     "waypoints":[{"lat":52.1000,"lon":5.4000},{"lat":52.0907,"lon":4.3007},
                  {"lat":51.9244,"lon":4.4777},{"lat":52.2200,"lon":5.9000},
