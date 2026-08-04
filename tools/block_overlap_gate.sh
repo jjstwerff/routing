@@ -188,6 +188,48 @@ if [ -f "$src" ]; then
     exit 1
   fi
 
+  # --- THE CEILING, and it is only a claim until something runs past it -------------------------------
+  #
+  # `block_overlap.loft` tracked cell owners as ONE BIT PER BLOCK and refused an index over 62. Western
+  # Europe projects to 34–68 road blocks (PLAN-SCALE §6e), so the cap would have bound exactly where it
+  # matters, and only once a continent was being generated on top of it. The mask became an owner LIST in
+  # 8fe43a7 — which removed the ceiling in the code and left it UNMEASURED: nothing in the tree ever handed
+  # the checker more than six blocks, so "no ceiling" was a comment, not a result.
+  #
+  # ⚠ IT ASSERTS BOTH HALVES, because the cheap version of this test passes for the wrong reason. Running
+  # 70 blocks and seeing ALL PASS proves only that nothing capped; a checker that had quietly stopped
+  # comparing would say exactly the same thing. So the same 70 blocks are handed a manufactured PARTIAL
+  # overlap too, and the run must still reject it — detection at scale, not just survival at scale.
+  #
+  # The 70 are hardlinks of one committed block, so the disk cost is zero and every pair is a nesting
+  # (identical cell sets), which is the allowed outcome — leaving the injected pair as the only defect.
+  t4="$(mktemp -d)"
+  nblk=70
+  for c in $(seq 1 "$nblk"); do
+    ln "$src" "$t4/n$c.roads.store" 2>/dev/null || cp "$src" "$t4/n$c.roads.store"
+    [ -f "$src.dschema" ] && { ln "$src.dschema" "$t4/n$c.roads.store.dschema" 2>/dev/null || cp "$src.dschema" "$t4/n$c.roads.store.dschema"; }
+  done
+  clean="$("$loft" --native --lib "$here/lib" "$here/tools/block_overlap.loft" "$t4"/n*.roads.store 2>&1)"
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t4/c_w" "$t4/c_e" 6.85 >/dev/null 2>&1
+  "$loft" --native --lib "$here/lib" "$here/tools/split_block.loft" "$src" "$t4/d_w" "$t4/d_e" 6.92 >/dev/null 2>&1
+  dirty="$("$loft" --native --lib "$here/lib" "$here/tools/block_overlap.loft" "$t4"/n*.roads.store "$t4/c_e" "$t4/d_w" 2>&1)"
+  rm -rf "$t4"
+  if echo "$clean" | grep -q "^#O ALL PASS — $nblk blocks"; then
+    echo "  self-check: $nblk blocks compared with no ceiling ($(echo "$clean" | grep -oP 'blocks, \K[0-9]+') cells, $(echo "$clean" | grep -oP '\K[0-9]+(?= nested)') pairs)"
+  else
+    echo "FAIL — the checker did not get through $nblk blocks; the 62-block ceiling is back:"
+    echo "$clean" | grep -E '^#O' | sed 's/^/       /'
+    exit 1
+  fi
+  if echo "$dirty" | grep -q 'PARTIALLY overlap'; then
+    echo "  self-check: and at $((nblk + 2)) blocks a partial overlap is STILL rejected"
+  else
+    echo "FAIL — at $((nblk + 2)) blocks the gate stopped detecting a partial overlap it was handed on purpose."
+    echo "       Passing on volume alone is the failure this check exists to catch."
+    echo "$dirty" | grep -E '^#O' | sed 's/^/       /'
+    exit 1
+  fi
+
   # The completeness half needs its own self-check, and for a sharper reason: on a fresh clone the real
   # check above SKIPs, so without this the gate would report a green C2b having compared nothing. One
   # split of a committed block gives all three verdicts from data already in the repo.

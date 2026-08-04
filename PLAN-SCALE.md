@@ -1048,8 +1048,12 @@ the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a dif
 
 #### Ceilings to raise before they bind
 
-* ⚠ **`tools/block_overlap.loft` caps an index at 62 blocks** (one bit per block in its owner mask). Its
-  comment claims that is "far above the per-index counts C2 contemplates" — true when written, and no
+* ~~⚠ **`tools/block_overlap.loft` caps an index at 62 blocks**~~ — **RAISED, and now gated.** The owner
+  mask became an owner LIST (`8fe43a7`), and `block_overlap_gate.sh` runs the checker at **70 blocks**
+  (2 415 pairs) *and* re-rejects a manufactured partial overlap at 72, so it cannot pass on volume alone.
+  It is also faster: the mask forced an O(blocks²) scan per cell where almost every cell has ONE owner.
+  Left here for the record; the ceiling that would have bound at 34–68 chunks is gone. The old note:
+  its comment claimed 62 was "far above the per-index counts C2 contemplates" — true when written, and no
   longer true at 34–68 chunks. Cheap to fix (count per pair rather than masking); fix it before it is
   load-bearing, not after.
 * `MARK_BLOCK = 10000000000` in `web_basemap_kernel.loft` namespaces cell marks as `block * MARK_BLOCK + k`
@@ -1082,7 +1086,7 @@ the cap is on total site bytes, so 2 GB in eight parts is still 2 GB. Only a dif
    nl-west/nl-east, then publish). ⚠ Chunk edges must be a **superset of the REGION edges** or no
    grouping of chunks is a region — `CHUNK_EDGES` exists for exactly that, and the NL edges include 5.40.
    *Still to do:* actually run the workflow once (it has never fired), and settle the per-seam loss.
-2. **Raise the 62-block cap** — small, and it is a ceiling on everything above it.
+2. ~~**Raise the 62-block cap**~~ — ✅ **done and gated** (owner list, proven at 70 blocks; above).
 3. **Price D2** — the cost check C5 is already gated on, and the thing that decides whether the WE base map
    is coverage or opt-in. `tools/cors_host_gate.sh` passes today, so the path is tested, not hypothetical.
 
@@ -1367,10 +1371,12 @@ the continent is.
    **D2 stops being optional**: one R2 bucket holds 40.5 GB for roughly **$0.61/month** at $0.015/GB with
    no egress fee, against 58 repos that are free and unmanageable. `publish-bucket.sh` already exists and
    `data/bucket-cors.json` is the policy; what is missing is the account, not the code.
-3. **⚠ THE 62-BLOCK CEILING BINDS.** `block_overlap.loft` masks cell owners one bit per block and refuses
-   an index over 62 (`tools/block_overlap.loft:53`). At ~58 road blocks WE lands *inside the margin of
-   error of the cap* — one finer cut, one city block, and it fails. §6e already listed this as open item
-   (c); it is no longer theoretical. Fix: count per PAIR rather than one bit per block.
+3. ~~**⚠ THE 62-BLOCK CEILING BINDS.**~~ — **FIXED, and it is the only one of the three that is.** The
+   owner mask became an owner LIST, so an index has no per-block ceiling. It was measured rather than
+   argued: `block_overlap_gate.sh` now runs the checker at **70 blocks** — where the old code refused
+   outright — and, on the same 70, still rejects a manufactured partial overlap, because "ALL PASS at 70"
+   is a verdict a checker that had quietly stopped comparing would also reach. **Breakages 1 and 2 above
+   still stand**, and they are the ones that decide whether WE ships.
 
 **Two more that are not new but get worse:**
 
@@ -2201,7 +2207,7 @@ somewhere else:
 | 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
 | 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |
 | 10 | A barrier BETWEEN way vertices is dropped | `apply_barriers` lands a barrier on the node that shares its coordinate; one tagged mid-segment matches nothing. Correct today (a route cannot pass through a point that is not a node) and worth revisiting only if real data shows barriers tagged off-vertex |
-| 11 | An index is capped at **62 blocks** | ⚠ **MINE, and it may bind.** `tools/block_overlap.loft` tracks cell owners as a per-block bitmask; its comment says 62 is "far above the per-index counts C2 contemplates", which was true when written. §6e's disk-derived chunking puts WE at **34–68 blocks**. Cheap fix: count shared cells per PAIR instead of masking. Do it before it is load-bearing |
+| 11 | ~~An index is capped at **62 blocks**~~ | ✅ **RAISED AND GATED.** The per-block bitmask became an owner LIST (`8fe43a7`), so there is no ceiling. Measured, not asserted: `block_overlap_gate.sh` runs the checker at **70 blocks / 2 415 pairs** — the old code refused outright — and re-rejects a manufactured partial overlap at 72, because passing on volume alone is the failure that check exists to catch. ⚠ The fix landed 2026-08-03 with **no test**, so "no ceiling" was a comment for a day; the gate is what closed it |
 | 12 | The GENERATOR does not stream | ~350 bytes of RSS per feature, so a WE-sized store is 130–270 GB. §6e's answer is to never build one that big — one region per run, fed by a single `osmium extract --config` pass. Only if chunking fails does this become an upstream ask for an incrementally-writable store |
 
 ---

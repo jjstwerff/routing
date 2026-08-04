@@ -50,14 +50,15 @@ that makes them ran end to end on 2026-08-03. What changes is scale.
 |---|---|---|---|
 | **C2** (today) | 6 | 0.26 + 2.75 GB | — |
 | **C3** Benelux + 1 | ~6 + ~12 | ~1.5 + ~9 GB *(stale — pre-halving)* | one Pages site per base block; a cross-border route |
-| **C4** WE roads | ~10–16 | 7–15 GB | the 62-block index cap (below) |
+| **C4** WE roads | ~10–16 | 7–15 GB | ~~the 62-block index cap~~ — lifted (phase B, gated at 70 blocks) |
 | **C5** WE base map | +25–45 | 44–88 GB | genuinely a cost decision, not a formality |
 
 Three known constraints, each already written down and none yet load-bearing:
 
-1. **An index is capped at 62 blocks** (`tools/block_overlap.loft` masks cell owners per block). §6e puts
-   WE at 34–68. The cheap fix is counting shared cells per *pair* instead of masking. **Do it before it
-   binds** — it is a one-commit change now and a debugging session later.
+1. ~~**An index is capped at 62 blocks**~~ — **done (phase B) and now GATED.** The owner list removed the
+   ceiling; `block_overlap_gate.sh` proves it at **70 blocks** and still rejects a manufactured overlap at
+   72. ⚠ The code fix shipped with no test, so for a day the ceiling was gone only by inspection — which
+   is the same shape as every "probe outside a gate is a comment" finding in this tree.
 2. **Geofabrik extracts overlap deliberately.** Blocks cut from one extract are disjoint by
    construction; blocks from per-country extracts are not, and `block_overlap_gate.sh` is the check that
    says which kind you have — *before* a continent is generated on the wrong one.
