@@ -9,7 +9,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9247}"
+profile="${here}/scratch/chromium-expose"
 httpport="${HTTPPORT:-8151}"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 command -v python3 >/dev/null || { echo "SKIP: python3 not found"; exit 2; }
@@ -18,18 +18,19 @@ command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; 
 SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-srv=""; chr=""
-cleanup() { kill "$chr" "$srv" 2>/dev/null; }
+rm -rf "$profile"; mkdir -p "$here/scratch"
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
+srv=""
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 python3 -m http.server "$httpport" --directory "$here/_site" >/dev/null 2>&1 &
 srv=$!
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
 
 echo "== step 9: does JS receive the layout handle? =="
-node "$here/browser/cdp_expose.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html"
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_expose.mjs" "$profile" "http://127.0.0.1:$httpport/index.html"
 rc=$?
 exit $rc
