@@ -112,6 +112,12 @@ Each cost a wrong claim that was already written down, about to be, or already f
 **On `view-ring-prefetch`, 4 commits, pushed and UNMERGED.** Nothing here touches the data or the live
 site; it is the app's read strategy plus the instruments that broke when the app grew background work.
 
+> ⚠ **TWO branches are unmerged, and this file is on one of them.** `handoff-benelux-live` carries THIS
+> text; `view-ring-prefetch` carries the code it describes. **Land `view-ring-prefetch` first** — §0c is
+> written as though the ring is already in, so the other order leaves `main` describing code it does not
+> have. Until both land, the `HANDOFF.md` on `main` still says Benelux is staged and unmerged, which has
+> been false since PR #55. A session that resumes from `main` reads that first.
+
 **The view no longer makes the screen wait for four screens it cannot show.** It read `viewportBox(0.6)`
 — 2.2 × 2.2 screens, 4.84 screens of area — in ONE kernel call. Now it reads ~one screen, and a RING of
 eight screen-sized cells is paged AFTERWARDS (3 × 3 = 9 screens), which the first paint pays nothing for.
