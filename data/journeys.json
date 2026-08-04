@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "CAMERA JOURNEYS — what a session actually looks like. A SESSION IS NEVER A TELEPORT.",
+    "",
+    "Every other corpus here describes a SKETCH (tools/corpus_tube.loft, match_parity) — what the router",
+    "is asked. None of them describe what the MAP is asked, and the map is where the waiting happens.",
+    "A journey is a walk: get your bearings wide, zoom in on somewhere, then work along the ground.",
+    "",
+    "Each step is one camera the user comes to rest at. `why` is the human reason, and it is not",
+    "decoration: a step that cannot be explained in a phrase is a step no user takes, and a corpus of",
+    "those measures nothing. `expect` names the block that SHOULD answer, so a run reports a scale",
+    "change instead of leaving the reader to infer one from timings.",
+    "",
+    "Zoom bands (browser/coverage.json): overview 0-12 · *-mid 12-14 · region blocks 14-99.",
+    "So z11 -> z13 -> z15 crosses BOTH boundaries, and each crossing is a different store, cold."
+  ],
+  "journeys": [
+    {
+      "id": "benelux-amsterdam-coast",
+      "name": "Bearings, then Amsterdam, then north along the coast",
+      "why": "The ordinary shape of a visit: see the whole area, choose somewhere, go there, work along it.",
+      "steps": [
+        { "why": "opens on the whole coverage",        "zoom": 7,  "lat": 50.80, "lon": 4.90, "expect": "overview" },
+        { "why": "narrows to the Netherlands",         "zoom": 9,  "lat": 52.10, "lon": 5.30, "expect": "overview" },
+        { "why": "the Randstad — still getting bearings", "zoom": 11, "lat": 52.30, "lon": 4.90, "expect": "overview" },
+        { "why": "picks Amsterdam — first scale change", "zoom": 13, "lat": 52.3702, "lon": 4.8952, "expect": "nl-mid" },
+        { "why": "arrives in the city — second scale change", "zoom": 14, "lat": 52.3702, "lon": 4.8952, "expect": "nl-midwest" },
+        { "why": "looks at a street",                  "zoom": 16, "lat": 52.3702, "lon": 4.8952, "expect": "nl-midwest" },
+        { "why": "back out to plan the way north",     "zoom": 13, "lat": 52.4200, "lon": 4.8700, "expect": "nl-mid" },
+        { "why": "Zaandam, moving north",              "zoom": 14, "lat": 52.4400, "lon": 4.8300, "expect": "nl-midwest" },
+        { "why": "Purmerend",                          "zoom": 14, "lat": 52.5050, "lon": 4.9600, "expect": "nl-midwest" },
+        { "why": "Alkmaar",                            "zoom": 14, "lat": 52.6324, "lon": 4.7534, "expect": "nl-midwest" },
+        { "why": "Egmond aan Zee — reaches the coast",  "zoom": 14, "lat": 52.6200, "lon": 4.6300, "expect": "nl-west" },
+        { "why": "Bergen aan Zee, along the coast",    "zoom": 14, "lat": 52.6650, "lon": 4.6340, "expect": "nl-west" },
+        { "why": "Camperduin",                         "zoom": 14, "lat": 52.7300, "lon": 4.6550, "expect": "nl-west" },
+        { "why": "Petten",                             "zoom": 14, "lat": 52.7670, "lon": 4.6610, "expect": "nl-west" },
+        { "why": "Callantsoog",                        "zoom": 14, "lat": 52.8420, "lon": 4.7020, "expect": "nl-west" },
+        { "why": "Den Helder — end of the coast run",  "zoom": 14, "lat": 52.9600, "lon": 4.7600, "expect": "nl-west" }
+      ]
+    },
+    {
+      "id": "amsterdam-pan-ring",
+      "name": "Small pans at one zoom — does the ring earn its bytes?",
+      "why": "The ring pages 3x3 screens after every view so the next pan is a redraw. This is the corpus that says whether it works: quarter-screen nudges should be ~free, and a full screen should be the first that is not.",
+      "steps": [
+        { "why": "settle",                    "zoom": 14, "lat": 52.3702, "lon": 4.8952, "expect": "nl-midwest" },
+        { "why": "quarter screen east",       "zoom": 14, "lat": 52.3702, "lon": 4.9072, "expect": "nl-midwest" },
+        { "why": "quarter screen east again", "zoom": 14, "lat": 52.3702, "lon": 4.9192, "expect": "nl-midwest" },
+        { "why": "half screen east",          "zoom": 14, "lat": 52.3702, "lon": 4.9442, "expect": "nl-midwest" },
+        { "why": "a full screen east — past the ring", "zoom": 14, "lat": 52.3702, "lon": 4.9952, "expect": "nl-midwest" }
+      ]
+    }
+  ]
+}

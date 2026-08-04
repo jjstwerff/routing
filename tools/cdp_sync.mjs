@@ -2,34 +2,23 @@
 // and edits it; tab 2 (subscribed via open) receives the edit WITHOUT sending anything itself
 // (echo-free apply). Uses REAL Vondelpark coordinates so the tight-corridor match succeeds on
 // the first fetch — ocean points would walk the whole widening loop and stall the fan-out. NOTE: overwrites the developer's "_working" sketch.
-// Usage: node tools/cdp_sync.mjs [devtools-host:port] [app-origin]
-const dt = process.argv[2] || "127.0.0.1:9224";
+// Usage: node tools/cdp_sync.mjs [profile-dir] [app-origin]
+import { launch } from "../browser/cdp_transport.mjs";
+const profile = process.argv[2];
 const app = process.argv[3] || "http://127.0.0.1:18080";
 
 // Headless Chromium rejects multiple startup URLs ("Multiple targets are not supported in
 // headless mode") — open the second tab through CDP instead.
-const targets = await (await fetch(`http://${dt}/json/list`)).json();
-const pages = targets.filter((t) => t.type === "page" && t.url.startsWith(app));
-if (pages.length < 1) { console.log("FAIL: no app tab"); process.exit(2); }
-if (pages.length < 2) {
-  const created = await (await fetch(`http://${dt}/json/new?${app}/?tab2`, { method: "PUT" })).json();
-  pages.push(created);
-  await new Promise((r) => setTimeout(r, 3000));   // let the new tab load the app
-}
+// Two tabs on ONE browser: the first is the page the browser opened on the app, the second is created
+// through CDP. Both sessions ride the same pipe, so the pair still cannot outlive this process.
+const browser = await launch({
+  bin: process.env.CHROMIUM_BIN || "chromium", userDataDir: profile, url: app + "/", clearStorage: false, windowSize: null, settleMs: 4000,
+});
+const second = await browser.newPage(`${app}/?tab2`);
+await new Promise((r) => setTimeout(r, 3000));   // let the new tab load the app
 
-function attach(target) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  let id = 0;
-  const pending = new Map();
-  ws.addEventListener("message", (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  });
-  const call = (method, params) => new Promise((res) => {
-    const mid = ++id;
-    pending.set(mid, res);
-    ws.send(JSON.stringify({ id: mid, method, params }));
-  });
+function attach(session) {
+  const { call } = session;
   const evaluate = async (expr) => {
     const r = await call("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
     if (r.result && r.result.exceptionDetails) {
@@ -41,12 +30,11 @@ function attach(target) {
     if (typeof v !== "string") { console.log("FAIL: evaluate", JSON.stringify(r.result).slice(0, 300)); process.exit(1); }
     return JSON.parse(v);
   };
-  return { ws, call, evaluate, ready: new Promise((res) => ws.addEventListener("open", res)) };
+  return { call, evaluate };
 }
 
-const t1 = attach(pages[0]);
-const t2 = attach(pages[1]);
-await Promise.all([t1.ready, t2.ready]);
+const t1 = attach(browser);
+const t2 = attach(second);
 // The created tab may sit on about:blank — navigate it to the app explicitly.
 await t2.call("Page.navigate", { url: `${app}/?tab2` });
 await new Promise((r) => setTimeout(r, 2000));
@@ -96,7 +84,7 @@ const s3 = await t2.evaluate(`(async () => {
 // Cleanup: delete the shared route.
 await t1.evaluate(`(async () => { routing.ws.deleteRoute("CDP Sync Route"); await new Promise((r) => setTimeout(r, 500)); return JSON.stringify({ ok: true }); })()`);
 
-t1.ws.close(); t2.ws.close();
+browser.close();
 console.log("RESULT", JSON.stringify({ s1, s2, s3 }));
 const ok = s2.opened === 2 && s3.synced === 3 && s3.stable === 3;
 console.log(ok ? "PASS" : "FAIL");

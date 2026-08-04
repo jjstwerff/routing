@@ -2,22 +2,19 @@
 // (which already implements loft_web.ws_yield), and answer the two questions that gate steps 4-8:
 //   1. does state (count) persist ACROSS commands? -> loft can own the loop, main() never returns
 //   2. does rAF keep firing while loft waits?      -> frame_yield really hands the frame back
-//   node drive_probe.mjs <devtools host:port> <probe url>
-const [dt, app] = process.argv.slice(2);
+//   node browser/cdp_loop_probe.mjs <profile-dir> <probe url>
+import { launch } from './cdp_transport.mjs';
+const [profile, app] = process.argv.slice(2);
 setTimeout(() => { console.log('  FAIL: hard timeout'); process.exit(3); }, 60000);
 
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const logs = []; const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.consoleAPICalled') logs.push((m.params.args || []).map((a) => a.value).join(' '));
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
+const browser = await launch({
+  bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile, windowSize: '800,600',
 });
-await new Promise((r) => ws.addEventListener('open', r));
+const { call, errors: errs } = browser;
+const logs = [];
+browser.onEvent((m) => {
+  if (m.method === 'Runtime.consoleAPICalled') logs.push((m.params.args || []).map((a) => a.value).join(' '));
+});
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in

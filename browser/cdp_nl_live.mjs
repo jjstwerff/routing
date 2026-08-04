@@ -15,11 +15,11 @@
 //   3. it MATCHES there — the product claim, and what a 404 on the block would silently deny;
 //   4. it reads that block BY RANGE — 222 MB down the wire is not a page load.
 //
-//   node browser/cdp_nl_live.mjs <host:port> <page-url>
-const [target, pageUrl] = process.argv.slice(2);
-if (!target || !pageUrl) { console.log('usage: cdp_nl_live.mjs <host:port> <url>'); process.exit(2); }
+//   node browser/cdp_nl_live.mjs <profile-dir> <page-url>
+import { launch } from './cdp_transport.mjs';
+const [profile, pageUrl] = process.argv.slice(2);
+if (!profile || !pageUrl) { console.log('usage: cdp_nl_live.mjs <profile-dir> <url>'); process.exit(2); }
 
-const listTargets = async () => (await (await fetch(`http://${target}/json/list`)).json());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Amsterdam, in the app's own fragment form (zoom/lat/lon) — far from Enschede and WEST of the 5.40°E
@@ -29,26 +29,15 @@ const CAM = '#14/52.3702/4.8952';
 // block answers and how it is read, not about route quality, which the corpus gates own.
 const SPEC = '52.3702,4.8952;52.3660,4.9000;52.3625,4.9065';
 
-let ws, id = 0;
-const pending = new Map();
-const send = (method, params = {}) => new Promise((resolve, reject) => {
-  const msg = { id: ++id, method, params };
-  pending.set(msg.id, { resolve, reject });
-  ws.send(JSON.stringify(msg));
-});
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+// `send` resolves with the CDP RESULT here, not the whole message — the transport offers both, and this
+// driver was written against the result.
+const send = browser.callResult;
 const ev = async (expr) => {
   const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
   if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'eval threw');
   return r.result?.value;
 };
-
-const t = (await listTargets()).find((x) => x.type === 'page');
-ws = new WebSocket(t.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-ws.addEventListener('message', (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id).resolve(d.result); pending.delete(d.id); }
-});
 
 await send('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
@@ -88,6 +77,14 @@ if (!c.hasBase) fail(`${c.id} reports NO base map — the site index must name i
 if (c.outside) fail('Amsterdam reported as OUTSIDE coverage');
 
 const before = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())'));
+// ⚠ PRINTED BEFORE THE MATCH, BECAUSE THE MATCH IS WHERE THIS GATE DIES. `matchSpec` here trapped with
+// `RuntimeError: unreachable` all through 2026-08-03/04 (HANDOFF §1 item 5), and every counter that could
+// explain it was read AFTER the match — i.e. never, on the run that mattered. The session state at the
+// moment of the crash is the evidence: `wasmBytes` for the memory-growth hypothesis (a `memory.grow` that
+// cannot be satisfied aborts exactly like this), and the read counters for how much of the walk was
+// SERIAL — prefetching the pages is what makes this gate pass, so the two are worth seeing side by side.
+console.log(`  before the match: wasm ${(before.wasmBytes / 1e6).toFixed(1)} MB · ${before.rangeReads} range reads` +
+            ` · ${before.prefetchHits || 0} of them from the prefetch buffer · ${before.commands} commands`);
 const m = JSON.parse(await ev(`(async () => JSON.stringify(await window.__perfHooks.matchSpec(${JSON.stringify(SPEC)})))()`));
 const after = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())'));
 

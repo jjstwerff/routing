@@ -21,7 +21,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 chromium="${CHROMIUM_BIN:-chromium}"
-dtport="${DTPORT:-9241}"
+profile="$here/scratch/chromium-cross_block_browser"
 httpport="${HTTPPORT:-8141}"
 site="$here/_site"
 command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
@@ -37,8 +37,8 @@ command -v "$chromium" >/dev/null || { echo "SKIP: chromium not found"; exit 2; 
 COVERAGE_MANIFEST="$here/data/coverage-fixture.toml" "$here/tools/build_index.sh" "$site/coverage.json" \
   >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 
-srv=""; chr=""
-cleanup() { kill "$chr" "$srv" 2>/dev/null; rm -f "$site/stores/west.roads.store"* "$site/stores/east.roads.store"*; }
+srv=""
+cleanup() { kill "$srv" 2>/dev/null; rm -f "$site/stores/west.roads.store"* "$site/stores/east.roads.store"*; }
 trap cleanup EXIT
 
 echo "== C2: the app across a block seam (browser) =="
@@ -48,14 +48,14 @@ echo "== C2: the app across a block seam (browser) =="
 [ -f "$site/stores/west.roads.store" ] && [ -f "$site/stores/east.roads.store" ] \
   || { echo "  FAIL: the split produced no halves"; exit 1; }
 
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
+rm -rf "$profile"; mkdir -p "$here/scratch"
 # Range, because the split blocks are read paged — python's own http.server would answer every page
 # request with a whole file and the gate would be grading something else entirely.
 python3 "$here/tools/range_server.py" "$httpport" "$site" /dev/null >/dev/null 2>&1 &
 srv=$!
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
-node "$here/browser/cdp_cross_block.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html"
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_cross_block.mjs" "$profile" "http://127.0.0.1:$httpport/index.html"

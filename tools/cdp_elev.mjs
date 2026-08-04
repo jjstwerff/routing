@@ -1,27 +1,17 @@
 // Drive the app in headless Chromium over the DevTools protocol (no puppeteer — node's built-in
 // WebSocket) and verify the elevation dock (PLAN step 15): closed by default, opens on toggle,
 // requests the profile over the app's own WS, draws it (canvas pixels), totals ↑100/↓0.
-// Usage: node tools/cdp_elev.mjs [devtools-host:port] [app-origin]
-const dt = process.argv[2] || "127.0.0.1:9222";
+// Usage: node tools/cdp_elev.mjs [profile-dir] [app-origin]
+import { launch } from "../browser/cdp_transport.mjs";
+const profile = process.argv[2];
 const app = process.argv[3] || "http://127.0.0.1:18080";
 
-const targets = await (await fetch(`http://${dt}/json/list`)).json();
-const page = targets.find((t) => t.type === "page" && t.url.startsWith(app));
-if (!page) { console.log("FAIL: no app page target", targets.map((t) => t.url)); process.exit(2); }
-
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0;
-const pending = new Map();
-const call = (method, params) => new Promise((res, rej) => {
-  const mid = ++id;
-  pending.set(mid, { res, rej });
-  ws.send(JSON.stringify({ id: mid, method, params }));
+// Opened ON the app, as the old gate did by passing the url to chromium — this driver's checks assume
+// the page is already the app rather than about:blank.
+const browser = await launch({
+  bin: process.env.CHROMIUM_BIN || "chromium", userDataDir: profile, url: app + "/", clearStorage: false, windowSize: null, settleMs: 4000,
 });
-ws.addEventListener("message", (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id).res(m); pending.delete(m.id); }
-});
-await new Promise((res) => ws.addEventListener("open", res));
+const { call } = browser;
 
 const driver = `(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -75,7 +65,7 @@ const r2 = await call("Runtime.evaluate", { expression: `(async () => {
   for (let i = 0; i < 100 && typeof window.routing === "undefined"; i++) await sleep(100);
   return JSON.stringify({ openAfterReload: !document.getElementById("elev-dock").classList.contains("hidden") });
 })()`, awaitPromise: true, returnByValue: true });
-ws.close();
+browser.close();
 const o2 = JSON.parse(r2.result.result.value);
 console.log("RELOAD", JSON.stringify(o2));
 

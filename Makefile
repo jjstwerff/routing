@@ -191,6 +191,7 @@ test: check
 	@LOFT_BIN="$(LOFT)" ./tools/routes_test.sh
 	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
 	@./tools/derived_scope_gate.sh
+	@node browser/page-index.test.mjs
 	@echo "  ALL OFFLINE GATES PASS"
 
 test-native: check-rustc
@@ -231,6 +232,7 @@ test-wasm: check
 # and believed for two months. A probe outside a gate is a comment.
 # NOTE these are local-only — CI has no chromium, so it runs neither this target nor the bridge gates.
 test-map:
+	@./tools/browser_leak_gate.sh
 	@./tools/map_render_gate.sh
 	@./tools/network_zoom_gate.sh
 	@./tools/expose_probe.sh

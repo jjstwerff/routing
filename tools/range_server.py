@@ -9,10 +9,21 @@
 # Also: GET /report?r=... appends r to a report file — the channel a headless browser reports through.
 #
 #   python3 tools/range_server.py [port] [root] [report-file]
-import http.server, socketserver, sys, os, re, urllib.parse
+import http.server, socketserver, sys, os, re, time, urllib.parse
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "."
+# ⚠ A PATH TO APPEND EVERY RANGED READ TO — not a switch. `RANGE_LOG=1` reads like "logging on" and is
+# taken literally: one gate set it that way and quietly grew a file named `1` in whatever directory it ran
+# from, which was the repo root. A relative value is therefore refused rather than obeyed.
+RANGE_LOG = os.environ.get("RANGE_LOG", "")
+if RANGE_LOG and not os.path.isabs(RANGE_LOG):
+    sys.exit(f"range_server: RANGE_LOG must be an absolute PATH to log to, not {RANGE_LOG!r}")
+# LATENCY_MS injects a fixed per-request delay. A local server has ~0 RTT, which is exactly the variable
+# that dominates a real paged read (measured against GitHub Pages: 26 ms TTFB on a reused connection, and
+# a 64 kB range costs the same as one byte). Without this an A/B of prefetching measures nothing, because
+# the thing prefetching removes is not present. Set it to the RTT you are modelling.
+LATENCY_MS = float(os.environ.get("LATENCY_MS", "0"))
 REPORT = sys.argv[3] if len(sys.argv) > 3 else os.path.join(ROOT, ".range-report")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -56,7 +67,16 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if LATENCY_MS: time.sleep(LATENCY_MS / 1000.0)
         rng = self.headers.get("Range")
+        # RANGE_LOG=<file> records what the client ASKED FOR — the only honest way to build a page index
+        # (tools/build_page_index.sh). `LOFT_LOADER_STATS=1` reports a histogram and no offsets, and a
+        # second purpose-built server got this WRONG: omitting `Accept-Ranges` above made the loader probe
+        # with a plain GET and then read differently, so the recorded pages were an artefact of the
+        # instrument. Logging from the server that already serves every gate cannot drift like that.
+        if RANGE_LOG:
+            with open(RANGE_LOG, "a") as lf:
+                lf.write(("R " + rng.strip() if rng else "WHOLE") + " " + self.path + "\n")
         if not rng:
             return super().do_GET()
         path = self.translate_path(self.path)

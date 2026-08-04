@@ -19,18 +19,19 @@
 //   * the address is real — storeBase/rec nonzero (rec == 0 is expose_value's early return)
 //   * the hash was PRE-FLATTENED — @PLN105 Phase 3's collect_keyed ran, so the descriptor is not a
 //     bare keyed node JS cannot walk. This is the claim I got wrong twice; assert it, don't argue it.
-//   usage: node browser/cdp_expose.mjs <devtools host:port> <app url>
-const [dt, app] = process.argv.slice(2);
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
+// ⚠ THIS DRIVER OWNS THE BROWSER. It used to attach to one bash had already started on a debugging
+// PORT, which is how a killed gate left a browser running with nobody to end it. Now it launches its own
+// over a CDP PIPE (browser/cdp_transport.mjs): the browser cannot outlive this process, on any OS, with
+// no cleanup code anywhere. The gate script passes a profile dir and a url — never a port.
+//   usage: node browser/cdp_expose.mjs <profile dir> <app url>
+import { launch } from './cdp_transport.mjs';
+const [profile, app] = process.argv.slice(2);
+const browser = await launch({
+  bin: process.env.CHROMIUM_BIN || 'chromium',
+  userDataDir: profile,
+  url: 'about:blank',
 });
-await new Promise((r) => ws.addEventListener('open', r));
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
@@ -81,10 +82,10 @@ if (info) {
   console.log(`  handle: storeBase=${info.storeBase} rec=${info.rec} pos=${info.pos} descNodes=${info.descNodes} wasmMB=${info.wasmMB}`);
   console.log(`  names:  ${JSON.stringify(info.sampleNames || []).slice(0, 200)}`);
 }
-if (fail.length) { console.log('FAIL — ' + fail.join('\n  FAIL — ')); process.exit(1); }
+if (fail.length) { console.log('FAIL — ' + fail.join('\n  FAIL — ')); browser.close(); process.exit(1); }
 console.log('PASS — JS holds a live layout handle: descriptor parsed + address delivered, bracket balanced');
-// Exit explicitly: the open WebSocket keeps node's event loop alive, so the success path would otherwise
-// hang forever. Only the FAIL branch ever called process.exit, and until step 9 landed this probe had
-// never once passed — so nothing had exercised the path that returns.
-ws.close();
+// Exit explicitly: the open pipe keeps node's event loop alive, so the success path would otherwise hang
+// forever. Only the FAIL branch ever called process.exit, and until step 9 landed this probe had never
+// once passed — so nothing had exercised the path that returns.
+browser.close();
 process.exit(0);

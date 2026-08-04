@@ -15,7 +15,7 @@
 #   tools/network_zoom_gate.sh
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dtport="${DTPORT:-9255}"
+profile="$here/scratch/chromium-network_zoom"
 httpport="${HTTPPORT:-8163}"
 chromium="${CHROMIUM_BIN:-chromium-browser}"
 command -v "$chromium" >/dev/null || chromium="$(command -v chromium || command -v google-chrome || echo chromium)"
@@ -28,19 +28,19 @@ SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" >/dev/null || exit 1
 "$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 [ -f "$here/_site/stores/enschede.roads.store" ] || { echo "SKIP: no roads fixture in _site"; exit 2; }
 
-rm -rf "$here/scratch/chromium-$dtport"; mkdir -p "$here/scratch"
-srv=""; chr=""; rc=0
-cleanup() { kill "$chr" "$srv" 2>/dev/null; }
+rm -rf "$profile"; mkdir -p "$here/scratch"
+srv=""; rc=0
+cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; return 0; }
 trap cleanup EXIT
 # Range, not python's http.server: the app pages its roads block, and a server that answers every page
 # request with the whole file would still render — while measuring something the deployed site never does.
 python3 "$here/tools/range_server.py" "$httpport" "$here/_site" /dev/null >/dev/null 2>&1 &
 srv=$!
-"$chromium" --headless=new --disable-gpu --no-sandbox --window-size=1000,700 \
-  --user-data-dir="$here/scratch/chromium-$dtport" --remote-debugging-port="$dtport" about:blank >/dev/null 2>&1 &
-chr=$!
-sleep 4
-
+# ⚠ THIS SCRIPT NO LONGER LAUNCHES A BROWSER, and that is the point. It used to start Chromium on a
+# debugging PORT and take it down from `trap cleanup EXIT` — correct for every way this script ends, and
+# useless for the way it actually dies (a timeout or an interrupted turn kills the shell, no trap runs,
+# and a detached browser owned by nobody runs for days). The driver now owns it over a CDP pipe, so the
+# browser cannot outlive `node` on any OS and there is nothing here to clean up. See browser/cdp_transport.mjs.
 echo "== PLAN-LAYERS §4: the signposted network survives a zoom step =="
-node "$here/browser/cdp_zoom_drop.mjs" "127.0.0.1:$dtport" "http://127.0.0.1:$httpport/index.html" || rc=1
+CHROMIUM_BIN="$chromium" node "$here/browser/cdp_zoom_drop.mjs" "$profile" "http://127.0.0.1:$httpport/index.html" || rc=1
 exit $rc

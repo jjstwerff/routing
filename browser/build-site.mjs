@@ -28,23 +28,28 @@ const roughMjs = stripExport(readFileSync(join(here, 'rough.mjs'), 'utf8'));
 // PLAN-SCALE S7 — the coverage resolver (index → block). Pure, no imports of its own.
 const coverageMjs = stripExport(readFileSync(join(here, 'coverage.mjs'), 'utf8'));
 const storeKernelMjs = stripExport(readFileSync(join(here, 'store-kernel.mjs'), 'utf8'));
+// docs/prefetch-index-design.md — reads the chunked page index so a viewport's pages can be fetched
+// as one batch instead of hundreds of serial round trips. Inlined like every other module: an
+// import left un-stripped would 404 at runtime and take the whole app down with it.
+const pageIndexMjs = stripExport(readFileSync(join(here, 'page-index.mjs'), 'utf8'));
 const storeAppMjs = stripExport(readFileSync(join(here, 'store-app.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/map\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-kernel\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-geom\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/loft-store\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/rough\.mjs';\s*$/m, '')
+  .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/page-index\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/coverage\.mjs';\s*$/m, '');
 // A leftover `import ... from './x.mjs'` means a module was added without teaching this bundler about
 // it: the browser then tries to FETCH that path out of _site/, where it does not exist, and the app dies
 // on load with no console error the harness can see. Fail the build instead.
-for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs], ['map.mjs', mapMjs], ['store-geom.mjs', storeGeomMjs], ['rough.mjs', roughMjs], ['coverage.mjs', coverageMjs]]) {
+for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs], ['map.mjs', mapMjs], ['store-geom.mjs', storeGeomMjs], ['rough.mjs', roughMjs], ['coverage.mjs', coverageMjs], ['page-index.mjs', pageIndexMjs]]) {
   const stray = src.match(/^import\s.*$/m);
   if (stray) { console.error(`build-site: ERROR — un-inlined import left in ${name}: ${stray[0]}`); process.exit(1); }
 }
 const html = readFileSync(join(here, 'index.html'), 'utf8')
   .replace(/<script type="module" src="\.\/store-app\.mjs"><\/script>/,
-    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/store-geom.mjs ---- */\n${storeGeomMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/rough.mjs ---- */\n${roughMjs}\n/* ---- inlined browser/coverage.mjs ---- */\n${coverageMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
+    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/store-geom.mjs ---- */\n${storeGeomMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/rough.mjs ---- */\n${roughMjs}\n/* ---- inlined browser/coverage.mjs ---- */\n${coverageMjs}\n/* ---- inlined browser/page-index.mjs ---- */\n${pageIndexMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
 
 // Assemble _site/: the inlined app + the kernel wasm + the two loft stores (served static for the app to fetch).
 if (existsSync(site)) rmSync(site, { recursive: true });
@@ -99,6 +104,17 @@ if (existsSync(blocks)) {
     n += 1; bytes += statSync(p).size;
   }
   if (n) console.log(`build-site: ${n} generated block file(s), ${(bytes / 1e6).toFixed(1)} MB (linked)`);
+  // docs/prefetch-index-design.md — the page index, beside `coverage.json` because it is one index over
+  // EVERY store (v3) rather than a sidecar of any one of them. It is read by range and never whole, so
+  // its size on the site is not its cost to a session; and its absence is not an error, only the old
+  // 764-round-trip read path. Staged here rather than by `finish_page_indexes.sh --stage` so that a
+  // rebuilt `_site` always has the current one — a gate serves `_site`, and an index staged into the
+  // previous build reaches nothing (HANDOFF §2).
+  const px = join(blocks, 'coverage.pagesx');
+  if (existsSync(px)) {
+    try { linkSync(px, join(site, 'coverage.pagesx')); } catch { cpSync(px, join(site, 'coverage.pagesx')); }
+    console.log(`build-site: coverage.pagesx (${(statSync(px).size / 1e6).toFixed(1)} MB page index)`);
+  }
 }
 console.log(`build-site: _site/index.html (${(html.length / 1024) | 0} KB, inlined) + _site/store-kernel.wasm + _site/stores/`);
 

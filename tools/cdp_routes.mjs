@@ -2,34 +2,26 @@
 // (PLAN step 16): save with a name, list shows it, PAGE RELOAD restores the working sketch
 // silently, opening the saved route applies its points + profile, delete removes it.
 // NOTE: overwrites the developer's "_working" sketch with the test route (it IS the restore test).
-// Usage: node tools/cdp_routes.mjs [devtools-host:port] [app-origin]
-const dt = process.argv[2] || "127.0.0.1:9222";
+// Usage: node tools/cdp_routes.mjs [profile-dir] [app-origin]
+import { launch } from "../browser/cdp_transport.mjs";
+const profile = process.argv[2];
 const app = process.argv[3] || "http://127.0.0.1:18080";
 
-const targets = await (await fetch(`http://${dt}/json/list`)).json();
-const page = targets.find((t) => t.type === "page" && t.url.startsWith(app));
-if (!page) { console.log("FAIL: no app page target"); process.exit(2); }
-
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0;
-const pending = new Map();
-const events = [];
-const call = (method, params) => new Promise((res) => {
-  const mid = ++id;
-  pending.set(mid, res);
-  ws.send(JSON.stringify({ id: mid, method, params }));
+// Opened ON the app, as the old gate did by passing the url to chromium — this driver's checks assume
+// the page is already the app rather than about:blank.
+const browser = await launch({
+  bin: process.env.CHROMIUM_BIN || "chromium", userDataDir: profile, url: app + "/", clearStorage: false, windowSize: null, settleMs: 4000,
 });
+const { call } = browser;
+const events = [];
 const waitEvent = (method, timeoutMs = 20000) => new Promise((res, rej) => {
   const t = setTimeout(() => rej(new Error("timeout waiting " + method)), timeoutMs);
   events.push({ method, res: (m) => { clearTimeout(t); res(m); } });
 });
-ws.addEventListener("message", (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return; }
+browser.onEvent((m) => {
   const i = events.findIndex((w) => w.method === m.method);
   if (i >= 0) events.splice(i, 1)[0].res(m);
 });
-await new Promise((res) => ws.addEventListener("open", res));
 await call("Page.enable");
 
 const evaluate = async (expr) => {
@@ -272,7 +264,7 @@ const s7 = await evaluate(`(async () => {
   return JSON.stringify(out);
 })()`);
 
-ws.close();
+browser.close();
 console.log("PHASE1", JSON.stringify(s1));
 console.log("PHASE2", JSON.stringify(s2));
 console.log("PHASE3", JSON.stringify(s3));

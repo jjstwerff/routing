@@ -7,10 +7,34 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-04, early)
+## 0. Where things stand (2026-08-04, late)
 
 **THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
 PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
+
+⚠ **THIRTEEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
+strands, in the order they were done:
+
+1. **Browser/test-process hygiene** (`8f55a06`, `f5ab0c2`, `67bb7c8`). Every gate's browser is owned by
+   its driver over a CDP **pipe**, so it cannot outlive the process that started it — no traps, no kill
+   logic, no platform-specific code. `browser_leak_gate` proves it by SIGKILLing an owner and re-taking
+   the profile. The loft test server got the same treatment (`exec` + a bounded `LOFT_TIMEOUT`), and
+   `fuser -k` is gone from all seven scripts. **Earned:** five leaked browser trees, 50 processes,
+   1.7 GB, the oldest 2 days 18 h old, on a box whose swap was full — and 24 leaked loft servers, all
+   mine, from the old broken `kill`.
+2. **`be-mid` moved to its own Pages repo** (`96c9e95`, merged) — site 86% → **70%**. And the 62-block
+   index cap is gone AND gated at 70 blocks (`2a52ca0`) — it had been fixed in code a day earlier with
+   no test.
+3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
+   **The browser reads the one coverage index now** (v3: a quadtree over every store, read by range), the
+   RING plans its pages too, and both halves are gated — `browser/page-index.test.mjs` in `make test` for
+   the format, `tools/prefetch_gate.sh` for the wired path. **~2× to the same map**, and the gate asserts
+   the map as well as the clock. Nothing is published yet; §1 item 6b says what is left.
+
+**READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
+Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
+binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91); one measurement — whether a
+Cloudflare cache HIT still bills a Class B op — stands between the recommendation and paying for it.
 
 | | live on Pages |
 |---|---|
@@ -178,23 +202,51 @@ both backends. **Two of our three upstream findings this week were corrected by 
    rather than discovering it at C4.
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
-   world is a funding decision).
-5. ⚠ **`nl_live_gate` TRAPS in wasm, and it is the match a real Amsterdam visitor performs.**
-   `RuntimeError: unreachable` in N3's `matchSpec`. It reproduces on **unmodified `main`** on a quiet box,
-   so nothing on the ring branch caused it — but it appeared partway through 2026-08-03/04 and the gate
-   passed at the start of that session. **Four suspects are ruled out, each with a verified instrument:**
-   the **toolchain** (the committed wasm, deployed into `_site` properly, traps — and so does one built on
-   the newest binary); the **data** (all 20 shipped blocks verify by size + sha256 against the index, and
-   no `.dschema` was rewritten — every sidecar predates the session); the **matcher** (a native whole-load
-   match on `nl-midwest` returns the exact expected route, 29 pts / 1531.9 m); and the **paged path**
-   itself (a FRESH browser session does the same paged match on the same block successfully, 1533 ms,
-   same route, kernel alive).
-   **What is left is the gate's ACCUMULATED SESSION** — N1/N2 walk z8 → z12 → z11 → z16 across 10 locally
-   served base blocks before N3 matches. The leading hypothesis is wasm memory (the profile shows a 531 MB
-   working set for a much lighter session, and a `memory.grow` that cannot be satisfied aborts exactly like
-   this), but it is a HYPOTHESIS. **The next probe:** replay N1/N2, report `kernelStats().wasmBytes` before
-   N3, and bisect which step arms it.
+   world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
+   headline is not about Western Europe at all: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at
+   ~1 000 sessions/month**, which binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91) and
+   the code to move already exists; one measurement stands between the recommendation and paying for it.
+5. ⚠ **`nl_live_gate`'s wasm trap is now A/B'd TO ITS TRIGGER, and the memory hypothesis is REFUTED.**
+   `RuntimeError: unreachable` in N3's `matchSpec`. **It is the SERIAL PAGED READ that arms it, and
+   prefetching the pages removes it** — one variable, same box, same binary (`4e31dbe8`, loft 2026.8.0),
+   same committed wasm (Chromium module `00592962`), same blocks:
+
+   | | |
+   |---|---|
+   | `main` | **TRAPS** (1/1) |
+   | branch, `prefetchOn = false` — the ONLY edit | **TRAPS** (3/3) |
+   | branch, prefetch on | **PASSES** (4/4) |
+
+   ⚠ **`wasmBytes` is 41.0 MB in BOTH arms immediately before the trapping call**, so *"a `memory.grow`
+   that cannot be satisfied"* — which this file named as the leading hypothesis — is not what is happening;
+   the arm that dies is not the bigger one. (The 531 MB in an older profile was a different session.) What
+   differs is how many reads SUSPENDED wasm: **764 with none prefetched, against 64 real ones when 699 of
+   763 came out of the buffer.** The trapping arm also ran one more kernel command (2 vs 1), so the arms
+   are not identical in work — that is the loose end in this A/B.
+   **So the app no longer trips it, and the DEFECT IS NOT FIXED**: a page the index does not name still
+   falls through to a real read (58 per view), and `nl-east.base` / `nl-mideast.base` have no index at all
+   — a camera over them takes the old path in full. **The next probe:** hold the work identical and vary
+   only the suspend COUNT (prefetch the view but not the ring, and the reverse), then symbolise
+   `wasm-function[531]` against a debug build. `browser/cdp_nl_live.mjs` prints the session state before
+   the match now, which is how these numbers exist at all — every counter used to be read *after* it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
+6b. **THE MAP IS SLOW BECAUSE OF ROUND TRIPS, AND THE FIX IS WIRED AND GATED — but not published.**
+   A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured
+   against the live host, a 64 kB range costs the same as one byte (41 ms), so `764 × 26 ms ≈ 20 s` IS
+   the wait. The browser now reads ONE coverage index (v3) and prefetches the pages a viewport needs as
+   one batch, and the ring plans its cells too. Measured on a QUIET box, n=3 a side, 26 ms injected RTT:
+   **to the view 14.5 → 6.3 s (2.29×)**, **to a settled session 54.1 → 18.8 s (2.87×)**, 1 331 of 1 751
+   reads answered out of the buffer, and the same map either way. **All 15 stores are indexed** — the
+   index is 8.5 MB, of which a viewport reads 870 kB and a session 1.7 kB.
+   `docs/prefetch-index-design.md` §11 is the state. **One thing remains: PUBLISHING.**
+   `tools/fetch-site-blocks.sh` pulls `coverage.pagesx` from the DATASET's release tag, so it is one
+   `gh release upload` onto `data-v2026-08-03d`, then the merge. ⚠ It cannot break what is live: with no
+   index the app reads exactly as it does today, and a STALE one is refused per store by the sha256 check
+   at the reader.
+
+   ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
+   **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
+   original cold entry. Retention across scale changes is unprobed and may matter more than the index.
 7. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
    survivable. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`. ⚠ **Benelux widens the exposure** — more blocks, more first-visit
@@ -268,6 +320,19 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
+* **AN OPTIMISATION THAT CAN ONLY COST TIME WILL FAIL SILENTLY, SO GATE IT ON ITS OUTPUT.** The page
+  index degrades by design — a page number is a fetch HINT, and a wrong one costs bytes, never a wrong
+  map. That is the property that makes it safe to publish, and it is exactly why a broken one is
+  invisible: `build_coverage_index.py` declared a 40-byte header beside a 36-byte `struct.pack`, so every
+  offset in the file pointed 4 bytes past its own data, and **nothing failed** — no error, no wrong
+  pixel, just the old slow read path wearing the new one's name. Two more of the same shape sat beside
+  it: the covering set is comma-separated and the prefetch split it on a SPACE (so every multi-block
+  viewport planned nothing), and a `whole` store was asked for pages it has none of (3.6 MB of index read
+  at z8 to plan a single-request download). ⚠ **The general form: when the failure mode is "no benefit",
+  the absence of errors is not evidence.** The gate has to read the OUTPUT back — `page-index.test.mjs`
+  builds a fixture, runs the real builder and insists on the pages that went in (it fails 9 checks against
+  the 4-byte regression), and `prefetch_gate.sh` requires the buffer to have actually ANSWERED. Same
+  family as the paged spot check that passed while fetching nothing.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
@@ -397,7 +462,12 @@ Two that are NOT in a suite, because each needs generated data a fresh clone doe
 ```bash
 tools/seam_route_gate.sh       # @51 D — a route across the NL/BE border is the one-block route
 tools/trim-borders.sh          # re-derive the disjoint Benelux roads set (~10 min)
+tools/prefetch_gate.sh         # the page index, wired: the app plans its own viewport, ~2x, same map
 ```
+
+`prefetch_gate.sh` SKIPs without `_site/coverage.pagesx` rather than passing — with no index both arms of
+its A/B agree and the experiment did not happen. Build one with `tools/finish_page_indexes.sh --stage`.
+The FORMAT half needs no data at all and runs in `make test` (`browser/page-index.test.mjs`).
 
 * Build with the **installed `loft` on `PATH`**; the sibling `../loft` and `../loft2` trees belong to
   other agents and are read-only (`CLAUDE.md`).

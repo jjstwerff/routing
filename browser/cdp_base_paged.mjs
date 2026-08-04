@@ -35,7 +35,8 @@
 //   {"mode":"paged","start":{...},"waypoints":[...]}   render-only, for a store too big to load WHOLE —
 //                                                       which is the case the whole rung exists for, and
 //                                                       where there is no whole-load run to compare to.
-const [dt, app, cfgJson] = process.argv.slice(2);
+import { launch } from './cdp_transport.mjs';
+const [profile, app, cfgJson] = process.argv.slice(2);
 const cfg = cfgJson ? JSON.parse(cfgJson) : {};
 const COMPARE = cfg.mode !== 'paged';
 
@@ -86,16 +87,8 @@ const LOSS_ABS_MAX = 20;
 // PROPORTIONALLY more — that is what an O(working set) re-expose would look like.
 const GROWTH_MAX = 3.0;
 
-const list = await (await fetch(`http://${dt}/json/list`)).json();
-const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const errs = [];
-const call = (m, p) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: m, params: p })); });
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errs.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text);
-});
-await new Promise((r) => ws.addEventListener('open', r));
+const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
+const { call, errors: errs } = browser;
 await call('Runtime.enable'); await call('Page.enable');
 // PLAN-EDIT E9 — the sketch autosave lives in localStorage, and every gate reuses its chromium
 // --user-data-dir, so one run's sketch would restore into the next one's assertions. Cleared here, in
