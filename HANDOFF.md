@@ -239,6 +239,14 @@ both backends. **Two of our three upstream findings this week were corrected by 
    PUBLISHED and live** on `data-v2026-08-03d` — 8.5 MB, of which a viewport reads 870 kB and a session
    1.7 kB before it plans anything.
 
+   **The ring's own misses were RETENTION, not the index.** 663 of 722 were pages the session had
+   already fetched and then DROPPED — the buffer drained on consume, so the ring re-read the ground the
+   view had just paid for. Pages are held to a **64 MB cap** now and the oldest evicted past it; §9 called
+   this ("the index makes the refetch cheap, retention makes it unnecessary"). Local, 82 Mbps/45 ms:
+   misses **722 → 59**, session hit rate **49.6% → 95.9%**, view **1.89× → 2.41×**, settle
+   **1.46× → 3.22×**. ⚠ Eviction is forced by a gate (`window.__prefetchCap`) because no camera that fits
+   under the cap ever runs that path.
+
    ⚠ **The first number this was shipped with — 2.29× — was measured by a harness with INFINITE
    BANDWIDTH, and the live site refused to reproduce it twice.** `docs/prefetch-index-design.md` §12 is
    the account. Two real defects were behind it: the ring **re-bought pages the view had already paid

@@ -74,6 +74,9 @@ async function arm(on) {
     // begins — and so the index's session read is paid in the boot, where a visitor pays it too.
     // The pad is read at module scope, so it has to be in place BEFORE the app's script runs.
     if (pad) await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__prefetchPad = ${Number(pad)};` });
+    if (process.env.PREFETCH_CAP) {
+      await call('Page.addScriptToEvaluateOnNewDocument', { source: `window.__prefetchCap = ${Number(process.env.PREFETCH_CAP)};` });
+    }
     await call('Page.navigate', { url: `${base}#8/52.1/5.3` });
     for (let i = 0; i < 900; i++) { await sleep(100); if (await ev(call, '!!(window.__storeApp&&window.__storeApp.viewSeq)')) break; }
     if (!await settle(call)) return { error: 'the boot view never settled' };
@@ -112,6 +115,8 @@ async function arm(on) {
       reads: d(st, st0, 'rangeReads'), bytes: d(st, st0, 'rangeBytes'),
       hits: d(st, st0, 'prefetchHits'), miss: d(st, st0, 'prefetchMiss'),
       dl: d(st, st0, 'prefetchDownloadBytes'),
+      missDrained: d(st, st0, 'prefetchMissDrained'), missUnknown: d(st, st0, 'prefetchMissUnknown'),
+      peak: st.prefetchPeakBytes || 0, evicted: d(st, st0, 'prefetchEvicted'),
       // The VIEW alone — everything above also carries the ring that ran after it.
       vreads: st1 ? d(st1, st0, 'rangeReads') : 0,
       vhits: st1 ? d(st1, st0, 'prefetchHits') : 0,
@@ -134,14 +139,21 @@ for (const [n, r] of [['A', A], ['B', B]]) {
               `${String(r.reads).padStart(5)} range reads · ${(r.bytes / 1e6).toFixed(1)} MB · buffer hits ${r.hits}, misses ${r.miss}`);
   console.log(`         the VIEW alone: ${r.vreads} reads · ${r.vhits} hits, ${r.vmiss} misses` +
               `   · the ring after it: ${r.reads - r.vreads} reads, ${r.miss - r.vmiss} of them unprefetched`);
+  if (r.miss) {
+    console.log(`         the MISSES: ${r.missDrained} were EVICTED by the cap (raise it), ` +
+                `${r.missUnknown} were never named (widen the query)`);
+  }
   if (r.batch && r.batch.batches) {
     console.log(`         the BATCHES: ${r.batch.batches} of them, ${r.batch.ms} ms total, ` +
                 `${r.batch.pages} pages in ${r.batch.requests} request(s)` +
                 `  ← this is time the view WAITS FOR, before the kernel runs`);
-    const used = r.batch.pages ? (100 * r.hits) / r.batch.pages : 0;
-    console.log(`         USED ${used.toFixed(1)}% of what it fetched (${r.hits} of ${r.batch.pages} pages, ` +
-                `${(r.dl / 1e6).toFixed(1)} MB down the wire)` +
-                `  ← waste is free on localhost and is NOT free on a real link`);
+    // READS PER PAGE FETCHED, not a percentage — since pages are retained to a cap, one page can answer
+    // several reads, so this legitimately exceeds 1.0 and a "% used" label was wrong the moment retention
+    // landed (it printed 171.4%). Below 1.0 it still means the same thing it always did: bytes bought and
+    // not read, the cost a localhost harness cannot see.
+    const used = r.batch.pages ? r.hits / r.batch.pages : 0;
+    console.log(`         ${used.toFixed(2)} reads per page fetched (${r.hits} reads from ${r.batch.pages} pages, ` +
+                `${(r.dl / 1e6).toFixed(1)} MB down the wire)`);
   }
 }
 const ix = B.index || {};
@@ -155,6 +167,10 @@ ok(ix.open, 'the coverage index opened');
 ok((ix.stores || []).length > 0 && (ix.cells || 0) > 0, `the index is not vacuous — ${(ix.stores || []).length} stores, ${ix.cells || 0} cells`);
 ok((ix.chunkReads || 0) > 0, `the viewport actually read leaf chunks (${ix.chunkReads || 0})`);
 ok(B.hits > 0, `the kernel's reads were answered from the buffer (${B.hits} hits)`);
+// §5.4 — the buffer is held in JS BESIDE wasm's own working set, so its peak is a number somebody has to
+// own. Retention is bounded by a cap; this is the assertion that the cap is real.
+ok(B.peak <= 80e6, `the buffer peaked at ${(B.peak / 1e6).toFixed(1)} MB, under the 64 MB cap + one batch` +
+   ` (${B.evicted} page(s) evicted)`);
 // ⚠ ASSERTED ON THE VIEW, REPORTED FOR THE SESSION. The index's claim is about the viewport it was
 // asked to plan; the ring that follows pages eight more screens and asks for nothing in advance, so a
 // session-wide rate measures the ring's policy, not the index's accuracy.
@@ -167,7 +183,7 @@ ok(rate >= Number(floorPct), `the VIEW's hit rate ${rate.toFixed(1)}% ≥ ${floo
 // site from 0.70x to 1.31x when the pad came down.
 const usedRate = B.batch && B.batch.pages ? (100 * B.hits) / B.batch.pages : 0;
 ok(usedRate >= Number(usedPct),
-   `it USED ${usedRate.toFixed(1)}% of what it fetched ≥ ${usedPct}% — bytes fetched and never read are the cost that a localhost harness cannot see`);
+   `${(usedRate / 100).toFixed(2)} reads per page fetched ≥ ${(Number(usedPct) / 100).toFixed(2)} — bytes bought and never read are the cost a localhost harness cannot see`);
 console.log(`      session hit rate ${sess.toFixed(1)}% (view + the ring behind it)`);
 // ⚠ THE MAP MUST BE THE SAME MAP. This is the check a timing cannot make.
 ok(A.view === B.view, `the same view summary either way  ${JSON.stringify(B.view)}${A.view === B.view ? '' : `\n      A: ${JSON.stringify(A.view)}`}`);

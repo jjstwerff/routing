@@ -519,6 +519,45 @@ stable is the counts: **2 627 pages, 172.2 MB, 79.0% used, 81.3% view hit rate**
 pulls ten screens scores perfectly on it — so `prefetch_gate` asserts the inverse as well: **of the pages
 FETCHED, at least 60% must be read.** That is the assertion that would have caught this on the first run.
 
+### §12b. The ring's misses were RETENTION, and the design said so before the code did
+
+With the pad fixed, 722 of a Luxembourg session's reads still missed the buffer. Splitting them by cause —
+which needed a counter, because the two causes take **opposite** fixes — settled it in one run:
+
+```
+663 were fetched and then DRAINED   ← a retention failure: raise/keep, do not re-buy
+ 59 were never named                ← an index failure: widen the query
+```
+
+**§9 predicted exactly this**: *"an index that makes pages findable does nothing if the pages are DROPPED
+on every scale change… the index makes the refetch cheap, retention makes it unnecessary."* It was written
+about scale changes; the same defect was one screen away, between a view and the ring behind it.
+
+The buffer drained to bound memory (§5.4). **A cap does that directly**, so pages are RETAINED to
+`PFCAP` (64 MB) and the oldest are evicted past it. Two things fall out for free:
+
+* **The dedup collapses into the bag.** "Have we already paid for this page" and "do we hold it" became
+  the same question, so the separate `fetchedOnce` set is gone — and a page the cap evicts is *buyable
+  again*, which is exactly right.
+* **A retained page answers more than one read**, so the waste ratio is now *reads per page fetched* and
+  legitimately exceeds 1.0. It printed **171.4%** before the label was fixed, which is how the change
+  announced itself.
+
+| Luxembourg z14, 82 Mbps · 45 ms | drained | **retained (64 MB)** |
+|---|---|---|
+| misses | 722 | **59** — all of them "never named" |
+| session hit rate | 49.6% | **95.9%** |
+| view hit rate | 76.5% | **91.1%** |
+| reads per page fetched | 0.89 | **1.71** |
+| to the view | 1.89× | **2.41×** |
+| to a settled session | 1.46× | **3.22×** |
+| peak buffer | — | 52.5 MB, 0 evictions |
+
+⚠ **Eviction is exercised on purpose** (`window.__prefetchCap`), because a camera that fits under the cap
+never runs that path and untested eviction is how a buffer starts serving pages it no longer holds. Forced
+to 8 MB: 2 793 pages evicted, peak 9.2 MB, **the map byte-identical**, and the gate FAILS its quality
+floors while naming the knob — `1015 were EVICTED by the cap (raise it)`. Degradation, not breakage.
+
 ### The rule this leaves behind
 
 *An emulator that models one cost and not the other does not measure a trade-off — it picks a winner.*
