@@ -17,8 +17,11 @@
 //     `*-mid` for a region block. Nothing prefetches across that boundary today, and "zoom out to get
 //     your bearings, then back in" crosses it twice.
 //
-// The block that answered is READ FROM THE APP (`window.__coverage.block.id`), never inferred from the
-// timing — so a scale change is reported as a fact, and a step whose `expect` was wrong says so.
+// ⚠ THE BLOCK IS ATTRIBUTED FROM OBSERVED TRAFFIC, not by asking the app. The first version of this
+// asked `window.__coverage.block.id`; `__coverage` is the coverage INDEX and has no such field, so every
+// row reported the same stale value and every scale change was missed. Which stores were actually
+// fetched is ground truth and needs no cooperation from the page — and a step that fetches NOTHING is
+// exactly the interesting case (it was already resident), which the app-side question could not express.
 //
 //   node browser/cdp_journey.mjs <profile-dir> <base-url> <journey-id> [cpuThrottle]
 import { launch } from './cdp_transport.mjs';
@@ -69,7 +72,7 @@ let prevBlock = null;
 const line = (n, why, z, ms, rq, mb, blk, note) =>
   console.log(`  ${String(n).padStart(2)} ${why.padEnd(34)} ${String(z).padStart(2)} ${String(ms).padStart(7)} ${String(rq).padStart(5)} ${mb.toFixed(1).padStart(6)}  ${blk}${note}`);
 
-let blk = String(await ev('window.__coverage?.block?.id ?? "?"'));
+let blk = [...touched].sort().join('+') || '(none)';
 prevBlock = blk;
 line(1, first.why, first.zoom, ok ? Date.now() - t0 : '>120000', reqs, bytes / 1e6, blk, blk === first.expect ? '' : `  ⚠ expected ${first.expect}`);
 rows.push({ ...first, ms: Date.now() - t0, reqs, mb: bytes / 1e6, blk, scale: false });
@@ -81,13 +84,19 @@ for (let i = 1; i < journey.steps.length; i++) {
   const before = Number(await ev('window.__storeApp?.viewSeq || 0'));
   const t = Date.now();
   await ev(`(() => { const m = window.__map0; m.camera.lat=${s.lat}; m.camera.lon=${s.lon}; m.camera.zoom=${s.zoom}; m._fireMove && m._fireMove(); m.render && m.render(); return 1; })()`);
-  let ms = null;
+  // ⚠ TWO WAYS A STEP CAN BE DONE, and the first version only knew one. `viewSeq` bumps when a view
+  // COMPLETES — but a camera move needing no new data may never re-view at all, and waiting on viewSeq
+  // alone reported those steps as ">60000ms" when they were the fastest in the journey. So: a step ends
+  // when the view completes, OR when the network has been quiet for 1.5 s with nothing new asked for.
+  let ms = null, quiet = 0, lastReq = reqs;
   for (let k = 0; k < 600; k++) {
     await sleep(100);
     if (Number(await ev('window.__storeApp?.viewSeq || 0')) > before) { ms = Date.now() - t; break; }
+    if (reqs === lastReq) { quiet += 100; } else { quiet = 0; lastReq = reqs; }
+    if (quiet >= 1500 && k > 20) { ms = Date.now() - t; break; }   // settled with no new work
   }
-  blk = String(await ev('window.__coverage?.block?.id ?? "?"'));
-  const scale = blk !== prevBlock;
+  blk = [...touched].sort().join('+') || '(none — already resident)';
+  const scale = blk !== '(none — already resident)' && blk !== prevBlock;
   const note = (blk === s.expect ? '' : `  ⚠ expected ${s.expect}`) + (scale ? '   ⇐ SCALE CHANGE' : '');
   line(i + 1, s.why, s.zoom, ms === null ? '>60000' : ms, reqs, bytes / 1e6, blk, note);
   rows.push({ ...s, ms: ms ?? 60000, reqs, mb: bytes / 1e6, blk, scale });

@@ -13,6 +13,7 @@ import http.server, socketserver, sys, os, re, urllib.parse
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8791
 ROOT = sys.argv[2] if len(sys.argv) > 2 else "."
+RANGE_LOG = os.environ.get("RANGE_LOG", "")
 REPORT = sys.argv[3] if len(sys.argv) > 3 else os.path.join(ROOT, ".range-report")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -57,6 +58,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         rng = self.headers.get("Range")
+        # RANGE_LOG=<file> records what the client ASKED FOR — the only honest way to build a page index
+        # (tools/build_page_index.sh). `LOFT_LOADER_STATS=1` reports a histogram and no offsets, and a
+        # second purpose-built server got this WRONG: omitting `Accept-Ranges` above made the loader probe
+        # with a plain GET and then read differently, so the recorded pages were an artefact of the
+        # instrument. Logging from the server that already serves every gate cannot drift like that.
+        if RANGE_LOG:
+            with open(RANGE_LOG, "a") as lf:
+                lf.write(("R " + rng.strip() if rng else "WHOLE") + " " + self.path + "\n")
         if not rng:
             return super().do_GET()
         path = self.translate_path(self.path)
