@@ -74,3 +74,23 @@ done
 
 [ "$rc" -eq 0 ] || { echo "FAIL — the site cannot be built without every block its index names"; exit 1; }
 echo "  $got fetched, $had already current"
+
+# THE PAGE INDEX — which 64 kB pages of which store a viewport needs (docs/prefetch-index-design.md).
+#
+# ⚠ ITS ABSENCE IS NOT A FAILURE, and that is the whole reason it can be published this way. A page
+# number is a fetch HINT: the bytes still come from the store, at the offset the kernel asked for, and are
+# still verified by loft's loader. With no index the app reads exactly as it did before one existed —
+# 764 serial round trips instead of one batch, a slower map and the same map. So a release that predates
+# the index, or one where it was not uploaded, builds a working site.
+#
+# It rides on the DATASET's release tag because that is its identity: it carries each store's sha256, and
+# the reader refuses per store on a mismatch rather than naming pages into bytes that have moved. An index
+# and the blocks it describes are one artifact, published together and fetched together.
+px="$here/blocks/coverage.pagesx"
+if curl -fsSL --retry 2 -o "$px.part" "$base/coverage.pagesx" 2>/dev/null; then
+  mv -f "$px.part" "$px"
+  echo "  coverage.pagesx — $(python3 -c "import os;print(f'{os.path.getsize('$px')/1e6:.1f}')") MB page index"
+else
+  rm -f "$px.part"
+  echo "  coverage.pagesx — not in $tag; the site will read as it did before the index existed"
+fi

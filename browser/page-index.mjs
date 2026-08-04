@@ -116,11 +116,14 @@ function open() {
     // 64 kB covers the whole session-level prologue with room to spare: at Western Europe it projects to
     // ~19 kB of store URLs plus ~8 kB of root tiles. If a future coverage outgrows it, `parseOpen` says
     // so rather than reading past the end, and the retry below asks for exactly what it needs.
+    // Any failure of the first read is retried ONCE at a megabyte before giving up: a prologue that
+    // outgrows 64 kB runs off the end of the buffer, and the several ways that shows up (a short-read
+    // check, a DataView RangeError) are all the same fixable cause. Failing straight to null would
+    // silently turn the index off for a whole session over an index that is merely large.
     let ix;
     try {
       ix = parseOpen(await range(cfg.url, 0, 65536), cfg.url);
-    } catch (e) {
-      if (String(e.message) !== 'short read') { return null; }
+    } catch {
       ix = parseOpen(await range(cfg.url, 0, 1 << 20), cfg.url);
     }
     // ⚠ THE STORE TABLE IS MATCHED AGAINST WHAT THE APP WILL ACTUALLY FETCH, and the sha256 decides.

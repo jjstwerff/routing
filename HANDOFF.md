@@ -12,7 +12,7 @@ account behind a rule, never for where things stand.
 **THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
 PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
 
-⚠ **ELEVEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
+⚠ **THIRTEEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
 strands, in the order they were done:
 
 1. **Browser/test-process hygiene** (`8f55a06`, `f5ab0c2`, `67bb7c8`). Every gate's browser is owned by
@@ -26,6 +26,10 @@ strands, in the order they were done:
    index cap is gone AND gated at 70 blocks (`2a52ca0`) — it had been fixed in code a day earlier with
    no test.
 3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
+   **The browser reads the one coverage index now** (v3: a quadtree over every store, read by range), the
+   RING plans its pages too, and both halves are gated — `browser/page-index.test.mjs` in `make test` for
+   the format, `tools/prefetch_gate.sh` for the wired path. **~2× to the same map**, and the gate asserts
+   the map as well as the clock. Nothing is published yet; §1 item 6b says what is left.
 
 **READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
 Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
@@ -218,13 +222,19 @@ both backends. **Two of our three upstream findings this week were corrected by 
    this), but it is a HYPOTHESIS. **The next probe:** replay N1/N2, report `kernelStats().wasmBytes` before
    N3, and bisect which step arms it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
-6b. ⚠ **THE MAP IS SLOW FOR A REASON NOTHING HERE HAD MEASURED, and the fix is built but not published.**
+6b. **THE MAP IS SLOW BECAUSE OF ROUND TRIPS, AND THE FIX IS WIRED AND GATED — but not published.**
    A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured
    against the live host, a 64 kB range costs the same as one byte (41 ms), so `764 × 26 ms ≈ 20 s` IS
-   the wait. Prefetching the pages a viewport needs, as one batch, is **4.79× faster** hand-fed and
-   **2.06×** wired end to end. `docs/prefetch-index-design.md` §11 is the state; the next job is that
-   the browser reader speaks the v1 per-store format while the builder writes **v3** (one index over
-   every store, quadtree leaves, two-level directory, cross-origin URLs, sized for WE).
+   the wait. The browser now reads ONE coverage index (v3) and prefetches the pages a viewport needs as
+   one batch — **~2×** to the same map, wired, and the ring plans its cells too (85.3% of a session's
+   reads come out of the buffer). `docs/prefetch-index-design.md` §11 is the state. **Two things remain:**
+   * **Generation for `nl-mideast.base` and `nl-east.base`** — 13 of 15 stores are indexed and those two
+     are ~half the Benelux cells. An unindexed store simply reads the old way.
+   * **Publishing.** `tools/fetch-site-blocks.sh` pulls `coverage.pagesx` from the DATASET's release tag,
+     so it is one `gh release upload` onto `data-v2026-08-03d`. ⚠ It cannot break what is live: with no
+     index the app reads exactly as it does today, and a STALE one is refused per store by the sha256
+     check at the reader. Publish the index, then merge — same order as the data.
+
    ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
    **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
    original cold entry. Retention across scale changes is unprobed and may matter more than the index.
@@ -301,6 +311,19 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
+* **AN OPTIMISATION THAT CAN ONLY COST TIME WILL FAIL SILENTLY, SO GATE IT ON ITS OUTPUT.** The page
+  index degrades by design — a page number is a fetch HINT, and a wrong one costs bytes, never a wrong
+  map. That is the property that makes it safe to publish, and it is exactly why a broken one is
+  invisible: `build_coverage_index.py` declared a 40-byte header beside a 36-byte `struct.pack`, so every
+  offset in the file pointed 4 bytes past its own data, and **nothing failed** — no error, no wrong
+  pixel, just the old slow read path wearing the new one's name. Two more of the same shape sat beside
+  it: the covering set is comma-separated and the prefetch split it on a SPACE (so every multi-block
+  viewport planned nothing), and a `whole` store was asked for pages it has none of (3.6 MB of index read
+  at z8 to plan a single-request download). ⚠ **The general form: when the failure mode is "no benefit",
+  the absence of errors is not evidence.** The gate has to read the OUTPUT back — `page-index.test.mjs`
+  builds a fixture, runs the real builder and insists on the pages that went in (it fails 9 checks against
+  the 4-byte regression), and `prefetch_gate.sh` requires the buffer to have actually ANSWERED. Same
+  family as the paged spot check that passed while fetching nothing.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
@@ -430,7 +453,12 @@ Two that are NOT in a suite, because each needs generated data a fresh clone doe
 ```bash
 tools/seam_route_gate.sh       # @51 D — a route across the NL/BE border is the one-block route
 tools/trim-borders.sh          # re-derive the disjoint Benelux roads set (~10 min)
+tools/prefetch_gate.sh         # the page index, wired: the app plans its own viewport, ~2x, same map
 ```
+
+`prefetch_gate.sh` SKIPs without `_site/coverage.pagesx` rather than passing — with no index both arms of
+its A/B agree and the experiment did not happen. Build one with `tools/finish_page_indexes.sh --stage`.
+The FORMAT half needs no data at all and runs in `make test` (`browser/page-index.test.mjs`).
 
 * Build with the **installed `loft` on `PATH`**; the sibling `../loft` and `../loft2` trees belong to
   other agents and are read-only (`CLAUDE.md`).

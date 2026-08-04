@@ -321,18 +321,48 @@ an index. **Probe before designing further: instrument what is released on a sca
 
 ---
 
-## 11. Where this stands (2026-08-04)
+## 11. Where this stands (2026-08-04, late)
 
-**Built, and proven twice.**
+**Built, wired to v3, and under two gates.** The browser reads the ONE coverage index now — the reader
+spoke v1 while the builder wrote v3, and until that was closed nothing in the browser could read it.
 
 | | |
 |---|---|
 | hand-fed a capture, one store fully covered | **26.0 s → 5.4 s · 4.79×** |
-| wired end to end, index-driven, one of three stores indexed | **15.5 s → 7.5 s · 2.06×** |
+| wired, v1 per-store, one of three stores indexed | 15.5 s → 7.5 s · 2.06× |
+| **wired, v3, 13 stores, the ring planned too** | **15.2 s → 8.1 s · 1.88× to the view, 57.5 s → 24.7 s · 2.33× to a settled session** |
 
-The wired run read the index header, picked **6 of 56 chunks** by viewport, unioned their pages and
-prefetched — no capture, nothing pre-arranged. `overview` and `belgium.roads` had no index and fell
-straight through to normal reads, which is why it is 2.06× and not more.
+Measured `tools/prefetch_gate.sh`, camera `14/49.6116/6.1319` (Luxembourg — both its stores are paged and
+indexed), 26 ms injected RTT, **load average ~20**: the ratios are one-session pairs and the spread across
+four runs is **1.88–2.41×**, so read them as "about twice", not as three digits. What is exact is the
+count: **1 751 range reads, 1 331 of them answered out of the buffer**, and the same map either way —
+`R=12242 G=1381 T=59`, per-layer counts identical.
+
+**Building the reader turned up three defects, and every one was silent by construction.**
+
+* ⚠ **The index's own offsets were 4 bytes wrong.** The builder declared `header_len = 40` beside a
+  36-byte `struct.pack`, so every sub-directory and chunk offset pointed past its own data. *Nothing
+  failed* — §5.2 is the reason: a page number is a fetch hint, so a completely garbled index degrades to
+  the read path it replaces. The length derives from the format now, and the builder re-reads its own
+  output and walks every leaf before reporting success.
+* ⚠ **The covering set is comma-separated and `prefetchFor` split it on a space**, so every multi-block
+  viewport prefetched nothing. A border screen is the case the covering set exists for.
+* ⚠ **A `whole` store has no pages to plan.** At z8 the country-wide viewport covers nearly every leaf,
+  and the app read **3.6 MB of index (575 chunks)** to plan a store it was about to fetch in one request.
+  Only paged stores are asked about now — which is §11 note 5's "do not index the overview", enforced at
+  the one place that can enforce it rather than in the builder.
+
+**And the ring plans its pages too.** The view read 455 ranges; the ring behind it read **1 296**, none of
+them prefetched — so prefetching the view alone left three quarters of a session's round trips serial.
+Session hit rate **51.6% → 85.3%**. It stays behind the critical path by construction: the ring is chained,
+one cell at a time, and the prefetch happens inside a cell's own job (§5.5).
+
+### The hit rate, attributed
+
+`84.3%` for the **view**, of the reads on stores that were prefetched at all. That is the number §5.3 asks
+for and the gate asserts on. A session-wide rate would have measured the ring's policy instead of the
+index's accuracy — the first run of the gate reported **51.6%** and the whole of the gap was the ring.
+*A number is not a measurement until you know what it is attributed to.*
 
 ### The pieces
 
@@ -340,13 +370,17 @@ straight through to normal reads, which is why it is 2.06× and not more.
 |---|---|
 | `tools/build_page_index.sh` | cell → pages, from a logging range server (16 workers, byte-identical to sequential) |
 | `tools/add_cell_coords.sh` | adds each cell's `ox`/`oy` — **JS works in bboxes and never computes a `tkey`**, so without this the index is unusable from the only place that needs it |
-| `tools/chunk_page_index.py` | v1 per-store chunked binary (54% of JSON) |
-| `tools/build_coverage_index.py` | **v3: ONE index over every store**, quadtree leaves, two-level directory, full cross-origin URLs |
-| `tools/finish_page_indexes.sh` | coords + chunk + stage, idempotent, safe to re-run while generation continues |
-| `browser/page-index.mjs` | the reader — **still speaks v1 per-store, NOT v3** |
+| `tools/build_coverage_index.py` | **v3: ONE index over every store**, quadtree leaves, two-level directory, full cross-origin URLs — and it verifies its own output by re-reading it |
+| `tools/finish_page_indexes.sh` | coords + one coverage index + stage, idempotent, safe to re-run while generation continues |
+| `browser/page-index.mjs` | **the reader — v3**, one session read, then a sub-directory and a few chunks per screen |
 | `browser/store-kernel.mjs` | page-granular prefetch buffer, drained on consume, coalescing adjacent pages |
+| `browser/page-index.test.mjs` | **the format gate** — builds a fixture, runs the real builder, reads the bytes back through a Range-honouring `fetch` stub. Hermetic; in `make test` |
+| `tools/prefetch_gate.sh` + `browser/cdp_prefetch_wired.mjs` | **the wired gate** — the app plans its own viewport, and the MAP must match across both arms |
 | `browser/cdp_latency.mjs`, `cdp_range_capture.mjs`, `cdp_journey.mjs`, `cdp_prefetch_ab.mjs` | the instruments |
 | `data/journeys.json` | a session described as data — a walk, not a teleport |
+
+`tools/chunk_page_index.py` (the v1 per-store writer) is **gone**: nothing reads that format now, and an
+unread writer beside a live reader is the survivor that looks authoritative.
 
 ### v3, and why it is shaped that way
 
@@ -370,19 +404,21 @@ sub-directory and one to four chunks.
 
 ### What is NOT done
 
-1. **`browser/page-index.mjs` reads v1, the builder writes v3.** Nothing in the browser can read the
-   coverage index yet. This is the next job.
-2. **Generation is unfinished** — 13 of 15 stores; `nl-mideast.base` and `nl-east.base` remain, and they
-   are ~half the Benelux cells. Re-run `tools/finish_page_indexes.sh --stage`, then
-   `tools/build_coverage_index.py`.
-3. **Nothing is published.** Indexes are in `blocks/` (gitignored) and staged only into a local `_site`.
-   The four `nl-*` base indexes belong in THEIR Pages repos beside their stores.
-4. **`PREFETCH_PAD` (0.16°) is a guess** standing in for the feature-overhang extent `PTile` carries
-   properly. It cost 58 misses on the wired run — they degrade to normal fetches, so it is a tuning
-   number, not a correctness one.
-5. ⚠ **The overview should probably not be indexed at all.** Three independent measurements say so: it is
-   the fastest step in a journey when whole-loaded (4.6 s, ZERO range requests), it has the worst
-   pages-per-cell (23.1), and chunked its index costs *more* to read (62 kB) than whole (20 kB).
+1. **Generation is unfinished** — 13 of 15 stores; `nl-mideast.base` and `nl-east.base` remain, and they
+   are ~half the Benelux cells. `tools/build_all_page_indexes.sh` for those two, then
+   `tools/finish_page_indexes.sh --stage` (which now builds the coverage index itself).
+2. **Nothing is published.** The index is in `blocks/` (gitignored) and staged into a local `_site`.
+   `tools/fetch-site-blocks.sh` fetches `coverage.pagesx` from the DATASET's release tag, so publishing is
+   one `gh release upload` onto `data-v2026-08-03d` — and it cannot break what is live: a release without
+   it builds a site that reads exactly as it does today, and a stale one is refused per store by the
+   sha256 check at the reader (§5.1).
+3. **`PREFETCH_PAD` (0.16°) is a guess** standing in for the feature-overhang extent `PTile` carries
+   properly. It costs **58 of the view's 371 buffer decisions** — they degrade to normal fetches, so it is
+   a tuning number, not a correctness one, and it is most of the 15.7% the view's hit rate is short of 100.
+4. ✅ ~~The overview should probably not be indexed at all~~ — **answered by the app instead of by the
+   builder.** It is not that the overview must not be *indexed*; it is that a `whole` store must not be
+   *prefetched*, which is one test at the one place that knows the read mode. The overview is still in the
+   index and costs nothing there.
 
 ### And the framing that has not changed
 
