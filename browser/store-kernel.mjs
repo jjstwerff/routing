@@ -97,6 +97,8 @@ export async function createKernel(wasmUrl) {
   const PFPAGE = 65536;
   // Which pages the cap threw away, per store — so a later miss can say WHY (evicted, or never named).
   const evictedPages = new Map();        // url -> Set<pageNo>
+  // Every page this session has bought, per store — kept across eviction ON PURPOSE (see `prefetch`).
+  const fetchedOnce = new Map();         // url -> Set<pageNo>
   // Oldest-first eviction. A Map iterates in insertion order, so the first key is the oldest page held;
   // that is FIFO rather than LRU, and it matches how these are used — a page is read shortly after the
   // batch that fetched it, and the ring moves outward, so age tracks distance from the screen.
@@ -425,11 +427,17 @@ export async function createKernel(wasmUrl) {
       const key = url.split('?')[0];
       if (!prefetched.has(key)) prefetched.set(key, new Map());
       const bag = prefetched.get(key);
-      // ⚠ NEVER FETCH A PAGE WE ALREADY HOLD. The ring asks nine overlapping batches for nearly the same
-      // ground — 9 811 pages fetched against 1 331 ever read, before this. Since pages are RETAINED to a
-      // cap, "in the bag" now answers both "do we have it" and "have we paid for it", so the bag is the
-      // only record needed; a page the cap evicted is buyable again, which is exactly right.
-      const sorted = [...new Set(pages)].filter((p) => !bag.has(p)).sort((a, b) => a - b);
+      // ⚠ TWO SEPARATE QUESTIONS, AND CONFLATING THEM COST A LIVE REGRESSION. "Do we hold this page" is
+      // the bag; "have we already PAID for it" is `fetchedOnce`, and eviction makes the bag forget while
+      // the wire does not. Dropping the second record on the reasoning that retention made it redundant
+      // sent Amsterdam into a thrash — 5 520 pages / 361.8 MB fetched for a session whose DISTINCT pages
+      // are 2 627 / 172.2 MB, because every eviction made a page buyable again. A page is bought at most
+      // ONCE per session now; if the cap evicted it, the read falls through to a normal fetch, which is
+      // one round trip instead of a second purchase.
+      if (!fetchedOnce.has(key)) fetchedOnce.set(key, new Set());
+      const seen = fetchedOnce.get(key);
+      const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
+      for (const p of sorted) seen.add(p);
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -457,7 +465,11 @@ export async function createKernel(wasmUrl) {
             if (prefetchHeldBytes > prefetchPeakBytes) prefetchPeakBytes = prefetchHeldBytes;
             evict();
             ok++;
-          } catch { failed++; }   // nothing was stored, so nothing has to be un-remembered
+          } catch {
+            failed++;
+            // Nothing arrived, so nothing was paid for: let a later batch try these pages again.
+            for (let q = 0; q * PFPAGE < n; q++) fetchedOnce.get(key)?.delete(off / PFPAGE + q);
+          }
         }
       };
       const t0 = performance.now();

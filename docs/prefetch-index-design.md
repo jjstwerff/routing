@@ -536,9 +536,15 @@ about scale changes; the same defect was one screen away, between a view and the
 The buffer drained to bound memory (§5.4). **A cap does that directly**, so pages are RETAINED to
 `PFCAP` (64 MB) and the oldest are evicted past it. Two things fall out for free:
 
-* **The dedup collapses into the bag.** "Have we already paid for this page" and "do we hold it" became
-  the same question, so the separate `fetchedOnce` set is gone — and a page the cap evicts is *buyable
-  again*, which is exactly right.
+* ⚠ **"Do we hold it" and "have we PAID for it" are two questions, and merging them cost a live
+  regression.** Retention was first shipped with the `fetchedOnce` record deleted, on the reasoning that
+  the bag now answers both. **Eviction makes the bag forget, and the wire does not.** On Amsterdam — whose
+  working set is far over the cap — every eviction made a page buyable again and the session thrashed:
+  **5 520 pages / 361.8 MB fetched for 2 627 distinct pages / 172.2 MB**, and a *settle* of **0.90×**,
+  slower than no prefetch at all. Both records are kept now: a page is bought **at most once per
+  session**, and if the cap evicted it the read simply falls through — one round trip, not a second
+  purchase. Forced to an 8 MB cap the bytes hold at 801 pages / 52.5 MB (from 2 921 / 191.4 MB) and the
+  result degrades to ~neutral rather than to a loss.
 * **A retained page answers more than one read**, so the waste ratio is now *reads per page fetched* and
   legitimately exceeds 1.0. It printed **171.4%** before the label was fixed, which is how the change
   announced itself.
