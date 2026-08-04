@@ -225,7 +225,27 @@ export async function createKernel(wasmUrl) {
   // `lineSink` is optional: pass it to receive each output line AS LOFT FLUSHES IT (see `drain`) instead
   // of only the whole text at the end. The promise still resolves with the complete response either way,
   // so a sink is a strictly additional view of the same bytes — it cannot change what the caller parses.
+  // ⚠ ONE RESOLVE SLOT, SO CALLS MUST NOT OVERLAP — and this is where that is made true, rather than
+  // hoped for. `resolveRun` below is a single variable: a second call entering while the first is in
+  // flight overwrites it and ORPHANS the first promise, which is PLAN-EDIT's P4 in its rawest form (a
+  // command that never resolves, and an awaiting caller that never wakes).
+  //
+  // `KernelQueue` has always guarded the APP's road, and while the app was the only caller that was
+  // enough. It stopped being enough when the app grew work that OUTLIVES the view that scheduled it (the
+  // ring prefetch): the ~20 probe calls in store-app's `__perfHooks` block deliberately bypass the queue
+  // to measure the kernel in isolation, and a ring cell landing between a probe's `reset` and its `match`
+  // was returning an empty route — measured, as `cors_host_gate` failing with `ways=0`.
+  //
+  // So serialise at the ROOT instead of at each of the twenty call sites. The queue keeps its own job,
+  // which is different and still needed: it COALESCES by key, so a drag emitting 33 moves a second owes
+  // one match rather than thirty-three. This only makes overlap safe instead of corrupting.
+  let tail = Promise.resolve();
   function runKernel(blob, lineSink) {
+    const p = tail.then(() => runKernelNow(blob, lineSink), () => runKernelNow(blob, lineSink));
+    tail = p.catch(() => {});          // a failed command must not wedge every command after it
+    return p;
+  }
+  function runKernelNow(blob, lineSink) {
     return new Promise((resolve) => {
       resolveRun = resolve;
       onLine = lineSink || null;

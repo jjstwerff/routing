@@ -132,6 +132,12 @@ export class KernelQueue {
   }
   get pendingCount() { return this._pending.size; }
   get generation() { return this._gen; }
+  // Is the kernel doing ANYTHING — running a job or holding one queued? A probe that samples counters
+  // without asking this reads a half-finished command: a kernel call releases the store's `expose` pin at
+  // its start and re-takes it at its end, so a snapshot taken mid-call sees a balanced bracket and reports
+  // the pin as missing. That is an ill-timed observation, not a defect, and it only became reachable when
+  // the app grew background work (the ring prefetch) that outlives the view that scheduled it.
+  get busy() { return this._running || this._pending.size > 0; }
 
   // Post `job` under `key`, replacing any pending job with the same key. Resolves with the job's return
   // value, or `undefined` if a later post superseded it before it ran (a superseded job is SETTLED, never
