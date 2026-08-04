@@ -33,6 +33,12 @@
                   background: #f04438; color: #fff; border: 0; border-radius: 6px; padding: 10px 18px;
                   font: 600 14px system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,.3); cursor: pointer; }
   #rough-delete.hidden { display: none; }
+  /* Deliberately plain and out of the way: it is a tool, not a feature, and it must never compete with
+     the map for attention on the screen a visitor came for. */
+  #diag-btn { position: fixed; right: 8px; bottom: 8px; z-index: 20;
+              background: #334155; color: #e2e8f0; border: 0; border-radius: 6px; padding: 6px 10px;
+              font: 600 12px system-ui, sans-serif; opacity: .85; cursor: pointer; }
+  #diag-btn.hidden { display: none; }
   /* A bulk delete is the one risky edit, so the phone gets a brief one-tap way back (DESIGN.md §1);
      single moves and inserts are self-correcting and get no chrome. */
   #undo-snackbar { position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%);
@@ -72,4 +78,7 @@
 <div id="route-bar" class="hidden"><span id="route-dist"></span><button id="route-gpx" type="button">GPX</button></div>
 <div id="undo-snackbar" class="hidden"><span id="undo-snack-label"></span><button id="undo-snack-btn" type="button">Undo</button></div>
 <div id="select-box" class="hidden"></div>
+<!-- The diagnostics control. HIDDEN unless the app is asked for it (`#…&debug`, or a local origin), so
+     the ordinary map keeps its screen — a debug button nobody asked for is clutter on a phone. -->
+<button id="diag-btn" class="hidden" type="button" title="Collect what the app has been doing">Debug</button>
 <script type="module" src="./store-app.mjs"></script>

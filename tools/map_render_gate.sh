@@ -39,7 +39,9 @@ ptr=$(grep -cE "addEventListener\('(pointerdown|pointerup|pointermove|pointercan
 # line in this file rather than something a grep happened not to see.
 # `routeGpxBtn` is the GPX download button in the route bar (PLAN-EDIT E8) — named chrome that turns
 # the route already on screen into a file, and touches the sketch not at all.
-chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel|routeGpxBtn)\\."
+# `diagBtn` is the diagnostics button (browser/diag.mjs): it reads counters and a rolling log and
+# ships them to a local server or a file. It cannot reach the sketch — chrome, like the GPX button.
+chrome_rx="(list|box|btn|snack|input|sel|aSel|sSel|routeGpxBtn|diagBtn)\\."
 stray=$(grep -nE "addEventListener\('(pointerdown|pointerup|pointermove|pointercancel|click|mousedown|mouseup|mousemove)'" \
         "$here/browser/store-app.mjs" "$here/browser/map.mjs" 2>/dev/null \
         | grep -vE ":[[:space:]]*$chrome_rx" || true)
