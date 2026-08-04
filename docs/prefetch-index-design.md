@@ -559,6 +559,22 @@ The buffer drained to bound memory (§5.4). **A cap does that directly**, so pag
 | to a settled session | 1.46× | **3.22×** |
 | peak buffer | — | 52.5 MB, 0 evictions |
 
+**Live, deployed, Amsterdam z14 — the camera that evicts:**
+
+```
+  A  prefetch off   33.4 s to the view · 89.4 s to settled · 204.1 MB
+  B  prefetch on    28.4 s to the view · 57.8 s to settled
+     2 627 pages / 172.2 MB fetched (bounded: exactly the distinct pages)
+     1 603 evicted · 0.74 reads per page · 83.9% view hit rate · identical map
+  ⇒ 1.18× to the view, 1.55× to a settled session
+```
+
+The settle figure is the one retention moved: **1.40× before it, 0.90× with it and re-buying, 1.55× with
+it and not.** ⚠ And the miss split names the next knob without guessing — **650 of the misses were
+EVICTED** (the cap is under Amsterdam's working set) against 379 never named (the pad). Raising the cap
+would buy those 650, at the price of more JS memory beside wasm on a phone; the buffer already peaks at
+68.7 MB. That is a trade to measure on the target device, not to assume here.
+
 ⚠ **Eviction is exercised on purpose** (`window.__prefetchCap`), because a camera that fits under the cap
 never runs that path and untested eviction is how a buffer starts serving pages it no longer holds. Forced
 to 8 MB: 2 793 pages evicted, peak 9.2 MB, **the map byte-identical**, and the gate FAILS its quality
