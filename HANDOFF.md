@@ -178,7 +178,10 @@ both backends. **Two of our three upstream findings this week were corrected by 
    rather than discovering it at C4.
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
-   world is a funding decision).
+   world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
+   headline is not about Western Europe at all: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at
+   ~1 000 sessions/month**, which binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91) and
+   the code to move already exists; one measurement stands between the recommendation and paying for it.
 5. ⚠ **`nl_live_gate` TRAPS in wasm, and it is the match a real Amsterdam visitor performs.**
    `RuntimeError: unreachable` in N3's `matchSpec`. It reproduces on **unmodified `main`** on a quiet box,
    so nothing on the ring branch caused it — but it appeared partway through 2026-08-03/04 and the gate

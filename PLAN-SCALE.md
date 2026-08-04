@@ -578,8 +578,8 @@ half-finished. **Coverage grows ~4–10× per rung, so a wall shows up while it 
 | **C5** | **WE base map** as coverage, not opt-in | +25–45 blocks / 44–88 GB — ⚠ §6e's disk-derived chunking says **34–68**, from a different direction | S0's real numbers, D2 cost check | that the map layer is affordable at all | C4 stable and S0 says the bytes are what §1 guessed |
 
 ⚠ **"a generator that streams" (C2's wants column) was answered in §6e, and it does not mean what it
-sounds like.** The client already streams and already scales — a viewport is 75–190 kB whatever the store's
-size. What does not stream is the GENERATOR, which accumulates a whole store in memory (~350 bytes/feature;
+sounds like.** The client already streams and already scales — a viewport costs the same
+whatever the store's size (⚠ the 75–190 kB once quoted here is retracted; it is 8.1 MB — §6f below). What does not stream is the GENERATOR, which accumulates a whole store in memory (~350 bytes/feature;
 130–270 GB for WE). The fix is not a bigger machine or a smaller store but **never building one that big**:
 one region at a time, fed by a single `osmium extract --config` pass, which is the block structure C4/C5
 already specify.
@@ -684,10 +684,13 @@ preparation and everything after it is the map getting prettier.
 
 **N4 · Decide the base-map read path — a MEASUREMENT, not a build.** ⚠ **ANSWERED 2026-08-01, and the
 question was slightly wrong — see §6e.** Both candidates below assume the read path is what stops the base
-map shipping. Measured, it is not: a base tile is **9.1 kB**, so a viewport of 8–20 cells is **75–190 kB
-whatever the store's total size**. Paging it would be about as cheap as paging the roads already is. What
-actually binds is that Pages caps the SITE at ~1 GB and the bytes must live somewhere — which no read path
-and no amount of splitting changes. Kept below as written, because the two candidates are still the right
+map shipping. Measured, it is not: a viewport costs the same **whatever the store's total size**, which is
+the property that matters. ⚠ **The number written here was 75–190 kB and is retracted — §6f measured 8.1 MB**
+(21.8 MB in a dense metro); it came from a store-wide average tile times an unpadded cell count. Paging is
+still about as cheap as paging the roads already is. What actually binds is that Pages caps the SITE at
+~1 GB **and its BANDWIDTH at 100 GB/month — ~1 000 sessions (`docs/hosting-cost-model.md`)** — and the
+bytes must live somewhere, which no read path and no amount of splitting changes. Kept below as written,
+because the two candidates are still the right
 two once hosting is settled:
   * **page the base like the roads** — `store_load_keys` over `PTile[tkey]`, which needs `expose` to work
     on a partially-filled store. That is the open question, and it is a loft question: if it cannot, the
@@ -964,7 +967,7 @@ assumed.
 |---|---|
 | a route on a country block | **17.7 MB of 222.4 MB (8.0%)**, 271 Range reads (`nl_live_gate`) |
 | a base-map tile | **9.1 kB** on disk (1058.3 MB / 116 561 tiles) |
-| ⇒ one viewport of base map | 8–20 cells ⇒ **75–190 kB, independent of the store's total size** |
+| ⇒ one viewport of base map | ⚠ **RETRACTED — see §6f.** This multiplied the store-wide average tile by an unpadded cell count and read **75–190 kB**; measured, a viewport is **8.1 MB** and a dense metro one **21.8 MB**. The *independence* from store size still holds; the number never did |
 
 That last row is the important one: a viewport costs the same against an 88 GB base map as against a 1 GB
 one, because `store_load_keys` fetches cells, not files. **The read path is not what stops WE.**
@@ -1108,7 +1111,7 @@ header, so a browser cannot read them. §6e concluded the fix was D2, a paid COR
 |---|---|---|
 | 1 | **GitHub Pages sends `access-control-allow-origin: *`** *and* a real `206` — verified against the live site with a cross-origin ranged GET | Pages IS a CORS host. A SECOND Pages site (a data-only repo) can serve blocks to the app, cross-origin, free. D2's premise — that CORS forces a paid bucket — was assumed, never tested |
 | 2 | **A country-scale base store PAGES correctly**: `store_load_key` on `nl-east.base.store` fetched **524 288 bytes of 1 109 719 080** and returned a tile identical to the whole-load one (653 areas / 1034 buildings / 563 lines / 41 labels / 252 pois / 17 379 coords) | N4's open question — "can `expose` work on a partially-filled store" — is answered for the READ half. The base map does not need to fit in memory, only the viewport does |
-| 3 | **A base tile is 9.1 kB**, so a viewport of 8–20 cells is 75–190 kB | The per-screen cost is the same against 88 GB as against 1 GB |
+| 3 | ~~**A base tile is 9.1 kB**, so a viewport of 8–20 cells is 75–190 kB~~ ⚠ **wrong, and refuted 40 lines below by this section's own measurement** — a viewport is **8.1 MB** | The per-screen cost is the same against 88 GB as against 1 GB — that half stands, and it is the half the WE path needs |
 
 #### The design
 
@@ -1371,6 +1374,9 @@ the continent is.
    **D2 stops being optional**: one R2 bucket holds 40.5 GB for roughly **$0.61/month** at $0.015/GB with
    no egress fee, against 58 repos that are free and unmanageable. `publish-bucket.sh` already exists and
    `data/bucket-cors.json` is the policy; what is missing is the account, not the code.
+   **Costed 2026-08-04 in `docs/hosting-cost-model.md`** — and the headline there is that the repo
+   count is the lesser problem: Pages' 100 GB/month bandwidth caps the app at **~1 000 sessions a
+   month**, which binds at Benelux rather than at WE. R2 is the recommendation, one measurement short.
 3. ~~**⚠ THE 62-BLOCK CEILING BINDS.**~~ — **FIXED, and it is the only one of the three that is.** The
    owner mask became an owner LIST, so an index has no per-block ceiling. It was measured rather than
    argued: `block_overlap_gate.sh` now runs the checker at **70 blocks** — where the old code refused
@@ -2197,12 +2203,12 @@ somewhere else:
 | | question | how it gets answered |
 |---|---|---|
 | 1 | ~~Does the paged Range reader work in a `--html` build?~~ | ✅ **ANSWERED — and now YES.** It did not compile (E0599); [loft#678](https://github.com/loft-lang/loft/issues/678) fixed it the same night, and `tools/paged_http_gate.sh` reports `browser=pass` at 262 KB / 5 range requests. ⚠ Fix is `fixed-pending-merge` upstream, present in the installed binary only |
-| 2 | ~~What does a realistic viewport working set actually cost in bytes?~~ | ✅ **ANSWERED 2026-08-01.** Roads: **17.7 MB of 222.4 MB (8.0%)** for a route on a country block, 271 Range reads (`nl_live_gate`). Base map: **9.1 kB/tile**, so a viewport of 8–20 cells is **75–190 kB — independent of the store's total size**. That last property is what makes §6e's WE path work at all |
+| 2 | ~~What does a realistic viewport working set actually cost in bytes?~~ | ✅ **ANSWERED 2026-08-01, and the base-map half was RETRACTED the next day.** Roads: **17.7 MB of 222.4 MB (8.0%)** for a route on a country block, 271 Range reads (`nl_live_gate`) — that still stands. ⚠ **The base map is NOT 75–190 kB per viewport.** §6f measured it: a viewport is **8.1 MB** (`base_paged_gate` phase 1, 13 viewports) and a dense metro one is **21.8 MB, or 68.4 MB one zoom out**. The old figure multiplied a store-wide average tile (9.1 kB) by an unpadded cell count. Costed per host in `docs/hosting-cost-model.md` |
 | 3 | Is per-working-set `expose` fast enough to render from? | S5; fallback is JS reading pages directly. ⚠ Now the **critical path** for a full NL base map — §6f F2. The READ half is answered (a paged `store_load_key` on a 1.11 GB base store returns a tile identical to the whole load, for 512 kB) ; what is untested is re-`expose` as the working set GROWS |
 | 3b | Which builtins are missing on the browser target? | ✅ **ASK IT: `loft targets wasm`** (loft#680, shipped 2026-07-30 — derived from rustc, so it cannot drift from the cfgs). Today it answers *"every stdlib builtin is available here"* |
 | 4 | Real density factor, hence real total size | S0 (three blocks) |
 | 5 | Is keyed lookup on a reloaded store reliable now? | S2 — the paged loader gives keyed access by construction, which may retire `corridor_ways_impl2`'s comment |
-| 6 | R2 vs B2: Range + CORS behaviour and egress cost | S9. ⚠ **Less urgent than it looked**: GitHub Pages itself sends `access-control-allow-origin: *` with a real 206 (measured 2026-08-01 against the live site), so a second Pages site is a free CORS host for NL-sized data. ⚠ **CORRECTED 2026-08-03 — `ACAO: *` is NOT enough, and a second Pages repo is a free host only while it is the SAME ORIGIN.** Pages sends `access-control-allow-origin: *` and a real `content-range`, but no **`access-control-expose-headers`** — and `Content-Range` is not CORS-safelisted, so genuinely cross-origin JS reads it as `null`, cannot learn the store's size, and stops after two `bytes=0-0` probes with no console error and no failed request. It works today because the app (`jjstwerff.github.io/routing`) and its data (`jjstwerff.github.io/routing-data-nl-*`) are different PATHS on ONE origin. Any consumer on another origin — a custom domain, an Android app, a second site — gets nothing. `cors_host_gate`'s header already stated both required headers; the 2026-08-01 measurement checked only the first. A bucket is still the answer at WE scale — 44–88 GB is 45–90 Pages repos — so this becomes a cost question at C4/C5, not at C2 |
+| 6 | ~~R2 vs B2: Range + CORS behaviour and egress cost~~ | ✅ **PRICED 2026-08-04 — `docs/hosting-cost-model.md`.** Against our own measured session (~1 600 requests / ~100 MB): R2 wins from ~10k sessions/month (**$2.68 vs $8.91**) and by ~2× at 100k (**$54 vs $99**). The bills are OPPOSITE in shape — R2 charges requests, B2 charges bytes — and we are byte-light, request-heavy. ⚠ **The binding limit is not either of them: GitHub Pages' 100 GB/month caps us at ~1 000 sessions**, and that binds at Benelux, not at WE. ⚠ One input unresolved and worth 10×: whether a Cloudflare cache HIT still bills a Class B op (docs silent, community says yes). Settle before paying |
 | 7 | ~~`oneway=` is still dropped by the store~~ | ✅ **CARRIED 2026-08-03.** `nets` moving to its own u16 (PLAN-LAYERS §3) freed bits 8–15 of `flags`, and direction now uses four of them: two for `oneway=` and a two-bit FIELD for `oneway:bicycle`, because a signed contraflow (`oneway=yes` **and** `oneway:bicycle=no`, 597 of them in the Enschede fixture alone) is the case one bit cannot express. `oneway_flags`/`oneway_tags` live beside each other in routing_kernel so the generator does not know the layout. The ROUTER never needed changing — `dir_allowed` has honoured direction since the matcher was written; it was fed `""` by every stored way, so this was a storage gap, not a matcher one. Regenerated fixture: **5345 / 1 / 597 / 51** for yes / -1 / bike-contraflow / bike-forward, matching the source export exactly, against **0 of each** before. A/B on one sketch: `driving_fastest` 27 pts 1062.2 m → 28 pts 1048.3 m, `walking_paved` **identical** (the control — foot ignores direction by design). ⚠ **The published blocks do not carry it until the next regeneration**; the code is inert on a block whose bits are zero. Old note follows | the flags byte is FULL (8/8 bits, see routing_kernel's `RF_*`). Carrying direction needs 2–3 more bits, hence a `u16` — which every existing block must be regenerated for, because the field width is in the schema. Deliberately not half-done alongside the access fix |
 | 8 | ~~The NL blocks predate the access bits~~ | ⚠ **NOW A HARD REQUIREMENT, not missing data.** `TTile` gained a `barriers` collection, and a store written before it does not read as "no barriers" — it reads GARBAGE (`len` came back as 20 981 984 713), because `store_load` maps old records at the new stride and ignores the sidecar's own schema hash ([loft#700](https://github.com/loft-lang/loft/issues/700), `sev:high`). Every block MUST be regenerated. `tools/build_index.sh` and `tools/access_gate.sh` both refuse a block whose `.dschema` lacks `barriers@`, so a stale one cannot reach the app |
 | 9 | ~~Barrier NODES are never fetched~~ | ✅ **DONE.** `osmium tags-filter w/highway n/barrier` + `--geometry-types=linestring,point`, `parse_barrier_feature` bins them per tile, and `build_graph_barriers` lands each on its graph node by coordinate. 989 in the Enschede block. ⚠ The **Overpass** path still asks for ways only, so an Overpass-sourced corridor (`server.loft`'s fallback when no tile block covers the area) still walks through gates |
