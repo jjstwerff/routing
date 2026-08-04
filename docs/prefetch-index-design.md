@@ -1,10 +1,13 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # The prefetch index — turning 764 round trips into one batch
 
-**Status: design + measured evidence. Nothing is built.** Written before the code, because the failure
-paths are where the invariant surfaces (`design-protocol`), and because this is an exact-invariant
-domain — byte ranges, caching, round trips — where the construction has to be *recovered from a
-capture*, not argued from the desk.
+**Status: BUILT and MEASURED, not published — §11 is the state; §0–§10 are how it was reached.**
+
+The design half was written BEFORE the code, because the failure paths are where the invariant surfaces
+(`design-protocol`), and because this is an exact-invariant domain — byte ranges, caching, round trips —
+where the construction has to be *recovered from a capture*, not argued from the desk. Two of its own
+sections were later retired by measurement (§7 by §8.2); they are struck through rather than deleted,
+because what a design got wrong is the part worth keeping.
 
 ---
 
@@ -314,3 +317,75 @@ an index. **Probe before designing further: instrument what is released on a sca
 | returning to a scale re-fetches everything (778 reqs) | **measured**, journey, n=1 |
 | six pointers per chunk make adjacency and scale change cheap | **design** — nothing built, nothing measured |
 | what a scale change discards, and whether it is policy or the expose constraint | **UNKNOWN — probe first** (§9) |
+
+
+---
+
+## 11. Where this stands (2026-08-04)
+
+**Built, and proven twice.**
+
+| | |
+|---|---|
+| hand-fed a capture, one store fully covered | **26.0 s → 5.4 s · 4.79×** |
+| wired end to end, index-driven, one of three stores indexed | **15.5 s → 7.5 s · 2.06×** |
+
+The wired run read the index header, picked **6 of 56 chunks** by viewport, unioned their pages and
+prefetched — no capture, nothing pre-arranged. `overview` and `belgium.roads` had no index and fell
+straight through to normal reads, which is why it is 2.06× and not more.
+
+### The pieces
+
+| | |
+|---|---|
+| `tools/build_page_index.sh` | cell → pages, from a logging range server (16 workers, byte-identical to sequential) |
+| `tools/add_cell_coords.sh` | adds each cell's `ox`/`oy` — **JS works in bboxes and never computes a `tkey`**, so without this the index is unusable from the only place that needs it |
+| `tools/chunk_page_index.py` | v1 per-store chunked binary (54% of JSON) |
+| `tools/build_coverage_index.py` | **v3: ONE index over every store**, quadtree leaves, two-level directory, full cross-origin URLs |
+| `tools/finish_page_indexes.sh` | coords + chunk + stage, idempotent, safe to re-run while generation continues |
+| `browser/page-index.mjs` | the reader — **still speaks v1 per-store, NOT v3** |
+| `browser/store-kernel.mjs` | page-granular prefetch buffer, drained on consume, coalescing adjacent pages |
+| `browser/cdp_latency.mjs`, `cdp_range_capture.mjs`, `cdp_journey.mjs`, `cdp_prefetch_ab.mjs` | the instruments |
+| `data/journeys.json` | a session described as data — a walk, not a teleport |
+
+### v3, and why it is shaped that way
+
+```
+12 stores · 80 704 cells · 447 leaf chunks · levels L0=11 L1=16 L2=118 L3=78 L4=224
+root tiles 26 · header+stores+rootdir 1 354 B   ← ONE read per SESSION
+sub-directory  median 160 B · max 1 792 B       ← ONE read per tile
+chunk          median 6 314 B · max 18 796 B
+```
+
+* **A quadtree, not a grid.** Measured density spans **4 to 6 297 cells/deg²**, so a uniform grid is
+  either too coarse for the Randstad or absurd over the North Sea. Bounding a chunk by CELL COUNT took
+  the worst chunk from **1 006 kB to 19 kB**.
+* **A two-level directory.** A flat one projects to **252 kB at Western Europe**, read whole before a
+  single page is planned, every session. Split, it is ~8 kB of root plus ~512 B for the tile you are in.
+* **Full URLs across origins**, so an entry can point at the app's site, any of the `routing-data-*`
+  repos, or a bucket. ~176 stores ≈ 19 kB at WE, read once.
+
+Projected: WE ≈ 2.9 M cells ≈ 97 MB total, **read by range, never whole** — a viewport still costs a
+sub-directory and one to four chunks.
+
+### What is NOT done
+
+1. **`browser/page-index.mjs` reads v1, the builder writes v3.** Nothing in the browser can read the
+   coverage index yet. This is the next job.
+2. **Generation is unfinished** — 13 of 15 stores; `nl-mideast.base` and `nl-east.base` remain, and they
+   are ~half the Benelux cells. Re-run `tools/finish_page_indexes.sh --stage`, then
+   `tools/build_coverage_index.py`.
+3. **Nothing is published.** Indexes are in `blocks/` (gitignored) and staged only into a local `_site`.
+   The four `nl-*` base indexes belong in THEIR Pages repos beside their stores.
+4. **`PREFETCH_PAD` (0.16°) is a guess** standing in for the feature-overhang extent `PTile` carries
+   properly. It cost 58 misses on the wired run — they degrade to normal fetches, so it is a tuning
+   number, not a correctness one.
+5. ⚠ **The overview should probably not be indexed at all.** Three independent measurements say so: it is
+   the fastest step in a journey when whole-loaded (4.6 s, ZERO range requests), it has the worst
+   pages-per-cell (23.1), and chunked its index costs *more* to read (62 kB) than whole (20 kB).
+
+### And the framing that has not changed
+
+**This is a latency fix, not a bytes fix.** It moves nothing about the ~1 000 sessions/month that GitHub
+Pages' 100 GB bandwidth ceiling allows (`docs/hosting-cost-model.md`). That ceiling remains the constraint
+that actually caps the product, and the R2 decision is the one that lifts it.

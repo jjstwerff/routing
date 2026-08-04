@@ -7,10 +7,30 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-04, early)
+## 0. Where things stand (2026-08-04, late)
 
 **THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
 PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
+
+⚠ **ELEVEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
+strands, in the order they were done:
+
+1. **Browser/test-process hygiene** (`8f55a06`, `f5ab0c2`, `67bb7c8`). Every gate's browser is owned by
+   its driver over a CDP **pipe**, so it cannot outlive the process that started it — no traps, no kill
+   logic, no platform-specific code. `browser_leak_gate` proves it by SIGKILLing an owner and re-taking
+   the profile. The loft test server got the same treatment (`exec` + a bounded `LOFT_TIMEOUT`), and
+   `fuser -k` is gone from all seven scripts. **Earned:** five leaked browser trees, 50 processes,
+   1.7 GB, the oldest 2 days 18 h old, on a box whose swap was full — and 24 leaked loft servers, all
+   mine, from the old broken `kill`.
+2. **`be-mid` moved to its own Pages repo** (`96c9e95`, merged) — site 86% → **70%**. And the 62-block
+   index cap is gone AND gated at 70 blocks (`2a52ca0`) — it had been fixed in code a day earlier with
+   no test.
+3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
+
+**READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
+Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
+binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91); one measurement — whether a
+Cloudflare cache HIT still bills a Class B op — stands between the recommendation and paying for it.
 
 | | live on Pages |
 |---|---|
@@ -198,6 +218,16 @@ both backends. **Two of our three upstream findings this week were corrected by 
    this), but it is a HYPOTHESIS. **The next probe:** replay N1/N2, report `kernelStats().wasmBytes` before
    N3, and bisect which step arms it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
+6b. ⚠ **THE MAP IS SLOW FOR A REASON NOTHING HERE HAD MEASURED, and the fix is built but not published.**
+   A cold Amsterdam visit is **16–26 s**, and it is **764 SERIAL round trips**, not bytes: measured
+   against the live host, a 64 kB range costs the same as one byte (41 ms), so `764 × 26 ms ≈ 20 s` IS
+   the wait. Prefetching the pages a viewport needs, as one batch, is **4.79× faster** hand-fed and
+   **2.06×** wired end to end. `docs/prefetch-index-design.md` §11 is the state; the next job is that
+   the browser reader speaks the v1 per-store format while the builder writes **v3** (one index over
+   every store, quadtree leaves, two-level directory, cross-origin URLs, sized for WE).
+   ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
+   **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
+   original cold entry. Retention across scale changes is unprobed and may matter more than the index.
 7. **A kernel death reported from the live site, not reproduced.** The sketch autosave makes it
    survivable. What would move it: the console line at the moment it stops answering, plus
    `window.__perfHooks.kernelStats()`. ⚠ **Benelux widens the exposure** — more blocks, more first-visit
