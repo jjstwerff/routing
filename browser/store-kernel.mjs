@@ -69,8 +69,15 @@ export async function createKernel(wasmUrl) {
   // store. Filled by `__perfHooks.prefetch`, which issues the whole batch CONCURRENTLY — that is the
   // entire point, because the reads are latency-bound (a 64 kB range costs the same as one byte, so 764
   // serial round trips are ~20 s of pure waiting). See docs/prefetch-index-design.md.
-  const prefetched = new Map();          // `${url}|${off}|${n}` -> Uint8Array
-  let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0, prefetchTotals = new Map();
+  // ⚠ KEYED BY PAGE NUMBER, NOT BY (off, len). The first version keyed on the exact range and worked
+  // only because the A/B replayed a capture verbatim. Driven from the index we know PAGES, and loft asks
+  // for 64 kB most of the time but also 128 kB and 192 kB spans — every one of those would have missed.
+  // Page-granular storage serves any request shape that its pages cover, which is what the page-set model
+  // said all along.
+  const prefetched = new Map();          // url -> Map<pageNo, Uint8Array>
+  let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
+  const prefetchTotals = new Map();
+  const PFPAGE = 65536;
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
 
@@ -187,20 +194,38 @@ export async function createKernel(wasmUrl) {
         const last = off + n - 1;
         // The prefetch hit: answer SYNCHRONOUSLY, with no fetch and no asyncify unwind. Safe for exactly
         // the reason the sidecar hit is — nothing suspends, so there is no rewind to get wrong.
-        const pk = `${url}|${off}|${n}`;
-        const hit = prefetched.get(pk);
-        if (hit) {
-          prefetched.delete(pk);                              // DRAIN: consumed once, then gone
-          prefetchHits++; prefetchBytes += hit.length;
-          ctrl.httpBytes = hit;
-          ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
-          rangeReads++; rangeBytes += hit.length;
-          const shk = url.split('?')[0].split('/').pop() || url;
-          const pse = perStore.get(shk) || { reads: 0, bytes: 0 };
-          pse.reads++; pse.bytes += hit.length; perStore.set(shk, pse);
-          return hit.length;
+        const bag = prefetched.get(url.split('?')[0]);
+        if (bag && bag.size) {
+          const p0 = Math.floor(off / PFPAGE), p1 = Math.floor((off + n - 1) / PFPAGE);
+          let all = true;
+          for (let p = p0; p <= p1 && all; p++) if (!bag.has(p)) all = false;
+          if (all) {
+            let outb;
+            if (p0 === p1) {
+              const pg = bag.get(p0);
+              const s0 = off - p0 * PFPAGE;
+              outb = (s0 === 0 && pg.length === n) ? pg : pg.subarray(s0, s0 + n);
+            } else {
+              outb = new Uint8Array(n);
+              for (let p = p0, w = 0; p <= p1; p++) {
+                const pg = bag.get(p), pStart = p * PFPAGE;
+                const from = Math.max(off, pStart) - pStart;
+                const to = Math.min(off + n, pStart + pg.length) - pStart;
+                outb.set(pg.subarray(from, to), w); w += to - from;
+              }
+            }
+            for (let p = p0; p <= p1; p++) bag.delete(p);     // DRAIN: consumed once, then gone
+            prefetchHits++; prefetchBytes += outb.length;
+            ctrl.httpBytes = outb;
+            ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
+            rangeReads++; rangeBytes += outb.length;
+            const shk = url.split('?')[0].split('/').pop() || url;
+            const pse = perStore.get(shk) || { reads: 0, bytes: 0 };
+            pse.reads++; pse.bytes += outb.length; perStore.set(shk, pse);
+            return outb.length;
+          }
+          prefetchMiss++;
         }
-        if (prefetched.size || prefetchHits) prefetchMiss++;   // only meaningful once a batch exists
         fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
           .then(async (res) => {
             // The total rides on Content-Range (`bytes a-b/TOTAL`), so size() needs no second round trip.
@@ -342,29 +367,47 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchHeld: prefetched.size }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchBytes, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
-    prefetch: async (url, ranges, concurrency = 24) => {
+    // `pages` is a list of PAGE NUMBERS. Adjacent ones are coalesced into a single range: it is what makes
+    // the request count fall (measured 1.8x on base, 3.0x on roads), and on a per-request billed host
+    // that is the difference between the same bill and half of it.
+    prefetch: async (url, pages, concurrency = 24) => {
+      const key = url.split('?')[0];
+      if (!prefetched.has(key)) prefetched.set(key, new Map());
+      const bag = prefetched.get(key);
+      const sorted = [...new Set(pages)].sort((a, b) => a - b);
+      const runs = [];
+      for (const p of sorted) {
+        const last = runs[runs.length - 1];
+        if (last && p === last[1] + 1) last[1] = p; else runs.push([p, p]);
+      }
+      const ranges = runs.map(([a, b]) => [a * PFPAGE, (b - a + 1) * PFPAGE]);
       let i = 0, ok = 0, failed = 0;
       const worker = async () => {
         while (i < ranges.length) {
-          const [off, n] = ranges[i++];
+          const j = i++;
+          const [off, n] = ranges[j];
           try {
             const res = await fetch(url, { headers: { Range: `bytes=${off}-${off + n - 1}` } });
             if (!res.ok) { failed++; continue; }
             const cr = res.headers.get('Content-Range');
             if (cr) { const t = cr.split('/').pop(); if (t && t !== '*') prefetchTotals.set(url, Number(t)); }
-            const b = new Uint8Array(await res.arrayBuffer());
-            prefetched.set(`${url}|${off}|${n}`, res.status === 206 ? b : b.subarray(off, off + n));
+            const b0 = new Uint8Array(await res.arrayBuffer());
+            const b = res.status === 206 ? b0 : b0.subarray(off, off + n);
+            for (let q = 0; q * PFPAGE < b.length; q++) {
+              bag.set(off / PFPAGE + q, b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
+            }
             ok++;
           } catch { failed++; }
         }
       };
       const t0 = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
-      return { asked: ranges.length, ok, failed, ms: Math.round(performance.now() - t0), held: prefetched.size };
+      return { pages: sorted.length, requests: ranges.length, ok, failed,
+               ms: Math.round(performance.now() - t0), held: bag.size };
     },
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.

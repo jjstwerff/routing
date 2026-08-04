@@ -27,16 +27,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const cap = JSON.parse(readFileSync(capFile, 'utf8'));
 const CAM = /#(.*)$/.exec(cap.url)?.[1] || '14/52.3702/4.8952';
 
-// The pages that viewport needs, deduplicated, in the order they were first asked for.
-const seen = new Set(), ranges = [];
+// The PAGE NUMBERS that viewport needs. `prefetch` takes pages, not ranges: it is keyed page-granularly
+// so it can serve the 128 kB and 192 kB spans loft also asks for, which an exact-range key could not.
+const PAGE = 65536;
+const pageSet = new Set();
 for (const r of cap.seq) {
   if (r.afterPaint) continue;
   if (!r.url.endsWith(storeName)) continue;
   if (r.len <= 1) continue;                         // the bytes=0-0 size probe is not a page
-  const k = `${r.off}|${r.len}`;
-  if (seen.has(k)) continue;
-  seen.add(k); ranges.push([r.off, r.len]);
+  for (let p = Math.floor(r.off / PAGE); p <= Math.floor((r.off + r.len - 1) / PAGE); p++) pageSet.add(p);
 }
+const ranges = [...pageSet].sort((a, b) => a - b);
 const storeUrl = new URL(`stores/${storeName}`, base).href;
 
 async function run(withPrefetch) {
@@ -80,7 +81,7 @@ const A = await run(false);
 console.log(`  A  cold, as today      ${String(A.ms ?? '>90000').padStart(7)} ms   ${String(A.reads).padStart(5)} range reads`);
 const B = await run(true);
 console.log(`  B  pages prefetched    ${String(B.ms ?? '>90000').padStart(7)} ms   ${String(B.reads).padStart(5)} range reads`);
-console.log(`       batch: ${B.fill?.ok}/${B.fill?.asked} pages in ${B.fill?.ms} ms · buffer hits ${B.hits} · misses ${B.miss} · left over ${B.held}`);
+console.log(`       batch: ${B.fill?.pages} pages in ${B.fill?.requests} request(s), ${B.fill?.ms} ms · buffer hits ${B.hits} · misses ${B.miss} · left over ${B.held}`);
 if (A.ms && B.ms) {
   console.log(`\n  ⇒ ${(A.ms / B.ms).toFixed(2)}× ${B.ms < A.ms ? 'FASTER' : 'SLOWER'} to the same view` +
               `   (${A.ms} ms → ${B.ms} ms, prefetch batch ${B.fill?.ms} ms of that)`);

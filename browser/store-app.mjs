@@ -9,6 +9,7 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
          routeDistanceM, formatDistance, routeGpx,
          SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
+import { pagesFor, indexStats } from './page-index.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
@@ -509,6 +510,32 @@ initSearch();
 // Load a viewport view only when the camera leaves the already-loaded area (a generous pad ⇒ small pans
 // just re-draw the cached layers — no re-decode). Whole-region view would be ~230k lines and freeze.
 //
+// The pages this viewport needs, from every store that will answer it, fetched as ONE batch per store.
+//
+// `baseFor`/`roadsFor` return the covering set the kernel is about to read, so this asks the same
+// question of the same stores — there is no second notion of "which block" to drift out of step.
+let prefetchOn = true;
+async function prefetchFor(box, zoom) {
+  if (!prefetchOn || !kernel.prefetch) return null;
+  const b = { mnlo: Math.round(box.mnlo * 1e7), mnla: Math.round(box.mnla * 1e7),
+              mxlo: Math.round(box.mxlo * 1e7), mxla: Math.round(box.mxla * 1e7) };
+  const urls = [...new Set([...(baseFor(box, zoom) || '').split(' '),
+                            ...(roadsFor(box, zoom) || '').split(' ')].filter((u) => u && u.endsWith('.store')))];
+  const out = [];
+  await Promise.all(urls.map(async (u) => {
+    try {
+      const pages = await pagesFor(u, b, PREFETCH_PAD);
+      if (pages.length) out.push({ url: u, ...(await kernel.prefetch(u, pages)) });
+    } catch { /* an index that will not read is not a reason to fail the view */ }
+  }));
+  return out;
+}
+// A feature is keyed by its FIRST VERTEX and never clipped, so it overhangs its cell — PLAN-PERF §7g
+// measured up to 16 cells, which is why `PTile` carries a sealed extent rather than being screened by
+// ox/oy. The index is keyed by ox/oy, so a padded query is the cheap approximation of that extent: too
+// small and some pages miss (they are then fetched normally), too large and bytes are wasted.
+const PREFETCH_PAD = 1600000;   // 0.16 deg in fixed-point 1e-7
+
 // The `covers` test lives INSIDE the job, so it is judged when the view actually runs rather than when it
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
 function ensureView() { return jobs.post('view', ensureViewNow); }
@@ -540,6 +567,15 @@ async function ensureViewNow() {
   hud.textContent = 'loading map…';
   const t0 = performance.now();
   const zoom = zoom0;
+  // ⚠ PREFETCH BEFORE THE KERNEL RUNS, not alongside it. The kernel's range reads are SERIAL — it asks,
+  // suspends, waits, resumes — so anything issued after `runKernel` starts is racing a chain it cannot
+  // shorten. Fetching the pages first, concurrently, is the entire mechanism: measured 4.79x faster to
+  // the same view (26.0 s -> 5.4 s at a 26 ms round trip). docs/prefetch-index-design.md.
+  //
+  // It degrades to today's behaviour at every step: a block with no `.pagesx` returns [], a page the
+  // index does not name simply misses and is fetched the old way. Nothing here can make the map WRONG —
+  // the store is unchanged and every byte is still verified by the loader.
+  await prefetchFor(box, zoom);
   const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
   map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
@@ -1000,7 +1036,11 @@ window.__perfHooks = {
   // kernel's reads become synchronous buffer hits instead of 764 serial round trips. Exposed as a probe
   // rather than wired into the view: the app cannot compute a cell key (JS works in bboxes, loft in
   // tkeys), so a real integration needs the index re-keyed spatially. This proves the CLAIM first.
-  prefetch: (url, ranges, c) => kernel.prefetch(url, ranges, c),
+  prefetch: (url, pages, c) => kernel.prefetch(url, pages, c),
+  // The wired path, for a gate to drive and assert on rather than infer from timings.
+  prefetchFor: (box, zoom) => prefetchFor(box || viewportBox(VIEW_PAD), zoom ?? map.camera.zoom),
+  pageIndexStats: () => indexStats(),
+  setPrefetch: (on) => { prefetchOn = !!on; return prefetchOn; },
   // HAS THE APP SETTLED? Every counter a gate asserts on — range reads, bytes, the expose bracket — is
   // only meaningful about a session that has stopped working. The ring keeps paging after the view that
   // scheduled it has finished and reported its milliseconds, so "the last view completed" no longer
