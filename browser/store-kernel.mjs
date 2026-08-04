@@ -45,6 +45,14 @@ export async function createKernel(wasmUrl) {
   const ctrl = { ac: null, httpBytes: null, httpTotal: -1 };
   const exposed = new Map();   // tag -> { storeBase, rec, pos, typeId, desc } from expose() (step 9)
   let mem, outBuf = '', resolveRun = null, started = false, starts = 0, commands = 0, storeLoads = 0;
+  // SIDECARS ARE NOT STORE BODIES, and conflating them made the session invariant report a re-decode that
+  // was not happening. `storeLoads` is the load-bearing count ("each store decoded ONCE"), but every
+  // command naming a store also fetches its ~1.3 kB `.dschema`, and once blocks became PAGED the bodies
+  // stopped coming through this bridge at all — so the whole count was sidecars, and the ❌ fired on both
+  // sides of every comparison. Counted apart, `storeLoads` means what it says again.
+  let sidecarLoads = 0, sidecarHits = 0;
+  // url -> bytes, sidecars only. See loft_host_http_get for why this is safe and why it stops there.
+  const schemaCache = new Map();
   // PLAN-SCALE C1b: a working-set read is only a working set if you can SEE what it fetched.
   let rangeReads = 0, rangeBytes = 0, rangeAsked = 0;
   // Per STORE, not just the session total. A gate that says "48% of a 222.4 MB block" has to be able to
@@ -52,6 +60,8 @@ export async function createKernel(wasmUrl) {
   // the app's own origin its pages joined the same counter, and a roads-block budget started failing on
   // base-map bytes. The url is right here, so attribution costs one Map.
   const perStore = new Map();
+  // Whole-file loads by store filename — the attribution half of `storeLoads` (see loft_host_http_get).
+  const wholeLoads = new Map();
   const rangeFails = [];
   let waiting = null;   // why loft is suspended: 'fetch' | 'yield' | null — see the header note
   let onLine = null, scanned = 0, deliveries = 0;   // the in-flight command's line sink — see `drain`
@@ -107,9 +117,42 @@ export async function createKernel(wasmUrl) {
       loft_host_http_get: (ptr, len) => {
         if (ctrl.ac && ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return ctrl.httpBytes ? ctrl.httpBytes.length : 0xFFFFFFFF; }
         const url = dec.decode(new Uint8Array(mem.buffer, ptr, len));
-        storeLoads++;              // counted on the UNWIND pass only — the rewind above returns early
+        // Counted on the UNWIND pass only — the rewind above returns early.
+        // WHICH store, not just how many. `storeLoads` is the session's load-bearing invariant ("each
+        // store loaded ONCE"), and when it climbs the total says nothing about WHY: five whole-file loads
+        // is fine if they are five different stores and a defect if they are one store five times. Range
+        // reads have had per-store attribution since the roads budget failed on base-map bytes; this is
+        // the same rule applied to the other counter, and it is what tells a re-decode from a wider set.
+        const wk = url.split('?')[0].split('/').pop() || url;
+        const isSidecar = wk.endsWith('.dschema');
+        // A SIDECAR CANNOT CHANGE UNDER A SESSION, so fetch each one once.
+        //
+        // Every command naming a store re-fetched its `.dschema`: 15 requests for 2 distinct files in a
+        // 109-command profile, and the ring made it worse by issuing eight more views per view. The
+        // content is immutable for the session — it describes the layout the block was WRITTEN with, and
+        // loft#705 refuses the store outright if that ever disagrees — so a second fetch can only return
+        // the bytes already held.
+        //
+        // A hit answers SYNCHRONOUSLY: return the length and let `..._get_copy` take the bytes, with no
+        // fetch, no asyncify unwind and no round trip. That is the same shape as the no-asyncify path,
+        // and it is safe precisely because nothing suspends — there is no rewind to get wrong.
+        //
+        // ⚠ SIDECARS ONLY, deliberately. The same cache over a store BODY would hold a 20 MB image in JS
+        // beside the copy already in wasm memory, which is the opposite of what a paged read is for.
+        if (isSidecar) {
+          const hit = schemaCache.get(url);
+          if (hit) { sidecarHits++; ctrl.httpBytes = hit; return hit.length; }
+        }
+        // Counted on the UNWIND pass only — the rewind above returns early.
+        // WHICH store, not just how many. `storeLoads` is the session's load-bearing invariant ("each
+        // store loaded ONCE"), and when it climbs the total says nothing about WHY: five whole-file loads
+        // is fine if they are five different stores and a defect if they are one store five times. Range
+        // reads have had per-store attribution since the roads budget failed on base-map bytes; this is
+        // the same rule applied to the other counter, and it is what tells a re-decode from a wider set.
+        wholeLoads.set(wk, (wholeLoads.get(wk) || 0) + 1);
+        if (isSidecar) sidecarLoads++; else storeLoads++;
         ctrl.httpBytes = null;
-        const back = (b) => { ctrl.httpBytes = b; wake('fetch'); };
+        const back = (b) => { ctrl.httpBytes = b; if (isSidecar && b) schemaCache.set(url, b); wake('fetch'); };
         fetch(url).then(async (res) => back(res.ok ? new Uint8Array(await res.arrayBuffer()) : null))
                   .catch(() => back(null));
         if (ctrl.ac) { waiting = 'fetch'; ctrl.ac.suspend(); }
@@ -225,7 +268,27 @@ export async function createKernel(wasmUrl) {
   // `lineSink` is optional: pass it to receive each output line AS LOFT FLUSHES IT (see `drain`) instead
   // of only the whole text at the end. The promise still resolves with the complete response either way,
   // so a sink is a strictly additional view of the same bytes — it cannot change what the caller parses.
+  // ⚠ ONE RESOLVE SLOT, SO CALLS MUST NOT OVERLAP — and this is where that is made true, rather than
+  // hoped for. `resolveRun` below is a single variable: a second call entering while the first is in
+  // flight overwrites it and ORPHANS the first promise, which is PLAN-EDIT's P4 in its rawest form (a
+  // command that never resolves, and an awaiting caller that never wakes).
+  //
+  // `KernelQueue` has always guarded the APP's road, and while the app was the only caller that was
+  // enough. It stopped being enough when the app grew work that OUTLIVES the view that scheduled it (the
+  // ring prefetch): the ~20 probe calls in store-app's `__perfHooks` block deliberately bypass the queue
+  // to measure the kernel in isolation, and a ring cell landing between a probe's `reset` and its `match`
+  // was returning an empty route — measured, as `cors_host_gate` failing with `ways=0`.
+  //
+  // So serialise at the ROOT instead of at each of the twenty call sites. The queue keeps its own job,
+  // which is different and still needed: it COALESCES by key, so a drag emitting 33 moves a second owes
+  // one match rather than thirty-three. This only makes overlap safe instead of corrupting.
+  let tail = Promise.resolve();
   function runKernel(blob, lineSink) {
+    const p = tail.then(() => runKernelNow(blob, lineSink), () => runKernelNow(blob, lineSink));
+    tail = p.catch(() => {});          // a failed command must not wedge every command after it
+    return p;
+  }
+  function runKernelNow(blob, lineSink) {
     return new Promise((resolve) => {
       resolveRun = resolve;
       onLine = lineSink || null;
@@ -255,7 +318,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads) }),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

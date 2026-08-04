@@ -307,6 +307,37 @@ function viewportBox(pad) {
 }
 const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= o.mnlo && i.mxlo <= o.mxlo;
 
+// THE SCREEN FIRST, THEN A RING AROUND IT.
+//
+// The view used to read `viewportBox(0.6)` — 2.2 x 2.2 screens, 4.84 screens of area — in ONE kernel
+// call, so the pixels the user is looking at waited for four screens of data they could not see. Two
+// numbers replace that one: `VIEW_PAD` is what the first view reads and what the index covers, and the
+// RING is eight screen-sized cells paged in AFTERWARDS, giving a full screen of data in every direction
+// (3 x 3 = 9 screens) without the first paint paying for any of it.
+//
+// ⚠ `VIEW_PAD` is NOT a correctness margin. Features are keyed by their first vertex and overhang their
+// cell (PLAN-PERF §7g), but both filters are already exact about it: `buildIndex` screens each tile on
+// its own SEALED feature extent (`fmnla`/`fmxla`/…) and then each ring on its true span, so a feature
+// whose key-cell lies outside the box still draws. The pad exists only so a one-pixel drift does not
+// re-request, and it is small for exactly that reason.
+const VIEW_PAD = 0.15;
+// The ring, in the order it is paged. Straight neighbours before diagonals: a pan is far likelier to
+// leave through an edge than a corner, and the queue can be interrupted at any step, so the order IS the
+// priority. `[dx, dy]` in screen widths/heights.
+const RING_CELLS = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+// One ring cell as a box: the screen translated by (dx, dy) screens, then padded like a view so adjacent
+// cells overlap and no seam is left unpaged. Built from a SNAPSHOT of the screen, never from the live
+// camera — the camera moves while the ring is being paged, and a cell computed from where the camera has
+// got to would leave a hole where it started.
+function ringCellBox(screen, dx, dy) {
+  const w = screen.mxlo - screen.mnlo, h = screen.mxla - screen.mnla;
+  const mnla = screen.mnla + dy * h, mxla = screen.mxla + dy * h;
+  const mnlo = screen.mnlo + dx * w, mxlo = screen.mxlo + dx * w;
+  const dla = h * VIEW_PAD, dlo = w * VIEW_PAD;
+  return { mnla: mnla - dla, mnlo: mnlo - dlo, mxla: mxla + dla, mxlo: mxlo + dlo };
+}
+
 // PLAN-PERF §0 step 13 — which layer kinds render from the EXPOSED STORE rather than from loft's text.
 // Grown one kind per commit, each proved equal to the text path before the next is added; loft's emit
 // stays until every kind is here, and only then can it be deleted (§7f: that deletion is also what
@@ -343,6 +374,12 @@ const viewCmd = (bbox, roads = ROADS, cmd = 'view', base = LAYOUT, box = null, z
    box ? baseModeFor(box, z) : (window.__baseReadMode || coverage.block.readMode || 'whole')].join('\n');
 
 let loadedBox = null, loadedBbox = null, lastViewText = null, loadedSrc = null;
+// The `storeBase` the live store index was built against, and the ring's own generation. `indexBase` is
+// what makes the ring safe to run without redrawing: a ring read is a kernel call like any other, so it
+// can `memory.grow` and MOVE the store, and the index holds record numbers that are only meaningful
+// against the base they were read from. Ring steps therefore compare and rebuild only on a change — the
+// common case is that the store did not move and the drawn map is untouched.
+let indexBase = null, ringGen = 0, ringStats = { planned: 0, done: 0, skipped: 0, abandoned: 0, ms: 0 };
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
 // so commands must be serialized; this does that AND coalesces per key, which the old shared `busy`
 // boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
@@ -476,7 +513,7 @@ initSearch();
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
 function ensureView() { return jobs.post('view', ensureViewNow); }
 async function ensureViewNow() {
-  const box = viewportBox(0.6);
+  const box = viewportBox(VIEW_PAD);
   const zoom0 = map.camera.zoom;
   // WHAT THIS VIEW WOULD READ — the covering set and the modes, not just the box.
   //
@@ -487,7 +524,13 @@ async function ensureViewNow() {
   // while a direct load of the same camera drew 51 350. The box test cannot see a change of SOURCE, and
   // crossing the handover is exactly that.
   const src = `${baseFor(box, zoom0)}|${roadsFor(box, zoom0)}|${baseModeFor(box, zoom0)}|${roadsModeFor(box, zoom0)}`;
+  // A pan that stays inside what is loaded is a re-draw, and it deliberately leaves the ring ALONE. The
+  // ring is centred on the screen it was planned for, so a camera that has not left that screen is still
+  // surrounded by it; retiring and re-planning here would re-page eight cells for a few pixels of drift.
   if (loadedSrc === src && covers(loadedBox, viewportBox(0.05))) { map.render(); return; }
+  // Past here a real load happens, so the ring around the OLD screen is retired. The bump is what stops
+  // the chain: every step checks its generation before doing anything.
+  ringGen++;
   // A view whose SOURCE changed discards the store the map is drawn from, and a paged one takes hundreds
   // of range requests to replace it — so hold the last good frame and keep painting it, stretched to the
   // camera, until real data lands. Only on a source change: a plain pan already has its data and holding
@@ -522,6 +565,7 @@ async function ensureViewNow() {
     // instead of 145k boxed vertex pairs.
     const idx = buildIndex(kernel.memory(), h, storeLayout(h), fboxOf(bbox), STORE_GEOM_KINDS);
     map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
+    indexBase = h.storeBase;      // what the ring compares against — see `pageRingCell`
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
   loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
@@ -573,6 +617,128 @@ async function ensureViewNow() {
                         firstViewMs: window.__storeApp?.firstViewMs ?? ms, lastViewMs: ms,
                         viewSeq: (window.__storeApp?.viewSeq || 0) + 1, viewBbox: bbox,
                         layerCounts: counts, areaSource: h ? 'store' : 'text' };
+  // The screen is on the glass; NOW go and get its surroundings. Scheduled after every measurement above
+  // so the ring can never be charged to `lastViewMs` — it is work that happens after the view is done.
+  scheduleRing(viewportBox(0), zoom);
+}
+
+// Page one screen of data in each direction, so the next pan finds its data already resident.
+//
+// ⚠ THE RING IS CHAINED, NOT FANNED OUT, and that is the whole design. `KernelQueue` runs one job at a
+// time in insertion order and cannot preempt a RUNNING job, so posting all eight cells at once would put
+// a user's next click or pan BEHIND eight screens of paging — turning a prefetch meant to make the app
+// feel faster into up to eight screens of added latency on the very interaction it exists to serve. Each
+// step posts the next instead, so at most ONE ring cell is ever queued and a user action waits for at
+// most one cell.
+//
+// Cells are paged with the ordinary `view` command and the result is DISCARDED: what the ring is buying
+// is the range reads (`store_load_keys` ACCUMULATES into the same store, so nothing is fetched twice),
+// not the text. Nothing is rendered and no index is rebuilt — see the storeBase guard below.
+function scheduleRing(screen, zoom) {
+  const gen = ringGen;
+  ringStats = { planned: 0, done: 0, skipped: 0, abandoned: 0, ms: 0, gen };
+  // A block read WHOLE is already entirely resident, so a ring around it would be eight kernel calls that
+  // fetch nothing. The ring is a paging optimisation and it belongs only where there is paging to do.
+  if (roadsModeFor(screen, zoom) !== 'paged' && baseModeFor(screen, zoom) !== 'paged') {
+    ringStats.skipped = RING_CELLS.length;
+    window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats, why: 'whole' } };
+    return;
+  }
+  ringStats.planned = RING_CELLS.length;
+  postRingStep(gen, screen, zoom, 0);
+}
+
+// THE RING IS COMPLETE — WIDEN ONTO IT. Every one of the nine screens is resident now, so rebuilding the
+// index over the whole 3 x 3 box costs one walk of tiles already in memory and NOT ONE FETCH. After this a
+// pan anywhere inside the ring is a redraw and nothing else: no kernel call, no range read, no wait.
+//
+// This is what keeps the small `VIEW_PAD` honest. Reading one screen makes the FIRST paint fast, but on its
+// own it would also make the app hold LESS ground than the old 2.2-screen box did, so panning would re-view
+// more often, not less. Promotion is the other half: fast first, then wider than before.
+//
+// ⚠ Only when the whole 3 x 3 box resolves to the SAME SOURCE. A neighbouring screen can belong to a
+// different block — the coverage is a set of blocks and at a border it changes mid-ring — and claiming the
+// centre's source covers it would let a later pan SKIP the view that would have loaded the right block, and
+// draw a hole instead. That is exactly the failure `ensureViewNow`'s `src` test exists to prevent, one box
+// larger, and it is why this compares rather than assumes.
+function promoteRing(screen, zoom) {
+  const w = screen.mxlo - screen.mnlo, h = screen.mxla - screen.mnla;
+  const box3 = { mnla: screen.mnla - h, mxla: screen.mxla + h, mnlo: screen.mnlo - w, mxlo: screen.mxlo + w };
+  const src3 = `${baseFor(box3, zoom)}|${roadsFor(box3, zoom)}|${baseModeFor(box3, zoom)}|${roadsModeFor(box3, zoom)}`;
+  if (src3 !== loadedSrc) { ringStats.promoted = 'source-differs'; return; }
+  // A ring with skipped cells did not fill the box, so widening onto it would claim ground the app does
+  // not hold — the map would then answer a pan into that cell from an index that has nothing there, and
+  // draw an empty screen instead of reloading. Hold the smaller, honest box.
+  if (ringStats.skipped) { ringStats.promoted = `incomplete (${ringStats.skipped} skipped)`; return; }
+  const hh = kernel.exposedValue ? kernel.exposedValue(1) : null;
+  if (!hh) { ringStats.promoted = 'no-handle'; return; }
+  const bbox3 = bboxOf(box3), fb = fboxOf(bbox3);
+  const lists = viewRenderLists(viewFromStore(kernel.memory(), hh, fb, { flatCount, flatField }, APP_OBJECT_KINDS));
+  for (const k of APP_OBJECT_KINDS) map[k] = lists[k];
+  const idx = buildIndex(kernel.memory(), hh, storeLayout(hh), fb, STORE_GEOM_KINDS);
+  map.setStoreIndex(idx, () => kernel.memory(), hh.storeBase);
+  indexBase = hh.storeBase;
+  loadedBox = box3; loadedBbox = bbox3;
+  // The held ground widens with the data, or the floor keeps drawing over ground the fine layer now holds.
+  const got = STORE_GEOM_KINDS.some((k) => idx[k].n > 0) || APP_OBJECT_KINDS.some((k) => lists[k].length > 0);
+  map.setHeldGround(heldGroundFor(box3, zoom, got));
+  ringStats.promoted = 'ok';
+  map.render();
+}
+
+function postRingStep(gen, screen, zoom, i) {
+  if (gen !== ringGen || i >= RING_CELLS.length) return;
+  jobs.post('ring', async () => {
+    // Checked again HERE, not only at post time: the camera can move while this job sits in the queue,
+    // and a ring cell around a screen the user has already left is work bought for nobody.
+    if (gen !== ringGen) { ringStats.abandoned = RING_CELLS.length - ringStats.done; return; }
+    const [dx, dy] = RING_CELLS[i];
+    const cell = ringCellBox(screen, dx, dy);
+    // ⚠ A RING CELL MUST NEVER CHANGE THE SOURCE. A neighbouring screen can resolve to a different block
+    // — around Amsterdam at country scale the ring reaches into other regions — and asking the kernel to
+    // load one mid-ring pulls a foreign store into a session whose layout store is exposed. That TRAPS:
+    // `RuntimeError: unreachable` out of wasm, measured as `nl_live_gate` dying on the match after it.
+    //
+    // A prefetch has no business changing what the app is reading. Cells that would are SKIPPED, and
+    // crossing a block boundary stays what it already is: the view's own path, which holds the last frame
+    // and reloads deliberately. This is `promoteRing`'s guard applied one cell at a time.
+    const cellSrc = `${baseFor(cell, zoom)}|${roadsFor(cell, zoom)}|${baseModeFor(cell, zoom)}|${roadsModeFor(cell, zoom)}`;
+    if (cellSrc !== loadedSrc) {
+      ringStats.skipped++;
+      window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats } };
+      postRingStep(gen, screen, zoom, i + 1);
+      return;
+    }
+    const t0 = performance.now();
+    try {
+      await kernel.runKernel(viewCmd(bboxOf(cell), roadsFor(cell, zoom), 'view', baseFor(cell, zoom), cell, zoom));
+    } catch (err) {
+      // A ring cell that fails is a prefetch that did not happen — never a broken map. The screen is
+      // already drawn from its own view, so the honest response is to record it and carry on.
+      console.warn(`[ring] cell ${dx},${dy} failed:`, err);
+    }
+    ringStats.ms += performance.now() - t0;
+    ringStats.done++;
+    if (i === RING_CELLS.length - 1 && gen === ringGen) {
+      promoteRing(screen, zoom);          // the last cell — the whole ring is resident, so widen onto it
+    } else {
+      // ⚠ THE STORE CAN MOVE UNDER THE DRAWN MAP. A ring read is a kernel call like any other, so it can
+      // grow wasm memory and relocate the store; the live index holds RECORD NUMBERS, which are only
+      // meaningful against the base they were read from. Rebuilding unconditionally would make the ring
+      // cost a full index walk per cell; rebuilding never would draw garbage the one time it matters. So
+      // compare, and pay only on a change.
+      const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
+      if (h && indexBase !== null && h.storeBase !== indexBase && loadedBbox) {
+        const idx = buildIndex(kernel.memory(), h, storeLayout(h), fboxOf(loadedBbox), STORE_GEOM_KINDS);
+        map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
+        indexBase = h.storeBase;
+        ringStats.rebuilt = (ringStats.rebuilt || 0) + 1;
+        map.render();
+      }
+    }
+    window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats } };
+    postRingStep(gen, screen, zoom, i + 1);
+  });
 }
 
 // Run a match and let the route DRAW ITSELF as it arrives (PLAN-PERF §6b(2)).
@@ -830,6 +996,14 @@ window.__rough = rough;
 window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // HAS THE APP SETTLED? Every counter a gate asserts on — range reads, bytes, the expose bracket — is
+  // only meaningful about a session that has stopped working. The ring keeps paging after the view that
+  // scheduled it has finished and reported its milliseconds, so "the last view completed" no longer
+  // implies "nothing is in flight". A driver that snapshots without waiting on this reads a kernel call
+  // in progress and, for the expose bracket specifically, sees the pin as missing when it is merely
+  // mid-command. Same family as PLAN-PERF §7e's "wait for the view to CHANGE before measuring it".
+  settled: () => !jobs.busy,
+  ringStats: () => ({ ...ringStats, busy: jobs.busy }),
   // PLAN-SCALE C2 — run a match through the APP's own path with a caller-supplied sketch, and report the
   // covering set the app named for it. The cross-block gate needs both halves: the route, to compare
   // against the single-block answer, and the URL list, to prove the command really addressed two blocks
@@ -901,7 +1075,7 @@ window.__perfHooks = {
   //     count is compared against the FILTERED store read, and the unfiltered count is reported next to
   //     loft's own `A=` so a divergence in the filter itself is visible rather than absorbed.
   areaParity: async () => {
-    const box = viewportBox(0.6);
+    const box = viewportBox(VIEW_PAD);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
@@ -977,7 +1151,7 @@ window.__perfHooks = {
     if (kind === 'match') {
       return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     }
-    const b = viewportBox(0.6);
+    const b = viewportBox(VIEW_PAD);
     return kernel.runKernel(viewCmd(bboxOf(b)));
   },
   // C0 — is cost growing with session history? Run the SAME command N times and report wasm memory and
@@ -989,7 +1163,7 @@ window.__perfHooks = {
       if (kind === 'match') {
         await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
       } else {
-        const b = viewportBox(0.6);
+        const b = viewportBox(VIEW_PAD);
         await kernel.runKernel(viewCmd(bboxOf(b)));
       }
       rows.push({ i, ms: performance.now() - t0, wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1) });
@@ -997,7 +1171,7 @@ window.__perfHooks = {
     return rows;
   },
   async timedView() {
-    const box = viewportBox(0.6);
+    const box = viewportBox(VIEW_PAD);
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
     const zoom = map.camera.zoom;
@@ -1610,7 +1784,7 @@ window.__perfHooks = {
     } else if (kind === 'match') {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     } else {
-      const b = viewportBox(0.6);
+      const b = viewportBox(VIEW_PAD);
       await kernel.runKernel(viewCmd(bboxOf(b)));
     }
     const total = performance.now() - t0;

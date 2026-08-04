@@ -60,6 +60,17 @@ if (!cov || !String(cov.url).startsWith(dataOrigin)) {
 
 await ev("window.__readMode = 'paged'");
 const m = JSON.parse(await ev(`(async () => JSON.stringify(await window.__perfHooks.matchSpec('52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554')))()`) || 'null');
+// SETTLE BEFORE SAMPLING. The counters below are only meaningful about a session that has stopped
+// working, and the app now has work that outlives the command that scheduled it (the ring prefetch). A
+// range read still in the air when this samples shows up as asked > delivered — measured, as
+// "ranges asked 210, DELIVERED 209" — which reads exactly like a host refusing a read, the one failure
+// this gate exists to detect. Bounded, and it says so rather than sampling anyway.
+let settled = false;
+for (let i = 0; i < 120 && !settled; i++) {
+  settled = await ev('!!window.__perfHooks?.settled?.()') === true;
+  if (!settled) await sleep(250);
+}
+if (!settled) { console.log('  FAIL: the kernel never went idle — the counters below would be read mid-flight'); ok = false; }
 const ks = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())') || 'null');
 // Non-vacuity: a summary is printed even when the corridor found nothing, and "ways=0 route_pts=0" is
 // exactly what a blocked cross-origin read produces. The route has to be real.

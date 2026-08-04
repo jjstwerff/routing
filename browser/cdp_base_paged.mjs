@@ -139,13 +139,32 @@ async function run(mode) {
   }
 
   const views = [];
-  const snap = async () => await evj(`JSON.stringify({
-    seq: window.__storeApp?.viewSeq || 0, bbox: window.__storeApp?.viewBbox || '',
-    ms: window.__storeApp?.lastViewMs || 0, counts: window.__storeApp?.layerCounts || {},
-    view: window.__storeApp?.view || '',
-    stats: window.__perfHooks?.kernelStats?.() || null,
-    exposes: globalThis.__exposeCalls || 0, releases: globalThis.__releaseCalls || 0,
-  })`);
+  // WAIT FOR THE APP TO STOP WORKING BEFORE READING ITS COUNTERS. The view being complete no longer means
+  // the kernel is idle: the ring prefetch keeps paging the surrounding screens after the view has
+  // reported. A snapshot taken mid-command sees the `expose` bracket balanced — loft releases the pin at
+  // the start of a call and re-takes it at the end — and F2 then reports a missing pin that is simply a
+  // command in flight. Bounded, and it SAYS SO when it gives up: a silent timeout here would turn this
+  // check back into the ill-timed read it exists to prevent.
+  let settleTimeouts = 0;
+  const settle = async () => {
+    for (let i = 0; i < 120; i++) {
+      if (await evj('JSON.stringify(!!window.__perfHooks?.settled?.())') === true) return true;
+      await sleep(250);
+    }
+    settleTimeouts++;
+    return false;
+  };
+  const snap = async () => {
+    await settle();
+    return await evj(`JSON.stringify({
+      seq: window.__storeApp?.viewSeq || 0, bbox: window.__storeApp?.viewBbox || '',
+      ms: window.__storeApp?.lastViewMs || 0, counts: window.__storeApp?.layerCounts || {},
+      view: window.__storeApp?.view || '',
+      stats: window.__perfHooks?.kernelStats?.() || null,
+      ring: window.__perfHooks?.ringStats?.() || null,
+      exposes: globalThis.__exposeCalls || 0, releases: globalThis.__releaseCalls || 0,
+    })`);
+  };
   views.push(await snap());
 
   for (const { lat, lon } of WAYPOINTS) {
@@ -163,7 +182,7 @@ async function run(mode) {
     views.push(got);
   }
   await call('Page.removeScriptToEvaluateOnNewDocument', { identifier: boot.result.identifier });
-  return { mode, views };
+  return { mode, views, settleTimeouts };
 }
 
 const whole = COMPARE ? await run('whole') : null;
@@ -245,6 +264,12 @@ if (paged?.views?.length) {
   const growth = head > 0 ? tail / head : 0;
   console.log(`  F2 · per-viewport cost: first third ${head.toFixed(0)} ms → last third ${tail.toFixed(0)} ms (${growth.toFixed(2)}×, bound ${GROWTH_MAX}×)`);
   console.log(`  F2 · expose bracket: ${last?.exposes} exposes / ${last?.releases} releases (want releases == exposes - 1)`);
+  if (last?.ring) console.log(`  F2 · ring: ${last.ring.done}/${last.ring.planned} cell(s) paged${last.ring.skipped ? `, ${last.ring.skipped} skipped (whole)` : ''}${last.ring.abandoned ? `, ${last.ring.abandoned} abandoned` : ''}${last.ring.rebuilt ? `, ${last.ring.rebuilt} index rebuild(s)` : ''}${last.ring.promoted ? `, promoted: ${last.ring.promoted}` : ''}`);
+  // A snapshot that gave up waiting is an ill-timed read, and every count above it is suspect. Fail on it
+  // rather than reporting numbers whose provenance is "the app was probably done".
+  if (paged.settleTimeouts) {
+    fail.push(`${paged.settleTimeouts} snapshot(s) timed out waiting for the kernel to go idle — the counters below were read mid-command`);
+  }
   if (growth > GROWTH_MAX) {
     fail.push(`per-viewport cost grew ${growth.toFixed(2)}× across the walk — that is the O(collection) re-expose ` +
               `§6f warned about; the fallback is JS reading pages directly, never a decoder of our own`);
