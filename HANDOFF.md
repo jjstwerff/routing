@@ -245,7 +245,9 @@ both backends. **Two of our three upstream findings this week were corrected by 
    for** (the buffer DRAINS on consume, so "in the bag" is not "already fetched"), and the **0.16° pad
    made the query ~40× the screen**, which on dense ground fetched 434.8 MB to serve 204 MB and made the
    deployed app **0.70×, a real regression**. Fixed: dedup + a 0.02° pad, both measured against the live
-   site. **Live now: 1.31× to the view, 1.42× to a settled session, 79% of fetched pages used.**
+   site. **Live now: 1.10–1.31× to the view and 1.20–1.42× to settled (n=3, B ahead every time), 79% of fetched
+   pages used.** ⚠ Only the RATIO is comparable live — the unprefetched arm measured 11.6 to 35.0 s for
+   the same camera on one afternoon. The COUNTS are stable: 2 627 pages, 172.2 MB, 81.3% view hit rate.
 
    ⚠ **A session is never a teleport** — `data/journeys.json` describes a walk, and a walk costs
    **1 127 MB and 16 927 requests** over 16 steps, with a return to a scale re-fetching MORE than the
