@@ -1,0 +1,29 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Build a self-contained keyed store for the two loader reproducers, so neither depends on any of
+// routing's data. The record shape follows the one the finding was measured on: a few scalars, a
+// text, and a flat vector of coordinates — a map tile, and the ordinary shape of a stored row.
+#cwd
+struct Cell {
+  key: integer,
+  name: text,
+  ox: integer,
+  oy: integer,
+  xs: vector<integer>,
+}
+
+fn main() {
+  a = arguments();
+  path = a[0] ?? "repro.store";
+  cells = a[1] as integer ?? 2000;
+  each = a[2] as integer ?? 500;
+  ws: hash<Cell[key]> = [];
+  for ci in 0..cells {
+    pts: vector<integer> = [];
+    for pi in 0..each { pts += [ci * 7 + pi]; }
+    ws += [Cell { key: 1000 + ci, name: "cell-{ci}", ox: ci * 400, oy: ci * 300, xs: pts }];
+  }
+  ok = store_persist_bind(ws, path);
+  println("wrote {path}: {cells} cells x {each} ints  persist={ok}");
+}

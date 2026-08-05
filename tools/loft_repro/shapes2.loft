@@ -1,0 +1,29 @@
+#cwd
+struct Named { x: integer, y: integer, name: text }
+struct Ring  { x: integer, pts: vector<integer> }
+struct TxtCell  { key: integer, ns: vector<Named> }
+struct NestCell { key: integer, rs: vector<Ring> }
+fn main() {
+  a = arguments();
+  which = a[0] ?? "txt";
+  path = a[1] ?? "s.store";
+  cells = a[2] as integer ?? 200;
+  each = a[3] as integer ?? 250;
+  if which == "txt" {
+    tw: hash<TxtCell[key]> = [];
+    for ti in 0..cells {
+      tns: vector<Named> = [];
+      for tj in 0..each { tns += [Named { x: ti + tj, y: ti - tj, name: "n{tj}" }]; }
+      tw += [TxtCell { key: 1000 + ti, ns: tns }];
+    }
+    println("txt persist={store_persist_bind(tw, path)}");
+  } else {
+    nw: hash<NestCell[key]> = [];
+    for ni in 0..cells {
+      nrs: vector<Ring> = [];
+      for nj in 0..each { nrs += [Ring { x: nj, pts: [nj, nj + 1] }]; }
+      nw += [NestCell { key: 1000 + ni, rs: nrs }];
+    }
+    println("nest persist={store_persist_bind(nw, path)}");
+  }
+}
