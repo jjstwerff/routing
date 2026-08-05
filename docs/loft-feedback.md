@@ -2167,3 +2167,27 @@ The general form is already `CLAUDE.md`'s and this cost a second instance of it:
 measurement until you know what it is attributed to.* A file size looks like the most concrete number
 available, which is precisely why it was believed without asking what produced it.
 
+## 2026-08-06 — two loader findings, filed as loft#782 and loft#783
+
+Both surfaced while spiking `store_bind_lazy` (@PLN129) against the app's own wasm kernel, and both are
+about `store_load_keys` rather than about lazy binding. Reproducers are self-contained in
+`tools/loft_repro/` — they build their own store, so neither needs routing data.
+
+**[loft#782] The ranges are issued one at a time**, though the loader is handed every key up front.
+20 requests: 41 ms wall at 0 latency, **592 ms at 25 ms per request** — `wall ≈ base + requests × latency`.
+That is the origin of this repo's largest measured cost (764 serial reads ≈ the whole 16–26 s cold wait,
+since a 1-byte and a 64 kB range both cost ~45 ms live) and of the entire page-index subsystem, whose job
+is to predict something loft already knows. Asked for either a batched host hook or `store_plan_keys`.
+
+**[loft#783] A pointer-bearing vector element is relocated field-at-a-time.** Same 25 000 elements:
+**811** four-byte internal reads for `vector<Pt>`, **75 836** once an element carries a `text`, **75 827**
+for a nested vector. ⚠ Two hypotheses died first — a plain `vector<integer>` and a `vector<Pt>` both come
+across as ONE 4 004-byte read — so it is not vectors and not records, it is the POINTER. That is `PTile`'s
+shape exactly, which is why 162 real cells cost 804 313 four-byte reads and **695 ms at CPU 4× for bytes
+already in the buffer**.
+
+⚠ **And a worry of ours was refuted on the way**: lazy faulting reads 2.9× and copies 2.5×, which looked
+like a phone-sized memory cost. Timed at CPU 1× and 4× with the pages prefetched, lazy is **0.89× and
+0.92×** the wall time of `store_load_keys` — slightly FASTER, with identical footprints, and the
+amplification does not grow with the throttle. The extra reads are cheap; the field-at-a-time relocate is
+not.
