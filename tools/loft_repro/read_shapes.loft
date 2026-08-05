@@ -1,0 +1,19 @@
+#cwd
+struct Pt { x: integer, y: integer }
+struct FlatCell { key: integer, xs: vector<integer> }
+struct RecCell  { key: integer, ps: vector<Pt> }
+fn main() {
+  a = arguments();
+  which = a[0] ?? "flat";
+  path = a[1] ?? "shape.store";
+  want = a[2] as integer ?? 100;
+  keys: vector<integer> = [];
+  for ki in 0..want { keys += [1000 + ki]; }
+  if which == "flat" {
+    fr: hash<FlatCell[key]> = [];
+    println("flat loaded={store_load_keys(fr, path, keys)}");
+  } else {
+    rr: hash<RecCell[key]> = [];
+    println("record loaded={store_load_keys(rr, path, keys)}");
+  }
+}

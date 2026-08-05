@@ -162,7 +162,17 @@ export class KernelQueue {
         this._pending.delete(key);
         const gen = ++this._gen;
         try { entry.resolve(await entry.job(() => gen === this._gen)); }
-        catch (err) { entry.resolve(undefined); console.error(`kernel job "${key}" failed:`, err); }
+        catch (err) {
+          // ⚠ A FAILED JOB RESOLVES AS IF IT SUCCEEDED, and until this hook existed that was the whole
+          // report. The caller cannot tell a job that finished from one that threw — a `match` that
+          // fails leaves the HUD on "matching…" for ever and a `view` silently keeps the previous data —
+          // and a console line reaches nobody who is not already watching. Resolving is still right (the
+          // callers all handle `undefined`), but the failure has to LEAVE A TRACE.
+          entry.resolve(undefined);
+          this.failures = (this.failures || 0) + 1;
+          console.error(`kernel job "${key}" failed:`, err);
+          if (this.onError) { try { this.onError(key, err); } catch { /* a reporter must not re-throw here */ } }
+        }
       }
     } finally { this._running = false; }
   }

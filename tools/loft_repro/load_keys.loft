@@ -1,0 +1,26 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// Load K keys out of the store `make_store.loft` wrote, from a path or an http(s) URL, and report the
+// wall time. Run with LOFT_LOADER_STATS=1 to see the loader's own read histogram beside it.
+#cwd
+struct Cell {
+  key: integer,
+  name: text,
+  ox: integer,
+  oy: integer,
+  xs: vector<integer>,
+}
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "repro.store";
+  want = a[1] as integer ?? 100;
+  keys: vector<integer> = [];
+  for ki in 0..want { keys += [1000 + ki]; }
+  ws: hash<Cell[key]> = [];
+  t0 = ticks();
+  n = store_load_keys(ws, src, keys);
+  ms = (ticks() - t0) / 1000000;
+  println("REPRO loaded={n} of {want} in {ms} ms from {src}");
+}

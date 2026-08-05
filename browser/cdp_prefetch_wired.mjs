@@ -125,7 +125,7 @@ async function arm(on) {
       dl: d(st, st0, 'prefetchDownloadBytes'),
       missDrained: d(st, st0, 'prefetchMissDrained'), missUnknown: d(st, st0, 'prefetchMissUnknown'),
       peak: st.prefetchPeakBytes || 0, evicted: d(st, st0, 'prefetchEvicted'),
-      heap, wasm: st.wasmBytes || 0,
+      heap, wasm: st.wasmBytes || 0, cap: st.prefetchCap || 0, maxBatch: st.prefetchMaxBatchBytes || 0,
       // The VIEW alone — everything above also carries the ring that ran after it.
       vreads: st1 ? d(st1, st0, 'rangeReads') : 0,
       vhits: st1 ? d(st1, st0, 'prefetchHits') : 0,
@@ -178,8 +178,13 @@ ok((ix.chunkReads || 0) > 0, `the viewport actually read leaf chunks (${ix.chunk
 ok(B.hits > 0, `the kernel's reads were answered from the buffer (${B.hits} hits)`);
 // §5.4 — the buffer is held in JS BESIDE wasm's own working set, so its peak is a number somebody has to
 // own. Retention is bounded by a cap; this is the assertion that the cap is real.
-ok(B.peak <= 80e6, `the buffer peaked at ${(B.peak / 1e6).toFixed(1)} MB, under the 64 MB cap + one batch` +
-   ` (${B.evicted} page(s) evicted)`);
+// The peak is bounded by the cap plus ONE in-flight batch, which is exactly what `evict` guarantees —
+// so the bound is computed from the run rather than hardcoded (an 80 MB constant failed a legitimate
+// 128 MB cap on the very sweep that was measuring it).
+const peakBound = B.cap + B.maxBatch;
+ok(B.peak <= peakBound,
+   `the buffer peaked at ${(B.peak / 1e6).toFixed(1)} MB ≤ cap ${(B.cap / 1e6).toFixed(0)} MB + one batch ` +
+   `${(B.maxBatch / 1e6).toFixed(1)} MB (${B.evicted} page(s) evicted)`);
 console.log(`      the tab holds: JS heap ${(B.heap / 1e6).toFixed(1)} MB (A: ${(A.heap / 1e6).toFixed(1)}) ` +
             `+ wasm ${(B.wasm / 1e6).toFixed(1)} MB — the phone's number, not the cap's`);
 // ⚠ ASSERTED ON THE VIEW, REPORTED FOR THE SESSION. The index's claim is about the viewport it was

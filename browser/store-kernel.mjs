@@ -62,7 +62,11 @@ export async function createKernel(wasmUrl) {
   const perStore = new Map();
   // Whole-file loads by store filename — the attribution half of `storeLoads` (see loft_host_http_get).
   const wholeLoads = new Map();
+  // ⚠ THE LIST IS CAPPED FOR REPORTING (4 entries), SO THE COUNT IS SEPARATE. A caller asking "did any
+  // read fail during this command" got `rangeFails.length`, which saturates at the cap and then stops
+  // moving — the fifth failure onward was invisible to exactly the check that cares most.
   const rangeFails = [];
+  let rangeFailed = 0;
   // ⚠ A PREFETCH BUFFER, NOT A CACHE — the distinction the sidecar comment above turns on. A cache
   // RETAINS, which would hold a second copy of a 20 MB image in JS beside wasm's. This is DRAINED: each
   // range is deleted the moment loft consumes it, so peak JS memory is the in-flight batch and not the
@@ -85,11 +89,29 @@ export async function createKernel(wasmUrl) {
   // `PFCAP` bytes, then evict the oldest. An evicted page becomes buyable again — eviction removes it
   // from the bag, and the bag IS the record of what we hold, so `prefetch` skipping what is in the bag
   // is the whole dedup. Nothing else has to remember anything.
+  // ⚠ THE CAP FOLLOWS THE DEVICE, because the whole point is that a phone cannot afford what a laptop
+  // can. Measured live on Amsterdam (working set 172.2 MB), it is worth real time and real memory:
+  //
+  //     cap 64 MB   view 1.19x  settle 1.48x   JS heap 239.9 MB
+  //     cap 128 MB  view 1.71x  settle 2.41x   JS heap 294.9 MB   (beside 202.6 MB of wasm)
+  //
+  // ⚠ AND THE SIGNAL IS THE HEAP CEILING, NOT `navigator.deviceMemory`. deviceMemory is specified to be
+  // capped at 8 and rounded to a power of two; this Chromium returns **32**, so a formula scaled by it
+  // silently lands on the maximum on any machine that over-reports. `jsHeapSizeLimit` is the browser's
+  // own ceiling for the tab and it is exactly the budget this buffer spends — the buffer IS JS heap.
+  // 15% of it leaves room for the map, the index and everything else that is not this buffer: ~128 MB on
+  // a desktop's 4.4 GB ceiling, ~77 MB where a phone reports 512 MB. Where no engine reports one
+  // (Firefox, Safari), fall back to the conservative middle rather than the maximum.
+  //
   // Settable before load so a gate can force EVICTION on a small session — the path is otherwise
   // untested on any camera that fits under the cap, and untested eviction is how a buffer starts
   // returning pages it no longer holds.
-  const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap) || 64 * 1024 * 1024;
-  let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0;
+  const heapLimit = (typeof performance !== 'undefined' && performance.memory)
+    ? performance.memory.jsHeapSizeLimit : 0;
+  const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap)
+    || (heapLimit ? Math.max(16, Math.min(128, Math.round(heapLimit * 0.15 / 1048576))) * 1024 * 1024
+                  : 48 * 1024 * 1024);
+  let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0, prefetchMaxBatchBytes = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
   let prefetchMissDrained = 0, prefetchMissUnknown = 0;
@@ -291,7 +313,7 @@ export async function createKernel(wasmUrl) {
             else { const cl = res.headers.get('Content-Length'); ctrl.httpTotal = cl ? Number(cl) : -1; }
             // 206 = the body IS the window. 200 = the server ignored Range and sent everything; slice it,
             // so a host without Range support is merely slow rather than wrong.
-            if (!res.ok) { rangeFails.push({ url, off, n, status: res.status }); ctrl.httpBytes = null; }
+            if (!res.ok) { rangeFails.push({ url, off, n, status: res.status }); rangeFailed++; ctrl.httpBytes = null; }
             else {
               const b = new Uint8Array(await res.arrayBuffer());
               ctrl.httpBytes = (res.status === 206) ? b : b.subarray(off, off + n);
@@ -308,7 +330,7 @@ export async function createKernel(wasmUrl) {
             // A cross-origin read that the browser refuses lands HERE, not at the server — which is why a
             // server log shows nothing and the app just renders an empty corridor. Record it so a gate can
             // say which read failed and why instead of only that the count came up short.
-            rangeFails.push({ url, off, n, err: String(e && e.message || e) });
+            rangeFails.push({ url, off, n, err: String(e && e.message || e) }); rangeFailed++;
             ctrl.httpBytes = null; wake('fetch');
           });
         waiting = 'fetch'; ctrl.ac.suspend();
@@ -424,7 +446,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), rangeFailed, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
@@ -447,6 +469,7 @@ export async function createKernel(wasmUrl) {
       const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
       for (const p of sorted) seen.add(p);
       inFlight = { key, pages: new Set(sorted) };
+      let batchBytes = 0;
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -475,6 +498,7 @@ export async function createKernel(wasmUrl) {
               const pg = new Uint8Array(b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
               bag.set(off / PFPAGE + q, pg);
               prefetchHeldBytes += pg.length;
+              batchBytes += pg.length;
             }
             if (prefetchHeldBytes > prefetchPeakBytes) prefetchPeakBytes = prefetchHeldBytes;
             evict();
@@ -489,6 +513,9 @@ export async function createKernel(wasmUrl) {
       const t0 = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
       inFlight = null;
+      // The peak can exceed the cap only by one in-flight batch (see `evict`), so recording the largest
+      // batch gives that excess an exact bound instead of a guessed constant in a gate.
+      if (batchBytes > prefetchMaxBatchBytes) prefetchMaxBatchBytes = batchBytes;
       evict();                    // the batch is complete and readable; NOW the cap applies to it too
       return { pages: sorted.length, requests: ranges.length, ok, failed,
                ms: Math.round(performance.now() - t0), held: bag.size };

@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// A local ingest point for the app's own diagnostics — so a bug that only happens on the real map can
+// be looked at instead of guessed at.
+//
+// WHY THIS EXISTS. Two faults are reported from real use and neither reproduces in a gate: roads going
+// missing after a pan, and a routing run that stops answering. Both are HISTORIES — what the app read,
+// which blocks answered, what failed on the way — and a screenshot or a console glance cannot carry
+// that. The app keeps a rolling log (`browser/diag.mjs`); this is where it lands.
+//
+// ⚠ IT ONLY WORKS FOR AN APP SERVED LOCALLY, and that is a browser rule rather than a choice. Measured
+// against the deployed site: an https page reaching http://127.0.0.1 or ws://127.0.0.1 is refused before
+// the request is made — the server never sees a preflight, let alone a body. So:
+//
+//   * app on http://127.0.0.1  → the button STREAMS here, live, while you reproduce the fault;
+//   * app on https://…github.io → the button DOWNLOADS the same bundle, and `--file` ingests it after.
+//
+// The transport is a WebSocket because the `server` library carries a payload on `ev.message` and gives
+// an http event nothing but a path — a diagnostic bundle does not fit in a URL.
+//
+//   loft --native tools/debug_server.loft [port]     # listen (default 8791)
+#cwd
+use server;
+
+const DEFAULT_PORT = 8791;
+const OUT_DIR = "scratch/debug";
+
+// Everything the ingest needs to remember between frames. A hash has to be a struct field, and so does
+// anything else that outlives one handler call.
+struct Ingest {
+  count: integer,
+  bytes: integer,
+  last: text,
+}
+
+// One bundle, written where a later run can read it back. Named by arrival order rather than by clock:
+// a file whose name depends on the time cannot be compared between two runs of the same fault.
+fn store(state: Ingest, payload: text) {
+  state.count += 1;
+  state.bytes += len(payload);
+  state.last = payload;
+  path = "{OUT_DIR}/bundle-{state.count}.json";
+  out = file(path);
+  out.write(payload);
+  println("  #{state.count}  {len(payload)} bytes  -> {path}");
+  summarise(payload);
+}
+
+// The three questions worth answering before anyone opens the file, each a plain substring count so that
+// this stays readable without a JSON parser in the loop.
+fn summarise(payload: text) {
+  views = count_of(payload, "\"k\":\"view\"");
+  // ⚠ COUNT THE NON-ZERO ONES, not the key. Every view record carries `rangeFailed` and every ring
+  // record carries `ringFailed`, so counting the key counted the RECORDS and reported a clean session as
+  // full of failures — the first summary this printed said "ring failures 1" for a run with none.
+  fails = count_of(payload, "\"rangeFailed\":") - count_of(payload, "\"rangeFailed\":0");
+  ring_fail = count_of(payload, "\"ringFailed\":") - count_of(payload, "\"ringFailed\":0");
+  errors = count_of(payload, "\"k\":\"error\"");
+  println("     views {views} · errors {errors} · views with a failed read {fails} · rings with a failed cell {ring_fail}");
+  if errors > 0 {
+    println("     ⚠ the bundle carries an ERROR record — that is the first thing to read");
+  }
+}
+
+// How many times `needle` occurs in `hay`. Text has no count builtin, so this walks it once.
+fn count_of(hay: text, needle: text) -> integer {
+  n = 0;
+  nl = len(needle);
+  if nl == 0 { return 0; }
+  // `find` takes no start offset, so the remainder is re-sliced each time rather than scanned from 0.
+  rest = hay;
+  hit = rest.find(needle);
+  while hit >= 0 {
+    n += 1;
+    rest = rest[(hit + nl)..];        // open-ended: slice bounds are BYTES, len() is characters
+    hit = rest.find(needle);
+  }
+  n
+}
+
+fn main() {
+  a = arguments();
+  port = DEFAULT_PORT;
+  if len(a) > 0 { port = a[0] as integer ?? DEFAULT_PORT; }
+  _ = mkdir(OUT_DIR);
+
+  srv = server::listen(port);
+  if srv.handle < 0 {
+    println("debug server: FAILED to listen on {port}");
+    return;
+  }
+  println("debug server: ws://127.0.0.1:{port}  (bundles -> {OUT_DIR}/)");
+  println("  the app's Debug button streams here when the app is served from a LOCAL origin.");
+  println("  a bundle downloaded from the deployed site is read with: loft ... debug_server.loft --file <path>");
+
+  state = Ingest { count: 0, bytes: 0, last: "" };
+  srv.run(fn(ev: server::WsEvent) {
+    if ev.http {
+      // A browser opening the port directly gets something readable rather than a dead socket.
+      srv.respond_typed(200, "debug server: {state.count} bundle(s), {state.bytes} bytes\n", "text/plain");
+    } else if ev.message {
+      store(state, ev.payload);
+    }
+  });
+}

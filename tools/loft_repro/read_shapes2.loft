@@ -1,0 +1,20 @@
+#cwd
+struct Named { x: integer, y: integer, name: text }
+struct Ring  { x: integer, pts: vector<integer> }
+struct TxtCell  { key: integer, ns: vector<Named> }
+struct NestCell { key: integer, rs: vector<Ring> }
+fn main() {
+  a = arguments();
+  which = a[0] ?? "txt";
+  path = a[1] ?? "s.store";
+  want = a[2] as integer ?? 100;
+  keys: vector<integer> = [];
+  for ki in 0..want { keys += [1000 + ki]; }
+  if which == "txt" {
+    tr: hash<TxtCell[key]> = [];
+    println("txt loaded={store_load_keys(tr, path, keys)}");
+  } else {
+    nr: hash<NestCell[key]> = [];
+    println("nest loaded={store_load_keys(nr, path, keys)}");
+  }
+}

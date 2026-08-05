@@ -10,6 +10,7 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
          SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
 import { pagesFor, indexStats, configureIndex, openIndex } from './page-index.mjs';
+import * as diag from './diag.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
@@ -60,6 +61,9 @@ const hud = document.getElementById('hud');
 const DEFAULT_CAM = { lat: 52.15, lon: 5.30, zoom: 8 };
 const bootCam = cameraFromHash(location.hash);
 if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
+// ⚠ HOOKED BEFORE ANYTHING ELSE RUNS. The fault worth catching most — a kernel that stops answering —
+// tends to end the session, so a handler installed later is a handler that was not there for it.
+diag.captureErrors(window);
 const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
 map.profile = PROFILE;   // the signposted-network overlay follows it (§6/PLAN step 8)
 
@@ -396,12 +400,19 @@ let loadedBox = null, loadedBbox = null, lastViewText = null, loadedSrc = null;
 // can `memory.grow` and MOVE the store, and the index holds record numbers that are only meaningful
 // against the base they were read from. Ring steps therefore compare and rebuild only on a change — the
 // common case is that the store did not move and the drawn map is untouched.
-let indexBase = null, ringGen = 0, ringStats = { planned: 0, done: 0, skipped: 0, abandoned: 0, ms: 0 };
+let indexBase = null, ringGen = 0, ringStats = { planned: 0, done: 0, skipped: 0, failed: 0, abandoned: 0, ms: 0 };
 // PLAN-EDIT E0, chokepoint 3 — the one way to reach the kernel. `runKernel` keeps a single resolve slot,
 // so commands must be serialized; this does that AND coalesces per key, which the old shared `busy`
 // boolean could not. Previously `busy` was held by both the view loader and the matcher, so a view in
 // flight made a click return without matching and the route silently went stale (PLAN-EDIT §2 P4).
 const jobs = new KernelQueue();
+// A job that throws resolves as if it had finished (see `KernelQueue._drain`), so without this the two
+// faults reported from real use — a view that quietly kept old data, a match that never answers — leave
+// nothing behind but a console line on a machine nobody is watching.
+jobs.onError = (key, err) => {
+  diag.note('error', { job: key, msg: String((err && err.message) || err).slice(0, 300) });
+  if (key === 'match') hud.textContent = 'the route could not be computed — press Debug to collect why';
+};
 
 // The two dropdowns. Options are built from ACT so the markup carries no profile knowledge, and the
 // value is validated against PROFILES — the kernel's own list — so a profile it cannot weigh never
@@ -620,7 +631,14 @@ async function ensureViewNow() {
   // index does not name simply misses and is fetched the old way. Nothing here can make the map WRONG —
   // the store is unchanged and every byte is still verified by the loader.
   await prefetchFor(box, zoom);
+  // ⚠ A RANGE READ CAN FAIL WITHOUT THE COMMAND FAILING, and then the view is short of data while looking
+  // finished. The kernel records the failure and carries on — a paged read of a cell that 404s or 5xxs
+  // yields a store with that cell missing, not an error — so the map draws fewer roads and the app files
+  // the box away as loaded. Every later pan inside it is answered from data that was never complete.
+  // Counted across the call, so an incomplete view can refuse to claim its ground below.
+  const failsBefore = (kernel.stats ? kernel.stats().rangeFailed : 0);
   const text = await kernel.runKernel(viewCmd(bbox, roadsFor(box, zoom), 'view', baseFor(box, zoom), box, zoom));
+  const viewFails = (kernel.stats ? kernel.stats().rangeFailed : 0) - failsBefore;
   map.loadRoadsFlat(text, roadsFloorFor(box, zoom));
   // PLAN-PERF §0 step 13 — every layout kind renders from the exposed store. `view` is now ROADS ONLY,
   // so `map.loadView` above parses only the R lines; the layout costs loft nothing to serialise and,
@@ -648,7 +666,18 @@ async function ensureViewNow() {
     indexBase = h.storeBase;      // what the ring compares against — see `pageRingCell`
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
   }
-  loadedBox = box; loadedBbox = bbox; lastViewText = text; loadedSrc = src;
+  // An incomplete view draws what it got — that is better than a blank screen — but it must NOT record
+  // the ground as held, or the next pan inside it loads nothing and the gap becomes permanent.
+  loadedBox = viewFails ? null : box;
+  loadedBbox = bbox; lastViewText = text; loadedSrc = viewFails ? null : src;
+  if (viewFails) console.warn(`[view] ${viewFails} range read(s) failed — the box is NOT recorded as held`);
+  // The record a "roads went missing after a pan" report is answered from: what was asked for, which
+  // blocks answered, how much came back, and whether the app then claimed to hold the ground.
+  diag.note('view', {
+    bbox, zoom, roads: roadsFor(box, zoom), base: baseFor(box, zoom),
+    mode: `${roadsModeFor(box, zoom)}|${baseModeFor(box, zoom)}`,
+    counts, ms: Math.round(performance.now() - t0), rangeFailed: viewFails, held: !viewFails,
+  });
   // PLAN-LAYERS §5 (L3) — the ground this view is ACTUALLY holding, which is what the floor draws around.
   // The intersection of the box that was read with the extents of the blocks that answered it: a viewport
   // wider than the data gets a held box narrower than the screen, and the floor fills the rest.
@@ -716,7 +745,7 @@ async function ensureViewNow() {
 // not the text. Nothing is rendered and no index is rebuilt — see the storeBase guard below.
 function scheduleRing(screen, zoom) {
   const gen = ringGen;
-  ringStats = { planned: 0, done: 0, skipped: 0, abandoned: 0, ms: 0, gen };
+  ringStats = { planned: 0, done: 0, skipped: 0, failed: 0, abandoned: 0, ms: 0, gen };
   // A block read WHOLE is already entirely resident, so a ring around it would be eight kernel calls that
   // fetch nothing. The ring is a paging optimisation and it belongs only where there is paging to do.
   if (roadsModeFor(screen, zoom) !== 'paged' && baseModeFor(screen, zoom) !== 'paged') {
@@ -749,7 +778,10 @@ function promoteRing(screen, zoom) {
   // A ring with skipped cells did not fill the box, so widening onto it would claim ground the app does
   // not hold — the map would then answer a pan into that cell from an index that has nothing there, and
   // draw an empty screen instead of reloading. Hold the smaller, honest box.
-  if (ringStats.skipped) { ringStats.promoted = `incomplete (${ringStats.skipped} skipped)`; return; }
+  if (ringStats.skipped || ringStats.failed) {
+    ringStats.promoted = `incomplete (${ringStats.skipped || 0} skipped, ${ringStats.failed || 0} failed)`;
+    return;
+  }
   const hh = kernel.exposedValue ? kernel.exposedValue(1) : null;
   if (!hh) { ringStats.promoted = 'no-handle'; return; }
   const bbox3 = bboxOf(box3), fb = fboxOf(bbox3);
@@ -801,8 +833,17 @@ function postRingStep(gen, screen, zoom, i) {
       await prefetchFor(cell, zoom);
       await kernel.runKernel(viewCmd(bboxOf(cell), roadsFor(cell, zoom), 'view', baseFor(cell, zoom), cell, zoom));
     } catch (err) {
-      // A ring cell that fails is a prefetch that did not happen — never a broken map. The screen is
-      // already drawn from its own view, so the honest response is to record it and carry on.
+      // ⚠ A FAILED CELL IS AN UNFILLED CELL, and until this counter existed it was indistinguishable from
+      // a filled one. `done` was incremented either way and `promoteRing` only refuses on `skipped`, so
+      // one failed cell — a dropped range read, a transient 5xx, a kernel that threw — widened
+      // `loadedBox` onto ground the app had never paged. A later pan into that cell then satisfies
+      // `covers(loadedBox, …)`, loads NOTHING, and draws an empty screen: reported from the live site as
+      // ROADS MISSING AFTER PANNING, which is exactly the shape of it.
+      //
+      // The screen the user is looking at is still correct — this is the ring, behind the paint — so the
+      // response is still to carry on. What changes is that the ring no longer claims to have finished.
+      ringStats.failed = (ringStats.failed || 0) + 1;
+      ringStats.lastError = String((err && err.message) || err).slice(0, 200);
       console.warn(`[ring] cell ${dx},${dy} failed:`, err);
     }
     ringStats.ms += performance.now() - t0;
@@ -825,6 +866,10 @@ function postRingStep(gen, screen, zoom, i) {
       }
     }
     window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats } };
+    if (i === RING_CELLS.length - 1) {
+      diag.note('ring', { done: ringStats.done, skipped: ringStats.skipped, ringFailed: ringStats.failed || 0,
+                          promoted: ringStats.promoted || null, err: ringStats.lastError || null });
+    }
     postRingStep(gen, screen, zoom, i + 1);
   });
 }
@@ -1007,6 +1052,11 @@ function requestMatch(pts) {
   }
   hud.textContent = 'matching…';
   return jobs.post('match', async (isCurrent) => {
+    // ⚠ WRITTEN BEFORE THE WORK, so a match that never returns is VISIBLE as a start with no end. A
+    // record written afterwards can only describe matches that finished, which are exactly the ones
+    // nobody is reporting.
+    const mt0 = performance.now();
+    diag.note('match-start', { pts: pts.length, first: pts[0] ? pts[0].join(',') : null });
     const spec = (p) => p.map(([a, b]) => `${a},${b}`).join(';');
     let text = await streamedMatch(spec(pts), isCurrent);
     // A superseded match's route must not land: the user has already edited past it, and drawing it would
@@ -1047,8 +1097,48 @@ function requestMatch(pts) {
     hud.textContent = sum ? (d ? `${d} · ${sum}` : sum) : '(no route)';
     window.__storeApp = { ...(window.__storeApp || {}), matchOk: /ways=\d+/.test(sum), summary: sum,
                           routePts: map.route.length, matchRuns: (window.__storeApp?.matchRuns || 0) + 1 };
+    // The record a "routing stopped answering" report is answered from. A match that never returns
+    // leaves the START record and no END, and that asymmetry is the whole signal — which is why the
+    // start is written before the work rather than after it.
+    diag.note('match', { pts: map.route.length, sum, ms: Math.round(performance.now() - mt0),
+                         ok: /ways=\d+/.test(sum) });
   });
 }
+
+// THE DIAGNOSTICS BUTTON — shown when the app is asked for it, or whenever it is served locally (where
+// it can stream). A visitor on the real site sees nothing unless they put `debug` in the fragment, which
+// is also how a bug report gets asked for one: "reload with #…&debug, press Debug, send me the file".
+const diagBtn = document.getElementById('diag-btn');
+if (diagBtn && (/(^|[#&/])debug\b/.test(location.hash) || diag.canStream())) {
+  diagBtn.classList.remove('hidden');
+  if (diag.canStream()) diag.connect().then((ok) => { if (ok) diagBtn.textContent = 'Debug ●'; });
+  diagBtn.addEventListener('click', async () => {
+    diagBtn.disabled = true;
+    const was = diagBtn.textContent;
+    try {
+      // The live state goes in at bundle time: counters are a snapshot by nature, and logging them per
+      // view would make the log mostly counters.
+      const r = await diag.send({
+        app: { ...(window.__storeApp || {}) },
+        kernel: kernel.stats ? kernel.stats() : null,
+        pageIndex: indexStats(),
+        ring: { ...ringStats },
+        coverage: { block: coverage.block ? coverage.block.id : null, outside: !!coverage.outside },
+        camera: { ...map.camera },
+        sketch: rough.points ? rough.points.length : null,
+      });
+      diagBtn.textContent = `${r.how} ${(r.bytes / 1024).toFixed(0)} kB`;
+    } catch (e) {
+      diagBtn.textContent = 'failed';
+      console.warn('[diag]', e);
+    }
+    setTimeout(() => { diagBtn.textContent = was; diagBtn.disabled = false; }, 4000);
+  });
+}
+window.__diag = diag;          // test hook: gates read the records without pressing anything
+// Test hook: the kernel itself, for probes that drive a command the app does not send (the lazy-bind
+// spike). Deliberately NOT routed through `jobs` — it is a probe, and the queue guards the app's road.
+window.__kernelForLazy = kernel;
 
 map.onMove(ensureView);        // re-view when the camera settles outside the loaded area
 map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
@@ -1084,6 +1174,10 @@ window.__rough = rough;
 window.__jobs = jobs;
 window.__perfHooks = {
   kernelStats: () => (kernel.stats ? kernel.stats() : null),
+  // A round trip through the whole machine — JS, wasm, loft's loop, back — that reads nothing and
+  // computes nothing. It exists to be TIMED: wasm cannot introspect the machine it runs on (the sandbox
+  // exposes no CPU and no memory), but it can be measured, and a measurement moves when the machine does.
+  kernelPing: () => kernel.runKernel('\n\nreset'),
   // docs/prefetch-index-design.md — hand the bridge the pages a viewport needs, ALL AT ONCE, so the
   // kernel's reads become synchronous buffer hits instead of 764 serial round trips. Exposed as a probe
   // rather than wired into the view: the app cannot compute a cell key (JS works in bboxes, loft in
