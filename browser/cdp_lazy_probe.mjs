@@ -53,7 +53,9 @@ try {
 
   // The probe command's own line protocol: no layout, the store as the roads URL, `paged` so nothing is
   // loaded eagerly — the whole point is that the collection starts EMPTY.
-  const cmd = (url, k, verb = 'lazyprobe') => `\n${url}\n${verb}\n${k}\n\npaged\n\nwhole`;
+  // The profile slot carries the RECORD TYPE for these probes — see the kernel's comment.
+  const kind = process.env.LAZY_KIND || 'roads';
+  const cmd = (url, k, verb = 'lazyprobe') => `\n${url}\n${verb}\n${k}\n${kind}\npaged\n\nwhole`;
   const runIt = async (url, k, verb) => {
     const before = await json(call, 'window.__perfHooks.kernelStats()') || {};
     const text = await ev(call, `window.__kernelForLazy.runKernel(${JSON.stringify(cmd(url, k, verb))})`);
@@ -94,8 +96,13 @@ try {
     console.log(`  ⇒ lazy costs ${(cold.reads / Math.max(base.reads, 1)).toFixed(1)}× the reads and ` +
                 `${(cold.bytes / Math.max(base.bytes, 1)).toFixed(1)}× the bytes of the batched path`);
 
-    const pages = Number(process.env.LAZY_PAGES || 72);
-    const fill = await json(call, `window.__perfHooks.prefetch(${JSON.stringify(storeUrl)}, ${JSON.stringify([...Array(pages).keys()])})`);
+    // The page list the INDEX names for exactly these cells, when given one — which is what the app
+    // does. Falling back to the first N pages only makes sense for a block small enough to hold whole.
+    const pageList = process.env.LAZY_PAGE_LIST
+      ? process.env.LAZY_PAGE_LIST.split(',').map(Number)
+      : [...Array(Number(process.env.LAZY_PAGES || 72)).keys()];
+    const fill = await json(call, `window.__perfHooks.prefetch(${JSON.stringify(storeUrl)}, ${JSON.stringify(pageList)})`);
+    console.log(`  the index named ${pageList.length} pages for these cells`);
     console.log(`\n=== the same keys, with the block's pages prefetched first`);
     console.log(`  batch: ${fill?.pages} pages in ${fill?.requests} request(s), ${fill?.ms} ms`);
     const warm = await runIt(storeUrl, process.env.LAZY_MANY);

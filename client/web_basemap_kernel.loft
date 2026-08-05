@@ -257,29 +257,46 @@ fn main() {
           //
           // Bound to a FRESH collection each pass, so the probe cannot be answered by a previous one's
           // residency. `arg3` carries the keys because JS never computes a `tkey` — only loft does.
+          // The record type is the PROFILE slot, because a probe has no profile and the protocol is
+          // positional: "base" walks PTile (the layout grid), anything else TTile (roads). The base
+          // store is the one that matters most — a cold Amsterdam view read 43.3 MB of base against
+          // 6.7 MB of roads — and its grid is finer, so a viewport names far more cells.
           lz: hash<TTile[tkey]> = [];
+          lzp: hash<PTile[tkey]> = [];
           lurl = roads_urls[0] ?? "";
-          bound = store_bind_lazy(lz, lurl);
+          lzbase = profile == "base";
+          bound = if lzbase { store_bind_lazy(lzp, lurl) } else { store_bind_lazy(lz, lurl) };
           got = 0;
           miss = 0;
           for lzk in arg3.split(',') {
             if lzk != "" {
-              lztile = lz[lzk as integer ?? 0];
-              if lztile == null { miss += 1; } else { got += 1; }
+              lzkey = lzk as integer ?? 0;
+              if lzbase {
+                lzptile = lzp[lzkey];
+                if lzptile == null { miss += 1; } else { got += 1; }
+              } else {
+                lztile = lz[lzkey];
+                if lztile == null { miss += 1; } else { got += 1; }
+              }
             }
           }
           // `faults` counts fetches that could not REACH the source — 0 is healthy — and `err` tells an
           // unreachable source apart from a genuinely absent key. That distinction is the one the app
           // has been unable to make: a range read that fails leaves a hole the view records as held.
-          println("LAZY bound={bound} got={got} miss={miss} faults={store_lazy_faults(lz)} err='{store_lazy_error(lz)}' url={lurl}");
+          lzfaults = if lzbase { store_lazy_faults(lzp) } else { store_lazy_faults(lz) };
+          lzerr = if lzbase { store_lazy_error(lzp) } else { store_lazy_error(lz) };
+          println("LAZY bound={bound} got={got} miss={miss} faults={lzfaults} err='{lzerr}' url={lurl}");
         } else if cmd == "keysprobe" {
           // The BASELINE the lazy probe has to be read against: the same keys through the path the app
           // uses today. `store_load_keys` is told everything up front and fetches it as one batch, which
           // is exactly what lazy binding gives up — so the comparison is bytes and reads, not features.
           kp: hash<TTile[tkey]> = [];
+          kpp: hash<PTile[tkey]> = [];
           kpkeys: vector<integer> = [];
           for kpk in arg3.split(',') { if kpk != "" { kpkeys += [kpk as integer ?? 0]; } }
-          kpn = store_load_keys(kp, roads_urls[0] ?? "", kpkeys);
+          kpurl = roads_urls[0] ?? "";
+          kpn = if profile == "base" { store_load_keys(kpp, kpurl, kpkeys) }
+                else { store_load_keys(kp, kpurl, kpkeys) };
           println("KEYSLOAD asked={len(kpkeys)} loaded={kpn}");
         } else if cmd == "reset" {
           // Profiler hook (PLAN-PERF §7e). The session is what makes a warm edit cheap — and it is also
