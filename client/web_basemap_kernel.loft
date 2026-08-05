@@ -247,6 +247,40 @@ fn main() {
             }
           }
           do_find(names, fq, fla, flo, 8);
+        } else if cmd == "lazyprobe" {
+          // @PLN129 arc A, in the browser — DOES A LOOKUP FETCH?
+          //
+          // Every other read here has to be TOLD what to fetch: `store_load_keys` takes the cell keys a
+          // command decided it needs, which is why the app carries a covering set, a page index, a
+          // prefetch batch and a ring — and why a cell nobody predicted is silently missing rather than
+          // fetched. A lazy bind inverts that: the collection starts empty and a MISS goes to the source.
+          //
+          // Bound to a FRESH collection each pass, so the probe cannot be answered by a previous one's
+          // residency. `arg3` carries the keys because JS never computes a `tkey` — only loft does.
+          lz: hash<TTile[tkey]> = [];
+          lurl = roads_urls[0] ?? "";
+          bound = store_bind_lazy(lz, lurl);
+          got = 0;
+          miss = 0;
+          for lzk in arg3.split(',') {
+            if lzk != "" {
+              lztile = lz[lzk as integer ?? 0];
+              if lztile == null { miss += 1; } else { got += 1; }
+            }
+          }
+          // `faults` counts fetches that could not REACH the source — 0 is healthy — and `err` tells an
+          // unreachable source apart from a genuinely absent key. That distinction is the one the app
+          // has been unable to make: a range read that fails leaves a hole the view records as held.
+          println("LAZY bound={bound} got={got} miss={miss} faults={store_lazy_faults(lz)} err='{store_lazy_error(lz)}' url={lurl}");
+        } else if cmd == "keysprobe" {
+          // The BASELINE the lazy probe has to be read against: the same keys through the path the app
+          // uses today. `store_load_keys` is told everything up front and fetches it as one batch, which
+          // is exactly what lazy binding gives up — so the comparison is bytes and reads, not features.
+          kp: hash<TTile[tkey]> = [];
+          kpkeys: vector<integer> = [];
+          for kpk in arg3.split(',') { if kpk != "" { kpkeys += [kpk as integer ?? 0]; } }
+          kpn = store_load_keys(kp, roads_urls[0] ?? "", kpkeys);
+          println("KEYSLOAD asked={len(kpkeys)} loaded={kpn}");
         } else if cmd == "reset" {
           // Profiler hook (PLAN-PERF §7e). The session is what makes a warm edit cheap — and it is also
           // what makes a "cold" measurement impossible once it exists: re-sending the same sketch into a

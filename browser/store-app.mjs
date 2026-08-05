@@ -1136,6 +1136,9 @@ if (diagBtn && (/(^|[#&/])debug\b/.test(location.hash) || diag.canStream())) {
   });
 }
 window.__diag = diag;          // test hook: gates read the records without pressing anything
+// Test hook: the kernel itself, for probes that drive a command the app does not send (the lazy-bind
+// spike). Deliberately NOT routed through `jobs` — it is a probe, and the queue guards the app's road.
+window.__kernelForLazy = kernel;
 
 map.onMove(ensureView);        // re-view when the camera settles outside the loaded area
 map.onMove(rememberCamera);    // …and record where it settled, so a reload comes back here
