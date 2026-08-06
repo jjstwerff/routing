@@ -42,11 +42,22 @@ export const TIERS = {
 };
 export const TIER_ORDER = ['minimal', 'reduced', 'full'];
 
-// The measured boundaries, in features indexed-and-drawn per millisecond. Set from
-// `browser/cdp_device_probe.mjs` at 1x / 4x / 8x CPU throttle — the throttle IS the slower machine, and
-// 4x is the mid-range phone PLAN-PERF targets throughout.
-export const FAST_ENOUGH = 900;      // at or above this, `full`
-export const SLOW_BELOW = 220;       // below this, `minimal`
+// The measured boundaries, in features indexed-and-drawn per millisecond, from
+// `browser/cdp_device_probe.mjs` — the CPU throttle IS the slower machine, and 4x is the mid-range phone
+// PLAN-PERF targets throughout:
+//
+//     CPU 1x   679 features/ms      this box, a 24-core desktop        -> full
+//     CPU 4x   208                  the target mid-range phone         -> reduced
+//     CPU 8x   102                  a weak phone                       -> minimal
+//
+// The signal tracks the machine almost linearly (679 / 208 / 102 against 1 / 4 / 8) while every declared
+// hint stays frozen, which is the whole reason the tier is corrected by measurement at all.
+//
+// The boundaries sit between those readings with room on both sides — 679 is 1.7x above FAST_ENOUGH and
+// 102 is 1.5x below SLOW_BELOW — so ordinary variance does not move a machine between tiers. They are
+// NOT the readings themselves: a threshold set at a measurement classifies that machine by a coin toss.
+export const FAST_ENOUGH = 400;      // at or above this, `full`
+export const SLOW_BELOW = 150;       // below this, `minimal`
 
 /** What the browser SAYS about itself, gathered in one place so the tier logic stays pure. */
 export function declaredSignals(w = (typeof window !== 'undefined' ? window : undefined)) {
@@ -93,8 +104,14 @@ export function measuredTier(featuresPerMs) {
  * the cost of believing it wrongly is some missing detail, and the cost of ignoring it is a frozen map.
  */
 export function createDevice(signals = declaredSignals()) {
-  let tier = declaredTier(signals);
-  let source = 'declared';
+  // ⚠ PINNABLE, BECAUSE THE TIER IS AN INPUT TO GEOMETRY. The pad decides the box a view reads, so any
+  // gate that compares TWO RUNS is comparing two machines' moods unless it fixes the tier — and one did:
+  // `base_paged` diffs a whole read against a paged one and reported "the two runs looked at different
+  // boxes" the moment the pad started following a measurement. A pinned tier never observes, so a loaded
+  // box cannot move it mid-suite.
+  const pinned = typeof window !== 'undefined' && window.__deviceTier;
+  let tier = pinned && TIERS[pinned] ? pinned : declaredTier(signals);
+  let source = pinned ? 'pinned' : 'declared';
   let fastRun = 0;
   const samples = [];
   const capOf = (t) => {
@@ -115,6 +132,7 @@ export function createDevice(signals = declaredSignals()) {
     samples: () => samples.slice(-8),
     /** Feed one view's measured speed. Returns true when the tier changed. */
     observe(featuresPerMs) {
+      if (source === 'pinned') return false;      // a pinned tier is the gate's, not the machine's
       const want = measuredTier(featuresPerMs);
       if (!want) return false;
       samples.push(Math.round(featuresPerMs));

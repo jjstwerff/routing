@@ -109,7 +109,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // says "whole" without a second dataset.
 async function run(mode) {
   const boot = await call('Page.addScriptToEvaluateOnNewDocument', {
-    source: `window.__baseReadMode = ${JSON.stringify(mode)};`,
+    // ⚠ AND THE DEVICE TIER IS PINNED. The tier decides `viewPad`, which decides the BOX a view reads —
+    // so with it free, the two arms of this diff can look at different ground and the comparison means
+    // nothing. It reported exactly that ("the two runs looked at different boxes") the moment the pad
+    // started following a measurement. A gate that compares two runs has to fix every input that is not
+    // the thing under test.
+    source: `window.__baseReadMode = ${JSON.stringify(mode)}; window.__deviceTier = 'full';`,
   });
   // ⚠ VIA about:blank. The app writes the camera into `location.hash`, so by the end of a run the URL
   // differs from the next run's only in its FRAGMENT — and navigating between two URLs that differ only

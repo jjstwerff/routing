@@ -106,11 +106,12 @@ export async function createKernel(wasmUrl) {
   // Settable before load so a gate can force EVICTION on a small session — the path is otherwise
   // untested on any camera that fits under the cap, and untested eviction is how a buffer starts
   // returning pages it no longer holds.
-  const heapLimit = (typeof performance !== 'undefined' && performance.memory)
-    ? performance.memory.jsHeapSizeLimit : 0;
+  // The cap is the DEVICE's to decide (browser/device.mjs) — one tier answers for the buffer, the
+  // off-screen ring and the drawn detail together, because they spend the same machine. `__prefetchCap`
+  // still overrides, so a gate can force eviction on a session that would otherwise fit.
   const PFCAP = (typeof window !== 'undefined' && window.__prefetchCap)
-    || (heapLimit ? Math.max(16, Math.min(128, Math.round(heapLimit * 0.15 / 1048576))) * 1024 * 1024
-                  : 48 * 1024 * 1024);
+    || (typeof window !== 'undefined' && window.__deviceCapBytes)
+    || 48 * 1024 * 1024;
   let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0, prefetchMaxBatchBytes = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;

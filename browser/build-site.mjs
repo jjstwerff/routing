@@ -35,6 +35,9 @@ const pageIndexMjs = stripExport(readFileSync(join(here, 'page-index.mjs'), 'utf
 // The rolling diagnostic log + its sinks. Inlined like every other module; `store-app` reaches it as the
 // `diag` namespace, which the bundler rewrites below because a flat scope has no namespace imports.
 const diagMjs = stripExport(readFileSync(join(here, 'diag.mjs'), 'utf8'));
+// The device tier — one answer for the retention cap, the off-screen ring and the drawn detail. Inlined
+// before store-app, which constructs it and publishes the cap the kernel reads.
+const deviceMjs = stripExport(readFileSync(join(here, 'device.mjs'), 'utf8'));
 const storeAppMjs = stripExport(readFileSync(join(here, 'store-app.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/map\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-kernel\.mjs';\s*$/m, '')
@@ -46,17 +49,18 @@ const storeAppMjs = stripExport(readFileSync(join(here, 'store-app.mjs'), 'utf8'
   // the functions the inlined module already defines.
   .replace(/^import\s+\*\s+as\s+diag\s+from\s+'\.\/diag\.mjs';\s*$/m,
            'const diag = { note, captureErrors, bundle, canStream, connect, send, records };')
+  .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/device\.mjs';\s*$/m, '')
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/coverage\.mjs';\s*$/m, '');
 // A leftover `import ... from './x.mjs'` means a module was added without teaching this bundler about
 // it: the browser then tries to FETCH that path out of _site/, where it does not exist, and the app dies
 // on load with no console error the harness can see. Fail the build instead.
-for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs], ['map.mjs', mapMjs], ['store-geom.mjs', storeGeomMjs], ['rough.mjs', roughMjs], ['coverage.mjs', coverageMjs], ['page-index.mjs', pageIndexMjs], ['diag.mjs', diagMjs]]) {
+for (const [name, src] of [['store-app.mjs', storeAppMjs], ['loft-store.mjs', loftStoreMjs], ['map.mjs', mapMjs], ['store-geom.mjs', storeGeomMjs], ['rough.mjs', roughMjs], ['coverage.mjs', coverageMjs], ['page-index.mjs', pageIndexMjs], ['diag.mjs', diagMjs], ['device.mjs', deviceMjs]]) {
   const stray = src.match(/^import\s.*$/m);
   if (stray) { console.error(`build-site: ERROR — un-inlined import left in ${name}: ${stray[0]}`); process.exit(1); }
 }
 const html = readFileSync(join(here, 'index.html'), 'utf8')
   .replace(/<script type="module" src="\.\/store-app\.mjs"><\/script>/,
-    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/store-geom.mjs ---- */\n${storeGeomMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/rough.mjs ---- */\n${roughMjs}\n/* ---- inlined browser/coverage.mjs ---- */\n${coverageMjs}\n/* ---- inlined browser/page-index.mjs ---- */\n${pageIndexMjs}\n/* ---- inlined browser/diag.mjs ---- */\n${diagMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
+    `<script type="module">\n/* ---- inlined browser/loft-deliver.js ---- */\n${loftDeliverJs}\n/* ---- inlined browser/loft-store.mjs ---- */\n${loftStoreMjs}\n/* ---- inlined browser/store-geom.mjs ---- */\n${storeGeomMjs}\n/* ---- inlined browser/map.mjs ---- */\n${mapMjs}\n/* ---- inlined browser/rough.mjs ---- */\n${roughMjs}\n/* ---- inlined browser/coverage.mjs ---- */\n${coverageMjs}\n/* ---- inlined browser/page-index.mjs ---- */\n${pageIndexMjs}\n/* ---- inlined browser/diag.mjs ---- */\n${diagMjs}\n/* ---- inlined browser/device.mjs ---- */\n${deviceMjs}\n/* ---- inlined browser/store-kernel.mjs ---- */\n${storeKernelMjs}\n/* ---- inlined browser/store-app.mjs ---- */\n${storeAppMjs}\n</script>`);
 
 // Assemble _site/: the inlined app + the kernel wasm + the two loft stores (served static for the app to fetch).
 if (existsSync(site)) rmSync(site, { recursive: true });

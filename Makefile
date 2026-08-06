@@ -192,6 +192,7 @@ test: check
 	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
 	@./tools/derived_scope_gate.sh
 	@node browser/page-index.test.mjs
+	@node browser/device.test.mjs
 	@echo "  ALL OFFLINE GATES PASS"
 
 test-native: check-rustc
