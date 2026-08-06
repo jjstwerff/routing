@@ -44,6 +44,11 @@ const CAMS = ROUTE.map(([lat, lon]) => ({ lat, lon, zoom: zooms[zooms.length - 1
 let fails = 0;
 const ok = (c, m) => { if (!c) { fails++; console.error('  ✗ ' + m); } else console.log('  ✓ ' + m); };
 
+// ⚠ THIS GATE IS THE SUITE'S LONGEST, so it reports where its own time goes rather than leaving the next
+// person to guess. `build-site.mjs` costs 0 s and the ten rebuilds across the suite are free — the cost is
+// here, in walking a route twice with a ring behind every camera.
+const T0 = Date.now();
+const lap = (what) => console.log(`    [${String(((Date.now() - T0) / 1000).toFixed(0)).padStart(3)}s] ${what}`);
 const browser = await launch({ bin: process.env.CHROMIUM_BIN || 'chromium', userDataDir: profile });
 const { call } = browser;
 const ready = async () => { for (let i = 0; i < 900; i++) { await sleep(100); if (await ev(call, '!!(window.__storeApp&&window.__storeApp.ready)')) return true; } return false; };
@@ -69,12 +74,20 @@ async function walk(call, label) {
 try {
   await call('Page.enable'); await call('Runtime.enable'); await call('Network.enable');
   await call('Storage.clearDataForOrigin', { origin: new URL(pageUrl).origin, storageTypes: 'local_storage,cache_storage' });
+  // ⚠ THE TIER IS PINNED, AND IT IS WHAT MAKES THIS GATE AFFORDABLE. Measured: 495 s, of which 244 s was
+  // the online walk alone — a ring of eight neighbouring screens is paged behind every camera, twice
+  // (once to record, once to replay). The ring is not what this gate claims: the claim is that a SAVED
+  // ROUTE draws with no network, and the ring is ground beyond it. `minimal` turns it off on both sides,
+  // so the pack and the trip still agree with each other, which is the property that matters.
+  await call('Page.addScriptToEvaluateOnNewDocument', { source: "window.__deviceTier = 'minimal';" });
   await call('Page.navigate', { url: pageUrl });
   if (!await ready()) { console.error('  ✗ the app never became ready'); process.exit(1); }
   await settle();
 
+  lap('app ready');
   console.log(`\n=== ONLINE: what the route looks like with a network`);
   const online = await walk(call, 'online ');
+  lap('online walk done');
 
   console.log(`\n=== SAVING A PACK — ${halfWidth} m either side, zooms ${zooms.join(',')}`);
   const plan = await jsonAwait(call, `window.__perfHooks.packPlan(${JSON.stringify(ROUTE)}, ${JSON.stringify({ halfWidthM: +halfWidth, zooms })})`);
@@ -83,6 +96,7 @@ try {
   const saved = await jsonAwait(call, `window.__perfHooks.savePack(${JSON.stringify(ROUTE)}, ${JSON.stringify({ halfWidthM: +halfWidth, zooms, id: 'gate-route' })})`);
   console.log(`  saved: ${saved ? `${saved.done} pages, ${saved.failed} failed` : '(failed)'}`);
   ok(saved && saved.done > 0 && saved.failed === 0, `the pack downloaded whole (${saved ? saved.done : 0} pages, ${saved ? saved.failed : '?'} failed)`);
+  lap('pack saved');
   const cs = await json(call, 'window.__perfHooks.pageCacheStats()') || {};
   ok((cs.writes || 0) > 0, `and reached persistent storage (${cs.writes} writes, ${(cs.bytesIn / 1e6).toFixed(1)} MB)`);
 
@@ -96,7 +110,9 @@ try {
   ok(bootedOffline, 'the app boots with no network at all');
   if (bootedOffline) {
     await settle();
+    lap('offline boot');
     const offline = await walk(call, 'offline');
+    lap('offline walk done');
     const cs2 = await json(call, 'window.__perfHooks.pageCacheStats()') || {};
     console.log(`  cache served ${cs2.hits} page(s), ${(cs2.bytesOut / 1e6).toFixed(1)} MB, ${cs2.misses} miss(es)`);
     ok(offline.every((n) => n > 0), `every step of the route drew something (${offline.join(', ')})`);
