@@ -115,6 +115,28 @@ export async function createKernel(wasmUrl) {
   let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0, prefetchMaxBatchBytes = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
   let persistHits = 0;                   // reads answered off the device, with no network at all
+  // ⚠ WHAT THE SESSION ACTUALLY READ, per store — which is not what the index NAMES. The page index is an
+  // approximation of the feature overhang (`PREFETCH_PAD`), so a view reads pages it never predicted:
+  // measured on one Luxembourg route, 179 reads that the plan did not contain, every one of them in the
+  // SECOND block of the covering set. Online those fall through to a fetch and nobody notices; offline
+  // they are holes in the map. A pack built from this instead is exact by construction.
+  const readPages = new Map();           // url -> Set<pageNo>
+  // While packing, `seen` is the wrong filter (see `prefetch`); what matters is whether the page is on
+  // DISK already. Tracked per store as it is written, so a pack re-run is cheap rather than a re-download.
+  const persisted = new Map();           // url -> Set<pageNo>
+  const persistKnown = (url, p) => (persisted.get(url.split('?')[0]) || new Set()).has(p);
+  const notePersisted = (url, ps) => {
+    const k = url.split('?')[0];
+    let set = persisted.get(k);
+    if (!set) { set = new Set(); persisted.set(k, set); }
+    for (const p of ps) set.add(p);
+  };
+  const noteRead = (url, off, len) => {
+    const k = url.split('?')[0];
+    let set = readPages.get(k);
+    if (!set) { set = new Set(); readPages.set(k, set); }
+    for (let p = Math.floor(off / PFPAGE); p <= Math.floor((off + Math.max(1, len) - 1) / PFPAGE); p++) set.add(p);
+  };
   // Set while a route pack is being built, so those pages are written PINNED rather than incidental.
   let prefetchPackId = null;
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
@@ -307,6 +329,7 @@ export async function createKernel(wasmUrl) {
             }
             // RETAINED, not drained — see PFCAP above. A page the ring asks for next is already here.
             prefetchHits++; prefetchBytes += outb.length;
+            noteRead(url, off, n);
             ctrl.httpBytes = outb;
             ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
             rangeReads++; rangeBytes += outb.length;
@@ -362,6 +385,7 @@ export async function createKernel(wasmUrl) {
             const pse2 = perStore.get(shk2) || { reads: 0, bytes: 0 };
             pse2.reads++; pse2.bytes += outb.length; perStore.set(shk2, pse2);
             persistHits++;
+            noteRead(url, off, n);
             // Answered exactly as the fetch path answers: fill the slot, restore the total from what the
             // buffer already knows, and wake the suspended kernel. (`back` belongs to `http_get`'s scope,
             // not this one — calling it here threw a ReferenceError the first time.)
@@ -387,6 +411,7 @@ export async function createKernel(wasmUrl) {
               // Counted on DELIVERY. The first version counted the request, so a cross-origin read that
               // the browser blocked still reported "38 range reads, 2.3 MB" while the matcher got nothing.
               rangeReads++; rangeBytes += ctrl.httpBytes.length;
+              noteRead(url, off, n);
               // WRITE-BEHIND on the miss path too: ground the user actually visited online is then
               // readable on the trip, without anyone having pressed save.
               if (persist && cacheSha && res.status === 206 && off % PFPAGE === 0 && ctrl.httpBytes.length >= PFPAGE) {
@@ -549,7 +574,21 @@ export async function createKernel(wasmUrl) {
       // one round trip instead of a second purchase.
       if (!fetchedOnce.has(key)) fetchedOnce.set(key, new Set());
       const seen = fetchedOnce.get(key);
-      let sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
+      // ⚠ WHEN PACKING, "already paid for" IS NOT "already saved". The dedup below skips any page this
+      // session fetched, which is right for a view and wrong for a pack: those pages were fetched BEFORE
+      // the pack existed, so the write-behind never saw them and they never reached the disk. Measured:
+      // the plan grew from 551 to 1 025 pages and the write count did not move at all. So a pack writes
+      // what is still resident straight out of the buffer, and re-fetches only what the cap evicted.
+      const packing = !!prefetchPackId;
+      const wanted = [...new Set(pages)];
+      if (packing && persist && shaOf(url)) {
+        const resident = new Map();
+        for (const p of wanted) { const b = bag.get(p); if (b) resident.set(p, b); }
+        if (resident.size) { persist.putMany(shaOf(url), resident, prefetchPackId).catch(() => {}); notePersisted(url, resident.keys()); }
+      }
+      let sorted = wanted
+        .filter((p) => !bag.has(p) && (packing ? !persistKnown(url, p) : !seen.has(p)))
+        .sort((a, b) => a - b);
       // ⚠ READ THE PERSISTENT TIER FIRST, and take it out of the fetch list — a page that is already on
       // this device must never be bought again. This is the whole win for a second visit, and it is the
       // same mechanism that makes a saved route readable with no network at all.
@@ -619,6 +658,7 @@ export async function createKernel(wasmUrl) {
       // draw. A failed write is a slower next visit and nothing else.
       if (persist && sha && fetchedNow.size) {
         persist.putMany(sha, fetchedNow, prefetchPackId).catch(() => {});
+        notePersisted(url, fetchedNow.keys());
       }
       // The peak can exceed the cap only by one in-flight batch (see `evict`), so recording the largest
       // batch gives that excess an exact bound instead of a guessed constant in a gate.
@@ -629,6 +669,10 @@ export async function createKernel(wasmUrl) {
     },
     // While this is set, every page the prefetch fetches is pinned to that pack (see page-cache.mjs).
     packInto: (id) => { prefetchPackId = id; },
+    // Every page this session has READ, per store — the exact set a pack must hold, as opposed to the
+    // set the index predicts. `reset` starts a fresh recording (a pack for THIS route, not the session).
+    readPages: () => Object.fromEntries([...readPages].map(([u, s2]) => [u, [...s2].sort((a, b) => a - b)])),
+    resetReadPages: () => readPages.clear(),
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

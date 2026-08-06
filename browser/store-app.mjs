@@ -1291,6 +1291,19 @@ window.__perfHooks = {
   packDescribe: describePlan,
   savePack: async (route, opts = {}) => {
     const plan = await window.__perfHooks.packPlan(route, opts);
+    // ⚠ UNION THE PLAN WITH WHAT THIS SESSION HAS ACTUALLY READ. The index is an approximation of the
+    // feature overhang, so a view reads pages the plan never names — measured offline, 179 such reads on
+    // one route, all in the second block of the covering set, every one a hole in the map. Pages already
+    // read are also already PAID FOR: adding them costs storage, not a fetch.
+    const seen = kernel.readPages ? kernel.readPages() : {};
+    for (const [url, pages] of Object.entries(seen)) {
+      if (!SHA_OF.has(url)) continue;                 // only what can be keyed safely
+      let e = plan.perStore.get(url);
+      if (!e) { e = { sha: SHA_OF.get(url), pages: new Set() }; plan.perStore.set(url, e); }
+      for (const p of pages) e.pages.add(p);
+    }
+    plan.pages = [...plan.perStore.values()].reduce((a, e) => a + e.pages.size, 0);
+    plan.bytes = plan.pages * 65536;
     const id = opts.id || `pack-${Math.round(map.camera.lat * 1e4)},${Math.round(map.camera.lon * 1e4)}`;
     kernel.packInto(id);
     pageCache.setPack(id);      // the index ranges the planner reads belong to the pack too
