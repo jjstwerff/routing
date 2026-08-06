@@ -352,12 +352,25 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   NO batching from it** — loft says so itself: *"on wasm the ranges go one at a time"*, because the bytes
   arrive through the synchronous `loft_host_http_*` bridge and making that concurrent would change the
   host contract. **So the page index stays load-bearing for the app**; loft#782's win is native-only.
+* ⚠ **BROWSER THREADS NEED A COOP/COEP HOST, WHICH GITHUB PAGES CANNOT BE** — so loft#782's batched
+  range read can never reach the app on the current hosting. loft's `THREADING.md` is explicit: the
+  browser pool is Web Workers behind `wasm_threads::loft_pool_build`, and running it *"needs a real
+  browser, a COOP/COEP host and a threaded bundle"* (nightly, `+atomics`, `-Z build-std` — recorded there
+  as a LONG-TERM dependency, not a temporary one). Pages serves static files with fixed headers, so
+  SharedArrayBuffer is out. **The page index is therefore load-bearing for the app permanently, not until
+  loft catches up** — and `docs/hosting-cost-model.md`'s R2 decision gains a second reason beside
+  bandwidth: a host that can set those headers is the only route to browser-side batching.
 * ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
   [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
   viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
   binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
   synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
   key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
+  ⚠ **It is being fixed as this is written, and the installed binary ALREADY CARRIES THE FIX UNCOMMITTED**
+  — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
+  (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
+  not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
+  the fix to land on a commit. This is HANDOFF §2's sibling-tree rule paying for itself twice in one day.
 * **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
   `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
   together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
