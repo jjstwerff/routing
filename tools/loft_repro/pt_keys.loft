@@ -1,0 +1,9 @@
+#cwd
+use basemap::PTile;
+fn main() {
+  a = arguments();
+  keys: vector<integer> = [];
+  for kt in (a[1]?).split(',') { if kt != "" { keys += [kt as integer ?? 0]; } }
+  ws: hash<PTile[tkey]> = [];
+  println("native loaded={store_load_keys(ws, a[0]?, keys)}");
+}

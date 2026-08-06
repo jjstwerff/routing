@@ -8,8 +8,15 @@ fn main() {
   which = a[0] ?? "txt";
   path = a[1] ?? "s.store";
   want = a[2] as integer ?? 100;
+  // A comma-separated key list as arg 4, so a SCATTERED selection can be measured — a viewport over a
+  // country block touches cells spread through the file, and a contiguous run is the easy case.
   keys: vector<integer> = [];
-  for ki in 0..want { keys += [1000 + ki]; }
+  spec = a[3] ?? "";
+  if spec != "" {
+    for kt in spec.split(',') { if kt != "" { keys += [kt as integer ?? 0]; } }
+  } else {
+    for ki in 0..want { keys += [1000 + ki]; }
+  }
   if which == "txt" {
     tr: hash<TxtCell[key]> = [];
     println("txt loaded={store_load_keys(tr, path, keys)}");

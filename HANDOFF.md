@@ -344,15 +344,20 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
-* ⚠ **THE WASM IS PINNED TO A BINARY, AND `browser/store-kernel.wasm` MUST NOT BE REBUILT ON loft
-  `38c86731` OR LATER UNTIL [loft#784](https://github.com/loft-lang/loft/issues/784) IS FIXED.** loft#782
-  landed overnight and batches a paged read's ranges with `std::thread::spawn` — with **no wasm gate** in
-  `src/paged_reader.rs`, so the browser target has no threads and a batched read never returns. The app
-  stalls in its FIRST paged view: `hud="loading map…"` for ever, no error, no trap, and the Range server
-  sees three ranges and then silence. `ranges.len() <= 1` takes the direct path, which is why small reads
-  (S1) pass and only genuinely batched ones hang — `base_paged_gate` is the one that catches it.
-  **The committed wasm predates that binary and works; keep it.** A rebuild is what breaks the app, not
-  the install, so `make test-map` stays green as long as nobody runs `build-store-kernel.mjs`.
+* ✅ ~~**THE WASM IS PINNED**~~ — [loft#784](https://github.com/loft-lang/loft/issues/784) **is FIXED**
+  (`c148e282`, in the binary installed 2026-08-06 10:04, md5 `22dfa069`). The batched `fetch_many` used
+  `std::thread::spawn` with no wasm gate, so the browser — which has no threads — stalled in its FIRST
+  paged view: `hud="loading map…"` for ever, no error, no trap, three ranges served and then silence.
+  It is `#[cfg(target_family = "wasm")]`-gated now and the wasm rebuilds cleanly. ⚠ **But the browser gets
+  NO batching from it** — loft says so itself: *"on wasm the ranges go one at a time"*, because the bytes
+  arrive through the synchronous `loft_host_http_*` bridge and making that concurrent would change the
+  host contract. **So the page index stays load-bearing for the app**; loft#782's win is native-only.
+* ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
+  [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
+  viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
+  binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
+  synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
+  key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
 * **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
   `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
   together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
