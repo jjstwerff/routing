@@ -369,7 +369,13 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
   it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
   26.74 MB** on the 812 MB block, better than before it started.
-  ⚠ **BUT THE BROWSER IS ~1.5x SLOWER ON THE SAME RUNTIME** —
+  ✅ **AND THE BROWSER REGRESSION IS CLOSED** on loft `759a4172` (2026-08-06 18:46): the same keyed load
+  is **694 ms at CPU 4x against the pre-arc baseline's 763**, with 42 fewer reads — faster than before the
+  arc started. The path there is worth keeping: **1.5x (measured with the arms in SEPARATE browser
+  sessions, always in the same order — withdrawn) → 1.14x (interleaved, real) → 1.03x**. The maintainer
+  refuted all three of my guessed mechanisms and found it: a heap `Vec` allocated per read in `u32_at`,
+  plus a page key hashed twice. ⚠ **The wasm may be rebuilt again** — the reason it was pinned is gone.
+  ⚠ **THE ORIGINAL REPORT SAID ~1.5x AND THAT NUMBER WAS METHOD, NOT RUNTIME** —
   [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
   sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
   **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
