@@ -123,6 +123,8 @@ export async function createKernel(wasmUrl) {
   const readPages = new Map();           // url -> Set<pageNo>
   // While packing, `seen` is the wrong filter (see `prefetch`); what matters is whether the page is on
   // DISK already. Tracked per store as it is written, so a pack re-run is cheap rather than a re-download.
+  const shaMisses = [];                  // reads that found no sha256 and so bypassed the disk tier
+  const shortReads = [];                 // reads the disk tier could not fully answer, with the gap
   const persisted = new Map();           // url -> Set<pageNo>
   const persistKnown = (url, p) => (persisted.get(url.split('?')[0]) || new Set()).has(p);
   const notePersisted = (url, ps) => {
@@ -152,6 +154,7 @@ export async function createKernel(wasmUrl) {
   // hashes; absent, every lookup below misses and this file behaves exactly as it did.
   let shaOf = () => null;                // url -> sha256, from coverage.json
   let sizeOf = () => 0;                  // url -> byte length, likewise — see the size probe below
+  let shaKeyList = () => [];             // what the app actually handed over, for comparing against a url
   let persist = null;                    // the page-cache module, or null when the app did not wire it
   // Every page this session has bought, per store — kept across eviction ON PURPOSE (see `prefetch`).
   const fetchedOnce = new Map();         // url -> Set<pageNo>
@@ -357,6 +360,10 @@ export async function createKernel(wasmUrl) {
         // reaches the store through HERE, so wiring only the prefetch left a saved route unreadable with
         // the network off: every read fell straight through to a fetch that could not complete.
         const cacheSha = shaOf(url);
+        // ⚠ WHY A READ SKIPPED THE PERSISTENT TIER, recorded rather than inferred. Offline the session
+        // reported 183 FAILED reads and ZERO cache misses, and both cannot be true of a read that
+        // consulted the cache — so these reads never did. The only way that happens is a null sha here.
+        if (!cacheSha && shaMisses.length < 6) shaMisses.push({ url, off, n, key: url.split('?')[0] });
         const p0c = Math.floor(off / PFPAGE), p1c = Math.floor(last / PFPAGE);
         const wantPages = [];
         for (let p = p0c; p <= p1c; p++) wantPages.push(p);
@@ -371,6 +378,13 @@ export async function createKernel(wasmUrl) {
           ? persist.getMany(cacheSha, wantPages).catch(() => new Map())
           : Promise.resolve(new Map());
         fromStore.then((held) => {
+          // What the disk tier actually returned for a read that is about to fall through. `shaMisses`
+          // came back EMPTY, so the sha lookup is fine and the cache IS consulted — which leaves only
+          // "it was consulted and did not have them", and that has to be seen rather than assumed.
+          if (held.size !== wantPages.length && shortReads.length < 6) {
+            shortReads.push({ url: url.split('/').pop(), off, n, got: held.size, want: wantPages.length,
+                              pages: wantPages.slice(0, 4) });
+          }
           if (held.size === wantPages.length) {
             // Every covering page is on this device: assemble and answer without touching the network.
             const outb = new Uint8Array(n);
@@ -547,7 +561,7 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), rangeFailed, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, persistHits, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), rangeFailed, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, persistHits, shaMisses, shortReads, shaKeys: shaKeyList(), prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
@@ -559,6 +573,7 @@ export async function createKernel(wasmUrl) {
     usePageCache: (mod, shas, sizes) => {
       persist = mod;
       shaOf = (u) => shas.get(u.split('?')[0]) || null;
+      shaKeyList = () => [...shas.keys()];
       sizeOf = (u) => (sizes && sizes.get(u.split('?')[0])) || 0;
     },
     prefetch: async (url, pages, concurrency = 24) => {
