@@ -366,7 +366,17 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
   synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
   key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
-  ⚠ **It is being fixed as this is written, and the installed binary ALREADY CARRIES THE FIX UNCOMMITTED**
+  ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
+  it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
+  26.74 MB** on the 812 MB block, better than before it started.
+  ⚠ **BUT THE BROWSER IS ~1.5x SLOWER ON THE SAME RUNTIME** —
+  [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
+  sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
+  **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
+  sequential path by design (#784), so it pays the new relocate's CPU without collecting the batching's
+  round-trip saving. **`browser/store-kernel.wasm` therefore STAYS on the older runtime** — on Pages the
+  app is latency- and CPU-bound, and 1.5x decode on a phone outweighs 10% fewer requests.
+  ⚠ The earlier note that the fix arrived UNCOMMITTED still stands as a rule:
   — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
   (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
   not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
