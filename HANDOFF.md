@@ -352,6 +352,20 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   NO batching from it** — loft says so itself: *"on wasm the ranges go one at a time"*, because the bytes
   arrive through the synchronous `loft_host_http_*` bridge and making that concurrent would change the
   host contract. **So the page index stays load-bearing for the app**; loft#782's win is native-only.
+* ✅ **A SAVED ROUTE IS WALKABLE WITH THE RADIO OFF** — `tools/offline_pack_gate.sh`, in `make test-map`.
+  Radio off and the page reloaded, every step of the route draws **100% of its online feature count**.
+  Five things had to be true at once, and each was found by the gate rather than by reading:
+  the **index** is fetched by range like everything else (a route could be stored and not FOUND); the
+  **`.dschema` sidecar** comes through the whole-file arm, and without it no store opens at all; loft
+  opens a paged store with a **one-byte probe** whose answer is `Content-Range`, impossible offline, so
+  the length comes from `coverage.json`; a pack sized to the ROUTE is narrower than the SCREEN; and a
+  window is ONE `store_load_keys` call, so one unreadable page took all of it — a batch that loads
+  nothing is retried cell by cell now, which is the difference between a map with a hole and no map.
+  ⚠ **The last one was a single line and cost the most.** On a buffer hit the bridge set
+  `httpTotal = prefetchTotals.get(url) ?? -1`, and that map is only ever filled from a network response's
+  `Content-Range`. Offline every read SUCCEEDED — 2 887 of them, 1 096 off the device — and the store
+  never opened, because loft was told the file had unknown length. **A read that returns bytes is not a
+  read that returned everything the caller needs.**
 * ⚠ **BROWSER THREADS NEED A COOP/COEP HOST, WHICH GITHUB PAGES CANNOT BE** — so loft#782's batched
   range read can never reach the app on the current hosting. loft's `THREADING.md` is explicit: the
   browser pool is Web Workers behind `wasm_threads::loft_pool_build`, and running it *"needs a real

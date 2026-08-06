@@ -328,7 +328,15 @@ fn main() {
                 // nothing", so an empty cell would otherwise be re-requested by every command for the
                 // rest of the session.
                 for nk in bneed { marks += CellMark { k: bi * MARK_BLOCK + nk }; }
-                _ = store_load_keys(roads, burl, bneed);
+                // A corridor is a window like any other: one unreadable page must not cost the route
+                // every cell it could have had. See the view's roads loop for what this is worth.
+                mbn = store_load_keys(roads, burl, bneed);
+                if mbn == 0 && len(bneed) > 1 {
+                  for mbk in bneed {
+                    mbone: vector<integer> = [mbk];
+                    _ = store_load_keys(roads, burl, mbone);
+                  }
+                }
               }
               bi += 1;
             }
@@ -402,7 +410,16 @@ fn main() {
                 // from THIS block: a paged loader reports "no such key" exactly as it reports "loaded
                 // nothing", so an empty cell would otherwise be re-requested for the rest of the session.
                 for lk in lbneed { lmarks += CellMark { k: lbi * LMARK_BLOCK + lk }; }
-                _ = store_load_keys(layout, lburl, lbneed);
+                // Same rule for the base map — see the roads loop below. The layout is the larger half of
+                // a cold view, so an all-or-nothing window here is the difference between a drawn town
+                // and a blank one.
+                lbn = store_load_keys(layout, lburl, lbneed);
+                if lbn == 0 && len(lbneed) > 1 {
+                  for lbk in lbneed {
+                    lbone: vector<integer> = [lbk];
+                    _ = store_load_keys(layout, lburl, lbone);
+                  }
+                }
               }
               lbi += 1;
             }
@@ -419,7 +436,22 @@ fn main() {
                 // nothing", so an empty cell would otherwise be re-requested by every command for the
                 // rest of the session.
                 for nk in vbneed { marks += CellMark { k: vbi * MARK_BLOCK + nk }; }
-                _ = store_load_keys(roads, vburl, vbneed);
+                // ⚠ A WINDOW IS ONE CALL, AND ONE UNREADABLE PAGE TAKES ALL OF IT. Measured offline with
+                // a saved route: 855 pages served from the device and the view still drew NOTHING —
+                // `R=0 G=0 T=0` — because a handful of pages in the second covering block could not be
+                // read and the whole batch came back empty. A blank map is the worst possible answer
+                // there: the person is on the route, holding a device that HAS most of the map.
+                //
+                // So a batch that loads nothing is retried cell by cell. The failures stay failures and
+                // everything else loads, which is the difference between a map with a hole and no map.
+                // It costs nothing when the batch succeeds, which is every online read.
+                vbn = store_load_keys(roads, vburl, vbneed);
+                if vbn == 0 && len(vbneed) > 1 {
+                  for vbk in vbneed {
+                    vbone: vector<integer> = [vbk];
+                    _ = store_load_keys(roads, vburl, vbone);
+                  }
+                }
               }
               vbi += 1;
             }

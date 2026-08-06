@@ -334,7 +334,12 @@ export async function createKernel(wasmUrl) {
             prefetchHits++; prefetchBytes += outb.length;
             noteRead(url, off, n);
             ctrl.httpBytes = outb;
-            ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? -1;
+            // ⚠ AND THE TOTAL, which only ever came from a network response's `Content-Range`. Offline the
+            // pages arrive from disk, so `prefetchTotals` is empty and this handed loft -1 — an unknown
+            // file length. Every read then SUCCEEDS and the store never opens: 2 887 reads, 1 096 of them
+            // off the device, and a view that drew `R=0 G=0 T=0`. The length is in `coverage.json`, which
+            // the app has without asking anyone.
+            ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? sizeOf(url) ?? -1;
             rangeReads++; rangeBytes += outb.length;
             const shk = url.split('?')[0].split('/').pop() || url;
             const pse = perStore.get(shk) || { reads: 0, bytes: 0 };

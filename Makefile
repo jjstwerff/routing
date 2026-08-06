@@ -244,3 +244,4 @@ test-map:
 	@./tools/cors_host_gate.sh
 	@./tools/overview_gate.sh
 	@./tools/nl_live_gate.sh
+	@./tools/offline_pack_gate.sh
