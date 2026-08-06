@@ -344,6 +344,20 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
+* ⚠ **THE WASM IS PINNED TO A BINARY, AND `browser/store-kernel.wasm` MUST NOT BE REBUILT ON loft
+  `38c86731` OR LATER UNTIL [loft#784](https://github.com/loft-lang/loft/issues/784) IS FIXED.** loft#782
+  landed overnight and batches a paged read's ranges with `std::thread::spawn` — with **no wasm gate** in
+  `src/paged_reader.rs`, so the browser target has no threads and a batched read never returns. The app
+  stalls in its FIRST paged view: `hud="loading map…"` for ever, no error, no trap, and the Range server
+  sees three ranges and then silence. `ranges.len() <= 1` takes the direct path, which is why small reads
+  (S1) pass and only genuinely batched ones hang — `base_paged_gate` is the one that catches it.
+  **The committed wasm predates that binary and works; keep it.** A rebuild is what breaks the app, not
+  the install, so `make test-map` stays green as long as nobody runs `build-store-kernel.mjs`.
+* **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
+  `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
+  together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
+  27-40 ms** with a backlog of 128, bimodally, on identical work. Every range-serving gate in this repo
+  would have measured that stall and charged it to the app. It is 128 now.
 * **AN EMULATOR THAT MODELS ONE COST AND NOT THE OTHER DOES NOT MEASURE A TRADE-OFF — IT PICKS A WINNER.**
   `prefetch_gate` injected the round trip and nothing else, because round trips are what prefetching
   removes. A localhost server has no throughput ceiling, so the cost prefetching ADDS — bytes — was free

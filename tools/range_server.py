@@ -116,6 +116,14 @@ class H(http.server.SimpleHTTPRequestHandler):
 
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
+# ⚠ THE LISTEN BACKLOG, AND IT IS NOT A TUNING KNOB — it decides whether this harness can MEASURE.
+# `socketserver` defaults to 5. loft's loader now issues the ranges of one `store_load_keys` TOGETHER
+# (loft#782), so a paged read opens many connections at once; past 5 pending, the kernel drops the SYN and
+# the client waits out a TCP retransmit — ~1 SECOND, conditionally, on some runs and not others. Measured
+# on the repro the moment the batched loader landed: 1 066 / 1 285 / 1 075 ms with the default, and
+# 27-40 ms with this line. Every range-serving gate in this repo would have been measuring that stall and
+# attributing it to the app.
+socketserver.ThreadingTCPServer.request_queue_size = 128
 with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), H) as httpd:
     print(f"range server: {ROOT} on http://127.0.0.1:{PORT}", flush=True)
     httpd.serve_forever()
