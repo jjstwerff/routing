@@ -27,6 +27,13 @@ export LOFT_BIN="${LOFT_BIN:-${LOFT:-$(command -v loft)}}"
 export KERNEL_TESTS="${KERNEL_TESTS:-$(make -s print-kernel-tests 2>/dev/null)}"
 [ -x "$LOFT_BIN" ] || { echo "ERROR: loft not found (LOFT_BIN=$LOFT_BIN)"; exit 1; }
 
+# ⚠ THE GATES' PREREQUISITE LIVES WITH THE GATES. `make test` created these before running anything,
+# and when CI stopped calling `make test` the setup stayed behind in the Makefile: three gates failed
+# on a missing scratch/srv.log — the server harnesses write their log here and exit if they cannot.
+# Extracting the LIST into a shared manifest is not enough if a caller still owns something the list
+# needs to run.
+mkdir -p scratch scratch/tiles
+
 LOGDIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-gates.$$"
 mkdir -p "$LOGDIR"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
