@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A run can be lost without the branch ever being at fault — on 2026-08-06 an Actions outage
+  # (15:22 UTC) meant PR #70 was opened into a queue that never created a run, and with no manual
+  # trigger the only way to ask again was to push a commit or reopen the PR. `gh workflow run ci.yml
+  # --ref <branch>` re-asks directly.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -77,8 +82,13 @@ jobs:
         run: $LOFT --native-wasm client/kernel.wasm --path /tmp/loft/ --lib lib client/kernel.loft
 
       # --- gates ---
+      # Per gate, not one line for all eight. `make test` stops at the first failure, which is right
+      # locally and wrong here: a red build naming gate 1 and hiding gates 2-8 costs a full toolchain
+      # build (~5 min) per hidden failure. ci_gates.sh runs them all, folds each one's output into its
+      # own log group, annotates the failures, and writes a pass/fail/duration table to the run summary.
+      # It reads the SAME tools/gates.offline manifest `make test` does, so the two cannot drift.
       - name: Offline test gates (kernel + server harnesses)
-        run: make test
+        run: ./tools/ci_gates.sh
 
       # Non-blocking: the wasm CLIENT build above already proves --native-wasm compiles.
       # This RUNS the wasm under wasmtime for interpret-parity, but loft #518's stack-overflow

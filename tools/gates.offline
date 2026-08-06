@@ -1,0 +1,21 @@
+# The OFFLINE gate manifest — ONE list, two consumers.
+#
+#   `make test`           runs them in order and STOPS at the first failure — the fast local signal,
+#                         because when you are iterating you only care about the one you just broke.
+#   `tools/ci_gates.sh`   runs ALL of them, times each, and reports a table — the CI signal, because a
+#                         red build that names gate 1 and hides gates 2-8 costs a whole round trip per
+#                         failure. CI is not iterating; it should say everything it knows in one pass.
+#
+# A second copy of this list is the thing certain to drift, and it would drift into a gate that runs
+# locally and silently never runs in CI. So the list lives here and neither consumer owns it.
+#
+# Format: <name><TAB><shell command>.  `$LOFT_BIN` and `$KERNEL_TESTS` are exported by both consumers
+# (the kernel-suite list stays a Makefile variable — `make -s print-kernel-tests` is the seam).
+kernel-suite	for t in $KERNEL_TESTS; do "$LOFT_BIN" --tests lib/routing_kernel/tests/$t.loft --lib lib || exit 1; done
+server	./tools/server_test.sh
+elevation	./tools/elevation_test.sh
+routes	./tools/routes_test.sh
+sync	./tools/sync_test.sh
+derived-scope	./tools/derived_scope_gate.sh
+page-index	node browser/page-index.test.mjs
+device-tier	node browser/device.test.mjs

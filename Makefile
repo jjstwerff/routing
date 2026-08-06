@@ -44,7 +44,7 @@ URL    := http://127.0.0.1:$(PORT)/
 KERNEL_TESTS = geodesic corridor gpx import loop matcher profiles roundtrip elevation
 
 .PHONY: help build check check-rustc install uninstall run stop clean \
-        test test-native test-wasm test-map
+        test test-native test-wasm test-map print-kernel-tests
 
 help:
 	@echo "routing — targets:"
@@ -181,19 +181,22 @@ clean:
 
 # --- test gates -----------------------------------------------------------------
 # The shell harnesses honor LOFT_BIN; pass ours through so an overridden LOFT wins.
+# The gates themselves live in tools/gates.offline — ONE list, read here and by tools/ci_gates.sh.
+# This target stops at the first failure (what you want while iterating); CI runs them all and
+# reports a table per gate (what you want from a build you are not watching).
 test: check
 	@mkdir -p scratch scratch/tiles
-	@for t in $(KERNEL_TESTS); do \
-	    "$(LOFT)" --tests lib/routing_kernel/tests/$$t.loft --lib lib || exit 1; \
-	done
-	@LOFT_BIN="$(LOFT)" ./tools/server_test.sh
-	@LOFT_BIN="$(LOFT)" ./tools/elevation_test.sh
-	@LOFT_BIN="$(LOFT)" ./tools/routes_test.sh
-	@LOFT_BIN="$(LOFT)" ./tools/sync_test.sh
-	@./tools/derived_scope_gate.sh
-	@node browser/page-index.test.mjs
-	@node browser/device.test.mjs
+	@LOFT_BIN="$(LOFT)" KERNEL_TESTS="$(KERNEL_TESTS)" bash -c '\
+	  while IFS="$$(printf "\t")" read -r name cmd; do \
+	    case "$$name" in ""|\#*) continue ;; esac; \
+	    [ -n "$$cmd" ] || continue; \
+	    bash -c "$$cmd" || { echo "  FAIL: gate $$name"; exit 1; }; \
+	  done < tools/gates.offline'
 	@echo "  ALL OFFLINE GATES PASS"
+
+# The seam that lets tools/gates.offline name the kernel suite without copying its list.
+print-kernel-tests:
+	@echo $(KERNEL_TESTS)
 
 test-native: check-rustc
 	@for t in $(KERNEL_TESTS); do \
