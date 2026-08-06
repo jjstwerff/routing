@@ -114,12 +114,23 @@ export async function createKernel(wasmUrl) {
     || 48 * 1024 * 1024;
   let prefetchHeldBytes = 0, prefetchPeakBytes = 0, prefetchEvicted = 0, prefetchMaxBatchBytes = 0;
   let prefetchDownloadBytes = 0;         // what the BATCHES cost the wire, apart from what was read
+  let persistHits = 0;                   // reads answered off the device, with no network at all
+  // Set while a route pack is being built, so those pages are written PINNED rather than incidental.
+  let prefetchPackId = null;
   let prefetchHits = 0, prefetchMiss = 0, prefetchBytes = 0;
   let prefetchMissDrained = 0, prefetchMissUnknown = 0;
   const prefetchTotals = new Map();
   const PFPAGE = 65536;
   // Which pages the cap threw away, per store — so a later miss can say WHY (evicted, or never named).
   const evictedPages = new Map();        // url -> Set<pageNo>
+  // ⚠ A SECOND TIER, BEHIND THE BUFFER AND IN FRONT OF THE WIRE. The buffer above dies with the tab and
+  // the host only allows caching for ten minutes (`max-age=600`, measured live) on data that is immutable
+  // for the life of a dataset. `page-cache.mjs` keeps pages across sessions, keyed by the block's sha256
+  // so a regenerated block cannot be served from an old one. Set by the app, which is what knows the
+  // hashes; absent, every lookup below misses and this file behaves exactly as it did.
+  let shaOf = () => null;                // url -> sha256, from coverage.json
+  let sizeOf = () => 0;                  // url -> byte length, likewise — see the size probe below
+  let persist = null;                    // the page-cache module, or null when the app did not wire it
   // Every page this session has bought, per store — kept across eviction ON PURPOSE (see `prefetch`).
   const fetchedOnce = new Map();         // url -> Set<pageNo>
   // Oldest-first eviction. A Map iterates in insertion order, so the first key is the oldest page held;
@@ -236,8 +247,20 @@ export async function createKernel(wasmUrl) {
         if (isSidecar) sidecarLoads++; else storeLoads++;
         ctrl.httpBytes = null;
         const back = (b) => { ctrl.httpBytes = b; if (isSidecar && b) schemaCache.set(url, b); wake('fetch'); };
-        fetch(url).then(async (res) => back(res.ok ? new Uint8Array(await res.arrayBuffer()) : null))
-                  .catch(() => back(null));
+        // ⚠ THE SIDECAR MUST SURVIVE THE SESSION TOO, or a saved route is unreadable however many of its
+        // PAGES are on the device. `.dschema` is what lets `store_load_keys` open a block at all, it comes
+        // through this whole-file arm rather than the range one, and its in-memory cache dies with the
+        // tab. Measured: with 862 pages served from disk and zero misses, the offline map still drew
+        // NOTHING — because the schema could not be fetched and no store could be opened.
+        const fromDisk = (persist && isSidecar) ? persist.getBlob('sidecar', url) : Promise.resolve(null);
+        fromDisk.then((hit) => {
+          if (hit) { persistHits++; back(hit); return; }
+          fetch(url).then(async (res) => {
+            const b = res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+            if (b && persist && isSidecar) persist.putBlob('sidecar', url, b).catch(() => {});
+            back(b);
+          }).catch(() => back(null));
+        }).catch(() => back(null));
         if (ctrl.ac) { waiting = 'fetch'; ctrl.ac.suspend(); }
         return 0;
       },
@@ -306,7 +329,50 @@ export async function createKernel(wasmUrl) {
           for (let p = p0; p <= p1; p++) if (ev && ev.has(p)) evicted = true;
           if (evicted) prefetchMissDrained++; else prefetchMissUnknown++;
         }
-        fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
+        // ⚠ THE PERSISTENT TIER, ON THE MISS PATH TOO — not only in `prefetch`. A view that was never
+        // planned (offline, where the index cannot be fetched; or a camera the pack did not anticipate)
+        // reaches the store through HERE, so wiring only the prefetch left a saved route unreadable with
+        // the network off: every read fell straight through to a fetch that could not complete.
+        const cacheSha = shaOf(url);
+        const p0c = Math.floor(off / PFPAGE), p1c = Math.floor(last / PFPAGE);
+        const wantPages = [];
+        for (let p = p0c; p <= p1c; p++) wantPages.push(p);
+        // ⚠ THE SIZE PROBE IS A READ LIKE ANY OTHER, and skipping it (`n > 1`) is why an offline map drew
+        // NOTHING while 862 pages sat on the device. loft opens a paged store by asking for ONE byte and
+        // reading the total out of `Content-Range`; with no network that request fails, the loader never
+        // learns the file's length, and it gives up before touching a single page. The length is in
+        // `coverage.json` — the app knows it without asking anyone — so it is answered locally.
+        const knownTotal = sizeOf(url);
+        if (knownTotal) ctrl.httpTotal = knownTotal;
+        const fromStore = (persist && cacheSha)
+          ? persist.getMany(cacheSha, wantPages).catch(() => new Map())
+          : Promise.resolve(new Map());
+        fromStore.then((held) => {
+          if (held.size === wantPages.length) {
+            // Every covering page is on this device: assemble and answer without touching the network.
+            const outb = new Uint8Array(n);
+            for (const p of wantPages) {
+              const pg = held.get(p), pStart = p * PFPAGE;
+              const from = Math.max(off, pStart) - pStart;
+              const to = Math.min(off + n, pStart + pg.length) - pStart;
+              if (to > from) outb.set(pg.subarray(from, to), Math.max(0, pStart + from - off));
+            }
+            rangeReads++; rangeBytes += outb.length;
+            const shk2 = url.split('?')[0].split('/').pop() || url;
+            const pse2 = perStore.get(shk2) || { reads: 0, bytes: 0 };
+            pse2.reads++; pse2.bytes += outb.length; perStore.set(shk2, pse2);
+            persistHits++;
+            // Answered exactly as the fetch path answers: fill the slot, restore the total from what the
+            // buffer already knows, and wake the suspended kernel. (`back` belongs to `http_get`'s scope,
+            // not this one — calling it here threw a ReferenceError the first time.)
+            ctrl.httpBytes = outb;
+            ctrl.httpTotal = prefetchTotals.get(url.split('?')[0]) ?? ctrl.httpTotal ?? -1;
+            wake('fetch');
+            return;
+          }
+          fetchRange();
+        });
+        const fetchRange = () => fetch(url, { headers: { Range: `bytes=${off}-${last}` } })
           .then(async (res) => {
             // The total rides on Content-Range (`bytes a-b/TOTAL`), so size() needs no second round trip.
             const cr = res.headers.get('Content-Range');
@@ -321,6 +387,15 @@ export async function createKernel(wasmUrl) {
               // Counted on DELIVERY. The first version counted the request, so a cross-origin read that
               // the browser blocked still reported "38 range reads, 2.3 MB" while the matcher got nothing.
               rangeReads++; rangeBytes += ctrl.httpBytes.length;
+              // WRITE-BEHIND on the miss path too: ground the user actually visited online is then
+              // readable on the trip, without anyone having pressed save.
+              if (persist && cacheSha && res.status === 206 && off % PFPAGE === 0 && ctrl.httpBytes.length >= PFPAGE) {
+                const m = new Map();
+                for (let q = 0; (q + 1) * PFPAGE <= ctrl.httpBytes.length; q++) {
+                  m.set(off / PFPAGE + q, new Uint8Array(ctrl.httpBytes.subarray(q * PFPAGE, (q + 1) * PFPAGE)));
+                }
+                if (m.size) persist.putMany(cacheSha, m).catch(() => {});
+              }
               const sk = url.split('?')[0].split('/').pop() || url;
               const pe = perStore.get(sk) || { reads: 0, bytes: 0 };
               pe.reads++; pe.bytes += ctrl.httpBytes.length; perStore.set(sk, pe);
@@ -447,13 +522,20 @@ export async function createKernel(wasmUrl) {
   // show this reliably (a loaded box moves every millisecond); a count can.
   return {
     runKernel,
-    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), rangeFailed, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
+    stats: () => ({ starts, commands, storeLoads, sidecarLoads, sidecarHits, rangeReads, rangeBytes, rangeAsked, rangeFails: rangeFails.slice(0, 4), rangeFailed, deliveries, wasmBytes: mem.buffer.byteLength, exposed: exposed.size, perStore: Object.fromEntries(perStore), wholeLoads: Object.fromEntries(wholeLoads), prefetchHits, prefetchMiss, prefetchMissDrained, prefetchMissUnknown, prefetchBytes, prefetchDownloadBytes, prefetchPeakBytes, prefetchEvicted, prefetchMaxBatchBytes, prefetchCap: PFCAP, persistHits, prefetchHeld: [...prefetched.values()].reduce((a, m) => a + m.size, 0) }),
     // Fill the prefetch buffer for `url` with `ranges` ([[off, len], …]) — ALL AT ONCE. Resolves when the
     // batch has landed. The whole design rests on this being concurrent: issuing them one at a time would
     // reproduce exactly the serial depth it exists to remove.
     // `pages` is a list of PAGE NUMBERS. Adjacent ones are coalesced into a single range: it is what makes
     // the request count fall (measured 1.8x on base, 3.0x on roads), and on a per-request billed host
     // that is the difference between the same bill and half of it.
+    // The app hands these in rather than importing them here: the kernel must stay usable by a driver
+    // that has neither (every gate builds one), and `store-kernel` has no business knowing coverage.json.
+    usePageCache: (mod, shas, sizes) => {
+      persist = mod;
+      shaOf = (u) => shas.get(u.split('?')[0]) || null;
+      sizeOf = (u) => (sizes && sizes.get(u.split('?')[0])) || 0;
+    },
     prefetch: async (url, pages, concurrency = 24) => {
       const key = url.split('?')[0];
       if (!prefetched.has(key)) prefetched.set(key, new Map());
@@ -467,10 +549,28 @@ export async function createKernel(wasmUrl) {
       // one round trip instead of a second purchase.
       if (!fetchedOnce.has(key)) fetchedOnce.set(key, new Set());
       const seen = fetchedOnce.get(key);
-      const sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
+      let sorted = [...new Set(pages)].filter((p) => !bag.has(p) && !seen.has(p)).sort((a, b) => a - b);
+      // ⚠ READ THE PERSISTENT TIER FIRST, and take it out of the fetch list — a page that is already on
+      // this device must never be bought again. This is the whole win for a second visit, and it is the
+      // same mechanism that makes a saved route readable with no network at all.
+      const sha = shaOf(url);
+      let fromDisk = 0;
+      if (persist && sha && sorted.length) {
+        try {
+          const held = await persist.getMany(sha, sorted);
+          for (const [p, b] of held) { bag.set(p, b); prefetchHeldBytes += b.length; seen.add(p); }
+          if (held.size) {
+            fromDisk = held.size;
+            sorted = sorted.filter((p) => !held.has(p));
+            if (prefetchHeldBytes > prefetchPeakBytes) prefetchPeakBytes = prefetchHeldBytes;
+            evict();
+          }
+        } catch { /* a cache that will not read is not a reason to fail a view */ }
+      }
       for (const p of sorted) seen.add(p);
       inFlight = { key, pages: new Set(sorted) };
       let batchBytes = 0;
+      const fetchedNow = new Map();      // page -> bytes, for the write-behind below
       const runs = [];
       for (const p of sorted) {
         const last = runs[runs.length - 1];
@@ -498,6 +598,7 @@ export async function createKernel(wasmUrl) {
               // page is cheap beside the round trip that fetched it, and it makes eviction actually free.
               const pg = new Uint8Array(b.subarray(q * PFPAGE, Math.min((q + 1) * PFPAGE, b.length)));
               bag.set(off / PFPAGE + q, pg);
+              fetchedNow.set(off / PFPAGE + q, pg);
               prefetchHeldBytes += pg.length;
               batchBytes += pg.length;
             }
@@ -514,13 +615,20 @@ export async function createKernel(wasmUrl) {
       const t0 = performance.now();
       await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
       inFlight = null;
+      // WRITE-BEHIND, never awaited: what a page costs to keep must not be added to what a view costs to
+      // draw. A failed write is a slower next visit and nothing else.
+      if (persist && sha && fetchedNow.size) {
+        persist.putMany(sha, fetchedNow, prefetchPackId).catch(() => {});
+      }
       // The peak can exceed the cap only by one in-flight batch (see `evict`), so recording the largest
       // batch gives that excess an exact bound instead of a guessed constant in a gate.
       if (batchBytes > prefetchMaxBatchBytes) prefetchMaxBatchBytes = batchBytes;
       evict();                    // the batch is complete and readable; NOW the cap applies to it too
-      return { pages: sorted.length, requests: ranges.length, ok, failed,
+      return { pages: sorted.length, requests: ranges.length, ok, failed, fromDisk,
                ms: Math.round(performance.now() - t0), held: bag.size };
     },
+    // While this is set, every page the prefetch fetches is pinned to that pack (see page-cache.mjs).
+    packInto: (id) => { prefetchPackId = id; },
     // The exposed handle for `tag`, or null. `mem` comes with it because every read must re-derive its
     // view from the CURRENT buffer — memory.grow detaches the old one.
     exposedValue: (tag) => exposed.get(tag) || null,

@@ -24,6 +24,9 @@ if RANGE_LOG and not os.path.isabs(RANGE_LOG):
 # a 64 kB range costs the same as one byte). Without this an A/B of prefetching measures nothing, because
 # the thing prefetching removes is not present. Set it to the RTT you are modelling.
 LATENCY_MS = float(os.environ.get("LATENCY_MS", "0"))
+# Seconds of `max-age` for everything that is not a `.store` — the app shell. Matches what Pages sends
+# (600) when a gate needs the shell to survive going offline; absent, every response stays `no-store`.
+SHELL_CACHE_S = int(os.environ.get("SHELL_CACHE_S", "0"))
 REPORT = sys.argv[3] if len(sys.argv) > 3 else os.path.join(ROOT, ".range-report")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
@@ -36,7 +39,14 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Content-Range, Content-Length")
-        self.send_header("Cache-Control", "no-store")
+        # ⚠ `no-store` is right for a gate that must not see a previous run's artifact, and WRONG for one
+        # that tests offline behaviour: GitHub Pages sends `max-age=600` on everything, so a real browser
+        # can reload the app shell without a network for ten minutes and ours could not reload it at all.
+        # Opt-in per gate, so nothing else changes.
+        if SHELL_CACHE_S and not self.path.endswith(".store"):
+            self.send_header("Cache-Control", f"max-age={SHELL_CACHE_S}")
+        else:
+            self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
     def guess_type(self, path):

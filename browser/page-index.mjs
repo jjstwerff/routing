@@ -45,15 +45,31 @@ const SUBENT_BYTES = 16;         // key u64 · off u32 · len u32
 // than scaled — the two numbers have to be the same number, not merely convertible.
 const PAGE = 65536;
 
+// The persistent tier, wired by the app. Without it every read below goes to the network exactly as it
+// did — and a saved route cannot be read offline, because the directory that finds its pages is itself
+// fetched by range.
+let store = null, storeTag = 'idx';
+export function usePersist(mod, tag) { store = mod; storeTag = `idx-${tag || 'v'}`; }
+
 let cfg = { url: null, sha: new Map() };
 let opening = null;              // Promise<idx|null> — one open per session, whatever asks first
 let held = null;                 // the same index once it has settled, for the synchronous stats hook
 const stats = { chunkReads: 0, chunkBytes: 0, subdirReads: 0, refusedSha: [], unknownStores: [] };
 
 async function range(url, off, len) {
+  // ⚠ THE CACHE IS CONSULTED FIRST AND WRITTEN AFTER, because offline this is the only way the index can
+  // be read at all — and the index is what turns a viewport into a page list. The tag carries the dataset
+  // version, so a regenerated index cannot be answered from the previous one's directory.
+  const key = `${off}+${len}`;
+  if (store) {
+    const hit = await store.getBlob(storeTag, key);
+    if (hit) return hit;
+  }
   const res = await fetch(url, { headers: { Range: `bytes=${off}-${off + len - 1}` } });
   if (!res.ok) throw new Error(`index ${url} range ${off}+${len} -> ${res.status}`);
-  return new Uint8Array(await res.arrayBuffer());
+  const b = new Uint8Array(await res.arrayBuffer());
+  if (store) store.putBlob(storeTag, key, b).catch(() => {});   // write-behind: never on the read's clock
+  return b;
 }
 
 /**

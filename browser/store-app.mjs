@@ -9,9 +9,11 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
          routeDistanceM, formatDistance, routeGpx,
          SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
-import { pagesFor, indexStats, configureIndex, openIndex } from './page-index.mjs';
+import { pagesFor, indexStats, configureIndex, openIndex, usePersist } from './page-index.mjs';
 import * as diag from './diag.mjs';
 import { createDevice } from './device.mjs';
+import * as pageCache from './page-cache.mjs';
+import { planPack, buildPack, describePlan } from './route-pack.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
@@ -131,7 +133,22 @@ const PAGES_URL = new URL('./coverage.pagesx', INDEX_URL).href;
 configureIndex(PAGES_URL, (coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
   .filter((s) => s && s.url && s.sha256)
   .map((s) => [new URL(s.url, INDEX_URL).href, s.sha256])));
+// The index is fetched by range like everything else, so it needs the same persistent tier — otherwise a
+// saved route cannot be FOUND offline, only stored. Tagged with the dataset version: a regenerated index
+// must never be answered from the previous one's directory.
+usePersist(pageCache, coverage.index.version || 'v');
 openIndex();          // one session read, warmed here so it is not on the first view's critical path
+
+// The store hashes, once — `page-index` refuses a stale index with them and `page-cache` KEYS on them, so
+// the two agree about what "this block" means by construction rather than by convention.
+const SHA_OF = new Map((coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
+  .filter((st) => st && st.url && st.sha256)
+  .map((st) => [new URL(st.url, INDEX_URL).href, st.sha256])));
+// And the byte length of each, which is what lets a paged store be OPENED with no network: loft learns a
+// file's size from a one-byte probe's `Content-Range`, and offline that probe cannot be made.
+const SIZE_OF = new Map((coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
+  .filter((st) => st && st.url && st.bytes)
+  .map((st) => [new URL(st.url, INDEX_URL).href, st.bytes])));
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 // ⚠ THE VIEW'S ROADS ARE ZOOM-BANDED; A MATCH'S ARE NOT. Below the handover the overview answers the
@@ -328,6 +345,11 @@ if (coverage.outside) console.warn(`[coverage] the camera is outside every block
 
 hud.textContent = 'loading kernel…';
 const kernel = await createKernel(new URL('./store-kernel.wasm', location.href).href);
+// ⚠ PAGES THAT OUTLIVE THE TAB. The host allows ten minutes of caching (`max-age=600`, measured) on data
+// that is immutable for a dataset's life, so without this a visitor who returns pays the whole cold read
+// again — and a saved route could not exist at all. Wired here because this is what knows the hashes.
+if (kernel.usePageCache) kernel.usePageCache(pageCache, SHA_OF, SIZE_OF);
+pageCache.requestPersistence();   // advisory: ask not to be evicted; a refusal changes nothing
 
 // The viewport bbox in degrees, padded by `pad` on each side.
 function viewportBox(pad) {
@@ -1238,6 +1260,48 @@ window.__perfHooks = {
   // The wired path, for a gate to drive and assert on rather than infer from timings.
   prefetchFor: (box, zoom) => prefetchFor(box || viewportBox(viewPad()), zoom ?? map.camera.zoom),
   pageIndexStats: () => indexStats(),
+  // ⚠ THE OFFLINE PACK, and the hooks a gate drives. Exposed here rather than only behind a button
+  // because the property that matters — "the map draws with the network off" — is only provable by a
+  // driver that can pack, go offline and then look at what was drawn.
+  pageCacheStats: () => pageCache.cacheStats(),
+  packPlan: (route, opts = {}) => planPack(route && route.length ? route : map.route, {
+    halfWidthM: opts.halfWidthM ?? 800,
+    zooms: opts.zooms ?? [12, 14, 16],
+    ask: {
+      // The app's OWN covering question, at the app's own zooms — not a second opinion about which block
+      // answers where. A pack computed any other way drifts into a hole in the map.
+      storesFor: (b, z) => [...new Set([...(baseFor(b, z) || '').split(/[,\s]+/),
+                                        ...(roadsFor(b, z) || '').split(/[,\s]+/)]
+                                       .filter((u) => u && u.endsWith('.store')))],
+      pagesFor: (url, b) => pagesFor(url, { mnlo: Math.round(b.mnlo * 1e7), mnla: Math.round(b.mnla * 1e7),
+                                            mxlo: Math.round(b.mxlo * 1e7), mxla: Math.round(b.mxla * 1e7) },
+                                     PREFETCH_PAD),
+      // The app's own idea of a screen at a camera — so the pack holds what a view will actually ask for.
+      boxAt: (lat, lon, zoom) => {
+        const save = { ...map.camera };
+        map.camera.lat = lat; map.camera.lon = lon; map.camera.zoom = zoom;
+        const b = viewportBox(viewPad());
+        Object.assign(map.camera, save);
+        return b;
+      },
+      shaOf: (url) => SHA_OF.get(url.split('?')[0]) || null,
+      pageBytes: 65536,
+    },
+  }),
+  packDescribe: describePlan,
+  savePack: async (route, opts = {}) => {
+    const plan = await window.__perfHooks.packPlan(route, opts);
+    const id = opts.id || `pack-${Math.round(map.camera.lat * 1e4)},${Math.round(map.camera.lon * 1e4)}`;
+    kernel.packInto(id);
+    pageCache.setPack(id);      // the index ranges the planner reads belong to the pack too
+    try {
+      const r = await buildPack(plan, { fetchPages: (u, p) => kernel.prefetch(u, p),
+                                        onProgress: (x) => diag.note('pack', x) });
+      return { id, ...r, bytes: plan.bytes, describe: describePlan(plan) };
+    } finally { kernel.packInto(null); pageCache.setPack(null); }
+  },
+  packs: () => pageCache.packs(),
+  dropPack: (id) => pageCache.dropPack(id),
   // What the tier decided and on what evidence — a gate asserts on this rather than inferring the tier
   // from a map that got sparser.
   deviceStats: () => ({ tier: device.tier, source: device.source, signals: device.signals(),
