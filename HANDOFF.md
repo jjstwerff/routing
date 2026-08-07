@@ -59,6 +59,18 @@ the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted
 `browser/store-kernel.wasm` is the runtime that does not triple a viewport's bytes (sources
 `9528328a…`).
 
+**⚠ AND A NEW ONE OPENED AND CLOSED THE SAME DAY — loft gained `trie<T[k]>`, and the installed binary
+moved FOUR TIMES on 2026-08-07, every one of them calling itself `2026.8.0`.**
+`759a4172…` (08-06 18:46) → `51e15f8a…` (13:35) → `d83e8f5d…` (22:56) → `ac54cc26…` (23:45). Two of
+those moves were **caused by probes in this repo**: loft#799 (a text-keyed `spatial` was accepted, then
+answered every lookup NULL) and loft#802 (a refused `store_bind_lazy` was invisible to the program)
+were filed and fixed within hours, each verified here against the installed binary rather than a
+commit — neither fix is in `../loft` or `../loft2` HEAD. **`trie<T[k]>` is the collection this repo's
+name-search design was hand-rolling**: one text key, exact lookup, byte order, and a prefix slice
+`t["kerk"..]` / `t["kerk"..:8]` that needs no successor string. Evidence and the numbers:
+`docs/name-search-index.md`; runnable probes `tools/trie_probe.loft` (self-contained),
+`tools/trie_vocab.loft`, `tools/trie_roundtrip.loft`, `tools/trie_paging.loft`.
+
 **READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
 Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
 binds at BENELUX. R2 beats B2 from ~10k sessions ($2.68 vs $8.91); one measurement — whether a
@@ -153,9 +165,17 @@ data it was built against.
 
    It is one store because `NAMES` is resolved once at boot, `store_load_url_trusted` ADOPTS, and every
    store numbers records from 0 — a covering set is not available without changing all three. Same ceiling
-   shape as the overview. **It is now costed for @51 phase E: `docs/name-search-index.md`** — a 7.2 MB
-   word-prefix index turns the 21.4 MB whole-store read into a 0.1–154 kB range read, byte-identical for
+   shape as the overview. **It is now costed for @51 phase E: `docs/name-search-index.md`** — a ~7.3 MB
+   word-prefix index turns the 21.4 MB whole-store read into a 0.1–181 kB range read, byte-identical for
    91.5% of queries and never wrong, with today's scan as the lossless fallback for the rest.
+
+   ⚠ **Two options now, and they are different points on the curve — not rival versions of one design.**
+   loft's new `trie<T[k]>` (§0) holds the whole vocabulary: **220 032 distinct words** (derived from the
+   store, not `strings`, which was 3.8% low), built in 2.2 s, persisted **5.9 MB gzipped**, reloaded in
+   42 ms, prefix queries 14 µs–2.1 ms. That is a **3.6× cut for almost no work** — but a **trie cannot
+   page** (`store_load_key` wants an integer-keyed hash, `store_bind_lazy` a hash, `store_lazy_range` a
+   `sorted`/`index`), so it reshapes the download rather than removing it. The range-read index is still
+   the only thing that removes it. They compose: **vocabulary whole, postings by range.**
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
    world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
@@ -325,6 +345,22 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **A GATE POINTED AT A STAGING DIRECTORY GOES GREEN WHEN THE STAGING ENDS.** `seam_route_gate` read
   `blocks/trim`, and the moment the trimmed set BECAME the real one it SKIPped — passing, having tested
   nothing. A gate must follow what ships, not where it was built.
+* **RE-RUN THE *PASSING* CONTROL WHEN YOU VERIFY A FIX — that is how you tell a fix from a suppression.**
+  loft#802 was "a refused lazy binding is invisible": `store_bind_lazy` said `true`, every lookup gave
+  `null`, `store_lazy_error` gave `""` and faults `0`. The fix could equally have been *refuse anything
+  I cannot immediately read* — **identical output in the failing case**. Only re-running the control
+  that was already green (a `hash` against an unreachable URL, which must still bind `true` and then
+  report the connection error with 1 fault) showed the fix was calibrated: a KIND mismatch is knowable
+  at bind time, reachability is not, so they are reported at different moments. Same shape as the trim
+  rule above — the negative control is the claim, and the positive one is what proves you did not buy
+  it by breaking something else.
+* **THE COMPILER MOVES UNDER YOU, AND `--version` DOES NOT SAY SO.** Four distinct
+  `/usr/local/bin/loft` binaries on 2026-08-07, all reporting `2026.8.0`; a conclusion drawn at 13:00
+  described a compiler that did not exist at 23:00. **Anchor every language finding to the binary's
+  md5**, and re-probe before trusting a doc that describes a surface — including one you wrote.
+  `docs/name-search-index.md` §3d was rewritten three times in a day, and every version was correct
+  when written. ⚠ Two of those moves were caused by *this repo's own probes*, so the target moves
+  fastest exactly when you are looking at it.
 
 * **A recipe that lives in a shell history is not a pipeline.** F3's four-region cut was performed by
   hand twice and written down nowhere a machine reads, so `data-refresh.yml` carried a COPY of an older
@@ -604,6 +640,18 @@ Two probes that are NOT gates, because each answers a question rather than defen
 `CDP_TIMEOUT_MS` above 30 s at phone speeds) and `browser/cdp_trap_scope.mjs` (`window.__prefetchScope`
 = `both|view|ring|none`, which holds the work identical while the suspend count moves — §1 item 5).
 
+**And four `trie` probes, kept runnable because the compiler moves (§2).** They are not gates either —
+`trie_probe` could be, but it would fail on any binary older than `d83e8f5d…`, which is a call for the
+maintainer rather than a default:
+
+```bash
+loft tools/trie_probe.loft                      # self-contained: prefix slice + a `sorted` control
+loft --native --lib lib tools/trie_vocab.loft <names.store> <out.store>   # 220 032 words, 2.2 s
+loft --native tools/trie_roundtrip.loft <out.store>                       # counts + key order survive
+loft --native tools/trie_paging.loft <url-or-path> [local]                # a trie CANNOT page (§1.3)
+loft tools/loft_repro/spatial_text_key.loft     # loft#799 — must now REFUSE to compile
+```
+
 `test-map`'s gates, timed on this box 2026-08-07 (all green; `crossorigin_paged_gate` added since, ~35 s
 and it needs the network): `map_render_gate` **59 s** and
 `base_paged_gate` **50 s** are half of it; then `overview` 20, `nl_live` 19, `cors_host` 17,
@@ -702,7 +750,7 @@ and whether anyone still stands behind it. Rows below flag ⚠ only where the an
 | **↳ what a FRAME costs** | `docs/render-frame-cost.md` — the render budget, the growing line, the split, the raster cache |
 | **↳ the MATCH** | `docs/match-performance.md` — per-point presentation, the escalation, `par` over the stretches |
 | **↳ where a COLD match's time goes** | `docs/cold-match-cost.md` — corridor, `build_graph`, the anchor search, the route-parity gate, and what was tried and REJECTED |
-| **↳ what a NAME SEARCH costs** | `docs/name-search-index.md` — the whole-store read re-measured (3× smaller than §1 item 3 recorded), the 7.2 MB word-prefix index that replaces it, and why `sorted` and not `radix` |
+| **↳ what a NAME SEARCH costs** | `docs/name-search-index.md` — the whole-store read re-measured (3× smaller than §1 item 3 recorded), the ~7.3 MB word-prefix index that replaces it, and why `trie<T[k]>` is a 3.6× cut that does **not** remove the download |
 | **the app as a serverless product** | `PLAN-APP.md` is the capstone · `browser/README.md` is the shell it runs in · `PLAN-BROWSER.md` ⚠ stale: the earlier path to it |
 | **routing, editing, restored features** | `PLAN-MATCH.md` the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` the sketch and the route as an object · `PLAN-RESTORE.md` what the old client had |
 | **the build and the toolchain** | `PLAN-BUILD.md` ⚠ · `PLAN-STORE.md` ⚠ · `docs/loft-build-phase-adoption.md` ⚠ — all three stale, and the store schema has moved to v2 since (§0) |
