@@ -2,6 +2,8 @@
 
 # PLAN-RESTORE — putting back what the serverless rewrite dropped, without a server
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** what the old Leaflet client did that the deployed app dropped
+
 The server-based Leaflet client (`index.html`, `app.js`, `controls.js`, `ws.js`, `geo.js` at the repo
 root, with `server/server.loft`) still exists and still runs under `make run`. The deployed app is the
 serverless one in `browser/`, and it **silently lost working features** in the rewrite. This plan puts

@@ -5,6 +5,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 # PLAN-SCALE — from one city to Western Europe
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-04 · **Owns:** how the data is cut, hosted and published, from one city to a country
+
 **Status (2026-08-01): C0–C2 BUILT. The Netherlands routes and searches on GitHub Pages — but the map is
 BLANK outside Enschede, and §6f is the design that fixes it.** Roads
 (233 + 264 MB) and a name index (36 MB) ship same-origin and paged; the base map (999 + 1058 MB) is

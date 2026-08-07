@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # loft#787 — the keyed paged load, with the leverage
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-06 · **Owns:** the loft#787 workload reproducer — a keyed paged load with real leverage
+
 The workload the ladder in loft#787 is missing: **162 cell keys of one z14 Amsterdam viewport** against a
 **812 MB** base block, and the **404 pages** this project's index names for them. Roughly an order of
 magnitude more read pressure than an Enschede z16 view (71 range reads), which is why a per-read cost is

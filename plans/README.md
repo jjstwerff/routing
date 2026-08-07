@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # plans/ — routing's plan structure
 
+**Kind:** guide · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the plan convention: reference vs plan, identity, labels, and closing
+
 routing organises multi-phase work the way **loft**, **crawler** and **moros** do, so one convention
 spans every repo. This file is the **binding** — the conventions and where routing differs.
 

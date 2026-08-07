@@ -1,5 +1,7 @@
 # HANDOFF — resume state
 
+**Kind:** state · **Status:** current · **Last verified:** 2026-08-07 · **Owns:** where things stand and how to resume; §4 is the index every other doc is found through
+
 Single entry point for picking this up on another machine. **Plan of record:** `DESIGN.md` (north-star)
 + the `PLAN-*.md` docs; this file is the *status + how-to-resume* layer on top, and it is deliberately
 short. The dated rungs it used to carry live in **`docs/handoff-archive.md`** — read those for the
@@ -32,8 +34,18 @@ the app's read strategy plus the instruments, again no data. Three strands:
    five things that all had to be true, and the one-line `httpTotal` bug that cost the most.
 3. **Two gates stopped costing minutes, and CI stopped reporting one line.** The trip gate 495 s → 10 s
    (it was measuring the ring, which is not what it tests); `map_render_gate` 91 s → 59 s (50.5 s of it
-   was 30 FIXED sleeps — §2). CI now runs all eight offline gates and reports each with a duration,
-   instead of stopping at the first failure.
+   was 30 FIXED sleeps — §2). CI now runs all offline gates and reports each with a duration, instead of
+   stopping at the first failure.
+
+**THE DOCS ARE GATED NOW — `make test` fails on a doc.** `docs/doc-structure-design.md` steps 1–4 shipped
+2026-08-07: §4 below is complete by construction, all **38** docs carry a
+`Kind · Status · Last verified · Owns` header, and `tools/docs_gate.sh` (+ a 14-case
+`tools/docs_gate_selftest.sh`, 4.6 s for both) checks orphans, dangling pointers, headers, declared
+staleness and budgets. **Nothing was renamed**, so no cross-reference moved. ⚠ **`Last verified` means
+someone re-checked the CLAIMS** — never bump it for an edit; `Status: stale — unverified since <date>`
+always passes, and the gate never fails for age alone. Six docs are marked stale today. Steps 5–7 (the
+`docs/` subdirectories) are open and deliberately unscheduled — and step 5 has a cost the design did not
+have: `docs/loft-feedback.md` is cited by path from loft-lang/loft issues, which nothing here can rewrite.
 
 **The upstream arc closed.** loft#782/#783/#784/#785 are fixed and in; **#787 is verified closed** —
 the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted; the committed
@@ -646,28 +658,34 @@ The FORMAT half needs no data at all and runs in `make test` (`browser/page-inde
 
 **Grouped by the QUESTION you are asking, not by filename** — the names grew by artifact (`MAP`,
 `BASEMAP`, `TILES`, `LAYERS` are four docs about what draws) and by date, so a name alone no longer says
-which one answers you. Every file in the tree is listed; the date is its last real change, and a doc
-untouched for a month is history that still holds, not a plan anyone is executing.
+which one answers you. **Every doc in the tree is listed here, and `tools/docs_gate.sh` fails the build
+when one is not** — so this table is complete by construction, not by anyone remembering.
+
+**Dates live in the docs, not here.** Each file opens with its own
+`**Kind:** · **Status:** · **Last verified:** · **Owns:**` line, and that is the single copy — a second
+one in this table is the thing certain to drift. Open a doc and its first line tells you what it is for
+and whether anyone still stands behind it. Rows below flag ⚠ only where the answer is *no*.
 
 | you want to know | read |
 |---|---|
-| **what the product IS** | `DESIGN.md` (08-03) — the north star |
-| **where things stand / how to resume** | **this file**, then `docs/handoff-archive.md` (08-07) for the account behind a rule |
-| **how to work in this repo as an agent** | `CLAUDE.md` (08-03) — and the `loft-write` skill BEFORE any `.loft` edit |
-| **a NEW multi-phase job** | **`plans/<issue>/`** — one directory per `jjstwerff/routing` issue, as `../loft`, `../crawler` and `../moros` do. `plans/README.md` is the binding; claim the issue before naming the directory. The overview is DERIVED: `gh issue list -R jjstwerff/routing --label plan --state all` |
-| **how the DATA is cut, hosted, published** | `PLAN-SCALE.md` (08-04) · **`docs/hosting-cost-model.md`** (08-04) — read before ANY hosting decision |
-| **what DRAWS, and at which zoom** | `PLAN-LAYERS.md` (08-03) is the model and the invariants — **start here** · `PLAN-BASEMAP.md` (08-03) the presentation layer · `PLAN-MAP.md` (08-03) the renderer · `PLAN-TILES.md` (07-30) the first NL slice |
-| **what the app COSTS in the browser** | `PLAN-PERF.md` (08-03), §0 is an executable step list · **`docs/prefetch-index-design.md`** (08-04) the page index · `docs/loft-binary-bridge.md` (07-13) ⚠ its premise was re-measured and no longer holds — §2 |
-| **the app as a serverless product** | `PLAN-APP.md` (08-03) is the capstone · `PLAN-BROWSER.md` (07-06) is the earlier path to it |
-| **routing, editing, restored features** | `PLAN-MATCH.md` (08-03) the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` (08-03) the sketch and the route as an object · `PLAN-RESTORE.md` (08-03) what the old client had |
-| **the build and the toolchain** | `PLAN-BUILD.md` (07-08) · `PLAN-STORE.md` (07-08) · `docs/loft-build-phase-adoption.md` (07-08) |
-| **which file does what** | `docs/ARCHITECTURE.md` (08-03) · `docs/debug-websocket.md` (07-30) for the live-debug channel |
-| **what loft's definition owes us** | `docs/loft-feedback.md` (08-06) — the consumer's half of the formal-definition work |
-| **how the docs themselves should be organised** | `docs/doc-structure-design.md` (08-07) — design, not yet executed: the measured defects, the four kinds, and the gate that keeps this table honest |
-| **how this all started** | `PLAN.md` (07-03) — the original server-era plan; superseded in almost every part, kept for the reasoning |
+| **what the product IS** | `DESIGN.md` — the north star |
+| **where things stand / how to resume** | **`HANDOFF.md`** — this file · then `docs/handoff-archive.md` for the dated account behind a rule |
+| **how to work in this repo as an agent** | `CLAUDE.md` — and the `loft-write` skill BEFORE any `.loft` edit |
+| **a NEW multi-phase job** | **`plans/<issue>/`** — one directory per `jjstwerff/routing` issue, as `../loft`, `../crawler` and `../moros` do. `plans/README.md` is the binding and `plans/_TEMPLATE.md` the skeleton; claim the issue before naming the directory. The overview is DERIVED, so no plan is listed here: `gh issue list -R jjstwerff/routing --label plan --state all` |
+| **how the DATA is cut, hosted, published** | `PLAN-SCALE.md` · **`docs/hosting-cost-model.md`** — read before ANY hosting decision |
+| **what DRAWS, and at which zoom** | `PLAN-LAYERS.md` is the model and the invariants — **start here** · `PLAN-BASEMAP.md` the presentation layer · `PLAN-MAP.md` the renderer · `PLAN-TILES.md` the first NL slice |
+| **what the app COSTS in the browser** | `PLAN-PERF.md`, §0 is an executable step list · **`docs/prefetch-index-design.md`** the page index · `docs/loft-binary-bridge.md` ⚠ stale: its premise was re-measured and no longer holds — §2 |
+| **the app as a serverless product** | `PLAN-APP.md` is the capstone · `browser/README.md` is the shell it runs in · `PLAN-BROWSER.md` ⚠ stale: the earlier path to it |
+| **routing, editing, restored features** | `PLAN-MATCH.md` the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` the sketch and the route as an object · `PLAN-RESTORE.md` what the old client had |
+| **the build and the toolchain** | `PLAN-BUILD.md` ⚠ · `PLAN-STORE.md` ⚠ · `docs/loft-build-phase-adoption.md` ⚠ — all three stale, and the store schema has moved to v2 since (§0) |
+| **which file does what** | `docs/ARCHITECTURE.md` · `docs/debug-websocket.md` for the live-debug channel |
+| **what loft's definition owes us** | `docs/loft-feedback.md` — the consumer's half of the formal-definition work · `tools/loft_repro/README.md` and `tools/loft_repro/787-workload/README.md` are the reproducers filed upstream, kept runnable |
+| **how the docs themselves are organised** | `docs/doc-structure-design.md` — the measured defects, the four kinds, and `tools/docs_gate.sh` (+ `tools/docs_gate.exempt`) that keeps this table honest |
+| **how this all started** | `PLAN.md` ⚠ stale — the original server-era plan; superseded in almost every part, kept for the reasoning |
+| **the public face: licence, contributing, credit** | `README.md` · `CONTRIBUTING.md` · `CODE_OF_CONDUCT.md` · `ATTRIBUTION.md` — these carry their header as an HTML comment, so a visitor does not see our currency banner |
 
 ⚠ **TWO CONVENTIONS COEXIST, AND THE BOUNDARY IS A DATE, NOT A SUBJECT.** `plans/` is where new work
 goes; the 16 root `PLAN-*.md` predate it, hold ~10 000 lines of still-valid reference, and migrate
 opportunistically or not at all. **So a subject can be in either place, and the only reliable way in is
-this table.** If you add a doc and do not add its row, the next session will not find it: five of the
-eight `docs/` files were missing here while §0 and §1 told people to read two of them.
+this table.** Adding a doc without adding its row now fails `make test` — before the gate existed, five
+of the eight `docs/` files were missing here while §0 and §1 told people to read two of them.

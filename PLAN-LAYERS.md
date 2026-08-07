@@ -1,6 +1,8 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-LAYERS — the network you can follow, and the ground that is always there
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** what draws and at which zoom — the R and C invariants; start here for anything that draws
+
 **Status (2026-08-03): SHIPPED and live** — steps 1–10 and 12 done, **11 deferred** with its reason in
 §5, on dataset `v2026-08-02c`. Written from three probes against the live site rather than from reading
 the code, and revised four times by measurements that contradicted it; every one of those is recorded in

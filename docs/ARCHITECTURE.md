@@ -1,5 +1,7 @@
 # routing — architecture & developer reference
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** which file does what: components, the wire protocol, the kernel API, build and run
+
 DESIGN.md is the *intent*; PLAN.md is the *per-step status*; this is the *current shape* — components,
 the wire protocol, the kernel API, and how to build/run/test.
 

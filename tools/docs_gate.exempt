@@ -1,0 +1,32 @@
+# Exemptions from tools/docs_gate.sh — FOUR TAB-SEPARATED COLUMNS, and the fourth is the point.
+#
+#   <doc-glob><TAB><rule><TAB><subject-glob><TAB><why>
+#
+# rule is one of: orphan · dangling · header · budget   (rule 4, staleness, is never exempt — a doc
+# that cannot honestly say it is current says `stale`, which always passes).
+#
+# ⚠ EVERY LINE HERE IS A PLACE WHERE A RULE AND A CONVENTION DISAGREE, and the reason column is the
+# resolution. An entry without a reason anyone can check is a hole, not an exemption. When the
+# condition behind one goes away — the migration happens, the log gets split — DELETE THE LINE.
+
+# plans/README.md: "No hand-maintained index here. The overview is DERIVED from the tracker." A second
+# hand-kept list in HANDOFF §4 would drift exactly as the first one did; §4's `plans/` row and its
+# `gh issue list` query ARE the index for these.
+plans/*/README.md	orphan	*	an active plan is indexed by its jjstwerff/routing issue, not by HANDOFF §4
+
+# §3 of the design is the TARGET layout: names chosen for docs that do not exist until step 5 moves
+# them. Scoped to those two directories, so a typo elsewhere in that file still fails.
+docs/doc-structure-design.md	dangling	docs/reference/*	§3 names the migration targets, which do not exist until step 5
+docs/doc-structure-design.md	dangling	docs/archive/*	§3 names the migration targets, which do not exist until step 5
+
+# PLAN-ROUTING.md was promoted to plans/50-get-me-there/ on 2026-08-03. Every citation of it is
+# historical — "promoted from", "the former name" — so the file is correctly absent and the sentences
+# are correctly there. Tree-wide rather than per-file: the reason does not vary by who is telling the
+# story, and the gate caught a third caller the moment this design doc was written up.
+*	dangling	PLAN-ROUTING.md	the former name of plans/50-get-me-there/, only ever cited as history
+
+# Append-only by design, like docs/handoff-archive.md — a chronological log of findings filed to
+# loft-lang/loft, where the ORDER is the record. Splitting it would break the upstream issues that
+# cite "docs/loft-feedback.md, <date>". It is `reference` because that is what it is; it is the length
+# budget that does not apply.
+docs/loft-feedback.md	budget	*	a chronological findings log filed upstream; the order is the record

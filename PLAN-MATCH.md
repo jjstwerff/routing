@@ -1,5 +1,7 @@
 # PLAN-MATCH — matching performance & accuracy (the escalation ladder)
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the matcher's ladder — turning a rough sketch into a route on real paths
+
 Refines **DESIGN §5** (Matching) for the tile-data era. §5 assumed a *tight corridor fetched from
 Overpass* that "physically caps deviation." With a **local tile block** (PLAN-TILES) the corridor is
 free to read but the graph we build from it dominates cost, and — crucially — a corridor tight enough

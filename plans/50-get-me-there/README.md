@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # 50 — Get-me-there: point-to-point routing over our own data
 
+**Kind:** plan · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** issue #50 — point-to-point routing over our own data
+
 **Issue:** [`jjstwerff/routing#50`](https://github.com/jjstwerff/routing/issues/50) ·
 **Value:** `G` · **Effort:** `H`
 

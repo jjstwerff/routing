@@ -2,10 +2,14 @@
      SPDX-License-Identifier: LGPL-3.0-or-later -->
 # A documentation structure that stays correct
 
-**Status:** design, not yet executed · **Written:** 2026-08-07 · **Owner:** unclaimed
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-07 · **Owns:** why the docs are organised the way they are, and what tools/docs_gate.sh enforces
 
-This proposes how routing's docs should be organised so they are **clear, complete and findable**. It
-is written against measured defects in the current tree, not against a preference for tidiness.
+**Written 2026-08-07 · steps 1–4 EXECUTED the same day; 5–7 open — see §6.** Discovery is done: the
+index is complete and gated, every doc declares itself, and nothing was renamed. What is left is the
+layout, which migrates one doc at a time.
+
+This is how routing's docs are organised so they are **clear, complete and findable**. It was written
+against measured defects in the tree, not against a preference for tidiness.
 
 ⚠ **The taxonomy already exists and is right.** `plans/README.md` defines *reference doc* vs *plan*,
 budgets a plan at 100–300 lines, and already predicts the outcome: *"most of them will end up as
@@ -85,7 +89,7 @@ plans/<issue>/     active multi-phase work (unchanged — it already works)
 
 ## 4. Every doc declares itself
 
-A four-line header on every file, so status is readable **without `git`** — the defect that let a
+One header line on every file, so status is readable **without `git`** — the defect that let a
 month-old plan read like this morning's:
 
 ```markdown
@@ -93,21 +97,35 @@ month-old plan read like this morning's:
 picks its tiles and what each layer costs
 ```
 
-`Status` is one of `current` · `stale — unverified since <date>` · `superseded by <path>`.
+`Kind` is one of `state` · `reference` · `plan` · `guide`. `Status` is one of `current` ·
+`stale — unverified since <date>` · `superseded by <path>`. `Owns` may wrap; the header ends at the
+first blank line.
+
 **`Last verified` means someone RE-CHECKED the claims**, not that the file was edited — this repo has
 already been bitten by a doc that was correct when written and wrong eight weeks later
-(`docs/loft-binary-bridge.md`, whose premise a later commit removed).
+(`docs/loft-binary-bridge.md`, whose premise a later commit removed). ⚠ **The dates this landed with
+are each doc's last substantive edit, adopted as a lower bound** — that is the only thing the tree
+actually knows, and it errs toward *older than it says*, which is the safe direction. The first person
+to genuinely re-check a doc moves its date to that day; a typo fix never touches it.
+
+**The four files a stranger arrives at carry the same header as an HTML comment** — `README.md`,
+`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `ATTRIBUTION.md`. A currency banner addressed to us is noise
+addressed to them, and exempting the front page from the rule would have been the bigger hole:
+
+```markdown
+<!-- Kind: guide · Status: current · Last verified: 2026-08-03 · Owns: what routing is -->
+```
 
 ---
 
 ## 5. It is gated, or it rots again
 
 Every defect in §1 is mechanically detectable, and *"a probe outside a gate is a comment"*.
-`tools/docs_gate.sh`, in `make test` (it needs no browser and no data):
+`tools/docs_gate.sh`, in `make test` (it needs no loft, no browser and no data):
 
 1. **No orphans** — every `*.md` appears in `HANDOFF.md` §4. *Would have caught all five missing files.*
 2. **No dangling pointers** — every `path/to.md` cited in any doc exists. *Catches a rename that missed a caller.*
-3. **Headers present and parseable** — kind, status, last-verified on every file.
+3. **Headers present and parseable** — kind, status, last-verified, owns on every file.
 4. **Staleness is declared, not discovered** — a doc whose `Last verified` is >90 days old must say
    `stale`, or the gate fails. It never fails for age alone; it fails for a **silent** claim of currency.
 5. **Budgets** — a plan over 300 lines, or a reference doc over ~800, fails with "split or move dated
@@ -117,6 +135,41 @@ Every defect in §1 is mechanically detectable, and *"a probe outside a gate is 
 turning it on today fails two files that nobody has time to split this week. **Land the gate with rule
 5 warning-only**, and promote it when the split happens.
 
+### What building it added — and it is not decoration
+
+**Rule 2 needed a definition of *ours*, and the measurement supplied it.** Of the 65 distinct `*.md`
+citations in the tree, **30 name a doc in another repo** (`LOFT.md`, `WEB_APPS.md`,
+`doc/claude/PACKAGES.md` — the loft reference `CLAUDE.md` sends you to) or a template slot
+(`plans/<N>-<slug>/README.md`). A rule that flagged those would bury the two real hits. So a citation is
+ours when its first path segment is a directory that exists here, or when it is a bare name in this
+repo's root-doc shape — which is what still catches `PLAN-ROUTING.md`.
+
+**`tools/docs_gate.exempt` — four columns, and the fourth is the reason.** Every entry is a place where
+a rule and a standing convention disagree, and the reason is the resolution. There are five, and each
+one is a decision worth seeing rather than a hole worth hiding:
+
+| exemption | the convention it yields to |
+|---|---|
+| active plan READMEs, from rule 1 | `plans/README.md`: *"No hand-maintained index here. The overview is DERIVED from the tracker."* A second hand-kept list would drift exactly as the first did |
+| §3's target names, from rule 2 | they are the *migration targets*; scoped to `docs/reference/` and `docs/archive/`, so a typo elsewhere in this file still fails |
+| the promoted plan's old name, from rule 2 | it is the former name of `plans/50-get-me-there/`, only ever cited as history — the file is correctly absent and the sentences are correctly there |
+| `docs/loft-feedback.md`, from rule 5 | append-only by design, like the archive: the ORDER is the record, and upstream issues cite it by date |
+
+**`tools/docs_gate_selftest.sh` — 14 cases, and it found a bug on its first run.** A gate that has only
+ever been seen to pass is a gate nobody knows the reach of. It builds a throwaway repo per case, injects
+exactly one defect, and asserts the verdict. Two of the cases exist because the first version of the
+gate got them wrong:
+
+- **`Last verified: last Tuesday` passed.** GNU `date -d` parses English — `yesterday`, `now`,
+  `last Tuesday` all succeed and yield a *moving* target. The shape check is not redundant with the
+  parse.
+- **The root `README.md` counted as indexed** because §4 names `plans/README.md`. A substring match
+  silently exempts the front page; the fix is a boundary class that excludes `/`.
+
+And two exist to stop the gate rotting into false safety: **age alone must never fail** (a doc that
+honestly says `stale` passes, or people will date-stamp docs they have not read just to get green), and
+**another repo's docs are not ours to resolve**.
+
 ---
 
 ## 6. Order of work
@@ -125,19 +178,31 @@ Discovery first, because it costs nothing and fixes what hurts today. Layout las
 `plans/README.md` says **migrate opportunistically, never in a sweep** — and a 17-file rename would
 break every cross-reference in one commit.
 
-| # | step | cost | ships |
-|---|---|---|---|
-| 1 | ✅ **done 2026-08-07** — §4 rewritten complete, grouped by question | — | findability, immediately |
-| 2 | `tools/docs_gate.sh` rules 1–3, in `make test` | ~1 h | the index can never silently rot again |
-| 3 | Headers on all 26 files | ~1 h | staleness visible without `git` |
-| 4 | Rule 4 on; mark the genuinely stale ones (`PLAN.md`, `PLAN-BROWSER.md`, `PLAN-BUILD.md`, `PLAN-STORE.md`) | ~30 min | no doc silently claims to be current |
-| 5 | `docs/` subdirectories; move the 8 existing `docs/` files first (they have few inbound links) | ~1 h | the shape exists before the big files move |
-| 6 | Migrate one root `PLAN-*.md` per session **as you touch it**, updating §4 in the same commit | ongoing | no flag day |
-| 7 | Rule 5 from warning to failing, once `SCALE` and `PERF` are split | — | budgets hold |
+| # | step | ships |
+|---|---|---|
+| 1 | ✅ **done 2026-08-07** — §4 rewritten complete, grouped by question | findability, immediately |
+| 2 | ✅ **done 2026-08-07** — `tools/docs_gate.sh` rules 1–5 + `tools/docs_gate_selftest.sh`, both in `make test` | the index can never silently rot again |
+| 3 | ✅ **done 2026-08-07** — headers on all **38** docs (26 was an undercount: `browser/`, `tools/loft_repro/` and the four public files were not in the census) | staleness visible without `git` |
+| 4 | ✅ **done 2026-08-07** — rule 4 on; **6** marked stale: `PLAN.md`, `PLAN-BROWSER.md`, `PLAN-BUILD.md`, `PLAN-STORE.md`, plus `docs/loft-binary-bridge.md` and `docs/loft-build-phase-adoption.md` | no doc silently claims to be current |
+| 5 | `docs/` subdirectories; move the 8 existing `docs/` files first — **but see the warning below** | the shape exists before the big files move |
+| 6 | Migrate one root `PLAN-*.md` per session **as you touch it**, updating §4 in the same commit | no flag day |
+| 7 | Rule 5 from warning to failing, once `SCALE` and `PERF` are split | budgets hold |
 
-**Steps 2–4 are the design's core and take an afternoon.** They deliver the whole benefit — complete,
-verifiable, self-describing — with **zero renames** and therefore zero broken references. Steps 5–7 are
-housekeeping that can take months without anyone waiting on them.
+**Steps 1–4 shipped in one session, and delivered the whole benefit** — complete, verifiable,
+self-describing — with **zero renames** and therefore zero broken references. `make test` now fails on
+a doc that is unlisted, unlabelled, dangling, or silently claiming to be current.
+
+⚠ **Step 5 is not the free hour this table implied, and the reason is `docs/loft-feedback.md`.** Its
+path is cited from **outside this repo** — the loft-lang/loft issues that routing files findings against
+say *"filed in `docs/loft-feedback.md`, <date>"*, and nothing here can rewrite those. Moving it to
+`docs/upstream/` breaks the one class of reference the gate cannot check and nobody can fix. Either it
+stays put while the other seven move, or step 5 accepts that cost knowingly. The same question applies,
+more weakly, to `docs/ARCHITECTURE.md`, which `README.md` links for the public.
+
+**Three docs are over budget and warn today** (rule 5): `PLAN-PERF.md` 2 231, `PLAN-SCALE.md` 2 240,
+`plans/51-coverage-past-nl/README.md` 410. The third is new information — a *current* plan already
+past the 300-line budget, which is the leak `plans/README.md` predicted, caught while it is still
+cheap to fix.
 
 ---
 
@@ -150,14 +215,19 @@ housekeeping that can take months without anyone waiting on them.
 - **No content rewriting.** Everything above moves or labels text. The measurements are the asset.
 - **No tooling beyond one shell gate.** A generated index was considered and rejected: §4's value is
   the one-line *"what it owns"* prose, which no generator can write.
+- **No date in two places.** §4 used to carry a per-doc date; the header now owns it, and §4 dropped
+  it. Two copies of one fact is the thing certain to drift — `tools/gates.offline` says so about
+  itself. §4 flags ⚠ only where a doc's answer to *"does anyone still stand behind this?"* is no.
 
 ---
 
-## 8. If this becomes work
+## 8. What is left
 
-It is genuinely multi-phase, so by `plans/README.md` it earns a plan — **but the identity is the issue
-number, claimed first**. Open an issue on `jjstwerff/routing`, then `plans/<n>-doc-structure/`, and move
-§§3–6 into it, leaving this file as the reference on *why the structure is what it is*.
+Steps 5–7 are housekeeping, and nobody is waiting on them. Migration happens **one doc per session, as
+you touch it** — `plans/README.md` forbids the sweep and is right.
 
-Steps 2–4 do not need any of that: they are a bug fix with a gate, which the workflow table calls
-**"Fix + a gate that would have caught it + commit. No plan, no issue."**
+If steps 5–7 ever get scheduled rather than drifted into, that is multi-phase work and earns a plan —
+**but the identity is the issue number, claimed first**. Open an issue on `jjstwerff/routing`, then
+`plans/<n>-doc-structure/`, and move §§3 and 6 into it, leaving this file as the reference on *why the
+structure is what it is*. Steps 1–4 needed none of that: they were a bug fix with a gate, which the
+workflow table calls **"Fix + a gate that would have caught it + commit. No plan, no issue."**

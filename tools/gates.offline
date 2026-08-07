@@ -19,3 +19,7 @@ sync	./tools/sync_test.sh
 derived-scope	./tools/derived_scope_gate.sh
 page-index	node browser/page-index.test.mjs
 device-tier	node browser/device.test.mjs
+# The docs are gated like the code: complete, findable, honest about being current. No loft, no
+# browser, no data — and the self-test runs FIRST, because a gate nobody has watched fail is a comment.
+docs-selftest	./tools/docs_gate_selftest.sh
+docs	./tools/docs_gate.sh

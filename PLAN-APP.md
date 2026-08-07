@@ -1,5 +1,7 @@
 # PLAN-APP — the standalone Western-Europe app (serverless, working-set)
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the app as a serverless product — the capstone the other plans feed
+
 The capstone: a **browser app with no server** that routes over **Western Europe** by fetching **only
 the blocks and tiles it needs** for the current view/route — never the whole dataset. Compute runs in
 wasm (the PLAN-MATCH matcher); data is open blocks hosted on GitHub, read on demand. This refines

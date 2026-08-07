@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Reproducers filed upstream
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-06 · **Owns:** the reproducers filed upstream, kept runnable here
+
 Self-contained repros for two loft loader findings — **no routing data**: each builds its own store.
 Filed on `loft-lang/loft`; kept here because a reproducer that only lives in an issue stops being run.
 

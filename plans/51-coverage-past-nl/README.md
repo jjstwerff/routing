@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # 51 — Coverage past the Netherlands: C3 Benelux+1, then Western Europe
 
+**Kind:** plan · **Status:** current · **Last verified:** 2026-08-04 · **Owns:** issue #51 — coverage past the Netherlands: Benelux+1, then Western Europe
+
 **Issue:** [`jjstwerff/routing#51`](https://github.com/jjstwerff/routing/issues/51) ·
 **Value:** `F` · **Effort:** `VH`
 

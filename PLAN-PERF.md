@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-PERF — making the standalone app fully performant
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** what the app costs in the browser, and the measurements behind every claim about it
+
 **Status (2026-07-22):** steps **1–16 and 20–22 IMPLEMENTED** (16 including its presentation half —
 §6b(2); 14 rescoped by measurement — §6c; 15 landed and ON — §6d); **18 is ⛔ not buildable in the
 browser — §6e**; **open:**

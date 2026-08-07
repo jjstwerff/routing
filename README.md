@@ -1,3 +1,4 @@
+<!-- Kind: guide · Status: current · Last verified: 2026-08-03 · Owns: what routing is and how to run it, for a first-time visitor -->
 # routing
 
 A **phone-first** map tool for quickly sketching a route (running / cycling / walking / driving),

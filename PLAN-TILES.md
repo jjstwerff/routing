@@ -1,5 +1,7 @@
 # First Tiles — Netherlands (+100 km), from Open Data to a Range-Read Client
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-07-30 · **Owns:** the first NL tile slice — the pyramid and how it was cut
+
 The concrete first slice of **[PLAN-BROWSER.md](PLAN-BROWSER.md) Phase 8**: generate a real tiled
 routable dataset for the Netherlands plus a ~100 km buffer, host it on GitHub *for now*, and read it
 from a client that fetches **only the parts it needs**, with transport and caching **hidden behind one

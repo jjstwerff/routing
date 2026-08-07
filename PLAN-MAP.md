@@ -1,6 +1,8 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-MAP — our own map renderer (drop Leaflet), whole-Enschede base map
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the canvas renderer: draw order, styling, and the interaction loop
+
 > **Status (2026-07-12): partly superseded by [PLAN-BUILD](PLAN-BUILD.md)** (the plan of record for the app).
 > The **canvas renderer** here (`browser/map.mjs`, M0–M3) is **live** — the standalone store app draws with
 > it. But **M4/M5's JS-baked text tiles** (`browser/*.txt` → `bake_tiles.mjs` → `tiles.mjs`) are **retired**:

@@ -1,5 +1,7 @@
 # HANDOFF ARCHIVE — the dated rungs, 2026-07-07 → 2026-08-02
 
+**Kind:** state · **Status:** current · **Last verified:** 2026-08-07 · **Owns:** the dated account behind each rule in HANDOFF — history, never where things stand
+
 **This is history, not state.** `HANDOFF.md` is the resume state; this file is what it used to say, kept
 verbatim because each rung records what something COST to learn and those receipts outlive the status
 they were attached to.

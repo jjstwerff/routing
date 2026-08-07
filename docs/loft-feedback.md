@@ -1,5 +1,7 @@
 # loft feedback from the `routing` consumer
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-06 · **Owns:** what loft's formal definition owes us — the consumer's half, filed upstream
+
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
 **Last updated:** 2026-08-03 — see the dated sections at the bottom; the CURRENT upstream asks are
 consolidated in *"2026-07-03 — remaining upstream blockers"*.

@@ -1,6 +1,8 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-EDIT — the rough-layer editor, on the canvas seam
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the sketch editor, and the route as an object you can pick up and change
+
 > **Status (2026-07-22): re-seated and open.** The 2026-07-12 version of this doc was written against
 > **Leaflet** and deferred with the note *"editing must be built once, on the canvas renderer's seam"*.
 > [PLAN-MAP](PLAN-MAP.md) has landed, so that condition is met and this doc is rewritten against

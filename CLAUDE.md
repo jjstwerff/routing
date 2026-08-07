@@ -1,5 +1,7 @@
 # CLAUDE.md — working notes for agents on this repo
 
+**Kind:** guide · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** how an agent works in this repo: what to read first, and what is expensive to get wrong
+
 `routing` is a bicycle/pedestrian route-matcher written in **loft** (a bespoke Rust-like language).
 It doubles as the **consumer test-bed** for loft, which is being given a formal language definition.
 Start with **`HANDOFF.md`** (resume state — short by design; its dated rungs are in
@@ -14,6 +16,27 @@ directory** — the number is the identity, and scanning the tree for a free one
 
 These notes carry context that isn't obvious from the code, so it survives across machines. (They
 mirror the maintainer's agent memory — keep both in sync when one changes.)
+
+## The docs are gated — `make test` fails on a doc, not just on code
+
+`tools/docs_gate.sh` (+ `tools/docs_gate_selftest.sh`) runs in `make test`. Three things follow, and all
+three are cheap to obey and annoying to discover from a red build:
+
+- **Every doc opens with a header line, and it is required.** `**Kind:** state·reference·plan·guide ·
+  **Status:** … · **Last verified:** YYYY-MM-DD · **Owns:** one line`. The four public files
+  (`README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `ATTRIBUTION.md`) carry the same fields as an
+  HTML comment instead. Copy an existing doc's line; `docs/doc-structure-design.md` §4 is the reference.
+- ⚠ **`Last verified` means you RE-CHECKED the claims, not that you edited the file.** Do not touch it
+  for a typo, a new section, or to get green. If a doc's claims are older than you can vouch for, say
+  `Status: stale — unverified since <date>` — **that always passes.** The gate never fails for age; it
+  fails only for a *silent* claim of currency. Bumping a date you have not earned is the one way to
+  break this permanently.
+- **Add a doc, add its row to `HANDOFF.md` §4, in the same commit.** That index is complete by
+  construction now. Dates do not go in §4 — the header owns them, and a second copy drifts.
+
+Exceptions live in `tools/docs_gate.exempt`, four columns, and **the fourth is a reason someone can
+check**. Read the existing five before adding a sixth; each is a place where a rule and a standing
+convention disagree.
 
 ## Read the reference before you write — this is the expensive one
 
