@@ -663,6 +663,7 @@ untouched for a month is history that still holds, not a plan anyone is executin
 | **the build and the toolchain** | `PLAN-BUILD.md` (07-08) · `PLAN-STORE.md` (07-08) · `docs/loft-build-phase-adoption.md` (07-08) |
 | **which file does what** | `docs/ARCHITECTURE.md` (08-03) · `docs/debug-websocket.md` (07-30) for the live-debug channel |
 | **what loft's definition owes us** | `docs/loft-feedback.md` (08-06) — the consumer's half of the formal-definition work |
+| **how the docs themselves should be organised** | `docs/doc-structure-design.md` (08-07) — design, not yet executed: the measured defects, the four kinds, and the gate that keeps this table honest |
 | **how this all started** | `PLAN.md` (07-03) — the original server-era plan; superseded in almost every part, kept for the reasoning |
 
 ⚠ **TWO CONVENTIONS COEXIST, AND THE BOUNDARY IS A DATE, NOT A SUBJECT.** `plans/` is where new work
