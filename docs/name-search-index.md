@@ -31,7 +31,8 @@ was being written. Re-read §2 against the binary in your hand before trusting i
 as small as loft will make it (§1b). **§8 is what has since been BUILT and proven**: a three-collection
 index whose resident part is **5.48 MB gzipped** against today's 21.4 MB whole-store read, answering
 **byte-identically for 93.0% of a 603-query corpus, a shorter list for the rest, and never a different
-one** — with the exact scan as the fallback. ⚠ It is **not wired into the app yet** (§8d).
+one** — with the exact scan as the fallback. **§8d: it is now WIRED INTO THE APP** — the names store is
+no longer fetched at all on an indexed query.
 
 ⚠ **Read §8b before re-deriving any size here.** §3's byte figures were sized on a hand-rolled varint
 format; the built index is made of loft store records, which are **~3× less dense**, and that single
@@ -508,10 +509,46 @@ therefore always depended on the store's insertion order, which is a build artif
 id as a final tie-break gives a total order, fixes that latent non-determinism, and takes the corpus to
 zero divergences. A differential harness found it; neither path alone could have.
 
-### 8d. What is left
+### 8d. Wired into the app (2026-08-08)
 
-* **Wire it in.** `web_basemap_kernel.loft` calls `do_find`; the browser needs the three URLs, and
-  `nxposts`/`nxents` need `store_load_key` against the interval rather than a whole load.
+`client/web_basemap_kernel.loft` now tries the index first and falls back to `do_find`. Measured against
+`_site` behind `tools/range_server.py` at `THROTTLE_KBPS=10250`, same query, same 8 hits:
+
+| | scan | indexed |
+|---|---|---|
+| first `find` | 6 511 ms | **3 659 ms** |
+| `coverage.names.store` | 63.47 MB fetched | **never requested** |
+| what it read | one whole store | `nxwords` whole + **33 range reads, 2.03 MB** |
+
+⚠ The harness does not gzip (§1a), so live the up-front cost is **5.48 MB** rather than 16.6, against
+today's 21.4 MB — and the ranges are identity either way (§1c).
+
+**The URLs are DERIVED, not declared.** `…/x.names.store` implies `…/x.nx{words,posts,ents}.store`
+beside it, so switching this on needs no coverage index republished: publish three files and the next
+search uses them. A region without them fails the vocabulary fetch **once per session** — remembered in
+`nx_no`, not retried per keystroke — and scans exactly as before. That fallback was verified by
+accident before it was verified on purpose: the first end-to-end run had no index published, fell back,
+and returned the same 8 hits.
+
+**`sorted`, not `hash`, for the postings** — `store_load_range` is the only loader that takes an
+interval, and it requires an ordered collection. That is the second half of what pass 2's key-ordering
+buys; a hash would have been one call per matched word.
+
+### 8e. ⚠ Two integration facts that cost time here
+
+* **`build-site.mjs` OWNS `_site/stores/` and deletes what it did not generate.** Index files written
+  there before a site build are silently gone afterwards, and the app then falls back — correctly, and
+  looking exactly like a design that does not work. Generate after the build, and teach `build-site`
+  about the three files before this ships.
+* **`--native-wasm` needs `clang`, which this box lacks; `loft --html` does not.** So the browser kernel
+  rebuilds fine (`node browser/build-store-kernel.mjs`, 1.52 → 1.66 MB) even when a wasip2 cross-build
+  fails. A red `--native-wasm` here is an environment gap, not a code fault — check `--html` before
+  believing it.
+
+### 8f. What is left
+
+* ~~**Wire it in.**~~ **DONE — §8d.** What remains is that
+  `build-site.mjs` must generate the three stores itself, so a site build stops deleting them.
 * **Publish the stores** — they are built to `scratch/` from a copy, never beside the live data.
 * ⚠ **`name_index_gate.sh` is NOT in `tools/gates.offline`.** It needs a names store the repo does not
   carry, so it would SKIP in CI — passing, having tested nothing, which `HANDOFF` §2 names as its own

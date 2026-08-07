@@ -1,0 +1,78 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// DOES A PREFIX COST ONE RANGE READ? The claim the whole index turns on, measured end to end.
+//
+// `wid` is numbered in trie key order, so a prefix is a contiguous interval (`nx_contiguous.loft`). This
+// checks that the interval is actually SERVABLE as one call — `store_load_range` over the sorted postings
+// — and that the entries store is then touched only for the rows a person sees:
+//
+//   words   whole, once          the only up-front cost
+//   posts   ONE store_load_range  [lo..hi] for the prefix
+//   ents    ONE store_load_keys   the <=8 displayed ids, never the candidates
+//
+// ⚠ It reports RESIDENCY, not just success: a loader that quietly fell back to reading everything would
+// return true and look identical. `len()` after the call is what tells those apart.
+//
+//   loft --native --lib lib tools/nx_paged_probe.loft <index-prefix> <query>
+#cwd
+
+use basemap::(NxWord, NxPost, NxEntry, nx_id);
+
+fn main() {
+  a = arguments();
+  pre = a[0] ?? "";
+  q   = a[1] ?? "kerk";
+  if pre == "" { println("usage: nx_paged_probe.loft <index-prefix> <query>"); return; }
+
+  words: trie<NxWord[w]> = [];
+  t0 = ticks();
+  if !store_load(words, "{pre}.nxwords.store") { println("ERR words"); return; }
+  println("words   : {words.len()} resident in {(ticks() - t0) / 1000} ms   (the whole vocabulary)");
+
+  // The interval this prefix occupies. One walk of a resident trie — no I/O.
+  lo = 0 - 1;
+  hi = 0 - 1;
+  nw = 0;
+  for w in words[q..] {
+    if nw == 0 { lo = w.wid; hi = w.wid; }
+    if w.wid < lo { lo = w.wid; }
+    if w.wid > hi { hi = w.wid; }
+    nw += 1;
+  }
+  if nw == 0 { println("no word starts with \"{q}\""); return; }
+  println("prefix  : \"{q}\" -> {nw} words, wid {lo}..{hi}");
+
+  // ⚠ THE CALL THIS DESIGN EXISTS FOR — one range, not `nw` lookups.
+  posts: sorted<NxPost[wid]> = [];
+  t1 = ticks();
+  got = store_load_range(posts, "{pre}.nxposts.store", lo, hi);
+  println("posts   : store_load_range({lo},{hi}) -> {got} records, {posts.len()} resident, {(ticks() - t1) / 1000} ms");
+  if posts.len() != nw { println("  ⚠ resident {posts.len()} != {nw} words in the prefix"); }
+
+  // Gather the candidates the way `do_find_indexed` does, and take the first 8 ids as a stand-in for
+  // the displayed rows — the point is the SHAPE of the entry read, not the ranking.
+  ids: vector<integer> = [];
+  np = 0;
+  for pst in posts {
+    k = 0;
+    while k < len(pst.p) {
+      np += 1;
+      if len(ids) < 8 { ids += [nx_id(pst.p[k] ?? 0)]; }
+      k += 1;
+    }
+  }
+  println("cands   : {np} postings from those words");
+
+  ents: hash<NxEntry[id]> = [];
+  t2 = ticks();
+  ge = store_load_keys(ents, "{pre}.nxents.store", ids);
+  println("entries : store_load_keys({len(ids)}) -> {ge} found, {ents.len()} resident, {(ticks() - t2) / 1000} ms");
+  for i in ids {
+    e = ents[i];
+    if e != null { println("  {e.name}"); }
+  }
+
+  println("");
+  println("⚠ residency is the claim: {posts.len()} of 220032 postings rows and {ents.len()} of 518804 entries");
+}

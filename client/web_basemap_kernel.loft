@@ -27,8 +27,9 @@
 // Output: the same A/B/L/P/N/S/R view lines or ROUTE/SUMMARY over println. The page requests `view <bbox>`
 // for the visible extent — whole-region view is ~230k lines and would block the browser thread.
 
-use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys, layout_cell_keys, LAYOUT_PAD, do_find);
-use basemap::(PTile, NameRec);
+use map_kernel::(do_view_bbox, do_view_roads_bbox, do_match_session_streamed, session_new, parse_sketch, emit_stretch, view_cell_keys, layout_cell_keys, LAYOUT_PAD, do_find,
+                 nx_span, nx_indexable, nx_rank_ids, nx_emit);
+use basemap::(PTile, NameRec, NxWord, NxPost, NxEntry);
 use routing_kernel::(TTile, GeoPoint, corridor_cell_keys, corridor_margin);
 use web::frame_yield;
 
@@ -123,6 +124,20 @@ fn main() {
   // you are about to scan end to end is strictly worse than fetching it once.
   names: hash<NameRec[id]> = [];
   names_at  = "";
+  // …AND THE INDEX THAT MAKES THAT PARAGRAPH OBSOLETE (`docs/name-search-index.md` §8). The vocabulary
+  // is a `trie`, which cannot page (loft#802) and at 5.5 MB gzipped does not need to; the postings and
+  // the entries are fetched per query, so the 21.4 MB whole-store read above never happens.
+  //
+  // ⚠ THE SCAN STAYS, and is not dead code. The index answers a single-token prefix; `name_score` scores
+  // wherever the query first appears in the fold, so an interior substring ("kerk" inside "verkerk") and
+  // any multi-token query fall back to `do_find`. That fallback is why replacing the search is safe, and
+  // it is measured: 93.0% of a 603-query corpus is byte-identical, the rest is a SHORTER list, none is
+  // different (`tools/name_index_gate.sh`).
+  nxwords: trie<NxWord[w]> = [];
+  nx_at = "";        // the index prefix whose vocabulary is resident
+  nx_no = "";        // a prefix already tried and found absent — so a region without an index costs
+                     // one failed fetch per session, not one per keystroke
+
   // The corridor ways + the graph built from them, held across commands: identical for every click that
   // stays inside the area already fetched, so rebuilding per click was ~41% of a match wasted
   // (PLAN-PERF §0 step 7). Reset when the roads store changes — a new region invalidates the corridor.
@@ -227,14 +242,6 @@ fn main() {
           //
           // arg3 is "<lat>,<lon>,<query>": the camera first so results can be ordered by proximity, and
           // the query LAST so a name containing a comma survives (everything after the second one).
-          if names_url != "" && names_url != names_at {
-            if store_load_url_trusted(names, names_url) {
-              names_at = names_url;
-            } else {
-              println("ERR names store_load_url failed: {names_url}");
-              names_at = "";
-            }
-          }
           fla = 0.0; flo = 0.0; fq = arg3;
           c1 = arg3.find(",");
           if c1 > 0 {
@@ -246,7 +253,57 @@ fn main() {
               fq = rest1[(c2 + 1)..rest1.size()];
             }
           }
-          do_find(names, fq, fla, flo, 8);
+
+          // ⚠ THE INDEX URLS ARE DERIVED, NOT DECLARED, so no coverage index has to be republished for
+          // this to switch on: `…/x.names.store` implies `…/x.nx{words,posts,ents}.store` beside it. A
+          // region that has not been indexed yet simply fails the vocabulary fetch once and scans
+          // forever after — the rollout is "publish three files", and the un-indexed case is the
+          // behaviour that shipped.
+          nxpre = "";
+          if names_url.size() > 12 && names_url[(names_url.size() - 12)..names_url.size()] == ".names.store" {
+            nxpre = names_url[0..(names_url.size() - 12)];
+          }
+          if nxpre != "" && nxpre != nx_at && nxpre != nx_no {
+            if store_load_url_trusted(nxwords, "{nxpre}.nxwords.store") { nx_at = nxpre; }
+            else { nx_no = nxpre; }
+          }
+
+          answered = false;
+          nfq = nx_indexable(fq);
+          if nx_at != "" && nx_at == nxpre && nfq != "" {
+            span = nx_span(nxwords, nfq);
+            if span.words == 0 {
+              println("FOUNDCOUNT 0");        // the vocabulary is authoritative: no word starts with it
+              answered = true;
+            } else {
+              // Fresh per query, so residency is the query's own and a broad prefix cannot leave the
+              // previous one's postings behind to be ranked again.
+              nxposts: sorted<NxPost[wid]> = [];
+              got = store_load_range(nxposts, "{nxpre}.nxposts.store", span.lo, span.hi);
+              if got > 0 {
+                ids = nx_rank_ids(nxposts, nxwords, nfq, fla, flo, 8);
+                nxents: hash<NxEntry[id]> = [];
+                store_load_keys(nxents, "{nxpre}.nxents.store", ids);
+                nx_emit(nxents, ids);
+                answered = true;
+              }
+            }
+          }
+
+          // The fallback, and the only path that needs the 21.4 MB store. Reached by a multi-token or
+          // interior-substring query, by a region with no index, or by a postings fetch that came back
+          // empty — all of which must still answer, so the load is here rather than at the top.
+          if !answered {
+            if names_url != "" && names_url != names_at {
+              if store_load_url_trusted(names, names_url) {
+                names_at = names_url;
+              } else {
+                println("ERR names store_load_url failed: {names_url}");
+                names_at = "";
+              }
+            }
+            do_find(names, fq, fla, flo, 8);
+          }
         } else if cmd == "lazyprobe" {
           // @PLN129 arc A, in the browser — DOES A LOOKUP FETCH?
           //

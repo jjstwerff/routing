@@ -197,11 +197,14 @@ pub const NK_PLACE  = 1;
 // Three collections, split by HOW EACH IS READ rather than by what it holds — that split is the whole
 // design, and `docs/name-search-index.md` §3d has the measurement behind it:
 //
-//   NxWord   a `trie`, shipped WHOLE       — a trie cannot page (loft#802), and at 5.9 MB gzipped for
+//   NxWord   a `trie`, shipped WHOLE       — a trie cannot page (loft#802), and at 5.5 MB gzipped for
 //                                            220 032 words it does not need to
-//   NxPost   a `hash`, PAGED by `wid`      — one range read per matched word
-//   NxEntry  a `hash`, PAGED by `id`       — one range read per DISPLAYED result, so the 8 rows a
-//                                            person sees are the only names ever fetched
+//   NxPost   a `sorted`, PAGED by a wid    — ⚠ `sorted` and not `hash` because `store_load_range` is
+//            RANGE                           the only loader that takes an interval, and an interval is
+//                                            what a prefix is once `wid` is numbered in key order. A
+//                                            hash would force one call per matched word: 459 for `kerk`.
+//   NxEntry  a `hash`, PAGED by `id`       — `store_load_keys` with the ids of the DISPLAYED rows, so
+//                                            the 8 names a person sees are the only ones ever fetched
 //
 // ⚠ THE FOLD IS NOT STORED, and that is what makes the index worth building: it is 7.06 MB of the
 // names store's text, and the trie key replaces it. The cost is that a tier can no longer be computed

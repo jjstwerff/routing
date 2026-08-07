@@ -636,7 +636,7 @@ pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limi
 // `tools/gen-names-index.loft` instead:
 //
 //   words   trie<NxWord[w]>    RESIDENT — 5.5 MB gzipped, the only thing fetched up front
-//   posts   hash<NxPost[wid]>  by a CONTIGUOUS wid interval, because pass 2 numbers words in key order
+//   posts   sorted<NxPost[wid]> ONE `store_load_range` over a CONTIGUOUS interval — pass 2 earns that
 //   ents    hash<NxEntry[id]>  ONE lookup per DISPLAYED row — at most `limit`, never per candidate
 //
 // ⚠ IT DECLINES RATHER THAN GUESSES, and the caller must honour that. A word index answers "some word
@@ -644,21 +644,64 @@ pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limi
 // single-token query and cannot for a multi-token one, so this returns `false` and the caller falls
 // back to `do_find`, which is exact. Returning a plausible answer instead is how a search box becomes
 // confidently wrong, which `basemap.loft` already warns is worse than finding nothing.
-pub fn do_find_indexed(words: trie<NxWord[w]>, posts: hash<NxPost[wid]>, ents: hash<NxEntry[id]>,
-                       q: text, clat: float, clon: float, limit: integer) -> boolean {
-  fq = fold_name(q);
-  if fq == "" { println("FOUNDCOUNT 0"); return true; }
-  // A separator in the query cannot be a prefix of ONE word. Decline; the caller scans.
-  if fq.find(" ") >= 0 || fq.find("-") >= 0 || fq.find("'") >= 0 { return false; }
+// ⚠ SPLIT IN THREE, because the browser cannot use it as one call. The ids to display are only known
+// AFTER ranking, so a single function would have to read the entries store itself — and this file must
+// not load stores at all (see the header: it compiles for --native-wasm, where there is no filesystem).
+// So the caller pages between the halves:
+//
+//   nx_span      which wid INTERVAL a prefix occupies      — a resident trie walk, no I/O
+//   …caller does store_load_range(posts, url, lo, hi)…
+//   nx_rank_ids  the ordered record ids, ranked from postings alone — no entry read per candidate
+//   …caller does store_load_keys(ents, url, ids)…
+//   nx_emit      the FOUND lines for those ids
+//
+// `do_find_indexed` below is the all-resident composition of the three: it is what the parity gate runs,
+// so the browser path and the gated path are the same code with the loads moved outward.
 
+// The wid interval a prefix occupies, and how many words are in it. `words` is 0 when nothing matches,
+// and the caller must then emit an empty result rather than fetching an interval that does not exist.
+pub struct NxSpan { const lo: integer, const hi: integer, const words: integer }
+
+pub fn nx_span(words: trie<NxWord[w]>, fq: text) -> NxSpan {
+  lo = 0;
+  hi = 0;
+  n = 0;
+  for w in words[fq..] {
+    if n == 0 { lo = w.wid; hi = w.wid; }
+    if w.wid < lo { lo = w.wid; }
+    if w.wid > hi { hi = w.wid; }
+    n += 1;
+  }
+  NxSpan { lo: lo, hi: hi, words: n }
+}
+
+// The folded query if the index can answer it, or "" if it cannot.
+//
+// ⚠ A SEPARATOR MEANS DECLINE, and the caller must fall back to `do_find`. A word index answers "some
+// word starts with q"; `name_score` asks "where does q FIRST appear in the fold". Those agree for one
+// token and cannot for two, so a multi-token query is refused rather than answered plausibly — a search
+// box that is confidently wrong is worse than one that finds nothing (`basemap.loft`).
+pub fn nx_indexable(q: text) -> text {
+  fq = fold_name(q);
+  if fq == "" { return ""; }
+  if fq.find(" ") >= 0 || fq.find("-") >= 0 || fq.find("'") >= 0 { return ""; }
+  fq
+}
+
+// Rank the postings of an already-loaded interval and return the record ids, best first.
+//
+// ⚠ NOTHING HERE READS AN ENTRY. That is the point: `a` matches 36 991 postings, and if ranking needed a
+// name or a coordinate per candidate this would be 36 991 fetches to show 8. The rank and position ride
+// in the posting (`basemap.loft`), so the entries store is touched once, for the survivors.
+pub fn nx_rank_ids(posts: sorted<NxPost[wid]>, words: trie<NxWord[w]>, fq: text,
+                   clat: float, clon: float, limit: integer) -> vector<integer> {
   cla = round(clat * 10000000.0) as integer;
   clo = round(clon * 10000000.0) as integer;
   qlen = fq.size();
-
   best: vector<NameHit> = [];
   for w in words[fq..] {
     slot = posts[w.wid];
-    if slot == null { continue; }
+    if slot == null { continue; }          // not in the loaded interval — a caller that paged less
     wlen = w.w.size();
     np = len(slot.p);
     k = 0;
@@ -672,15 +715,31 @@ pub fn do_find_indexed(words: trie<NxWord[w]>, posts: hash<NxPost[wid]>, ents: h
       k += 1;
     }
   }
+  ids: vector<integer> = [];
+  for h in best { ids += [h.rec]; }
+  ids
+}
 
-  println("FOUNDCOUNT {len(best)}");
-  for h in best {
-    e = ents[h.rec];            // ⚠ the ONLY read of the entries store: at most `limit` of them
+// Emit the FOUND block for `ids`, in the order given. The ONLY read of the entries store.
+pub fn nx_emit(ents: hash<NxEntry[id]>, ids: vector<integer>) {
+  println("FOUNDCOUNT {len(ids)}");
+  for i in ids {
+    e = ents[i];
     if e == null { continue; }
-    la2 = (e.lat as integer) as float / 10000000.0;
-    lo2 = (e.lon as integer) as float / 10000000.0;
-    println("FOUND {la2:1.7},{lo2:1.7} {e.kind as integer} {e.rank as integer} {e.name}");
+    la = (e.lat as integer) as float / 10000000.0;
+    lo = (e.lon as integer) as float / 10000000.0;
+    println("FOUND {la:1.7},{lo:1.7} {e.kind as integer} {e.rank as integer} {e.name}");
   }
+}
+
+// The all-resident composition — what the parity gate runs, and what a caller with everything in memory
+// wants. Returns false when the index declines, and the caller must then run `do_find`.
+pub fn do_find_indexed(words: trie<NxWord[w]>, posts: sorted<NxPost[wid]>, ents: hash<NxEntry[id]>,
+                       q: text, clat: float, clon: float, limit: integer) -> boolean {
+  if fold_name(q) == "" { println("FOUNDCOUNT 0"); return true; }
+  fq = nx_indexable(q);
+  if fq == "" { return false; }
+  nx_emit(ents, nx_rank_ids(posts, words, fq, clat, clon, limit));
   true
 }
 

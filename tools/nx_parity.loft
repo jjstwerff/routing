@@ -29,7 +29,7 @@ fn main() {
   names: hash<NameRec[id]> = [];
   if !store_load(names, nsrc) { println("ERR names: {nsrc}"); return; }
   words: trie<NxWord[w]> = [];
-  posts: hash<NxPost[wid]> = [];
+  posts: sorted<NxPost[wid]> = [];
   ents:  hash<NxEntry[id]> = [];
   if !store_load(words, "{pre}.nxwords.store") { println("ERR words"); return; }
   if !store_load(posts, "{pre}.nxposts.store") { println("ERR posts"); return; }

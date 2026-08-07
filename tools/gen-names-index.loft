@@ -8,8 +8,8 @@
 // each part is READ (`basemap.loft`, `docs/name-search-index.md` §3d):
 //
 //   <out>.nxwords.store   trie<NxWord[w]>    shipped whole   — a trie cannot page, and does not need to
-//   <out>.nxposts.store   hash<NxPost[wid]>  paged by wid    — one range read per matched word
-//   <out>.nxents.store    hash<NxEntry[id]>  paged by id     — one range read per DISPLAYED result
+//   <out>.nxposts.store   sorted<NxPost[wid]> ONE range read      — store_load_range over the interval
+//   <out>.nxents.store    hash<NxEntry[id]>   paged by id       — store_load_keys, the DISPLAYED ids only
 //
 //   loft --native-release --lib lib tools/gen-names-index.loft <names.store> <out-prefix>
 //
@@ -27,7 +27,7 @@ fn is_sep(c: text) -> boolean { c == " " || c == "-" || c == "'" }
 //
 // One function for both passes so the two can never disagree about what a word is — a split that
 // differs between them would silently drop postings for the words only one pass sees.
-fn each_word(fold: text, words: trie<NxWord[w]>, posts: hash<NxPost[wid]>,
+fn each_word(fold: text, words: trie<NxWord[w]>, posts: sorted<NxPost[wid]>,
              r: NameRec, posting: boolean, npost: &integer) {
   flen = fold.size();
   start = 0;
@@ -76,7 +76,7 @@ fn main() {
   println("names: {total} records");
 
   words: trie<NxWord[w]> = [];
-  posts: hash<NxPost[wid]> = [];
+  posts: sorted<NxPost[wid]> = [];
   ents:  hash<NxEntry[id]> = [];
   npost = 0;
   skipped = 0;
