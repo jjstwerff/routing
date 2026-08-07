@@ -203,13 +203,36 @@ both backends. **Two of our three upstream findings this week were corrected by 
    plus the built site, so a stale `_site` keeps the moved block on disk and the gate reclassifies it into
    "app shell" instead of dropping it: it reported the same 814.2 MB total with the correct index.
 2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
-   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14. **This
-   is what item 1's headroom was bought for**, and at 70% there is now room to land the halves.
-3. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
-   first search; Western Europe extrapolates to ~500 MB. It is one store because `NAMES` is resolved once
-   at boot, `store_load_url_trusted` ADOPTS, and every store numbers records from 0 — a covering set is
-   not available without changing all three. Same ceiling shape as the overview. **Cost it in @51 phase E**
-   rather than discovering it at C4.
+   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
+   **Re-measured 2026-08-07 on a freshly rebuilt `_site`: 673.8 MB of the 950 MB budget (71%), so the
+   headroom is 276.2 MB.** ⚠ That headroom is NOT what the halves need — they go to their own Pages
+   repos, the way `be-mid`, `nl-mid` and the four region base maps already do, so the binding constraint
+   is two more repos under the ~1 GB per-site cap, not this budget. The 63.5 MB `coverage.names.store`
+   IS on this budget, which is where item 3 and this one meet.
+3. ⚠ **The names store does not scale past this rung — MEASURED now, not extrapolated**
+   (`browser/cdp_names_cost.mjs`, 2026-08-07). `coverage.names.store` is 63.5 MB and the first `find`
+   pays for all of it: `wholeLoads [coverage.names.store x1]`, **`rangeReads +0`** — it arrives WHOLE,
+   never by range, which is the structural claim now confirmed rather than asserted.
+
+   | link | first `find` | second |
+   |---|---|---|
+   | localhost — decode only | **262 ms** *(201–900, n=5)* | 1–2 ms |
+   | 82 Mbps / 45 ms — the real link | **7 199 ms** *(7 163–7 351, n=3)* | — |
+   | 10 Mbps / 80 ms — a phone | **49 893 ms** *(49 879–52 212, n=3)* | — |
+
+   So it is **transfer-bound and linear in the store**: 262 ms of that is decode and the rest is wire.
+   The second search is a `names_at` hit at 1 ms — **509× cheaper** — so the cost is entirely the first
+   one. Western Europe at ~500 MB is 7.9× this store: **~57 s on the real link and ~6.5 min on a phone**,
+   for one search.
+
+   ✅ **But the app does NOT freeze** — 58–60 fps for the whole 50 s, measured by counting animation
+   frames across the call. That is the difference between a slow search and a broken product, and it was
+   worth knowing before costing a fix: this is a spinner, not a hang. ⚠ It does exceed the 30 s CDP call
+   timeout every gate uses, which is why `CDP_TIMEOUT_MS` is overridable now (default unchanged).
+
+   It is one store because `NAMES` is resolved once at boot, `store_load_url_trusted` ADOPTS, and every
+   store numbers records from 0 — a covering set is not available without changing all three. Same ceiling
+   shape as the overview. **Cost it in @51 phase E** rather than discovering it at C4.
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
    world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its

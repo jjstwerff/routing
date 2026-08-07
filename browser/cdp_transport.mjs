@@ -38,7 +38,11 @@
 //   b.close();
 import { spawn } from 'node:child_process';
 
-const CDP_TIMEOUT_MS = 30_000;
+// 30 s is right for a gate: a call that takes longer is a hang, and a hang must fail rather than sit.
+// But a probe that deliberately throttles the link can exceed it doing exactly what it is measuring —
+// the whole-file names load is ~51 s at 10 Mbps — so the ceiling is overridable for those, and left
+// alone (30 s) for everything else.
+const CDP_TIMEOUT_MS = Number(process.env.CDP_TIMEOUT_MS || 30_000);
 
 export async function launch({
   bin, userDataDir, url = 'about:blank', args = [], maxLifetimeMs = 600_000, clearStorage = true,
