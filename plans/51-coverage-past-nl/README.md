@@ -37,6 +37,7 @@ seam invisible and the working set bounded.
 | what the NL rung cost, and the four defects it found | `PLAN-SCALE.md` §6c, §6f F3 |
 | why roads partition and the base map covers | `PLAN-SCALE.md` D12 (§3) |
 | why hosting binds before the read path | `PLAN-SCALE.md` D2, §6e · `docs/hosting-cost-model.md` |
+| **what a name search costs, and the index that bounds it** | `docs/name-search-index.md` — E's third half |
 | the generator's memory, and the `stat` trap | `docs/loft-feedback.md` (loft#746, #752) · `tools/bind_order_gate.sh` |
 | the cut, both rules, and its conservation checks | `tools/cut-regions.sh`, `plans/README.md` |
 | the whole refresh sequence | `tools/refresh-region.sh` |
@@ -89,7 +90,7 @@ the route the whole region gives**.
 | **B** — fix the 62-block cap before it binds. | S | `block_overlap.loft` counts per pair; the gate's self-check still rejects a manufactured overlap | ✅ **DONE 2026-08-03** — owner list replaces the 62-bit mask, proven at 70 blocks |
 | **C** — publish ONE neighbour (BE first — A's numbers decided it). | MH | `conservation_gate` · `block_overlap_gate` · the published index resolves | ✅ **DONE** — trimmed and verified 2026-08-03 (`tools/trim-borders.sh`), then **SHIPPED**: the trimmed set is the live one in `v2026-08-03d`. ⚠ The trim this plan SPECIFIED was wrong; see the closure record |
 | **D** — the cross-border route. | M | a seam corpus: each route byte-identical against one-block and two-block reads | ✅ **DONE 2026-08-03** — `tools/seam_route_gate.sh`, 4 crossings, all identical. **The rung is entered.** |
-| **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | **OPEN, unblocked.** `PLAN-SCALE` §8b is the cadence half; `docs/hosting-cost-model.md` the hosting half — priced 2026-08-04: R2 over B2 from ~10k sessions/month, and the limit that actually binds is Pages' 100 GB/month (~1 000 sessions), which binds at Benelux rather than at WE |
+| **E** — decide C4/C5. WE roads is a scale-up of C; the WE **base map** is a genuine decision point and may end at "per-region on demand, forever". | S | a costed recommendation, or `status:declined` on the C5 half | **OPEN, unblocked.** Three halves, all now costed. `PLAN-SCALE` §8b is the cadence; `docs/hosting-cost-model.md` the hosting — priced 2026-08-04: R2 over B2 from ~10k sessions/month, and the limit that actually binds is Pages' 100 GB/month (~1 000 sessions), which binds at Benelux rather than at WE. **The names store is the third** (`docs/name-search-index.md`, 2026-08-07): ⚠ its recorded ceiling was **3× too high — a harness that did not gzip**, so decide against ~17 s at WE, not ~6.5 min; a 7.2 MB word index removes it outright |
 
 ## Closure record
 

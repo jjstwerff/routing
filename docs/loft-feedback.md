@@ -2193,3 +2193,54 @@ like a phone-sized memory cost. Timed at CPU 1× and 4× with the pages prefetch
 0.92×** the wall time of `store_load_keys` — slightly FASTER, with identical footprints, and the
 amplification does not grow with the throttle. The extra reads are cheap; the field-at-a-time relocate is
 not.
+
+## 2026-08-07 — a text-keyed `spatial` is accepted, and then every point lookup answers NULL
+
+Found while asking whether loft exposes a prefix-capable collection for the name-search index
+(`docs/name-search-index.md` §2). ⚠ **Two binaries both calling themselves 2026.8.0** — md5
+`759a4172…` (2026-08-06 18:46) and `51e15f8a…` (2026-08-07 13:35) — and the finding CHANGED between
+them, so it is anchored to the second.
+
+`spatial<T[k]>` is documented as interleaving 1–3 **coordinate** axes into a Morton key. Declared with a
+single `text` key it compiles anyway, on both binaries:
+
+```loft
+struct Word { const w: text, const n: integer }
+words: spatial<Word[w]> = [];
+```
+
+**On `51e15f8a…` the range is now correctly refused**, with a message that teaches:
+
+```
+error: a `spatial` range is a COORDINATE slice, not a scalar one — write `s[(x1, y1)..(x2, y2)]`
+       (the bounding box), or iterate the whole collection with `for x in s`
+```
+
+That is a real improvement over `759a4172…`, where `words["kerk".."kerl"]` compiled and returned a wrong
+count. **But the declaration is still accepted, and the key still is not a key.** Five words inserted,
+identical on `--interpret` and `--native`:
+
+```
+#X len=5                                               ← correct, the records are there
+#X point: NULL                                         ← words["kerklaan"], which IS present
+#X order: kerkstraat kerklaan lonneker kerf kerkweg    ← INSERTION order, not key order
+```
+
+**The half that is left is the worse half to leave.** A refused range is a compile error the author
+fixes in seconds; a point lookup returning NULL reads as *"not found"* and is indistinguishable from an
+empty collection at the call site. Ours only surfaced because the probe asserted on a key it had just
+inserted.
+
+**Ask:** reject a non-coordinate key field at DECLARATION, the same way the range is now rejected, and
+with the same shape of message. This is the per-kind dispatch omission `DATABASE.md` warns about under
+*"Adding or changing a collection kind"* — one that "does not read as a missing feature" — the way
+loft#720 was three at once.
+
+**Not asking for a byte-string oracle.** An earlier draft did, and the same binary refuted the need:
+`07_reflect.loft`'s `CollectionKind` states that *"a `radix` is a Morton-order structure that no SQL
+shape means the same thing as"*, while `sorted`/`ordered`/`index` "answer a range in their declared
+direction". `sorted<Word[w]>` with `c["kerk".."kerl"]` returns exactly the prefix-matching words on both
+backends and both binaries — **the primitive we needed already exists and is correctly kinded.** So this
+is a soundness report, not a feature request.
+
+**Repro:** five `+=` inserts, one subscript, one `for`. No store, no data.

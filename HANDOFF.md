@@ -125,25 +125,37 @@ data it was built against.
    pays for all of it: `wholeLoads [coverage.names.store x1]`, **`rangeReads +0`** — it arrives WHOLE,
    never by range, which is the structural claim now confirmed rather than asserted.
 
+   ⚠ **The numbers first recorded here were 3× too high, and the error was the INSTRUMENT's.**
+   `cdp_names_cost.mjs` ran against `_site` behind `tools/range_server.py`, which sends no
+   `Content-Encoding`; GitHub Pages gzips the same store **3.0×**. So a throttled harness run carried
+   63.5 MB where the live link carries **21.4 MB**, and that was reported as the product's ceiling.
+   Measured against the live site with the fixed probe (`docs/name-search-index.md` §1a, §6):
+
    | link | first `find` | second |
    |---|---|---|
    | localhost — decode only | **262 ms** *(201–900, n=5)* | 1–2 ms |
-   | 82 Mbps / 45 ms — the real link | **7 199 ms** *(7 163–7 351, n=3)* | — |
-   | 10 Mbps / 80 ms — a phone | **49 893 ms** *(49 879–52 212, n=3)* | — |
+   | **live site, this box** | **2 182 / 3 907 ms** — 21.41 MB gzip → 63.47 MB | 0–3 ms |
+   | 82 Mbps / 45 ms — the real link | ~~7 199 ms~~ → **~2 100 ms** | — |
+   | 10 Mbps / 80 ms — a phone | ~~49 893 ms~~ → **~17 000 ms** | — |
 
    So it is **transfer-bound and linear in the store**: 262 ms of that is decode and the rest is wire.
-   The second search is a `names_at` hit at 1 ms — **509× cheaper** — so the cost is entirely the first
-   one. Western Europe at ~500 MB is 7.9× this store: **~57 s on the real link and ~6.5 min on a phone**,
-   for one search.
+   The second search is a `names_at` hit at 1 ms, so the cost is entirely the first one. Western Europe
+   at ~500 MB is 7.9× this store: ~~57 s / 6.5 min~~ → **~17 s on the real link and ~2.3 min on a
+   phone**. ⚠ **Still a wall at WE — but this rung is not on fire**, and phase E must not be decided
+   against the 3× figure. Same family as `prefetch_gate`'s harness (§2): *an emulator generous with one
+   resource is not a slower reality, it is a different question.*
 
-   ✅ **But the app does NOT freeze** — 58–60 fps for the whole 50 s, measured by counting animation
-   frames across the call. That is the difference between a slow search and a broken product, and it was
-   worth knowing before costing a fix: this is a spinner, not a hang. ⚠ It does exceed the 30 s CDP call
-   timeout every gate uses, which is why `CDP_TIMEOUT_MS` is overridable now (default unchanged).
+   ✅ **But the app does NOT freeze** — 58–60 fps throughout, on the harness's slowest run and on the
+   live site alike, measured by counting animation frames across the call. That is the difference between
+   a slow search and a broken product, and it was worth knowing before costing a fix: this is a spinner,
+   not a hang. ⚠ A throttled harness run still exceeds the 30 s CDP call timeout every gate uses, which
+   is why `CDP_TIMEOUT_MS` is overridable now (default unchanged).
 
    It is one store because `NAMES` is resolved once at boot, `store_load_url_trusted` ADOPTS, and every
    store numbers records from 0 — a covering set is not available without changing all three. Same ceiling
-   shape as the overview. **Cost it in @51 phase E** rather than discovering it at C4.
+   shape as the overview. **It is now costed for @51 phase E: `docs/name-search-index.md`** — a 7.2 MB
+   word-prefix index turns the 21.4 MB whole-store read into a 0.1–154 kB range read, byte-identical for
+   91.5% of queries and never wrong, with today's scan as the lossless fallback for the rest.
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
    world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
@@ -690,6 +702,7 @@ and whether anyone still stands behind it. Rows below flag ⚠ only where the an
 | **↳ what a FRAME costs** | `docs/render-frame-cost.md` — the render budget, the growing line, the split, the raster cache |
 | **↳ the MATCH** | `docs/match-performance.md` — per-point presentation, the escalation, `par` over the stretches |
 | **↳ where a COLD match's time goes** | `docs/cold-match-cost.md` — corridor, `build_graph`, the anchor search, the route-parity gate, and what was tried and REJECTED |
+| **↳ what a NAME SEARCH costs** | `docs/name-search-index.md` — the whole-store read re-measured (3× smaller than §1 item 3 recorded), the 7.2 MB word-prefix index that replaces it, and why `sorted` and not `radix` |
 | **the app as a serverless product** | `PLAN-APP.md` is the capstone · `browser/README.md` is the shell it runs in · `PLAN-BROWSER.md` ⚠ stale: the earlier path to it |
 | **routing, editing, restored features** | `PLAN-MATCH.md` the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` the sketch and the route as an object · `PLAN-RESTORE.md` what the old client had |
 | **the build and the toolchain** | `PLAN-BUILD.md` ⚠ · `PLAN-STORE.md` ⚠ · `docs/loft-build-phase-adoption.md` ⚠ — all three stale, and the store schema has moved to v2 since (§0) |
