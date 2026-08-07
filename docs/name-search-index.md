@@ -545,11 +545,46 @@ buys; a hash would have been one call per matched word.
   fails. A red `--native-wasm` here is an environment gap, not a code fault — check `--html` before
   believing it.
 
-### 8f. What is left
+### 8f. In the pipeline and the site build (2026-08-08)
 
-* ~~**Wire it in.**~~ **DONE — §8d.** What remains is that
-  `build-site.mjs` must generate the three stores itself, so a site build stops deleting them.
-* **Publish the stores** — they are built to `scratch/` from a copy, never beside the live data.
+* **`tools/refresh-region.sh` builds it** — step 3, straight after `gen-names.loft`, into the same
+  `blocks/` directory. ⚠ It does **not** `die` on failure, unlike every step around it: the index is an
+  accelerator with an exact fallback, and failing a whole refresh — losing the roads and the base map
+  with it — because an optimisation did not build would be the wrong trade. It warns, the way
+  `bake-heights` does.
+* **`browser/build-site.mjs` ships it** — the three names are DERIVED from each block's `names` url,
+  the same rule the kernel uses, so **no `coverage.json` entry is added and nothing is republished**.
+  One place decides what the files are called; a second spelling in JSON could disagree with the
+  kernel's and the app would fall back to the scan with nothing reporting it. Absence stays a non-error:
+  a region without an index has no files to link.
+
+Verified on a `rm -rf _site` rebuild: all six files link in, and the app takes the indexed path —
+`rangeReads +33, rangeBytes 2.03 MB`, and **no `.names.store` request at all**.
+
+### 8g. ⚠ What it costs the site, which is the real trade
+
+| | before | after |
+|---|---|---|
+| deployed site | 673.8 MB (71%) | **809.3 MB (85%)** |
+| headroom under the 950 MB budget | 276 MB | **141 MB** |
+
+**The index adds 135.4 MB, and the names store stays** — the fallback needs it, so search now costs
+199 MB of site budget rather than 63.5. That is the honest shape of this: **fixed storage traded for
+per-session bytes.**
+
+The trade is worth taking, and `docs/hosting-cost-model.md` says why. Pages' binding limit is **100 GB
+of bandwidth a month**, not the ~1 GB of storage — it caps the app at roughly a thousand sessions. A
+search that costs ~7.5 MB instead of 21.4 MB moves that cap by nearly 3×, and 135 MB of a budget with
+141 MB still free is the cheaper side of the ledger. ⚠ But the headroom is now thin enough that **the
+next region added crosses it**, which was already true at 71% and is more true now.
+
+### 8h. What is left
+
+* ~~**Wire it in**~~ (§8d) · ~~**teach `build-site` to ship it**~~ (§8f) — both done.
+* **Publish, and regenerate first.** Nothing here has touched live data: the stores were built from a
+  COPY into `scratch/`, and `blocks/` was staged by hand for the site build. A real publish runs
+  `refresh-region.sh` so the index is a pure function of the names store it ships beside — an index one
+  refresh out of date is worse than none, because it answers confidently from stale ids.
 * ⚠ **`name_index_gate.sh` is NOT in `tools/gates.offline`.** It needs a names store the repo does not
   carry, so it would SKIP in CI — passing, having tested nothing, which `HANDOFF` §2 names as its own
   trap. Run it by hand after `gen-names-index.loft`, or give CI a fixture first.
