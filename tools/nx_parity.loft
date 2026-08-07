@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// DOES THE INDEX ANSWER WHAT THE SCAN ANSWERS? A differential harness, not a spot check.
+//
+// `do_find_indexed` replaces a linear scan over every NameRec with a prefix walk over a word trie. Those
+// two are NOT the same question — `name_score` scores the FIRST occurrence of the query anywhere in the
+// fold, and a word index only knows about word starts — so the divergence is a number to MEASURE, not a
+// risk to reason about. This runs both over a query corpus and reports, per query, whether the emitted
+// blocks are byte-identical.
+//
+// ⚠ THE CORPUS IS DRAWN FROM THE REAL VOCABULARY, not invented: prefixes of real folded words at several
+// lengths, plus the five §3c cases and a few known-hard ones. A corpus of pretty queries would report a
+// parity this design has not earned.
+//
+//   loft --native --lib lib tools/nx_parity.loft <names.store> <index-prefix> [limit]
+#cwd
+
+use basemap::(NameRec, NxWord, NxPost, NxEntry, fold_name);
+use map_kernel::(do_find, do_find_indexed);
+
+fn main() {
+  a = arguments();
+  nsrc = a[0] ?? "";
+  pre  = a[1] ?? "";
+  lim  = (a[2] ?? "8") as integer ?? 8;
+  if nsrc == "" || pre == "" { println("usage: nx_parity.loft <names.store> <index-prefix> [limit]"); return; }
+
+  names: hash<NameRec[id]> = [];
+  if !store_load(names, nsrc) { println("ERR names: {nsrc}"); return; }
+  words: trie<NxWord[w]> = [];
+  posts: hash<NxPost[wid]> = [];
+  ents:  hash<NxEntry[id]> = [];
+  if !store_load(words, "{pre}.nxwords.store") { println("ERR words"); return; }
+  if !store_load(posts, "{pre}.nxposts.store") { println("ERR posts"); return; }
+  if !store_load(ents,  "{pre}.nxents.store")  { println("ERR ents"); return; }
+  println("#P loaded names={names.len()} words={words.len()} ents={ents.len()}");
+
+  // The corpus: prefixes of real words, every 977th word (a prime, so the sample is spread rather than
+  // clustered at one end of the alphabet), at lengths 2..6 — plus the five §3c cases.
+  corpus: vector<text> = ["lonn", "amster", "stra", "kerk", "a", "enschede", "kerkstraat", "zzzqq"];
+  n = 0;
+  for w in words {
+    n += 1;
+    if n % 977 != 0 { continue; }
+    ww = w.w;
+    if ww.size() >= 2 { corpus += [ww[0..2]]; }
+    if ww.size() >= 4 { corpus += [ww[0..4]]; }
+    if ww.size() >= 6 { corpus += [ww[0..6]]; }
+    if len(corpus) > 600 { break; }
+  }
+  println("#P corpus {len(corpus)} queries, limit {lim}");
+
+  // Enschede's centre — the same viewpoint the app's own gates use, so distance ordering is exercised
+  // rather than collapsing to "everything is equally far".
+  clat = 52.2215;
+  clon = 6.8937;
+
+  same = 0; declined = 0; differ = 0;
+  for q in corpus {
+    println("#Q {q}");
+    println("#S");                                  // the SCAN's block
+    do_find(names, q, clat, clon, lim);
+    println("#I");                                  // the INDEX's block
+    ok = do_find_indexed(words, posts, ents, q, clat, clon, lim);
+    if ok { println("#E answered"); } else { println("#E declined"); }
+  }
+  println("#P end {same} {declined} {differ}");
+}

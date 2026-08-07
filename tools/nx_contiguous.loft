@@ -1,0 +1,57 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// IS A PREFIX A CONTIGUOUS `wid` INTERVAL? The property the whole index design rests on.
+//
+// `gen-names-index.loft` pass 2 numbers words by walking the trie in KEY order, so every prefix should
+// map to one unbroken run of wids — which is what turns 459 scattered posting lookups for `kerk` into a
+// single span. That is a claim about the generator AND about the trie's iteration order, so it is
+// checked rather than assumed: for each prefix, collect the wids, and assert
+//
+//     count == max - min + 1        (no gaps, no strays)
+//
+// A gap here means a reader that fetches `[min..max]` would pull postings for words that do NOT match
+// the prefix — correct answers, wasted bytes — and a stray outside the run means it would MISS matches.
+//
+//   loft --native --lib lib tools/nx_contiguous.loft <prefix>.nxwords.store
+#cwd
+
+use basemap::NxWord;
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "";
+  if src == "" { println("usage: nx_contiguous.loft <nxwords.store>"); return; }
+
+  words: trie<NxWord[w]> = [];
+  if !store_load(words, src) { println("ERR store_load failed: {src}"); return; }
+  println("vocabulary: {words.len()} words");
+
+  bad = 0;
+  check(words, "lonn",   bad);
+  check(words, "amster", bad);
+  check(words, "stra",   bad);
+  check(words, "kerk",   bad);
+  check(words, "a",      bad);
+  check(words, "zzzzzz", bad);
+
+  println("");
+  if bad > 0 { println("NOT CONTIGUOUS — {bad} prefix(es) have a gap or a stray"); }
+  else { println("EVERY PREFIX IS ONE UNBROKEN wid RUN"); }
+}
+
+fn check(words: trie<NxWord[w]>, pre: text, bad: &integer) {
+  n = 0;
+  lo = 0;
+  hi = 0;
+  for w in words[pre..] {
+    if n == 0 { lo = w.wid; hi = w.wid; }
+    if w.wid < lo { lo = w.wid; }
+    if w.wid > hi { hi = w.wid; }
+    n += 1;
+  }
+  if n == 0 { println("[\"{pre}\"..] -> 0 words   (nothing to be contiguous)"); return; }
+  span = hi - lo + 1;
+  if span == n { println("[\"{pre}\"..] -> {n} words, wid {lo}..{hi} — CONTIGUOUS ✅"); }
+  else { println("[\"{pre}\"..] -> {n} words, wid {lo}..{hi} spans {span} — GAP of {span - n} ❌"); bad += 1; }
+}

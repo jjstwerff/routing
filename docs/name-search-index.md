@@ -27,12 +27,15 @@ times in one day: every version of §3d was correct when written, and two were w
 these probes and both fixed the same day, so the compiler this doc describes changed *because* the doc
 was being written. Re-read §2 against the binary in your hand before trusting it.
 
-**The short form.** The ceiling is real but **3× smaller than recorded**, the store is already as small
-as loft will make it, and a **word-prefix index of ~7.3 MB replaces a 21.4 MB whole-store read with a
-0.1–181 kB range read** while returning a byte-identical top-8 for 91.5% of queries and a *shorter*
-list — never a wrong one — for the rest. Since binary C there is also a **cheap partial win**: a
-`trie` over the vocabulary alone cuts the whole-file read to **5.9 MB gzipped** for almost no work,
-but it cannot page (§3d), so it reshapes the download rather than removing it.
+**The short form.** The ceiling is real but **3× smaller than recorded** (§1a), and the store is already
+as small as loft will make it (§1b). **§8 is what has since been BUILT and proven**: a three-collection
+index whose resident part is **5.48 MB gzipped** against today's 21.4 MB whole-store read, answering
+**byte-identically for 93.0% of a 603-query corpus, a shorter list for the rest, and never a different
+one** — with the exact scan as the fallback. ⚠ It is **not wired into the app yet** (§8d).
+
+⚠ **Read §8b before re-deriving any size here.** §3's byte figures were sized on a hand-rolled varint
+format; the built index is made of loft store records, which are **~3× less dense**, and that single
+fact turned the obvious design (ship the index whole) into a 5% win and forced the one that works.
 
 ---
 
@@ -436,3 +439,80 @@ invariant — so the fix is to make its output impossible to misread, not to mak
    time and reachability is not, so the two are reported at different moments. That the control was
    re-run is the point: a fix that silences the symptom by refusing more broadly would have looked
    identical in the failing case.
+
+---
+
+## 8. What was built (2026-08-08)
+
+The index exists, is generated from the live store, and answers at parity with the scan. **It is not yet
+wired into the app** — `client/web_basemap_kernel.loft:249` still calls `do_find` — so this section is
+what has been *proven*, not what a visitor gets.
+
+### 8a. Three collections, split by how each is READ
+
+That split is the design, and §3d is why: a trie cannot page, so anything shipped inside it is shipped
+whole, and anything large must therefore live outside it.
+
+| store | gzipped | read as |
+|---|---|---|
+| `<r>.nxwords.store` — `trie<NxWord[w]>` | **5.48 MB** | resident, whole |
+| `<r>.nxposts.store` — `hash<NxPost[wid]>` | 15.5 MB | one **contiguous wid interval** per query |
+| `<r>.nxents.store` — `hash<NxEntry[id]>` | 16.1 MB | one lookup per **displayed row** — at most `limit` |
+| *`coverage.names.store` today* | *21.4 MB* | *whole, before the first keystroke can be answered* |
+
+`220 032 words · 870 646 postings · 518 804 entries` from 518 804 records. **The fold is not stored** —
+the trie key replaces it, and it was 7.06 MB of the names store's text. That is what pays for the
+postings.
+
+### 8b. ⚠ Two measurements that killed the obvious version
+
+Both were found by building it rather than by reasoning about it, and either would have shipped a
+design that does not work:
+
+1. **Shipping words + posts whole is 20.4 MB against the names store's 21.4 — a 5% win.** §3b's 7.2 MB
+   was sized on a hand-rolled varint format; **loft store records are ~3× less dense**, so an index made
+   of them is not a small index. Paging is not an optimisation here, it is the entire point.
+2. **Paging postings per word is 459 round trips for `kerk`** (~45 ms each live). Fatal on its own.
+
+**The fix is one pass in the generator, and it is the load-bearing idea.** `wid` is assigned by walking
+the trie in KEY order (`gen-names-index.loft` pass 2), not in first-encounter order, so **every prefix
+is one unbroken `wid` run** and the 459 lookups become a single interval. Verified rather than assumed —
+`tools/nx_contiguous.loft`, all five §3c cases plus a no-match control:
+
+```
+["kerk"..] -> 459 words, wid 96720..97178 — CONTIGUOUS ✅
+["a"..]    -> 7955 words, wid 1291..9245 — CONTIGUOUS ✅
+```
+
+⚠ This is why `NxWord.wid` is **not** `const`: write-once would force first-encounter numbering, which
+is exactly the version that does not work.
+
+### 8c. Parity, and the bug the gate found in the EXISTING code
+
+`tools/name_index_gate.sh` runs both paths over 603 queries — prefixes of real vocabulary words at
+lengths 2/4/6, sampled every 977th word so the corpus spreads across the alphabet rather than clustering.
+
+| | |
+|---|---|
+| byte-identical | **561 (93.0%)** |
+| shorter, order preserved — the accounted tier-0 class | 42 |
+| **diverged** | **0** |
+
+`do_find_indexed` shares `nh_insert` with `do_find` rather than reimplementing the ranking, so parity is
+structural: the two cannot drift without one function changing under both.
+
+⚠ **The first run failed on three queries, and the fault was in `do_find`.** `beijli`'s top two results
+share a coordinate, a kind AND a rank — equal score, rank and distance — so nothing separated them but
+the order they were visited in: by id for a scan, by word for a prefix walk. **`do_find`'s output has
+therefore always depended on the store's insertion order, which is a build artifact.** Adding the record
+id as a final tie-break gives a total order, fixes that latent non-determinism, and takes the corpus to
+zero divergences. A differential harness found it; neither path alone could have.
+
+### 8d. What is left
+
+* **Wire it in.** `web_basemap_kernel.loft` calls `do_find`; the browser needs the three URLs, and
+  `nxposts`/`nxents` need `store_load_key` against the interval rather than a whole load.
+* **Publish the stores** — they are built to `scratch/` from a copy, never beside the live data.
+* ⚠ **`name_index_gate.sh` is NOT in `tools/gates.offline`.** It needs a names store the repo does not
+  carry, so it would SKIP in CI — passing, having tested nothing, which `HANDOFF` §2 names as its own
+  trap. Run it by hand after `gen-names-index.loft`, or give CI a fixture first.

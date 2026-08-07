@@ -191,6 +191,70 @@ pub struct NameRec {
 pub const NK_STREET = 0;
 pub const NK_PLACE  = 1;
 
+// ===================================================================================================
+// THE SEARCH INDEX (`tools/gen-names-index.loft`, read by `do_find_indexed`).
+//
+// Three collections, split by HOW EACH IS READ rather than by what it holds — that split is the whole
+// design, and `docs/name-search-index.md` §3d has the measurement behind it:
+//
+//   NxWord   a `trie`, shipped WHOLE       — a trie cannot page (loft#802), and at 5.9 MB gzipped for
+//                                            220 032 words it does not need to
+//   NxPost   a `hash`, PAGED by `wid`      — one range read per matched word
+//   NxEntry  a `hash`, PAGED by `id`       — one range read per DISPLAYED result, so the 8 rows a
+//                                            person sees are the only names ever fetched
+//
+// ⚠ THE FOLD IS NOT STORED, and that is what makes the index worth building: it is 7.06 MB of the
+// names store's text, and the trie key replaces it. The cost is that a tier can no longer be computed
+// by `fold.find(q)`, so each POSTING carries the two bits that determine it (below).
+// ⚠ A POSTING CARRIES ITS OWN RANK AND POSITION, and that is not redundancy — it is what stops the
+// index paging an entry per CANDIDATE. `do_find` orders by score, then rank, then squared distance, so
+// it needs both for every candidate before it can pick 8. A query like `a` matches 36 991 postings; if
+// ranking had to read entries, that would be 36 991 range reads to display 8. With them here the
+// entries store is touched **once per DISPLAYED row**.
+// ⚠ `wid` is NOT `const`: the generator registers every word first, then walks the trie in KEY order
+// to number them, because a prefix must map to a CONTIGUOUS wid interval (see `gen-names-index.loft`
+// pass 2). Write-once would force first-encounter numbering, which is the version that does not work.
+pub struct NxWord  { const w: text, wid: integer }
+pub struct NxPost  { const wid: integer, const p: vector<integer>, const la: vector<i32>, const lo: vector<i32> }
+pub struct NxEntry { const id: integer, const name: text, const lat: i32, const lon: i32, const kind: u8, const rank: u8 }
+
+// A posting packs the record id with the two bits that decide the tier, because a tier is a property of
+// WHERE the word sits in its fold and nothing else survives dropping the fold:
+//
+//   bit 1  FIRST — this word starts at offset 0 of the fold, so a query that prefixes it also prefixes
+//                  the fold (`name_score`'s `at == 0`, tier 2)
+//   bit 0  WHOLE — the fold IS this one word, so a query equal to it equals the fold (tier 3)
+//
+// `rank` rides along in the same word (a place_rank is 0..6), so ranking needs no second lookup:
+//
+//   p = id * 32 + rank * 4 + flags
+//
+// Ids reach 518 803 today; `integer` is 64-bit, so 518 803 * 32 is nowhere near the range and the pack
+// stays exact. It is a pack rather than three vectors because these three are read TOGETHER, always.
+pub const NX_FIRST = 2;
+pub const NX_WHOLE = 1;
+pub fn nx_pack(id: integer, rank: integer, first: boolean, whole: boolean) -> integer {
+  v = (id * 32) + (rank * 4);
+  if first { v += NX_FIRST; }
+  if whole { v += NX_WHOLE; }
+  v
+}
+pub fn nx_id(p: integer) -> integer { p / 32 }
+pub fn nx_rank(p: integer) -> integer { (p / 4) % 8 }
+pub fn nx_flags(p: integer) -> integer { p % 4 }
+
+// The tier a query of `qlen` characters earns against a posting whose word is `wlen` long.
+//
+// ⚠ EXACT FOR A SINGLE-TOKEN QUERY, and deliberately not attempted for anything else — a query with a
+// separator in it cannot be a prefix of one word, so `do_find_indexed` falls back to the scan rather
+// than guessing. Mirrors `name_score`'s tiers 3/2/1; tier 0 (an interior substring) is not reachable
+// from a word index at all, which is the known and measured gap.
+pub fn nx_tier(flags: integer, qlen: integer, wlen: integer) -> integer {
+  if (flags % 2) == NX_WHOLE && qlen == wlen { return 3; }
+  if ((flags / 2) % 2) == 1 { return 2; }
+  1
+}
+
 // ~5.5 km. Coarser than the roads grid (0.02°) on purpose: this bins NAMES, and a street is a thing a
 // person locates by town, not by 2 km cell. At 0.02° a single ring road becomes a dozen answers.
 pub const NAME_CELL = 500000;
