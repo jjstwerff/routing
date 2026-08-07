@@ -344,6 +344,68 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   counted a store fetch that had not finished. All three settle on `__perfHooks.settled()` first now, and
   each FAILS rather than sampling anyway if it times out. **A counter is a claim about a session that has
   STOPPED.**
+* ✅ ~~**THE WASM IS PINNED**~~ — [loft#784](https://github.com/loft-lang/loft/issues/784) **is FIXED**
+  (`c148e282`, in the binary installed 2026-08-06 10:04, md5 `22dfa069`). The batched `fetch_many` used
+  `std::thread::spawn` with no wasm gate, so the browser — which has no threads — stalled in its FIRST
+  paged view: `hud="loading map…"` for ever, no error, no trap, three ranges served and then silence.
+  It is `#[cfg(target_family = "wasm")]`-gated now and the wasm rebuilds cleanly. ⚠ **But the browser gets
+  NO batching from it** — loft says so itself: *"on wasm the ranges go one at a time"*, because the bytes
+  arrive through the synchronous `loft_host_http_*` bridge and making that concurrent would change the
+  host contract. **So the page index stays load-bearing for the app**; loft#782's win is native-only.
+* ✅ **A SAVED ROUTE IS WALKABLE WITH THE RADIO OFF** — `tools/offline_pack_gate.sh`, in `make test-map`.
+  Radio off and the page reloaded, every step of the route draws **100% of its online feature count**.
+  Five things had to be true at once, and each was found by the gate rather than by reading:
+  the **index** is fetched by range like everything else (a route could be stored and not FOUND); the
+  **`.dschema` sidecar** comes through the whole-file arm, and without it no store opens at all; loft
+  opens a paged store with a **one-byte probe** whose answer is `Content-Range`, impossible offline, so
+  the length comes from `coverage.json`; a pack sized to the ROUTE is narrower than the SCREEN; and a
+  window is ONE `store_load_keys` call, so one unreadable page took all of it — a batch that loads
+  nothing is retried cell by cell now, which is the difference between a map with a hole and no map.
+  ⚠ **The last one was a single line and cost the most.** On a buffer hit the bridge set
+  `httpTotal = prefetchTotals.get(url) ?? -1`, and that map is only ever filled from a network response's
+  `Content-Range`. Offline every read SUCCEEDED — 2 887 of them, 1 096 off the device — and the store
+  never opened, because loft was told the file had unknown length. **A read that returns bytes is not a
+  read that returned everything the caller needs.**
+* ⚠ **BROWSER THREADS NEED A COOP/COEP HOST, WHICH GITHUB PAGES CANNOT BE** — so loft#782's batched
+  range read can never reach the app on the current hosting. loft's `THREADING.md` is explicit: the
+  browser pool is Web Workers behind `wasm_threads::loft_pool_build`, and running it *"needs a real
+  browser, a COOP/COEP host and a threaded bundle"* (nightly, `+atomics`, `-Z build-std` — recorded there
+  as a LONG-TERM dependency, not a temporary one). Pages serves static files with fixed headers, so
+  SharedArrayBuffer is out. **The page index is therefore load-bearing for the app permanently, not until
+  loft catches up** — and `docs/hosting-cost-model.md`'s R2 decision gains a second reason beside
+  bandwidth: a host that can set those headers is the only route to browser-side batching.
+* ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
+  [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
+  viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
+  binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
+  synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
+  key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
+  ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
+  it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
+  26.74 MB** on the 812 MB block, better than before it started.
+  ✅ **AND THE BROWSER REGRESSION IS CLOSED** on loft `759a4172` (2026-08-06 18:46): the same keyed load
+  is **694 ms at CPU 4x against the pre-arc baseline's 763**, with 42 fewer reads — faster than before the
+  arc started. The path there is worth keeping: **1.5x (measured with the arms in SEPARATE browser
+  sessions, always in the same order — withdrawn) → 1.14x (interleaved, real) → 1.03x**. The maintainer
+  refuted all three of my guessed mechanisms and found it: a heap `Vec` allocated per read in `u32_at`,
+  plus a page key hashed twice. ⚠ **The wasm may be rebuilt again** — the reason it was pinned is gone.
+  ⚠ **THE ORIGINAL REPORT SAID ~1.5x AND THAT NUMBER WAS METHOD, NOT RUNTIME** —
+  [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
+  sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
+  **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
+  sequential path by design (#784), so it pays the new relocate's CPU without collecting the batching's
+  round-trip saving. **`browser/store-kernel.wasm` therefore STAYS on the older runtime** — on Pages the
+  app is latency- and CPU-bound, and 1.5x decode on a phone outweighs 10% fewer requests.
+  ⚠ The earlier note that the fix arrived UNCOMMITTED still stands as a rule:
+  — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
+  (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
+  not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
+  the fix to land on a commit. This is HANDOFF §2's sibling-tree rule paying for itself twice in one day.
+* **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
+  `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
+  together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
+  27-40 ms** with a backlog of 128, bimodally, on identical work. Every range-serving gate in this repo
+  would have measured that stall and charged it to the app. It is 128 now.
 * **AN EMULATOR THAT MODELS ONE COST AND NOT THE OTHER DOES NOT MEASURE A TRADE-OFF — IT PICKS A WINNER.**
   `prefetch_gate` injected the round trip and nothing else, because round trips are what prefetching
   removes. A localhost server has no throughput ceiling, so the cost prefetching ADDS — bytes — was free

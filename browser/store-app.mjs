@@ -9,8 +9,11 @@ import { RouteMap, parseView, parseStretch, areasFromStore, viewFromStore, viewR
          routeDistanceM, formatDistance, routeGpx,
          SKETCH_KEY, sketchToJson, sketchFromJson } from './map.mjs';
 import { createKernel } from './store-kernel.mjs';
-import { pagesFor, indexStats, configureIndex, openIndex } from './page-index.mjs';
+import { pagesFor, indexStats, configureIndex, openIndex, usePersist } from './page-index.mjs';
 import * as diag from './diag.mjs';
+import { createDevice } from './device.mjs';
+import * as pageCache from './page-cache.mjs';
+import { planPack, buildPack, describePlan } from './route-pack.mjs';
 import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
@@ -64,8 +67,18 @@ if (bootCam && bootCam.profile) PROFILE = bootCam.profile;
 // ⚠ HOOKED BEFORE ANYTHING ELSE RUNS. The fault worth catching most — a kernel that stops answering —
 // tends to end the session, so a handler installed later is a handler that was not there for it.
 diag.captureErrors(window);
+// ⚠ DECLARED FIRST, CORRECTED AFTER THE FIRST MEASURED VIEW. The first screen is the one a visitor
+// judges, and no measurement exists yet when it is drawn — so the tier starts from what the browser will
+// say about the machine (cores, mobile, the heap ceiling, an explicit reduced-data preference) and is
+// replaced by measurement from the second view on. Being one tier low costs some detail; being one tier
+// high costs a phone the frame budget on the screen that decides whether the visitor stays.
+const device = createDevice();
+// The kernel is built after this and reads the cap off `window` — it has no import of its own, and the
+// bundler inlines it into one flat scope where an import would not exist anyway.
+window.__deviceCapBytes = device.capBytes();
 const map = new RouteMap(canvas, bootCam || DEFAULT_CAM);
 map.profile = PROFILE;   // the signposted-network overlay follows it (§6/PLAN step 8)
+map.detailShift = device.detailShift();   // the declared tier's detail, until a view measures the machine
 
 // `replaceState`, not `location.hash =`: assigning would push a history entry per pan and turn the back
 // button into a rewind of every camera nudge.
@@ -120,7 +133,22 @@ const PAGES_URL = new URL('./coverage.pagesx', INDEX_URL).href;
 configureIndex(PAGES_URL, (coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
   .filter((s) => s && s.url && s.sha256)
   .map((s) => [new URL(s.url, INDEX_URL).href, s.sha256])));
+// The index is fetched by range like everything else, so it needs the same persistent tier — otherwise a
+// saved route cannot be FOUND offline, only stored. Tagged with the dataset version: a regenerated index
+// must never be answered from the previous one's directory.
+usePersist(pageCache, coverage.index.version || 'v');
 openIndex();          // one session read, warmed here so it is not on the first view's critical path
+
+// The store hashes, once — `page-index` refuses a stale index with them and `page-cache` KEYS on them, so
+// the two agree about what "this block" means by construction rather than by convention.
+const SHA_OF = new Map((coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
+  .filter((st) => st && st.url && st.sha256)
+  .map((st) => [new URL(st.url, INDEX_URL).href, st.sha256])));
+// And the byte length of each, which is what lets a paged store be OPENED with no network: loft learns a
+// file's size from a one-byte probe's `Content-Range`, and offline that probe cannot be made.
+const SIZE_OF = new Map((coverage.index.blocks || []).flatMap((b) => [b.roads, b.base]
+  .filter((st) => st && st.url && st.bytes)
+  .map((st) => [new URL(st.url, INDEX_URL).href, st.bytes])));
 // The roads blocks a box needs, as the kernel's line 1: the covering set, comma-separated. The BASE map
 // stays single-block for now — `expose` pins one store, and re-scoping that is S5/C3.
 // ⚠ THE VIEW'S ROADS ARE ZOOM-BANDED; A MATCH'S ARE NOT. Below the handover the overview answers the
@@ -317,6 +345,11 @@ if (coverage.outside) console.warn(`[coverage] the camera is outside every block
 
 hud.textContent = 'loading kernel…';
 const kernel = await createKernel(new URL('./store-kernel.wasm', location.href).href);
+// ⚠ PAGES THAT OUTLIVE THE TAB. The host allows ten minutes of caching (`max-age=600`, measured) on data
+// that is immutable for a dataset's life, so without this a visitor who returns pays the whole cold read
+// again — and a saved route could not exist at all. Wired here because this is what knows the hashes.
+if (kernel.usePageCache) kernel.usePageCache(pageCache, SHA_OF, SIZE_OF);
+pageCache.requestPersistence();   // advisory: ask not to be evicted; a refusal changes nothing
 
 // The viewport bbox in degrees, padded by `pad` on each side.
 function viewportBox(pad) {
@@ -341,11 +374,30 @@ const covers = (o, i) => o && i.mnla >= o.mnla && i.mxla <= o.mxla && i.mnlo >= 
 // its own SEALED feature extent (`fmnla`/`fmxla`/…) and then each ring on its true span, so a feature
 // whose key-cell lies outside the box still draws. The pad exists only so a one-pixel drift does not
 // re-request, and it is small for exactly that reason.
-const VIEW_PAD = 0.15;
+// How far outside the screen a view reads, as a fraction of the screen — a TIER decision now. A phone
+// pays for ground it may never pan to in both bytes and decode, and the ring behind it multiplies that
+// by however many cells the tier allows.
+// ⚠ A FUNCTION, NOT A CONSTANT. The tier starts DECLARED and is corrected by measurement after the first
+// view, so anything captured at module load is frozen at a guess. Shipped that way for one round and the
+// gate caught it: at `minimal` the app still reported a ring of 8 and a pad of 0.15, because both had
+// been evaluated before a single view had been timed. Only `map.detailShift` — reassigned on change —
+// was actually following the tier.
+const viewPad = () => device.viewPad();
 // The ring, in the order it is paged. Straight neighbours before diagonals: a pan is far likelier to
 // leave through an edge than a corner, and the queue can be interrupted at any step, so the order IS the
 // priority. `[dx, dy]` in screen widths/heights.
-const RING_CELLS = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+// The eight neighbours, in the order they are paged — orthogonals first, because a pan is far more
+// likely to cross an edge than a corner. The TIER decides how many of them are worth having: `full`
+// takes all eight, `reduced` the four orthogonals, `minimal` none at all.
+const RING_ALL = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+const ringCells = () => RING_ALL.slice(0, device.ringCells());
+// The tier's knobs as the app is CONFIGURED right now, republished whenever the tier moves — a boot-time
+// snapshot is what made the first version wrong. It is published outside `scheduleRing` on purpose too:
+// a whole-read block returns from there before reaching it, so a gate on that camera read `null` and
+// proved nothing, on a camera where the ring is correctly absent.
+const publishTier = () => { window.__storeApp = { ...(window.__storeApp || {}),
+  viewPad: viewPad(), ringCells: ringCells().length, tier: device.tier }; };
+publishTier();
 
 // One ring cell as a box: the screen translated by (dx, dy) screens, then padded like a view so adjacent
 // cells overlap and no seam is left unpaged. Built from a SNAPSHOT of the screen, never from the live
@@ -355,7 +407,7 @@ function ringCellBox(screen, dx, dy) {
   const w = screen.mxlo - screen.mnlo, h = screen.mxla - screen.mnla;
   const mnla = screen.mnla + dy * h, mxla = screen.mxla + dy * h;
   const mnlo = screen.mnlo + dx * w, mxlo = screen.mxlo + dx * w;
-  const dla = h * VIEW_PAD, dlo = w * VIEW_PAD;
+  const dla = h * viewPad(), dlo = w * viewPad();
   return { mnla: mnla - dla, mnlo: mnlo - dlo, mxla: mxla + dla, mxlo: mxlo + dlo };
 }
 
@@ -595,7 +647,7 @@ const PREFETCH_PAD = window.__prefetchPad ?? 200000;   // 0.02 deg in fixed-poin
 // was queued — a camera that moved back over the loaded box while another job ran skips the load entirely.
 function ensureView() { return jobs.post('view', ensureViewNow); }
 async function ensureViewNow() {
-  const box = viewportBox(VIEW_PAD);
+  const box = viewportBox(viewPad());
   const zoom0 = map.camera.zoom;
   // WHAT THIS VIEW WOULD READ — the covering set and the modes, not just the box.
   //
@@ -652,6 +704,12 @@ async function ensureViewNow() {
   // `viewParity()` below asks for `viewtext` explicitly and compares. That keeps the check honest
   // without paying for it on every user-facing view.
   const counts = {};
+  // ⚠ THE MACHINE'S OWN SPEED, MEASURED ON THE WORK IT ACTUALLY DOES. No declared signal moves when the
+  // machine slows: at CPU 1x/4x/8x, `deviceMemory`, `hardwareConcurrency` and `jsHeapSizeLimit` are all
+  // UNCHANGED while the same work takes 2.7x and 4.2x longer (browser/cdp_device_probe.mjs). So the tier
+  // starts declared and is corrected from here — features indexed-and-drawn per millisecond, which is a
+  // speed rather than a size and so does not depend on how much this viewport happened to hold.
+  const cpu0 = performance.now();
   const h = kernel.exposedValue ? kernel.exposedValue(1) : null;
   if (h) {
     const lists = viewRenderLists(viewFromStore(kernel.memory(), h, fboxOf(bbox), { flatCount, flatField }, APP_OBJECT_KINDS));
@@ -665,6 +723,22 @@ async function ensureViewNow() {
     map.setStoreIndex(idx, () => kernel.memory(), h.storeBase);
     indexBase = h.storeBase;      // what the ring compares against — see `pageRingCell`
     for (const k of STORE_GEOM_KINDS) counts[k] = idx[k].n;
+  }
+  // Fed only when there is enough work to time: a viewport holding a handful of features measures the
+  // clock's resolution, not the machine, and a tier that flips on that noise is worse than no tier.
+  const cpuMs = performance.now() - cpu0;
+  const drawn = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (drawn >= 2000 && cpuMs > 1) {
+    const perMs = drawn / cpuMs;
+    if (device.observe(perMs)) {
+      // A tier change is a change to what the app FETCHES and DRAWS, so it must be visible rather than
+      // inferred from a map that quietly got sparser.
+      console.info(`[device] ${device.tier} (${Math.round(perMs)} features/ms) — ` +
+                   `detail +${device.detailShift()}, pad ${device.viewPad()}, ring ${device.ringCells()}`);
+      map.detailShift = device.detailShift();
+      publishTier();
+      diag.note('device', { tier: device.tier, perMs: Math.round(perMs), source: device.source });
+    }
   }
   // An incomplete view draws what it got — that is better than a blank screen — but it must NOT record
   // the ground as held, or the next pan inside it loads nothing and the gap becomes permanent.
@@ -749,11 +823,11 @@ function scheduleRing(screen, zoom) {
   // A block read WHOLE is already entirely resident, so a ring around it would be eight kernel calls that
   // fetch nothing. The ring is a paging optimisation and it belongs only where there is paging to do.
   if (roadsModeFor(screen, zoom) !== 'paged' && baseModeFor(screen, zoom) !== 'paged') {
-    ringStats.skipped = RING_CELLS.length;
+    ringStats.skipped = ringCells().length;
     window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats, why: 'whole' } };
     return;
   }
-  ringStats.planned = RING_CELLS.length;
+  ringStats.planned = ringCells().length;
   postRingStep(gen, screen, zoom, 0);
 }
 
@@ -799,12 +873,12 @@ function promoteRing(screen, zoom) {
 }
 
 function postRingStep(gen, screen, zoom, i) {
-  if (gen !== ringGen || i >= RING_CELLS.length) return;
+  if (gen !== ringGen || i >= ringCells().length) return;
   jobs.post('ring', async () => {
     // Checked again HERE, not only at post time: the camera can move while this job sits in the queue,
     // and a ring cell around a screen the user has already left is work bought for nobody.
-    if (gen !== ringGen) { ringStats.abandoned = RING_CELLS.length - ringStats.done; return; }
-    const [dx, dy] = RING_CELLS[i];
+    if (gen !== ringGen) { ringStats.abandoned = ringCells().length - ringStats.done; return; }
+    const [dx, dy] = ringCells()[i];
     const cell = ringCellBox(screen, dx, dy);
     // ⚠ A RING CELL MUST NEVER CHANGE THE SOURCE. A neighbouring screen can resolve to a different block
     // — around Amsterdam at country scale the ring reaches into other regions — and asking the kernel to
@@ -848,7 +922,7 @@ function postRingStep(gen, screen, zoom, i) {
     }
     ringStats.ms += performance.now() - t0;
     ringStats.done++;
-    if (i === RING_CELLS.length - 1 && gen === ringGen) {
+    if (i === ringCells().length - 1 && gen === ringGen) {
       promoteRing(screen, zoom);          // the last cell — the whole ring is resident, so widen onto it
     } else {
       // ⚠ THE STORE CAN MOVE UNDER THE DRAWN MAP. A ring read is a kernel call like any other, so it can
@@ -866,7 +940,7 @@ function postRingStep(gen, screen, zoom, i) {
       }
     }
     window.__storeApp = { ...(window.__storeApp || {}), ring: { ...ringStats } };
-    if (i === RING_CELLS.length - 1) {
+    if (i === ringCells().length - 1) {
       diag.note('ring', { done: ringStats.done, skipped: ringStats.skipped, ringFailed: ringStats.failed || 0,
                           promoted: ringStats.promoted || null, err: ringStats.lastError || null });
     }
@@ -1184,8 +1258,68 @@ window.__perfHooks = {
   // tkeys), so a real integration needs the index re-keyed spatially. This proves the CLAIM first.
   prefetch: (url, pages, c) => kernel.prefetch(url, pages, c),
   // The wired path, for a gate to drive and assert on rather than infer from timings.
-  prefetchFor: (box, zoom) => prefetchFor(box || viewportBox(VIEW_PAD), zoom ?? map.camera.zoom),
+  prefetchFor: (box, zoom) => prefetchFor(box || viewportBox(viewPad()), zoom ?? map.camera.zoom),
   pageIndexStats: () => indexStats(),
+  // ⚠ THE OFFLINE PACK, and the hooks a gate drives. Exposed here rather than only behind a button
+  // because the property that matters — "the map draws with the network off" — is only provable by a
+  // driver that can pack, go offline and then look at what was drawn.
+  pageCacheStats: () => pageCache.cacheStats(),
+  packPlan: (route, opts = {}) => planPack(route && route.length ? route : map.route, {
+    halfWidthM: opts.halfWidthM ?? 800,
+    zooms: opts.zooms ?? [12, 14, 16],
+    ask: {
+      // The app's OWN covering question, at the app's own zooms — not a second opinion about which block
+      // answers where. A pack computed any other way drifts into a hole in the map.
+      storesFor: (b, z) => [...new Set([...(baseFor(b, z) || '').split(/[,\s]+/),
+                                        ...(roadsFor(b, z) || '').split(/[,\s]+/)]
+                                       .filter((u) => u && u.endsWith('.store')))],
+      pagesFor: (url, b) => pagesFor(url, { mnlo: Math.round(b.mnlo * 1e7), mnla: Math.round(b.mnla * 1e7),
+                                            mxlo: Math.round(b.mxlo * 1e7), mxla: Math.round(b.mxla * 1e7) },
+                                     PREFETCH_PAD),
+      // The app's own idea of a screen at a camera — so the pack holds what a view will actually ask for.
+      boxAt: (lat, lon, zoom) => {
+        const save = { ...map.camera };
+        map.camera.lat = lat; map.camera.lon = lon; map.camera.zoom = zoom;
+        const b = viewportBox(viewPad());
+        Object.assign(map.camera, save);
+        return b;
+      },
+      shaOf: (url) => SHA_OF.get(url.split('?')[0]) || null,
+      pageBytes: 65536,
+    },
+  }),
+  packDescribe: describePlan,
+  savePack: async (route, opts = {}) => {
+    const plan = await window.__perfHooks.packPlan(route, opts);
+    // ⚠ UNION THE PLAN WITH WHAT THIS SESSION HAS ACTUALLY READ. The index is an approximation of the
+    // feature overhang, so a view reads pages the plan never names — measured offline, 179 such reads on
+    // one route, all in the second block of the covering set, every one a hole in the map. Pages already
+    // read are also already PAID FOR: adding them costs storage, not a fetch.
+    const seen = kernel.readPages ? kernel.readPages() : {};
+    for (const [url, pages] of Object.entries(seen)) {
+      if (!SHA_OF.has(url)) continue;                 // only what can be keyed safely
+      let e = plan.perStore.get(url);
+      if (!e) { e = { sha: SHA_OF.get(url), pages: new Set() }; plan.perStore.set(url, e); }
+      for (const p of pages) e.pages.add(p);
+    }
+    plan.pages = [...plan.perStore.values()].reduce((a, e) => a + e.pages.size, 0);
+    plan.bytes = plan.pages * 65536;
+    const id = opts.id || `pack-${Math.round(map.camera.lat * 1e4)},${Math.round(map.camera.lon * 1e4)}`;
+    kernel.packInto(id);
+    pageCache.setPack(id);      // the index ranges the planner reads belong to the pack too
+    try {
+      const r = await buildPack(plan, { fetchPages: (u, p) => kernel.prefetch(u, p),
+                                        onProgress: (x) => diag.note('pack', x) });
+      return { id, ...r, bytes: plan.bytes, describe: describePlan(plan) };
+    } finally { kernel.packInto(null); pageCache.setPack(null); }
+  },
+  packs: () => pageCache.packs(),
+  dropPack: (id) => pageCache.dropPack(id),
+  // What the tier decided and on what evidence — a gate asserts on this rather than inferring the tier
+  // from a map that got sparser.
+  deviceStats: () => ({ tier: device.tier, source: device.source, signals: device.signals(),
+                        cap: device.capBytes(), detail: device.detailShift(),
+                        pad: device.viewPad(), ring: device.ringCells(), samples: device.samples() }),
   // What the batches themselves cost — the view's own wait, attributed away from the kernel loop.
   prefetchStats: () => ({ ...prefetchStats }),
   setPrefetch: (on) => { prefetchOn = !!on; return prefetchOn; },
@@ -1268,7 +1402,7 @@ window.__perfHooks = {
   //     count is compared against the FILTERED store read, and the unfiltered count is reported next to
   //     loft's own `A=` so a divergence in the filter itself is visible rather than absorbed.
   areaParity: async () => {
-    const box = viewportBox(VIEW_PAD);
+    const box = viewportBox(viewPad());
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     // `viewtext` is the FULL text emit, kept in the kernel purely as this gate's reference — the app's
     // own `view` no longer serialises the layout at all. Asking for it explicitly is what keeps the
@@ -1344,7 +1478,7 @@ window.__perfHooks = {
     if (kind === 'match') {
       return kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     }
-    const b = viewportBox(VIEW_PAD);
+    const b = viewportBox(viewPad());
     return kernel.runKernel(viewCmd(bboxOf(b)));
   },
   // C0 — is cost growing with session history? Run the SAME command N times and report wasm memory and
@@ -1356,7 +1490,7 @@ window.__perfHooks = {
       if (kind === 'match') {
         await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
       } else {
-        const b = viewportBox(VIEW_PAD);
+        const b = viewportBox(viewPad());
         await kernel.runKernel(viewCmd(bboxOf(b)));
       }
       rows.push({ i, ms: performance.now() - t0, wasmMB: +(kernel.stats().wasmBytes / 1048576).toFixed(1) });
@@ -1364,7 +1498,7 @@ window.__perfHooks = {
     return rows;
   },
   async timedView() {
-    const box = viewportBox(VIEW_PAD);
+    const box = viewportBox(viewPad());
     const bbox = `${box.mnla.toFixed(6)},${box.mnlo.toFixed(6)},${box.mxla.toFixed(6)},${box.mxlo.toFixed(6)}`;
     const t0 = performance.now();
     const zoom = map.camera.zoom;
@@ -1977,7 +2111,7 @@ window.__perfHooks = {
     } else if (kind === 'match') {
       await kernel.runKernel(`${LAYOUT}\n${ROADS}\nmatch\n52.2412299,6.8834496;52.2694705,6.9164085;52.3116272,6.9088554\n${PROFILE}\n${READ_MODE()}`);
     } else {
-      const b = viewportBox(VIEW_PAD);
+      const b = viewportBox(viewPad());
       await kernel.runKernel(viewCmd(bboxOf(b)));
     }
     const total = performance.now() - t0;

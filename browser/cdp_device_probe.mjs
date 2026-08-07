@@ -29,6 +29,7 @@ const [profile, url, throttles = '1,4,8'] = process.argv.slice(2);
 if (!profile || !url) { console.log('usage: cdp_device_probe.mjs <profile-dir> <url> [throttles]'); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ev = async (call, x) => (await call('Runtime.evaluate', { expression: x, awaitPromise: true, returnByValue: true })).result?.result?.value;
+const json = async (call, x) => { try { return JSON.parse(await ev(call, `JSON.stringify(${x})`) || 'null'); } catch { return null; } };
 
 const ROUNDS = 40;
 
@@ -60,6 +61,24 @@ async function at(rate) {
       for (let i = 0; i < ${ROUNDS}; i++) await window.__perfHooks.kernelPing();
       return performance.now() - t;
     })()`)) || 0;
+    // ⚠ THE SIGNAL THE TIER ACTUALLY USES: features indexed-and-drawn per millisecond, taken from the
+    // app's own view path rather than from a synthetic loop. The thresholds in device.mjs are set from
+    // this table, so it has to be the same number the app feeds `device.observe`.
+    // The samples the BOOT view already produced under this throttle — no need to provoke another, and
+    // provoking one is unreliable anyway (a camera nudge inside the loaded box is a redraw, not a view).
+    const dev0 = await json(call, 'window.__perfHooks.deviceStats()') || { samples: [] };
+    const perMs = dev0.samples.length ? dev0.samples[dev0.samples.length - 1] : 0;
+    const allSamples = dev0.samples.join(' ');
+    const dev = await json(call, 'window.__perfHooks.deviceStats()') || {};
+    // ⚠ DOES THE APP OBEY THE TIER, or merely report it? The tier is only worth having if the pad, the
+    // ring and the drawn detail actually follow it — a stat nothing acts on is decoration.
+    // Sampled once the session has STOPPED: the ring publishes its plan when it is scheduled, which is
+    // after the view reports. Reading before that reported `null` and proved nothing.
+    for (let i = 0; i < 300; i++) { if (await ev(call, 'window.__perfHooks.settled()')) break; await sleep(200); }
+    const obeys = await json(call, `({ pad: window.__storeApp.viewPad ?? null,
+                                       ring: window.__storeApp.ringCells ?? null,
+                                       detail: window.__map0.detailShift ?? null })`) || {};
+
     // Real wasm COMPUTATION, not just a round trip: the app's own matcher over a fixed sketch, on data
     // that is already resident. This is the work a slow device actually struggles with.
     const matchMs = Number(await ev(call, `(async () => {
@@ -73,7 +92,8 @@ async function at(rate) {
       for (let i = 0; i < 3e6; i++) x += Math.sqrt(i) % 7;
       return performance.now() - t + (x > -1 ? 0 : 1);
     })()`)) || 0;
-    return { rate, ...stat, wasmMs: Math.round(wasmMs), matchMs: Math.round(matchMs), jsMs: Math.round(jsMs) };
+    return { rate, ...stat, perMs, allSamples, tier: dev.tier, source: dev.source, obeys, dev,
+             wasmMs: Math.round(wasmMs), matchMs: Math.round(matchMs), jsMs: Math.round(jsMs) };
   } finally { browser.close(); }
 }
 
@@ -88,9 +108,17 @@ console.log(`  ${'throttle'.padEnd(9)}${'deviceMem'.padStart(10)}${'cores'.padSt
 for (const r of rows) {
   console.log(`  ${(r.rate + '×').padEnd(9)}${String(r.deviceMemory).padStart(10)}${String(r.cores).padStart(7)}` +
               `${String(r.mobile).padStart(8)}${(r.heapLimit ? (r.heapLimit / 1e6).toFixed(0) + ' MB' : 'null').padStart(12)}` +
-              `${(r.wasmMs + ' ms').padStart(11)}${(r.matchMs + ' ms').padStart(10)}${(r.jsMs + ' ms').padStart(10)}`);
+              `${String(Math.round(r.perMs)).padStart(13)}${String(r.tier).padStart(10)}${(r.matchMs + ' ms').padStart(9)}${(r.jsMs + ' ms').padStart(9)}`);
 }
 const base = rows[0];
+console.log('\n  what the app is DOING at each tier (the knobs, not the label):');
+for (const r of rows) {
+  console.log(`    ${r.rate}×  tier ${String(r.tier).padEnd(8)} pad ${r.dev.pad}  ring ${r.dev.ring}  ` +
+              `detail +${r.dev.detail}  cap ${(r.dev.cap / 1e6).toFixed(0)} MB   ` +
+              `→ map.detailShift=${r.obeys.detail}, ring planned=${r.obeys.ring}`);
+}
+console.log('\n  every sample, per throttle:');
+for (const r of rows) console.log(`    ${r.rate}×  ${r.allSamples || '(none)'}`);
 console.log('\n  relative to 1×:');
 for (const r of rows.slice(1)) {
   console.log(`    ${r.rate}×  wasm ${(r.wasmMs / base.wasmMs).toFixed(2)}×   js ${(r.jsMs / base.jsMs).toFixed(2)}×` +

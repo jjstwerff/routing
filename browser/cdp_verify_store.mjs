@@ -27,6 +27,12 @@ const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPr
 // national map while claiming to check a city's invariants. Every driver states the camera it means.
 const GATE_CAM = '#16/52.2215/6.8937';
 await call('Page.navigate', { url: app + GATE_CAM });
+// Opt-in per-check timing (`VERIFY_TIME=1`). This driver is 87 s of `map_render_gate`'s 91 s and the
+// rest of the gate is under 350 ms, so any question about that gate's cost is a question about THIS file
+// — and answering it by reading 25 checks is how you optimise the wrong one.
+const __t0 = Date.now(), __log = console.log;
+if (process.env.VERIFY_TIME) console.log = (...a) => __log(`[${String(Date.now() - __t0).padStart(6)}ms]`, ...a);
+
 let ok = true;
 
 // 1. view <bbox> renders the visible region on load.
@@ -187,6 +193,24 @@ else console.log(`  ✓ block cache ON: cached==baked, data-load invalidates, la
 // It is also hard to see by eye: the rough points render as DOTS with no line between them, so "did my
 // click land?" has no visual answer beyond a single 4-px marker.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ⚠ WAIT FOR THE APP TO STOP, NOT FOR A CLOCK. This driver is 87 s of `map_render_gate`'s 91 s, and
+// **50.5 s of it was fixed `sleep()`** across 30 call sites — five of 2 500 ms, four of 3 500 ms — each
+// one a guess at how long a sketch edit and its re-match might take. The app already answers that
+// question: `__perfHooks.settled()` is false while any kernel job is queued or running.
+//
+// The floor is what makes it safe. `settled()` is true in the instant BEFORE an interaction's job is
+// posted, so polling it immediately would sail past the very work being waited for; `floor` holds long
+// enough for the click to become a job, and only then does the condition decide. The cap is the original
+// sleep, so the worst case is exactly today's behaviour and anything faster is free.
+const quiesce = async (cap, floor = 150) => {
+  const t = Date.now();
+  await sleep(Math.min(floor, cap));
+  while (Date.now() - t < cap) {
+    if (await ev('!(window.__perfHooks && window.__perfHooks.settled) || window.__perfHooks.settled()')) break;
+    await sleep(50);
+  }
+  return Date.now() - t;
+};
 const mouse = (type, x, y, extra = {}) =>
   call('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons: type === 'mousePressed' ? 1 : 0, ...extra });
 const click = async (x, y, settle = 250) => { await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(settle); };
@@ -332,7 +356,7 @@ else console.log('  ✓ a double-click drops exactly 1 point (P2)');
 // point between the right neighbours. The unit tier pins the geometry; this pins that the wiring is real.
 await resetSketch();
 await click(260, 180); await click(720, 460);
-await sleep(2500);
+await quiesce(2500);
 const sweep = JSON.parse(await ev(`(() => {
   const m = window.__map0, r = window.__rough;
   const a = m.project(r.points[0].lat, r.points[0].lon), b = m.project(r.points[1].lat, r.points[1].lon);
@@ -362,7 +386,7 @@ else console.log(`  ✓ press-on-line + drag inserts ONE point between its neigh
 // finally landed, which is checked by re-matching the settled sketch and requiring an identical route.
 await resetSketch();
 await click(300, 220); await click(560, 400); await click(760, 200);
-await sleep(3000);
+await quiesce(3000);
 const grab = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
   const s = m.project(p.lat, p.lon);
   window.__storeApp.matchRuns = 0;
@@ -372,7 +396,7 @@ await mouse('mousePressed', grab.x, grab.y);
 for (let i = 1; i <= MOVES; i++) { await mouse('mouseMoved', grab.x + i * 5, grab.y + i * 4); await sleep(16); }
 await mouse('mouseReleased', grab.x + MOVES * 5, grab.y + MOVES * 4);
 for (let i = 0; i < 60 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
-await sleep(2000);
+await quiesce(2000);
 const dragged = JSON.parse(await ev(`(() => { const m = window.__map0, r = window.__rough;
   const p = r.points[1], s = m.project(p.lat, p.lon);
   const h = m.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7);
@@ -394,14 +418,14 @@ else if (Math.abs(dragged.x - wx) > 6 || Math.abs(dragged.y - wy) > 6) {
 // 7c4. PLAN-EDIT E4 — delete a point: double-click (mouse) and select + the Delete button (touch).
 await resetSketch();
 await click(300, 220); await click(560, 400); await click(760, 200);
-await sleep(3000);
+await quiesce(3000);
 const midAt = JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[1];
   const s = m.project(p.lat, p.lon); return JSON.stringify({ x: Math.round(s.x), y: Math.round(s.y), id: p.id }); })()`));
 await click(midAt.x, midAt.y, 120);
 const sel = JSON.parse(await ev(`JSON.stringify({ selected: window.__rough.selectedIds()[0],
   btn: document.getElementById('rough-delete').classList.contains('hidden'), n: window.__rough.points.length })`));
 await click(midAt.x, midAt.y, 120);          // the second click of a double-click, inside 250 ms
-await sleep(2500);
+await quiesce(2500);
 const del = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
   gone: !window.__rough.points.some((p) => p.id === ${midAt.id}), route: window.__map0.route.length,
   hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7),
@@ -424,7 +448,7 @@ else console.log(`  ✓ click selects (button shown), double-click deletes and r
 // on screen describing a sketch that no longer exists.
 await ev('window.__rough.select(window.__rough.points[1].id);');
 await ev("document.getElementById('rough-delete').click();");
-await sleep(2000);
+await quiesce(2000);
 const one = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
   hud: document.getElementById('hud').textContent })`));
 if (one.n !== 1) { console.log(`  FAIL: the Delete button left ${one.n} points (want 1)`); ok = false; }
@@ -439,7 +463,7 @@ else console.log(`  ✓ the Delete button works and 1 point degrades cleanly: "$
 // start/finish. Driven with real clicks so the range comes from the hit test, not from an API call.
 await resetSketch();
 for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
-await sleep(3500);
+await quiesce(3500);
 const before5 = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
   ids: window.__rough.points.map((p) => p.id) })`));
 const ptAt = async (i) => JSON.parse(await ev(`(() => { const m = window.__map0, p = window.__rough.points[${i}];
@@ -451,7 +475,7 @@ const ranged = JSON.parse(await ev(`JSON.stringify({ sel: window.__rough.selecte
   label: document.getElementById('rough-delete').textContent,
   hidden: document.getElementById('rough-delete').classList.contains('hidden') })`));
 await ev("document.getElementById('rough-delete').click();");
-await sleep(3000);
+await quiesce(3000);
 const bulk = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
   ids: window.__rough.points.map((p) => p.id), route: window.__map0.route.length,
   sel: window.__rough.selectedIds().length, shared: window.__map0.points === window.__rough.points,
@@ -478,7 +502,7 @@ const key = async (k, mods = 0) => {
 };
 await resetSketch();
 for (const [x, y] of [[260, 440], [420, 340], [600, 260], [740, 180]]) await click(x, y);
-await sleep(3500);
+await quiesce(3500);
 const base6 = JSON.parse(await ev('JSON.stringify({ n: window.__rough.points.length, ids: window.__rough.points.map((p) => p.id) })'));
 await key('z', 2);                            // Ctrl+Z  (modifiers: 2 = Ctrl)
 const u1 = await ev('window.__rough.points.length');
@@ -486,7 +510,7 @@ await key('z', 2);
 const u2 = await ev('window.__rough.points.length');
 await key('z', 10);                           // Ctrl+Shift+Z = redo  (2|8)
 const r1 = await ev('window.__rough.points.length');
-await sleep(2000);
+await quiesce(2000);
 const redone = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
   hash: window.__map0.route.reduce((a, c) => (((a * 31 + Math.round(c[0] * 1e6)) >>> 0) * 31 + Math.round(c[1] * 1e6)) >>> 0, 7) })`));
 const redoRe = await ev(`(async () => { await window.__match(window.__rough.coords());
@@ -500,17 +524,17 @@ else console.log(`  ✓ Ctrl+Z walks back 4→3→2 and Ctrl+Shift+Z redoes to 3
 // 7c8. The bulk-delete snackbar, and its one-tap restore.
 await resetSketch();
 for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
-await sleep(3500);
+await quiesce(3500);
 const s1 = await ptAt(1), s3 = await ptAt(3);
 await click(s1.x, s1.y, 400);
 await click(s3.x, s3.y, 400);
 await ev("document.getElementById('rough-delete').click();");
-await sleep(2500);
+await quiesce(2500);
 const snack = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length,
   hidden: document.getElementById('undo-snackbar').classList.contains('hidden'),
   label: document.getElementById('undo-snack-label').textContent })`));
 await ev("document.getElementById('undo-snack-btn').click();");
-await sleep(2500);
+await quiesce(2500);
 const back = JSON.parse(await ev(`JSON.stringify({ n: window.__rough.points.length, route: window.__map0.route.length,
   hidden: document.getElementById('undo-snackbar').classList.contains('hidden') })`));
 if (snack.n !== 2) { console.log(`  FAIL: the bulk delete left ${snack.n} points (want 2)`); ok = false; }
@@ -523,7 +547,7 @@ else console.log(`  ✓ a bulk delete offers "${snack.label}Undo" and one tap re
 // 7c9. PLAN-EDIT E7 — shift+drag box select (desktop), with the real SHIFT modifier.
 await resetSketch();
 for (const [x, y] of [[220, 480], [360, 400], [500, 320], [640, 250], [780, 170]]) await click(x, y);
-await sleep(3500);
+await quiesce(3500);
 const q1 = await ptAt(1), q3 = await ptAt(3);
 const bx0 = Math.min(q1.x, q3.x) - 25, by0 = Math.min(q1.y, q3.y) - 25;
 const bx1 = Math.max(q1.x, q3.x) + 25, by1 = Math.max(q1.y, q3.y) + 25;
@@ -570,11 +594,11 @@ else if (!(p5.ins < p5.cold * 0.6 && p5.del < p5.cold * 0.6)) {
 // last rough point. The queue coalesces instead — latest wins, nothing is dropped.
 await resetSketch();
 await click(300, 200); await click(520, 330);
-await sleep(2500);
+await quiesce(2500);
 await click(700, 180, 120);        // these two land inside the previous match
 await click(760, 420, 120);
 for (let i = 0; i < 40 && (await ev('window.__jobs.pendingCount')) > 0; i++) await sleep(500);
-await sleep(1500);
+await quiesce(1500);
 const fresh = JSON.parse(await ev(`(() => { const p = window.__rough.points, r = window.__map0.route;
   if (!p.length || !r.length) return JSON.stringify({ gapM: -1, pts: p.length, route: r.length, runs: window.__storeApp.matchRuns });
   const last = p[p.length - 1], end = r[r.length - 1];
@@ -600,9 +624,9 @@ else console.log(`  ✓ a click during a match still matches: route ends ${fresh
 await ev("window.__readMode = 'paged'");
 await ev('window.__storeApp.invalidate && window.__storeApp.invalidate()');
 await ev("window.__jobs.run('view', () => window.__storeApp.ensureViewNow())").catch(() => {});
-await sleep(1500);
+await quiesce(1500);
 await click(320, 240); await click(560, 360);
-await sleep(3000);
+await quiesce(3000);
 const ks = JSON.parse(await ev('(() => JSON.stringify(window.__perfHooks.kernelStats()))()') || 'null');
 // The size comes from the page's own coverage index, never a constant here. A hardcoded size silently
 // becomes a lie the moment the block changes: with the Netherlands block in place it reported a working

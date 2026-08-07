@@ -1710,6 +1710,16 @@ export class RouteMap {
   // ⚠ `memory` is kept as a FUNCTION, never as a buffer. `memory.grow` detaches the ArrayBuffer and the
   // kernel grows memory while matching, so every frame must re-derive its view; a cached Int32Array would
   // read a detached buffer (length 0) and the map would silently go blank after the first match.
+  // ⚠ WITHHOLD DETAIL UNTIL A DEEPER ZOOM — the one lever, asked by every draw site that consults a
+  // debut zoom. A mark that debuts at z14 debuts at z15 when this is 1, and nothing about the debut
+  // LADDER changes: the ladder is a property of the data (a 0.008° area is small at z9 wherever it is
+  // drawn), while this is a property of the MACHINE. Keeping them apart is what stops a slow phone
+  // silently redefining what the map means.
+  //
+  // Applied to the debut comparison ONLY, never to the projection — the camera still shows the ground it
+  // is pointed at, at the scale it says. Set from `device.mjs`; 0 is the full map.
+  _detailZoom(z) { return z - (this.detailShift || 0); }
+
   setStoreIndex(idx, memFn, storeBase) {
     this._sidx = idx; this._smem = memFn; this._sb = Number(storeBase) || 0;
     this.invalidateBlocks();
@@ -2126,7 +2136,7 @@ export class RouteMap {
       if (len < 3) continue;                                 // areaRenderList's drop, applied at draw
       const diag = Math.hypot(col.bb[o4 + 1] / 1e7 - col.bb[o4] / 1e7, col.bb[o4 + 3] / 1e7 - col.bb[o4 + 2] / 1e7);
       const mz = areaDebutDiag(diag);
-      if (z < mz) continue;
+      if (this._detailZoom(z) < mz) continue;
       const cover = decodeText(mem, sb, col.sRec[i], cache);
       if (DESIGNATION_STYLES[cover]) continue;             // drawn in the overlay — drawDesignations()
       const fill = COVER_COLORS[cover];
@@ -2238,6 +2248,7 @@ export class RouteMap {
       const signposted = !!(wantNet && F.net && (F.net[i] & wantNet));
       if (signposted) netInView++;
       const debut = roadDebut(cls, floor);
+      const zdet = this._detailZoom(z);
       // PLAN-LAYERS §4, invariant R — A MARK DRAWS WHEN ITS OWN LAYER SAYS SO.
       //
       // The class gate decides whether the ROAD is stroked. It used to decide the ROUTE too, because the
@@ -2247,7 +2258,7 @@ export class RouteMap {
       //
       // A signposted way is therefore projected even when its own class is not shown yet: it contributes
       // its network band and no road stroke.
-      const classShown = z >= debut;
+      const classShown = zdet >= debut;
       if (!classShown && !signposted) continue;
       const a = F.off[i], len = F.off[i + 1] - a;
       if (len < 2) { if (signposted) netSkipped++; continue; }
@@ -2361,7 +2372,8 @@ export class RouteMap {
     for (let i = 0; i < this.streets.length; i++) {
       if (!this._onScreen(sbb, i, win)) continue;         // step 14: reject before projecting, not after
       const st = this.streets[i];
-      const style = ROAD_STYLES[st.cls]; if (!style || z < roadDebut(st.cls, this.roadsBandFloor || 0)) continue;
+      const style = ROAD_STYLES[st.cls];
+      if (!style || this._detailZoom(z) < roadDebut(st.cls, this.roadsBandFloor || 0)) continue;
       const px = this._projLine(st.line); if (px.length < 2 || !this._inView(px)) continue;
       const entry = { st, px };
       const bucket = st.shut ? byShut : byClass;
