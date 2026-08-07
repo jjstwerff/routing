@@ -38,8 +38,20 @@ const ev = async (x) => (await call('Runtime.evaluate', { expression: x, awaitPr
 
 // The trap surfaces as an uncaught exception, so it has to be collected rather than inferred from a
 // missing result — a swallowed throw would read as "passed with no route".
+// ⚠ THE TRANSPORT'S EVENT API IS `onEvent`, NOT `.on` — and `browser.on?.(...)` is a SILENT no-op that
+// collects nothing. This probe ran that way and reported "passed" for an arm that drew 0 features,
+// because the only trap it could see was one thrown by `matchSpec` itself. The trap fires in the VIEW,
+// long before the match, so the detector was blind to exactly the case it exists for.
 const errors = [];
-browser.on?.('Runtime.exceptionThrown', (p) => errors.push(String(p?.exceptionDetails?.exception?.description || p?.exceptionDetails?.text || '')));
+browser.onEvent((m) => {
+  if (m.method === 'Runtime.exceptionThrown') {
+    const d = m.params?.exceptionDetails;
+    errors.push(String(d?.exception?.description || d?.text || 'exception'));
+  }
+  if (m.method === 'Runtime.consoleAPICalled' && m.params?.type === 'error') {
+    errors.push(String(m.params.args?.map((a) => a.value || a.description).join(' ') || ''));
+  }
+});
 
 try {
   await call('Runtime.enable', {});
@@ -67,6 +79,12 @@ try {
   if (!ready) { console.log(`  scope=${scope}  FAIL: never became ready`); process.exit(1); }
 
   const ran = await ev('(window.__storeApp||{}).prefetchScope');
+  // ⚠ "PASSED" WITHOUT DRAWING IS NOT A PASS. A kernel that quietly read nothing cannot trap, so an arm
+  // that fails to load its stores would score as the healthiest one here — the exact inversion this repo
+  // has hit before ("a paged spot check that passed while fetching nothing"). The feature count makes an
+  // empty arm visible instead of flattering it.
+  const lc = JSON.parse(await ev('JSON.stringify((window.__storeApp||{}).layerCounts||{})') || '{}');
+  const drawn = ['areas','buildings','lines','pois','places','streetLabels'].reduce((n, k) => n + (lc[k] || 0), 0);
   const before = JSON.parse(await ev('JSON.stringify(window.__perfHooks.kernelStats())') || '{}');
 
   const SPEC = process.env.TRAP_SPEC || '52.3702,4.8952;52.3660,4.9000;52.3625,4.9065';
@@ -83,6 +101,7 @@ try {
   let parsed = null; try { parsed = JSON.parse(res || 'null'); } catch {}
   if (parsed && parsed.__trap) trapped = true;
   if (errors.some((e) => /unreachable|RuntimeError/.test(e))) trapped = true;
+  const trapMsg = errors.find((e) => /unreachable|RuntimeError/.test(e));
 
   const d = (k) => (after[k] ?? 0) - (before[k] ?? 0);
   // The suspend count IS the variable: a range read that came off the wire suspended wasm; one served
@@ -94,9 +113,11 @@ try {
   // ⚠ THE DELTA ACROSS THE MATCH IS NOT THE SESSION. The view's prefetch runs during BOOT, before the
   // `before` snapshot, so a scope that changes boot behaviour shows up nowhere in a match-window delta —
   // which is exactly how the first run of this probe reported four identical arms and measured nothing.
+  console.log(`    DREW ${drawn} features${drawn === 0 ? '  <-- VACUOUS: this arm cannot trap because it read nothing' : ''}`);
   console.log(`    SESSION total: ${after.rangeReads} range reads · ${after.prefetchHits} prefetch hits · ` +
               `${((after.prefetchBytes || 0) / 1e6).toFixed(1)} MB prefetched · ${after.prefetchMiss || 0} misses · ${after.commands} commands`);
-  if (trapped) console.log(`    trap: ${(parsed && parsed.__trap) || errors.find((e) => /unreachable|RuntimeError/.test(e)) || 'uncaught'}`);
+  if (trapped) console.log(`    trap: ${(parsed && parsed.__trap) || trapMsg || 'uncaught'}`);
+  if (errors.length) console.log(`    ${errors.length} page error(s), first: ${errors[0].slice(0, 160)}`);
   console.log(`RESULT\t${scope}\t${trapped ? 'TRAP' : 'PASS'}\t${real}\t${hits}\t${d('commands')}\t${ms}`);
 } finally {
   await close();

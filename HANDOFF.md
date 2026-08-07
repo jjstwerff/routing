@@ -276,8 +276,35 @@ both backends. **Two of our three upstream findings this week were corrected by 
    names as still taking the old path in full — with suspends spanning 0 → 2 129. The `none` arm is the
    configuration recorded above as trapping 3/3.
 
-   **So the suspend hypothesis is neither confirmed nor refuted: there is no trap left to attribute**,
-   and symbolising `wasm-function[531]` is moot without one. ⚠ **This is NOT "the defect is fixed".** The
+   ⚠⚠ **AND THE SUSPEND HYPOTHESIS IS REFUTED. IT IS NOT THE SERIAL READ — IT IS A CROSS-ORIGIN STORE
+   THAT NEVER OPENS.** Chasing why `none` drew 0 features found the mechanism, and it is the trap §2
+   already documents:
+
+   * `scope=none` over `nl-midwest` reads the base store **2 588 times for 2 588 BYTES** — exactly one
+     byte per read, loft's open probe, repeating and never progressing. `rangeFailed=0`: nothing failed.
+   * that base store is not in `_site`. `coverage.json` points it at
+     `jjstwerff.github.io/routing-data-nl-midwest`, so against a `127.0.0.1` app it is **CROSS-ORIGIN** —
+     and Pages sends `access-control-allow-origin: *` with a correct `content-range: bytes 0-0/812562696`
+     but **no `access-control-expose-headers`**. The JS reader cannot see that header, so the direct path
+     never learns the size and the store never opens.
+   * **the prefetch path is immune, which is the whole illusion**: it takes the size from `coverage.json`
+     (`sizeOf`), not from the response header. So prefetching MASKED a cross-origin limit and looked
+     load-bearing for correctness.
+   * ✅ **the control settles it** — Luxembourg's base store IS in `_site`, same-origin. There `none` and
+     `both` draw the **identical 40 941 features**. Turning prefetch off costs time and nothing else,
+     exactly as designed.
+
+   So the earlier `prefetchOn = false` arm did not trap because reads suspended wasm; it trapped because
+   the dev setup is cross-origin, the store never opened, and the older kernel met that as `unreachable`.
+   **One variable was measured and a different one was moving.**
+
+   ⚠ **THE CONSEQUENCE IS FOR HOSTING, NOT FOR THIS BUG** (§1 item 4, R2 vs Pages): **the app can read
+   cross-origin paged data ONLY while the index names its pages.** Any store the index does not cover
+   draws NOTHING from another origin — silently, with no failed request. That is a hard constraint on
+   moving the data off this origin, and it was invisible while everything was indexed.
+
+   **So there is no trap left to attribute**, and symbolising `wasm-function[531]` is moot. ⚠ **This is
+   still NOT "the defect is fixed".** The
    wasm has been rebuilt twice since that A/B (`6567484`, `89b30fc`; md5 `dbb64043` now), so the runtime
    under test is not the one that trapped — the likeliest explanation is loft#785's own fix, *"a
    prefetched page must still be resident when the walk reads it"*, which is exactly the shape of an
