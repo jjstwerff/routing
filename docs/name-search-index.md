@@ -144,8 +144,11 @@ error: a `spatial` range is a COORDINATE slice, not a scalar one — write `s[(x
 error and the quiet one did not — which is the worse half to leave, because a point lookup returning
 NULL reads as "not found" rather than as a defect. This is the shape `DATABASE.md` warns about in
 *"Adding or changing a collection kind"*: a per-kind dispatch omission that "does not read as a missing
-feature", the way loft#720 was three at once. **Filed in `docs/loft-feedback.md` (2026-08-07)**: reject a
-non-coordinate key field at declaration, the same way the range is now rejected.
+feature", the way loft#720 was three at once. **Filed as
+[loft#799](https://github.com/loft-lang/loft/issues/799)** (`docs/loft-feedback.md`, 2026-08-07): reject
+a non-coordinate key field at declaration, the same way the range is now rejected. The reproducer is
+`tools/loft_repro/spatial_text_key.loft` — self-contained, and it runs the `sorted` control beside the
+broken kind.
 
 ### 2b. `sorted<T[text]>` is the primitive the index needs, and it works today
 

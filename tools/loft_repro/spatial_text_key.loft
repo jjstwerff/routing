@@ -1,0 +1,71 @@
+// A text-keyed `spatial` is ACCEPTED, and then every point lookup answers NULL.
+//
+// `spatial<T[k]>` interleaves 1-3 COORDINATE axes into a Morton key. Declared with a single `text`
+// key it compiles anyway — and the key is not a key: `len()` is right, `words[k]` is NULL for a key
+// that was just inserted, and iteration comes back in INSERTION order rather than any key order.
+//
+// Self-contained: no store, no data, five inserts. Reproduces on --interpret and --native.
+// Filed on loft-lang/loft; see docs/loft-feedback.md (2026-08-07).
+//
+//   loft spatial_text_key.loft
+//   loft --native spatial_text_key.loft
+//
+// The words are chosen so a correct answer is unmistakable: bytewise they order
+// kerf < kerklaan < kerkstraat < kerkweg < lonneker.
+
+struct Word { const w: text, const n: integer }
+
+fn main() {
+  words: spatial<Word[w]> = [];
+  words += [Word { w: "kerkstraat", n: 1 }];
+  words += [Word { w: "kerklaan",   n: 2 }];
+  words += [Word { w: "kerf",       n: 3 }];
+  words += [Word { w: "lonneker",   n: 4 }];
+  words += [Word { w: "kerkweg",    n: 5 }];
+
+  faults = 0;
+
+  // 1. The records are there — so this is not a failed insert.
+  println("len   = {words.len()}   (expect 5)");
+  if words.len() != 5 { faults += 1; }
+
+  // 2. THE FINDING. A key that was just inserted does not resolve.
+  hit = words["kerklaan"];
+  if hit == null {
+    println("point = NULL           <- BUG: 'kerklaan' was inserted above, n=2 expected");
+    faults += 1;
+  } else {
+    println("point = n={hit.n}          (expect 2)");
+  }
+
+  // 3. Iteration is insertion order, not key order.
+  seen = "";
+  for word in words { seen += "{word.w} "; }
+  println("order = {seen}");
+  println("        bytewise would be: kerf kerklaan kerkstraat kerkweg lonneker");
+  if seen != "kerf kerklaan kerkstraat kerkweg lonneker " { faults += 1; }
+
+  // 4. The control: `sorted` over the SAME key does all three correctly, which is why this is a
+  //    soundness report and not a feature request — the prefix-capable kind already exists.
+  ok: sorted<Word[w]> = [];
+  ok += [Word { w: "kerkstraat", n: 1 }];
+  ok += [Word { w: "kerklaan",   n: 2 }];
+  ok += [Word { w: "kerf",       n: 3 }];
+  ok += [Word { w: "lonneker",   n: 4 }];
+  ok += [Word { w: "kerkweg",    n: 5 }];
+  ref = ok["kerklaan"];
+  ctl = "";
+  for good in ok { ctl += "{good.w} "; }
+  println("");
+  println("sorted point = {ref?.n}   order = {ctl}");
+  println("sorted range[\"kerk\"..\"kerl\"] is the prefix query this consumer needs, and it works.");
+
+  println("");
+  if faults > 0 {
+    println("REPRO CONFIRMED — {faults} of 3 checks show the key is not a key.");
+    println("Ask: reject a non-coordinate key field at DECLARATION, the way the RANGE now is:");
+    println("  error: a `spatial` range is a COORDINATE slice, not a scalar one — ...");
+  } else {
+    println("FIXED — a text-keyed `spatial` now behaves, or is refused earlier.");
+  }
+}

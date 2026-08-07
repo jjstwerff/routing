@@ -2194,7 +2194,7 @@ like a phone-sized memory cost. Timed at CPU 1× and 4× with the pages prefetch
 amplification does not grow with the throttle. The extra reads are cheap; the field-at-a-time relocate is
 not.
 
-## 2026-08-07 — a text-keyed `spatial` is accepted, and then every point lookup answers NULL
+## 2026-08-07 — a text-keyed `spatial` is accepted, and then every point lookup answers NULL (loft#799)
 
 Found while asking whether loft exposes a prefix-capable collection for the name-search index
 (`docs/name-search-index.md` §2). ⚠ **Two binaries both calling themselves 2026.8.0** — md5
@@ -2243,4 +2243,8 @@ direction". `sorted<Word[w]>` with `c["kerk".."kerl"]` returns exactly the prefi
 backends and both binaries — **the primitive we needed already exists and is correctly kinded.** So this
 is a soundness report, not a feature request.
 
-**Repro:** five `+=` inserts, one subscript, one `for`. No store, no data.
+**Repro:** `tools/loft_repro/spatial_text_key.loft` — five `+=` inserts, one subscript, one `for`. No
+store, no data, and it carries the `sorted` control in the same file so a fix can be checked against a
+working kind rather than against a description. **Filed as
+[loft#799](https://github.com/loft-lang/loft/issues/799)** — `bug` · `sev:medium` · `area:parser` ·
+`both-backends` · `wa:clean` (the workaround is `sorted`, and it is the right answer anyway).

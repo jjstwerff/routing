@@ -3,8 +3,10 @@
 
 **Kind:** reference · **Status:** current · **Last verified:** 2026-08-06 · **Owns:** the reproducers filed upstream, kept runnable here
 
-Self-contained repros for two loft loader findings — **no routing data**: each builds its own store.
-Filed on `loft-lang/loft`; kept here because a reproducer that only lives in an issue stops being run.
+Self-contained repros for loft findings filed from this consumer — **no routing data**: each builds
+its own store, or needs none. Kept here because a reproducer that only lives in an issue stops being
+run — and #3 below is the case for that: it is the *second* state of a defect whose first state was
+already fixed upstream, and only a runnable repro shows which half is left.
 
 ```bash
 cd tools/loft_repro
@@ -24,4 +26,16 @@ LOFT_LOADER_STATS=1 loft --native read_shapes.loft  rec  rec.store  100
 LOFT_LOADER_STATS=1 loft --native read_shapes2.loft txt  txt.store  100
 LOFT_LOADER_STATS=1 loft --native read_shapes2.loft nest nest.store 100
 #  same 25 000 elements, 4-byte internal reads:  scalars 811 · text 75 836 · nested 75 827
+
+# 3 — loft#799: a TEXT-keyed `spatial` is accepted, and then the key is not a key. No store, no data.
+loft          spatial_text_key.loft
+loft --native spatial_text_key.loft
+#  len 5 (right) · words["kerklaan"] NULL for a key just inserted · INSERTION-order iteration
+#  identical on both backends; the `sorted` control in the same file gets all three right
 ```
+
+⚠ **#3 is a half-fixed defect, which is why it is worth keeping runnable.** On loft
+`759a4172…` (2026-08-06) the *range* `words["kerk".."kerl"]` also compiled and returned a wrong
+count; on `51e15f8a…` (2026-08-07) it is correctly refused with a message that teaches. **Both
+binaries call themselves 2026.8.0.** The declaration half is what remains, and it is the quieter
+one: a point lookup returning NULL reads as "not found", not as a defect.
