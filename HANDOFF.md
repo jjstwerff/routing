@@ -66,7 +66,7 @@ two and two data repos of its own. It draws from the overview below z12 and `be-
 above that it is roads on a plain background — a state `store-app.mjs` handles as a product, not a
 fallback. Luxembourg's base is 70.6 MB and ships, so it has a complete map. **Asymmetric on purpose.**
 
-**The site is at 664.9 MB of 950 (70%), and the headroom is real again.** It was live at 814.2 MB (86%),
+**The site is at 673.8 MB of 950 (71%) — re-measured 2026-08-07 on a rebuilt `_site`.** It was live at 814.2 MB (86%),
 where `site_size_gate`'s own margin note said the next region added is what crosses it. **`be-mid`
 (149.3 MB) now serves from its own Pages repo**, `jjstwerff.github.io/routing-data-be-mid`, as `nl-mid`
 and the four region base maps already did — same origin as the app, a different PATH, so no CORS is in
@@ -81,114 +81,6 @@ meeting a v1 block fails outright**. Any block older than 2026-08-02 must be reg
 **The order that follows, and it is not optional:** code → regenerate → publish → merge. A dataset is
 always staged BESIDE the live one rather than clobbering it, which is what keeps `main` resolving to the
 data it was built against.
-
----
-
-## 0b. How Benelux was built, and five upstream findings
-
-**Landed as PR #55** (`build-test` 4m23s, `deploy` 24s), on top of `data-v2026-08-03d` — 23 assets,
-784 MB, each verified by a ranged GET before the index pointed anywhere.
-
-⚠ **Only 784 MB was uploaded, not 3.91 GB.** The four NL base maps and `nl-mid` (3.12 GB) are unchanged
-and already served by their own Pages repos. `publish-release.sh` would have taken all of them — stage
-the referenced set and point `BLOCKS_OUT` at it, as HANDOFF has warned since §3.
-
-### The data, in the order it was built
-
-1. **Derived blocks** so Belgium is not blank below z14 — `overview` (renamed from `nl-overview`,
-   46.4 MB, spans the whole coverage), `be-mid` 149.3 MB, `lu-mid` 17.0 MB.
-2. **The border trim** (@51 phase C) — `tools/trim-borders.sh`. 6 blocks, 23 299 cells, disjoint.
-3. **Heights** for BE/LU, then **names**: `coverage.names.store`, 63.5 MB, 518 804 records.
-4. **Published** as `v2026-08-03d`.
-
-### Five things that were measured and came out the OPPOSITE way
-
-Each cost a wrong claim that was already written down, about to be, or already filed upstream:
-
-* **Binding a store FIRST is 3–5× CHEAPER, not 4.5× worse.** @51 said the reverse; it was measured
-  against loft#746 on a binary that no longer exists. `tools/bind_order_gate.sh` is the re-runnable form.
-  A bound store's pages are evictable — bind-first completes under a cgroup cap where bind-last is
-  OOM-killed. **`PLAN-SCALE` §6e's 130–270 GB is a bind-LAST number.**
-* **"Key order changes the file 2.3×" was RETRACTED.** A store's file is its CAPACITY, on a 7/3 ladder
-  (loft#752): 250k, 300k and 400k roads all persist to *exactly* 91 419 400 bytes. Real effect after
-  `store_reclaim` is ~1.5×. **"Stream in cell order" still stands** — @51 came one commit from recording
-  the opposite.
-* **z13 elevation is not worth adopting.** Belgium and Luxembourg baked both ways: mean |Δ| **1.15 m and
-  1.41 m**, and the RANGE is identical (568 m). Luxembourg is the hilliest ground in the dataset, so the
-  "sample by terrain, not by country" hypothesis is refuted too. `PLAN-RESTORE` §5 decision 3 is answered.
-* **The 0.8% of unsampled steps was a PADDING bug, not resolution.** `bake-heights` pads 0.35° now
-  (`TERRAIN_PAD`) and z12 fills 100%.
-* **loft#757, which WE filed, was refuted — the refusal we called a bug was the diagnosis.** A field bind
-  writes a container-rooted file *by design*; what we asked for would have made the load SUCCEED on
-  mismatched bytes. The rule survives, the reason did not (§2), and `loft_bug_gate` guards a CONTRACT now
-  instead of watching a defect.
-
-### The upstream ledger
-
-| | |
-|---|---|
-| **loft#739** | ✅ fixed; **both workarounds deleted**. `loft_bug_gate` FAILS if either returns |
-| **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
-| **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
-| **loft#757** | **filed by us, then REFUTED and closed** — the sidecar is honest; the rule survives (§2) |
-| **loft#762** | **filed by us, fixed same day** — and our diagnosis was corrected on the way (§0c) |
-
-### New tools, all gated
-
-`bind_order_gate`+`probe` · `trim_cells` · `trim-borders.sh` · `merge_blocks` · `reseat_schema` ·
-`height_diff` · `find_probe` · `loft_schema_probe` · `derived_scope_gate` (in `make test`) ·
-`seam_route_gate` (@51 D).
-
----
-
-## 0c. The session after it: panning, and three gates that were measuring a moving app
-
-**Landed** (`view-ring-prefetch`, then #65–#69). Nothing here touches the data or the live site; it is
-the app's read strategy plus the instruments that broke when the app grew background work.
-
-> ⚠ **This section is why §0 is dated.** It once carried a warning that two branches were unmerged and
-> that *"a session that resumes from `main` reads that first"* — and the warning then outlived the merge
-> by three days, so `main` spent them telling every reader to land work that was already in. **A status
-> section that is not corrected on the way past is worse than no status section**, because it is read
-> with the authority of the rest of the file. Retire the warning in the SAME commit that removes its
-> cause.
-
-**The view no longer makes the screen wait for four screens it cannot show.** It read `viewportBox(0.6)`
-— 2.2 × 2.2 screens, 4.84 screens of area — in ONE kernel call. Now it reads ~one screen, and a RING of
-eight screen-sized cells is paged AFTERWARDS (3 × 3 = 9 screens), which the first paint pays nothing for.
-Measured `CPU_THROTTLE=4`, n=3 a side, quiet box:
-
-| | baseline | ring |
-|---|---|---|
-| **view call** | 83 ms *(82–85)* | **50 ms** *(49–51)* — **1.66×**, and the freeze halves with it |
-| wasm working set | 532.9 MB | **531.0 MB** — nine screens PAGED is not nine screens RESIDENT |
-| match / matchWarm | 2306 / 382 ms | unchanged; spreads too wide to claim either way |
-
-Four things the ring needed, each found by measuring rather than by design — the ring is **chained, not
-fanned out** (KernelQueue cannot preempt a running job, so eight queued cells would put the user's next
-click behind eight screens of paging); the ring is **PROMOTED** when complete (the index is rebuilt over
-the whole 3 × 3 from resident tiles, no fetch, or the smaller read would make the app hold LESS than the
-old box and re-view more often); a **cell must never change the SOURCE** (a neighbour can be another
-block, and pulling a foreign store into a session whose layout store is exposed TRAPS); and the **store
-can move under the drawn map**, so the index's `storeBase` is compared and rebuilt only on a change.
-
-`runKernel` now serialises internally, which is a fix older than the ring: `resolveRun` is ONE slot, so a
-second call orphans the first promise. The queue guarded the APP's road; the ~20 `__perfHooks` probes
-bypass it deliberately, and a ring cell landing between a probe's `reset` and its `match` returned an
-empty route. Serialising at the root fixes all twenty instead of twenty call sites.
-
-**A sidecar is fetched once now, not once per command** — 15 fetches → 2 + 13 cached, which is fewer than
-main's 5. See §2 for what that count had been hiding.
-
-### loft#762, and being wrong in public
-
-We filed `for _ in <hash>` failing `--native` and narrowed it to *(bound store, discarded loop variable)*.
-**The store was incidental and the narrowing was wrong.** `_` is ONE variable per function: `_ = delete(p)`
-typed it `u8`, and `for _ in a` then assigned a `DbRef` to the same slot. The store appeared only because
-our repro used `delete` to set one up. Fixed the same day — the loop binding now gets its own `let mut
-var____1` inside the loop, and body reads of `_` resolve to it, so `_` stays readable. Verified here on
-both backends. **Two of our three upstream findings this week were corrected by the maintainer** (#757,
-#762); both times the report was useful and the *cause* we attached to it was not.
 
 ---
 
@@ -298,10 +190,22 @@ both backends. **Two of our three upstream findings this week were corrected by 
    the dev setup is cross-origin, the store never opened, and the older kernel met that as `unreachable`.
    **One variable was measured and a different one was moving.**
 
-   ⚠ **THE CONSEQUENCE IS FOR HOSTING, NOT FOR THIS BUG** (§1 item 4, R2 vs Pages): **the app can read
-   cross-origin paged data ONLY while the index names its pages.** Any store the index does not cover
-   draws NOTHING from another origin — silently, with no failed request. That is a hard constraint on
-   moving the data off this origin, and it was invisible while everything was indexed.
+   ✅ **AND IT WAS A THREE-LINE APP BUG, NOW FIXED — the hosting constraint this looked like is GONE.**
+   For an hour this was written down as *"the app can read cross-origin paged data only while the index
+   names its pages"*, which would have been a hard limit on ever moving data to another origin (§1 item
+   4, R2 vs Pages). It was not a limit; it was `store-kernel.mjs` discarding the answer it already had.
+   `knownTotal = sizeOf(url)` comes from `coverage.json` and is correct — and the next line **overwrote
+   it with `Content-Length`, which on a 206 is the length of the PART**. The open probe is one byte, so
+   loft was told an 812 MB store was one byte long. Cross-origin only, because `Content-Range` is not
+   CORS-safelisted while `Content-Length` stays readable and looks like an answer.
+   **Cross-origin, prefetch off: 0 features → 103 299, identical to the prefetched arm.**
+   ⚠ **loft needed no change.** `loft_host_http_range_total()` is a HOST callback — loft asks, and the
+   host may answer from anywhere. The mechanism to do this right was already there and was being thrown
+   away. Before reaching for an upstream capability, check what the bridge already offers (`CLAUDE.md`).
+   Gated by `tools/crossorigin_paged_gate.sh` in `make test-map`: prefetch OFF, cross-origin, the map
+   must still draw — verified to FAIL on the reverted fix. **An optimisation that becomes load-bearing
+   for correctness has stopped being one**, and nothing else in the suite could see it, because the
+   prefetch masked it on every path the app normally takes.
 
    **So there is no trap left to attribute**, and symbolising `wasm-function[531]` is moot. ⚠ **This is
    still NOT "the defect is fixed".** The
@@ -458,33 +362,37 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   SharedArrayBuffer is out. **The page index is therefore load-bearing for the app permanently, not until
   loft catches up** — and `docs/hosting-cost-model.md`'s R2 decision gains a second reason beside
   bandwidth: a host that can set those headers is the only route to browser-side batching.
-* ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
-  [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
-  viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
-  binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
-  synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
-  key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
-  ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
-  it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
-  26.74 MB** on the 812 MB block, better than before it started.
-  ✅ **AND THE BROWSER REGRESSION IS CLOSED** on loft `759a4172` (2026-08-06 18:46): the same keyed load
-  is **694 ms at CPU 4x against the pre-arc baseline's 763**, with 42 fewer reads — faster than before the
-  arc started. The path there is worth keeping: **1.5x (measured with the arms in SEPARATE browser
-  sessions, always in the same order — withdrawn) → 1.14x (interleaved, real) → 1.03x**. The maintainer
-  refuted all three of my guessed mechanisms and found it: a heap `Vec` allocated per read in `u32_at`,
-  plus a page key hashed twice. ⚠ **The wasm may be rebuilt again** — the reason it was pinned is gone.
-  ⚠ **THE ORIGINAL REPORT SAID ~1.5x AND THAT NUMBER WAS METHOD, NOT RUNTIME** —
-  [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
-  sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
-  **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
-  sequential path by design (#784), so it pays the new relocate's CPU without collecting the batching's
-  round-trip saving. **`browser/store-kernel.wasm` therefore STAYS on the older runtime** — on Pages the
-  app is latency- and CPU-bound, and 1.5x decode on a phone outweighs 10% fewer requests.
-  ⚠ The earlier note that the fix arrived UNCOMMITTED still stands as a rule:
-  — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
-  (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
-  not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
-  the fix to land on a commit. This is HANDOFF §2's sibling-tree rule paying for itself twice in one day.
+* ✅ **THE #782→#787 LOFT ARC IS CLOSED, AND THE WASM PIN WITH IT.** The full account — read
+  amplification on a large scattered store, the page-cache eviction that fixed it, and the browser
+  regression that followed — is in `docs/handoff-archive.md`. What survives as RULE:
+  **a ratio measured with the arms in separate sessions, always in the same order, is METHOD not
+  runtime.** Ours read 1.5x that way; interleaved it was 1.14x, and the landed fix took it to 694 ms
+  against a 763 ms pre-arc baseline — faster than before the arc started. The maintainer refuted all
+  three mechanisms we guessed at and found the real one (a heap `Vec` per read in `u32_at`, plus a page
+  key hashed twice). **Two of our findings in one week were right about the symptom and wrong about the
+  cause**, which is the reason to file the repro and let the owner diagnose.
+  ⚠ And: **never rebuild `browser/store-kernel.wasm` against an UNCOMMITTED runtime.** `../loft`'s tree
+  is another agent's live workspace; a number measured against its dirty state is in-flight work, not a
+  property of anything you can ship.
+
+* ⚠ **ON A `206`, `Content-Length` IS THE PART — AND USING IT AS THE FILE SIZE COSTS THE WHOLE MAP.**
+  `store-kernel.mjs` knew the right total (`sizeOf(url)`, from `coverage.json`) and then overwrote it
+  with the response header. The open probe is one byte, so loft was told an **812 MB store was 1 byte**;
+  it could not open it and re-probed **2 588 times for 2 588 bytes**, with `rangeFailed=0`, no console
+  error and a blank base map. **Cross-origin ONLY**, which is why it hid for so long: `Content-Range` is
+  not CORS-safelisted and Pages sends no `access-control-expose-headers`, so the good header is missing
+  exactly when the data is on another origin — while `Content-Length` stays readable and looks like an
+  answer. **And the prefetch masked it entirely**, because that path takes the size from `coverage.json`
+  rather than from a header. Fixed; gated by `tools/crossorigin_paged_gate.sh` (prefetch OFF,
+  cross-origin, the map must still draw).
+  **The general form: an optimisation that becomes load-bearing for CORRECTNESS has stopped being one** —
+  and it will not be caught by any gate that leaves the optimisation on. ⚠ It also looked for an hour
+  like a hosting LIMIT ("cross-origin paged data only works where the index names its pages"), which
+  would have constrained the R2 decision. It was a three-line bug. **Before recording a constraint,
+  check whether it is a defect.**
+  ⚠ **And loft needed no change.** `loft_host_http_range_total()` is a HOST callback: loft asks, the host
+  may answer from anywhere. The mechanism was already there and was being thrown away — the same shape as
+  `CLAUDE.md`'s rule about reading the reference before concluding loft cannot do something.
 * **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
   `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
   together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
@@ -660,7 +568,13 @@ make test-wasm     # wasip2 parity: geodesic + a byte-identical full match  (~15
 make test-map      # the browser gates, headless Chromium                (~3.6 min)
 ```
 
-`test-map`'s twelve gates, timed on this box 2026-08-07 (all green): `map_render_gate` **59 s** and
+Two probes that are NOT gates, because each answers a question rather than defending an invariant:
+`browser/cdp_names_cost.mjs` (what a first search costs, §1 item 3 — takes `THROTTLE_KBPS`, and needs
+`CDP_TIMEOUT_MS` above 30 s at phone speeds) and `browser/cdp_trap_scope.mjs` (`window.__prefetchScope`
+= `both|view|ring|none`, which holds the work identical while the suspend count moves — §1 item 5).
+
+`test-map`'s gates, timed on this box 2026-08-07 (all green; `crossorigin_paged_gate` added since, ~35 s
+and it needs the network): `map_render_gate` **59 s** and
 `base_paged_gate` **50 s** are half of it; then `overview` 20, `nl_live` 19, `cors_host` 17,
 `paged_http` 16, `network_zoom` 14, `offline_pack` **9**, `browser_leak` and `cross_block` 4, and
 `expose_probe` / `deliver_probe` 1 s each. ⚠ Two of those numbers were 495 s and 91 s a day ago — see
@@ -730,17 +644,29 @@ The FORMAT half needs no data at all and runs in `make test` (`browser/page-inde
 
 ## 4. Where the docs are
 
-| doc | what it owns |
+**Grouped by the QUESTION you are asking, not by filename** — the names grew by artifact (`MAP`,
+`BASEMAP`, `TILES`, `LAYERS` are four docs about what draws) and by date, so a name alone no longer says
+which one answers you. Every file in the tree is listed; the date is its last real change, and a doc
+untouched for a month is history that still holds, not a plan anyone is executing.
+
+| you want to know | read |
 |---|---|
-| **`plans/`** | **new multi-phase work — one directory per tracker issue, the way `../loft`, `../crawler` and `../moros` do it.** `plans/README.md` is the binding. The overview is DERIVED, not curated: `gh issue list -R jjstwerff/routing --label plan --state all`. ⚠ The 16 root-level `PLAN-*.md` predate this and stay where they are — they are reference docs with step ladders inside them, and they migrate opportunistically or not at all |
-| `DESIGN.md` | the north star — what the product is |
-| `PLAN-LAYERS.md` | **current work**: the layer model, the signposted networks, the coverage floor |
-| `PLAN-SCALE.md` | blocks, bands, regions, publishing — how the data is cut and hosted |
-| `PLAN-PERF.md` | what the app costs and why, including the loft store fixes |
-| `PLAN-EDIT.md` | the sketch editor, and the route as an object (distance, GPX, autosave) |
-| `PLAN-MATCH.md` | the matcher's ladder (the get-me-there fork moved to `plans/50-get-me-there/`) |
-| `PLAN-BUILD.md` / `PLAN-APP.md` / `PLAN-MAP.md` / `PLAN-BROWSER.md` | the standalone app and its renderer |
-| `PLAN-RESTORE.md` / `PLAN-TILES.md` / `PLAN-BASEMAP.md` | features restored from the old client, and the data they need |
-| `docs/ARCHITECTURE.md` | which file does what |
-| `docs/loft-feedback.md` | findings for loft's formal definition — the consumer's half of that work |
-| `docs/handoff-archive.md` | the dated rungs this file used to carry |
+| **what the product IS** | `DESIGN.md` (08-03) — the north star |
+| **where things stand / how to resume** | **this file**, then `docs/handoff-archive.md` (08-07) for the account behind a rule |
+| **how to work in this repo as an agent** | `CLAUDE.md` (08-03) — and the `loft-write` skill BEFORE any `.loft` edit |
+| **a NEW multi-phase job** | **`plans/<issue>/`** — one directory per `jjstwerff/routing` issue, as `../loft`, `../crawler` and `../moros` do. `plans/README.md` is the binding; claim the issue before naming the directory. The overview is DERIVED: `gh issue list -R jjstwerff/routing --label plan --state all` |
+| **how the DATA is cut, hosted, published** | `PLAN-SCALE.md` (08-04) · **`docs/hosting-cost-model.md`** (08-04) — read before ANY hosting decision |
+| **what DRAWS, and at which zoom** | `PLAN-LAYERS.md` (08-03) is the model and the invariants — **start here** · `PLAN-BASEMAP.md` (08-03) the presentation layer · `PLAN-MAP.md` (08-03) the renderer · `PLAN-TILES.md` (07-30) the first NL slice |
+| **what the app COSTS in the browser** | `PLAN-PERF.md` (08-03), §0 is an executable step list · **`docs/prefetch-index-design.md`** (08-04) the page index · `docs/loft-binary-bridge.md` (07-13) ⚠ its premise was re-measured and no longer holds — §2 |
+| **the app as a serverless product** | `PLAN-APP.md` (08-03) is the capstone · `PLAN-BROWSER.md` (07-06) is the earlier path to it |
+| **routing, editing, restored features** | `PLAN-MATCH.md` (08-03) the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` (08-03) the sketch and the route as an object · `PLAN-RESTORE.md` (08-03) what the old client had |
+| **the build and the toolchain** | `PLAN-BUILD.md` (07-08) · `PLAN-STORE.md` (07-08) · `docs/loft-build-phase-adoption.md` (07-08) |
+| **which file does what** | `docs/ARCHITECTURE.md` (08-03) · `docs/debug-websocket.md` (07-30) for the live-debug channel |
+| **what loft's definition owes us** | `docs/loft-feedback.md` (08-06) — the consumer's half of the formal-definition work |
+| **how this all started** | `PLAN.md` (07-03) — the original server-era plan; superseded in almost every part, kept for the reasoning |
+
+⚠ **TWO CONVENTIONS COEXIST, AND THE BOUNDARY IS A DATE, NOT A SUBJECT.** `plans/` is where new work
+goes; the 16 root `PLAN-*.md` predate it, hold ~10 000 lines of still-valid reference, and migrate
+opportunistically or not at all. **So a subject can be in either place, and the only reliable way in is
+this table.** If you add a doc and do not add its row, the next session will not find it: five of the
+eight `docs/` files were missing here while §0 and §1 told people to read two of them.

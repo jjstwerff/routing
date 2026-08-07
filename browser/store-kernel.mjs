@@ -420,7 +420,23 @@ export async function createKernel(wasmUrl) {
             // The total rides on Content-Range (`bytes a-b/TOTAL`), so size() needs no second round trip.
             const cr = res.headers.get('Content-Range');
             if (cr) { const t = cr.split('/').pop(); ctrl.httpTotal = (t && t !== '*') ? Number(t) : -1; }
-            else { const cl = res.headers.get('Content-Length'); ctrl.httpTotal = cl ? Number(cl) : -1; }
+            // ⚠ ON A 206, `Content-Length` IS THE LENGTH OF THE PART, NOT OF THE FILE — and using it as
+            // the total told loft an 812 MB store was ONE BYTE, because that is how long the open probe
+            // is. It then could not open the store and re-probed 2 588 times, drawing nothing, with
+            // `rangeFailed=0` and no console error.
+            //
+            // This only bites CROSS-ORIGIN, which is why it hid: `Content-Range` is not CORS-safelisted
+            // and GitHub Pages sends no `access-control-expose-headers`, so `cr` is null exactly when the
+            // data is on another origin — while `Content-Length` stays readable and looks like an answer.
+            // Same-origin the header is visible and this branch never runs.
+            //
+            // `knownTotal` (from coverage.json) is already the right answer and was set above; the old
+            // code overwrote it. So: never let a 206's part length outrank it, and only trust
+            // `Content-Length` when the response is the WHOLE file and nothing better is known.
+            else if (!knownTotal) {
+              const cl = res.headers.get('Content-Length');
+              ctrl.httpTotal = (res.status === 200 && cl) ? Number(cl) : -1;
+            }
             // 206 = the body IS the window. 200 = the server ignored Range and sent everything; slice it,
             // so a host without Range support is merely slow rather than wrong.
             if (!res.ok) { rangeFails.push({ url, off, n, status: res.status }); rangeFailed++; ctrl.httpBytes = null; }
