@@ -1,0 +1,97 @@
+// Does `trie<T[k]>` carry the REAL name vocabulary, and what does it cost persisted?
+//
+// docs/name-search-index.md §3 designs a hand-rolled sorted word list + offsets + postings because
+// `sorted` was the only prefix-capable kind on the surface. `trie<T[k]>` landed 2026-08-07 22:56 with
+// a native prefix slice. This measures the replacement against the real store rather than arguing it:
+//
+//   * distinct words in the real folds — §3b's 211 748 came from a `strings` recovery, ±2%. §7 open
+//     question 1 asks for it re-derived from the store. This derives it.
+//   * what a persisted trie COSTS, against the 7.2 MB the hand-rolled design was sized at
+//   * what a prefix query costs on the real vocabulary
+//
+// Reads the shipped store; never binds it. The trie goes to a scratch store of its own.
+//
+//   loft --native --lib lib tools/trie_vocab.loft <coverage.names.store> <out.trie.store>
+#cwd
+
+use basemap::NameRec;
+
+// One distinct word of the vocabulary, with what a search needs to RANK without touching the store:
+// the best (lowest) rank seen for it and how many names contain it.
+struct Word { const w: text, hits: integer, best: integer }
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "";
+  dst = a[1] ?? "";
+  if src == "" || dst == "" { println("usage: trie_scale.loft <names.store> <out.store>"); return; }
+
+  names: hash<NameRec[id]> = [];
+  t0 = ticks();
+  if !store_load(names, src) { println("ERR store_load failed: {src}"); return; }
+  t_load = ticks() - t0;
+  total = names.len();
+  println("loaded {total} records in {t_load / 1000} ms");
+
+  // ⚠ WALKED BY INDEX, not `for r in names` — hash iteration yields COPIES of the two text fields
+  // (loft C86), which is the trap map_kernel's do_find documents and cost a country build 12 minutes.
+  words: trie<Word[w]> = [];
+  t1 = ticks();
+  scanned = 0;
+  for i in 0..total {
+    r = names[i];
+    if r == null { continue; }
+    fold = r.fold;
+    if fold == "" { continue; }
+    scanned += 1;
+    // Split the fold into words on space and hyphen — the same boundaries name_score treats as a
+    // word start (tier 1), so the vocabulary matches the tiers the index has to answer.
+    start = 0;
+    j = 0;
+    while j <= fold.size() {
+      atend = j == fold.size();
+      sep = "";
+      if !atend { sep = fold[j..(j + 1)]; }
+      if atend || sep == " " || sep == "-" || sep == "'" {
+        if j > start {
+          piece = fold[start..j];
+          have = words[piece];
+          if have == null { words += [Word { w: piece, hits: 1, best: r.rank as integer }]; }
+          else {
+            have.hits += 1;
+            if (r.rank as integer) < have.best { have.best = r.rank as integer; }
+          }
+        }
+        start = j + 1;
+      }
+      j += 1;
+    }
+  }
+  t_build = ticks() - t1;
+  println("scanned {scanned} folds -> {words.len()} distinct words in {t_build / 1000} ms");
+
+  // What does a PREFIX QUERY cost on the real vocabulary? These are §3c's five cases.
+  probe(words, "lonn");
+  probe(words, "amster");
+  probe(words, "stra");
+  probe(words, "kerk");
+  probe(words, "a");
+
+  // And the capped form — what a search box actually issues.
+  t2 = ticks();
+  capped = 0;
+  for c in words["a"..:8] { capped += 1; }
+  println("[\"a\"..:8]  -> {capped} in {(ticks() - t2) / 1000} ms   <- the capped form a search box issues");
+
+  t3 = ticks();
+  ok = store_persist_bind(words, dst);
+  println("persist {ok} in {(ticks() - t3) / 1000} ms");
+}
+
+fn probe(words: trie<Word[w]>, pre: text) {
+  t = ticks();
+  n = 0;
+  hits = 0;
+  for w in words[pre..] { n += 1; hits += w.hits; }
+  println("[\"{pre}\"..] -> {n} words, {hits} postings, {(ticks() - t) / 1000} ms");
+}

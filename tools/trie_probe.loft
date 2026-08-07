@@ -1,0 +1,80 @@
+// Does `trie<T[k]>` do what the name-search index needs, and does reflection agree?
+//
+// The index in docs/name-search-index.md is a hand-rolled sorted word list because `sorted` was the
+// only prefix-capable kind on the surface. `trie<T[k]>` landed 2026-08-07 22:56. This asks whether it
+// replaces that design outright: exact lookup, byte-order iteration, and a PREFIX SLICE that needs no
+// successor string.
+
+struct Word { const w: text, const n: integer }
+
+fn main() {
+  words: trie<Word[w]> = [];
+  words += [Word { w: "kerkstraat", n: 1 }];
+  words += [Word { w: "kerklaan",   n: 2 }];
+  words += [Word { w: "kerf",       n: 3 }];
+  words += [Word { w: "lonneker",   n: 4 }];
+  words += [Word { w: "kerkweg",    n: 5 }];
+  words += [Word { w: "kerk",       n: 6 }];
+
+  faults = 0;
+
+  // 1. Length and exact lookup — the two `spatial` got wrong.
+  println("len        = {words.len()}   (expect 6)");
+  if words.len() != 6 { faults += 1; }
+  hit = words["kerklaan"];
+  if hit == null { println("exact      = NULL   <- FAIL"); faults += 1; }
+  else { println("exact      = n={hit.n}   (expect 2)"); }
+
+  // A key that is a strict PREFIX of others must not return a neighbour.
+  miss = words["kerkl"];
+  if miss == null { println("exact miss = null   (correct — 'kerkl' is a prefix, not a key)"); }
+  else { println("exact miss = n={miss.n}   <- FAIL, returned a neighbour"); faults += 1; }
+
+  // 2. Iteration in key order. The terminator sorts before any byte, so `kerk` precedes `kerklaan`.
+  order = "";
+  for word in words { order += "{word.w} "; }
+  println("order      = {order}");
+  if order != "kerf kerk kerklaan kerkstraat kerkweg lonneker " { faults += 1; }
+
+  // 3. THE CAPABILITY. A prefix slice with NO successor string constructed by the caller.
+  pre = "";
+  for p in words["kerk"..] { pre += "{p.w} "; }
+  println("[\"kerk\"..]  = {pre}");
+  if pre != "kerk kerklaan kerkstraat kerkweg " { faults += 1; }
+
+  // 4. Capped — this is what a search box wants: top-n without walking the tail.
+  cap = "";
+  for c in words["kerk"..:2] { cap += "{c.w} "; }
+  println("[\"kerk\"..:2]= {cap}   (expect the first 2 in key order)");
+  if cap != "kerk kerklaan " { faults += 1; }
+
+  // A prefix that matches nothing must be empty, not the whole collection.
+  none = 0;
+  for z in words["zzz"..] { none += 1; }
+  println("[\"zzz\"..]   = {none} hits   (expect 0)");
+  if none != 0 { faults += 1; }
+
+  // 5. The `sorted` control — what the current design does, for comparison. It needs "kerl": a
+  //    successor string the CALLER has to construct, and getting it wrong is a silent wrong answer.
+  ctl: sorted<Word[w]> = [];
+  ctl += [Word { w: "kerkstraat", n: 1 }];
+  ctl += [Word { w: "kerklaan",   n: 2 }];
+  ctl += [Word { w: "kerf",       n: 3 }];
+  ctl += [Word { w: "lonneker",   n: 4 }];
+  ctl += [Word { w: "kerkweg",    n: 5 }];
+  ctl += [Word { w: "kerk",       n: 6 }];
+  sortedpre = "";
+  for s in ctl["kerk".."kerl"] { sortedpre += "{s.w} "; }
+  println("sorted[kerk..kerl] = {sortedpre}");
+
+  // 6. Does REFLECTION name the kind? This is what an ORM or a schema check reads.
+  ti = type_of(words);
+  ts = type_of(ctl);
+  println("");
+  println("reflect trie   : name={ti.name} kind={ti.kind} collection={ti.collection} element={ti.element}");
+  for k in ti.keys { println("  key {k.name} @{k.position} ascending={k.ascending}"); }
+  println("reflect sorted : collection={ts.collection} element={ts.element}");
+
+  println("");
+  if faults > 0 { println("FAULTS: {faults}"); } else { println("ALL TRIE CHECKS PASS"); }
+}

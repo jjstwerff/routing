@@ -2248,3 +2248,42 @@ store, no data, and it carries the `sorted` control in the same file so a fix ca
 working kind rather than against a description. **Filed as
 [loft#799](https://github.com/loft-lang/loft/issues/799)** — `bug` · `sev:medium` · `area:parser` ·
 `both-backends` · `wa:clean` (the workaround is `sorted`, and it is the right answer anyway).
+
+## 2026-08-07 — `trie<T[k]>` lands and answers the name index; a refused lazy binding does not (loft#802)
+
+⚠ **Third binary of the day, all three saying 2026.8.0** — `d83e8f5d…` (22:56) after `51e15f8a…`
+(13:35) and `759a4172…` (2026-08-06). It carries `trie<T[k]>` and the fix for loft#799, filed hours
+earlier. Both were verified here rather than read.
+
+**loft#799 is fixed, and the diagnostic names the successor** — this is the shape to ask for:
+
+```
+error: a spatial index interleaves its axes into a Morton code, which needs numbers, and `w` is
+       text — use `trie<Word[w]>`, which keys on text and answers a prefix
+```
+
+**`trie<T[k]>` is the kind this consumer was hand-rolling**, and it does the job on both backends
+(`tools/trie_probe.loft`, with a `sorted` control in the same file): exact lookup; `t["kerkl"]` → NULL
+rather than a neighbour; byte-order iteration; `t["kerk"..]` with **no successor string**; capped
+`t["kerk"..:8]`; `t["zzz"..]` empty. Reflection names it (`collection=KeyedTrie`, `key w @8`). At real
+scale (`tools/trie_vocab.loft`, 518 804 name records): **220 032 distinct words built in 2.24 s**,
+persisted 23.4 MB raw / **5.9 MB gzipped**, reloaded in 42 ms with counts and key order intact, prefix
+queries **14 µs – 2.1 ms**.
+
+⚠ **The capped slice is the part that deletes a bug class, not just code.** A `sorted` prefix query
+needs the caller to construct the successor `"kerl"`; getting that wrong is a *silently wrong answer*.
+`t[a..b]` being refused — and naming `sorted` as the kind that answers an interval — is the right call.
+
+**What it cannot do is page**, and that is worth writing down because it decided our design.
+`store_load_key` wants an integer-keyed hash, `store_bind_lazy` a hash, `store_lazy_range` a
+`sorted`/`index`. A trie is a **whole-image** structure: for us that is 21.4 MB → 5.9 MB gzipped, a
+3.6× cut for nearly no work, but not the 0.1–181 kB per query a range-read index gives. Both stay on
+the table; they are different points on the curve.
+
+**[loft#802] A refused lazy binding is invisible to the program.** `store_bind_lazy` answered `true`
+for the trie source, every lookup returned `null`, the refusal went to **stderr only**, and
+`store_lazy_error` returned `""` — its documented meaning being *reachable, genuinely no such key* —
+with `store_lazy_faults` at **0**. The control in the same run (a `hash` against an unreachable URL)
+reports the connection error and 1 fault, so the API works; it simply picks the wrong side of the tie
+for a refused kind. Asked for `store_bind_lazy` to return `false` when the root kind cannot be served —
+it is known at bind time — or failing that for the refusal to reach `store_lazy_error`.

@@ -1,0 +1,48 @@
+// Does a persisted trie come BACK — and still answer a prefix?
+//
+// A structure that builds correctly and reloads as an unordered bag is worse than no structure, so
+// this reloads the store trie_scale.loft wrote and re-asks the same prefix queries. Same expected
+// answers, from a file rather than from memory.
+//
+//   loft --native tools/trie_roundtrip.loft scratch/vocab.trie.store
+#cwd
+
+struct Word { const w: text, hits: integer, best: integer }
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "";
+  if src == "" { println("usage: trie_roundtrip.loft <vocab.trie.store>"); return; }
+
+  words: trie<Word[w]> = [];
+  t0 = ticks();
+  if !store_load(words, src) { println("ERR store_load failed: {src}"); return; }
+  println("reloaded {words.len()} words in {(ticks() - t0) / 1000} ms");
+
+  // 1. Exact lookup survives.
+  hit = words["kerkstraat"];
+  if hit == null { println("exact  kerkstraat = NULL   <- FAIL"); }
+  else { println("exact  kerkstraat = {hit.hits} hits, best rank {hit.best}"); }
+
+  // 2. The prefix slice survives — same counts trie_scale printed at build time.
+  check(words, "lonn",   15);
+  check(words, "amster", 20);
+  check(words, "stra",   247);
+  check(words, "kerk",   459);
+  check(words, "a",      7955);
+
+  // 3. Key ORDER survives — a trie that reloads as insertion order would still pass a count check.
+  first = "";
+  for w in words["kerk"..:6] { first += "{w.w} "; }
+  println("first 6 of [\"kerk\"..] = {first}");
+}
+
+fn check(words: trie<Word[w]>, pre: text, want: integer) {
+  t = ticks();
+  n = 0;
+  for x in words[pre..] { n += 1; }
+  us = ticks() - t;
+  mark = "ok";
+  if n != want { mark = "MISMATCH, wanted {want}"; }
+  println("[\"{pre}\"..] -> {n} words in {us} us   {mark}");
+}

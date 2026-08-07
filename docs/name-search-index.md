@@ -6,19 +6,21 @@
 `HANDOFF.md` §1 item 3 records that `coverage.names.store` "does not scale past this rung" and asks for
 the cost to be settled in @51 phase E. This is that costing.
 
-⚠ **Two binaries, and `--version` does not tell them apart.** Everything here was measured on
-2026-08-07, but `/usr/local/bin/loft` was **reinstalled mid-day** — both builds call themselves
-**2026.8.0**:
+⚠ **THREE binaries in one day, and `--version` does not tell them apart.** Everything here was measured
+on 2026-08-07, and `/usr/local/bin/loft` was reinstalled **twice while this document was being
+written**. All three call themselves **2026.8.0**:
 
-| | md5 | installed |
-|---|---|---|
-| A | `759a417227355415fd7bd6e94657ede4` | 2026-08-06 18:46 |
-| **B** | **`51e15f8a0bb3f93e3772e5d0e7f94b77`** | **2026-08-07 13:35** |
+| | md5 | installed | what moved |
+|---|---|---|---|
+| A | `759a417227355415fd7bd6e94657ede4` | 2026-08-06 18:46 | — |
+| B | `51e15f8a0bb3f93e3772e5d0e7f94b77` | 2026-08-07 13:35 | a text-keyed `spatial` RANGE is refused (§2a) |
+| **C** | **`d83e8f5d1d8fbd300445d941bb155917`** | **2026-08-07 22:56** | **`trie<T[k]>` exists (§2c); loft#799 fixed** |
 
-§1's numbers are properties of the *data and the host*, not of loft, and are unchanged. **§2 is a
-property of the compiler, so it was re-probed in full on B** — and one row moved (§2a). This is the
-`CLAUDE.md` rule *"anchor a finding to the binary you will report it against"* doing its job: had §2
-not been re-run, this doc would be describing a compiler that no longer exists.
+§1's numbers are properties of the *data and the host*, not of loft, and are unchanged throughout.
+**§2 and §3 are properties of the compiler, and each re-probe changed a conclusion** — B corrected §2a,
+C obsoleted §3d *twice over* and answered two of §7's open questions. This is the `CLAUDE.md` rule
+*"anchor a finding to the binary you will report it against"* earning its place three times in one day:
+every version of §3d was correct when written, and two of them were wrong within hours.
 
 **The short form.** The ceiling is real but **3× smaller than recorded**, the store is already as small
 as loft will make it, and a **word-prefix index of 7.2 MB replaces a 21.4 MB whole-store read with a
@@ -114,13 +116,41 @@ Index*). What was not established is what the *language* exposes. Probed on both
 | `radix<W[w]>` as a struct field | ✗ same |
 | `spatial<W[x,y]>` | ✓ compiles |
 | `spatial<W[x]>` (1 axis) | ✓ compiles |
-| `spatial<W[w]>` (TEXT key) — **declaration** | ✓ compiles — **and the key is not a key, see §2a** |
-| `spatial<W[w]>` — `c["kerk".."kerl"]` | ✗ **refused on B**, was silently wrong on A |
-| **`sorted<W[w]>` + `c["kerk".."kerl"]`** | ✓ **works, both backends, both binaries** |
+| `spatial<W[w]>` (TEXT key) — **declaration** | ✓ compiles on A/B — **and the key is not a key, §2a** · ✗ **refused on C** |
+| `spatial<W[w]>` — `c["kerk".."kerl"]` | ✗ refused on B/C, silently wrong on A |
+| **`sorted<W[w]>` + `c["kerk".."kerl"]`** | ✓ **works, both backends, all three binaries** |
+| **`trie<W[w]>` + `c["kerk"..]`** | ✓ **C only — the kind this design wanted, see §2c** |
 
-So `radix` is a reserved keyword with **no language surface on either binary**; the tree is reachable
-only through `spatial`, whose only wired key oracle is a Morton/Z-order interleave of coordinate axes.
-The maintainer confirms the surface is coming — but §3d explains why that no longer changes this design.
+So `radix` is a reserved keyword with **no language surface on any of the three**; the tree is reachable
+through `spatial` (Morton oracle) and, since C, through **`trie` (byte oracle)** — `DATABASE.md` is
+explicit that these share `radix_tree.rs` and nothing above it, because *"a bounding box means nothing
+for a word, and a prefix means nothing for a coordinate"*.
+
+### 2c. `trie<T[k]>` — the kind this design was hand-rolling
+
+Landed in binary C (2026-08-07 22:56). One **text** key, refused at the keyword if given more. Probed
+on both backends with a `sorted` control in the same file (`tools/trie_probe.loft`), all identical:
+
+| asked | answer |
+|---|---|
+| `t["kerklaan"]` | the record |
+| `t["kerkl"]` — a strict PREFIX of real keys | **`null`, never a neighbour** |
+| `for x in t` | `kerf kerk kerklaan kerkstraat kerkweg lonneker` — byte order |
+| **`t["kerk"..]`** | **the four kerk-words — no successor string** |
+| `t["kerk"..:2]` | the first two, in key order |
+| `t["zzz"..]` | 0 — not the whole collection |
+| `type_of(t)` | `kind=KeyedKind collection=KeyedTrie element=Word`, `key w @8 ascending=true` |
+
+**`t[a..b]` is refused and names `sorted`** as the kind that answers an interval — the two kinds are
+deliberately not interchangeable. And loft#799's fix (also in C) makes the old mistake un-writable:
+
+```
+error: a spatial index interleaves its axes into a Morton code, which needs numbers, and `w` is
+       text — use `trie<Word[w]>`, which keys on text and answers a prefix
+```
+
+⚠ **What it does NOT do is page** — §3d has the measurement, and it is the reason this section does not
+end the design question.
 
 ### 2a. ⚠ A text-keyed `spatial` — half fixed on B, and the remaining half is the quiet one
 
@@ -183,19 +213,30 @@ posting means a query never touches the store to *rank*, only to *display*.
 
 ### 3b. Sizing
 
-From the store's own text. ⚠ **Provenance: recovered with `strings`, which yields 529 093 name/fold
-pairs against the 518 804 records the loft probe counts — 2.0% over, so every figure here is ±2%.**
-Re-derive from the store directly before building.
+⚠ **The vocabulary is now DERIVED FROM THE STORE, not recovered with `strings`** — §7's open question 1,
+answered by `tools/trie_vocab.loft` walking all 518 804 records by index:
 
-| | |
-|---|---|
-| records | 518 804 |
-| distinct words | 211 748 |
-| postings | 817 321 (**1.54 per record**) |
-| front-coded word list | 1.39 MB |
-| postings (varint Δid + 3 B cell + 1 B rank/kind) | 4.99 MB |
-| word → postings offsets | 0.85 MB |
-| **index total** | **7.2 MB — 3.0× smaller than the gzipped store** |
+```
+loaded 518804 records in 227 ms
+scanned 518804 folds -> 220032 distinct words in 2239 ms
+```
+
+**220 032, not 211 748.** The `strings` recovery was **3.8% LOW**, and in the direction that flatters
+the design — so every byte figure below derived from it is slightly under, not over.
+
+| | from `strings` (±2% claimed) | **measured from the store** |
+|---|---|---|
+| records | 518 804 | 518 804 ✅ |
+| distinct words | 211 748 | **220 032** (+3.9%) |
+| postings | 817 321 | (not re-derived — see below) |
+| front-coded word list | 1.39 MB | ~1.44 MB |
+| postings (varint Δid + 3 B cell + 1 B rank/kind) | 4.99 MB | — |
+| word → postings offsets | 0.85 MB | ~0.88 MB |
+| **index total** | **7.2 MB** | **~7.3 MB** |
+
+The total barely moves, so the design's conclusion survives its own bad input — but the *provenance*
+was the defect, not the magnitude, and it is now fixed. **Re-derive the postings the same way before
+building**; only the word list has been measured directly.
 
 **The resident part is 13 kB.** Every 256th word as a sparse sample is 828 entries; one binary search
 lands in a 256-word block, and the block plus its postings is one range read. If the memory is
@@ -204,42 +245,66 @@ makes word→range resolution cost **zero** round trips and leaves only the post
 
 ### 3c. What a query fetches
 
-Measured over the real vocabulary:
+⚠ **Re-measured on binary C against a real `trie` over the real vocabulary** — the earlier row was the
+`strings` estimate, and it was low on the two large cases:
 
-| typed | words | postings | fetched |
-|---|---|---|---|
-| `lonn` | 15 | 22 | 0.1 kB |
-| `amster` | 20 | 93 | 0.5 kB |
-| `stra` | 240 | 1 406 | 6.9 kB |
-| `kerk` | 455 | 3 301 | 16.1 kB |
-| `a` | 7 547 | 31 483 | 154 kB |
+| typed | words (est.) | **words (real)** | postings (est.) | **postings (real)** | fetched |
+|---|---|---|---|---|---|
+| `lonn` | 15 | **15** ✅ | 22 | **22** ✅ | 0.1 kB |
+| `amster` | 20 | **20** ✅ | 93 | **93** ✅ | 0.5 kB |
+| `stra` | 240 | **247** | 1 406 | **1 462** | 7.2 kB |
+| `kerk` | 455 | **459** | 3 301 | **3 330** | 16.3 kB |
+| `a` | 7 547 | **7 955** | 31 483 | **36 991** | 181 kB |
 
-Posting lists are short — median 1, p95 9 — with a long tail (max 38 700). A single typed letter is the
-worst realistic case at 154 kB, against **21.4 MB today**.
+The two short prefixes were exact and the two broad ones were under by 4–17%. A single typed letter is
+the worst realistic case at **181 kB** (was estimated at 154 kB), against **21.4 MB today** — so the
+conclusion holds by two orders of magnitude and the estimate was never load-bearing.
 
-### 3d. `sorted` is the right kind — not a placeholder for the coming `radix`
+Query time on the real trie is not the constraint: **14 µs** for `amster`, **145 µs** for `kerk`,
+**2.1 ms** for `a` — the worst case being 7 955 words walked in key order.
 
-An earlier draft of this section said the word list was a sorted array only *because that is what loft
-exposes today*, and that stages 1 and 2 would collapse into a `radix<Word[w]>` once the surface landed.
-**Binary B refutes that from loft's own shipped library.** `07_reflect.loft` — new in B, the @PLN127 /
-@PLN133 reflection arc — enumerates the collection kinds and says what each one can answer:
+### 3d. `trie<T[k]>` is the right kind for the WORD LIST — and it does not remove the download
 
-> a `hash` answers equality only, `sorted` / `ordered` / `index` also answer a range in their declared
-> direction, and a **`radix` is a Morton-order structure** that no SQL shape means the same thing as.
+**This section has been written three times in one day, once per binary, and each version was correct
+when written.** The history is kept because it is the finding: A said "a sorted array until `radix`
+lands"; B refuted that from loft's own taxonomy (`radix` is Morton-order, so a text prefix is never
+contiguous in it) and concluded `sorted` was the right kind; **C shipped `trie<T[k]>`, which is a
+better answer than either.** Every one of those was a defensible read of the evidence available.
 
-That is loft stating in its own taxonomy what §2's probes had to establish by experiment: **the radix
-tree's key oracle is Morton, and Morton order does not make a text prefix contiguous.** A prefix range
-is precisely what §2b measured `sorted` doing and what this index is built on, so `sorted` is not the
-fallback — it is the kind whose declared job this is.
+**What `trie` gives, measured on both backends (§2c):** exact lookup, byte-order iteration, a prefix
+slice `t["kerk"..]` that needs **no successor string**, and a capped `t["kerk"..:8]` — which is
+precisely what a search box issues. The `sorted` design required the caller to construct `"kerl"`, and
+**getting that construction wrong is a silently wrong answer, not an error.** That alone justifies the
+swap: it deletes a class of bug rather than a line of code.
 
-**So do not wait for the `radix` surface, and do not shape the design around adopting it.** If it later
-gains a byte-string oracle — `radix_db.rs` does abstract the oracle, so this is a bridge rather than a
-new structure — it becomes a candidate again, and the swap stays cheap because **the postings format
-does not change** either way. Keep the two halves separable for that reason, not in anticipation.
+⚠ **But a trie CANNOT PAGE, and that is the load-bearing negative result.** The whole reason §3a
+hand-rolls a sparse sample is so a query reads a *range* instead of a file. A store-backed trie looked
+like it would make that unnecessary. It does not — measured, not read:
 
-⚠ Note what this cost: the earlier draft was written against binary A and would have shipped a design
-premised on a structure that answers the wrong query. It was not caught by reasoning about it again — it
-was caught by re-probing after the binary moved.
+```
+store_bind_lazy   -> true                     <- reports success
+  lookup kerkstraat -> NULL after 1 ms
+  resident len      -> 0                      <- nothing paged in
+  ["kerk"..] over a lazily-bound trie -> 0 words
+store loader: refusing … — its bound store roots `trie<Word[w]>`, not a hash
+store_load(local) -> true, 220032 words in 24 ms      <- whole image is fine
+store_load_url    -> true, 220032 words in 28 ms
+```
+
+`store_load_key` wants an integer-keyed hash, `store_bind_lazy` wants a hash, `store_lazy_range` wants
+`sorted`/`index`. **A trie is a whole-image structure.** So:
+
+| | bytes on the wire | per query |
+|---|---|---|
+| today | 21.4 MB gzipped, whole | 0 (resident after the first) |
+| **trie over the vocabulary** | **5.9 MB gzipped, whole** | 14 µs – 2.1 ms, no fetch |
+| §3a hand-rolled + range reads | ~0 resident (13 kB sample) | **0.1 – 181 kB** |
+
+**The trie is a 3.6× cut for almost no work; it is not the two-orders-of-magnitude cut.** These are
+different points on the curve, not competing versions of one design — and the honest reading is that
+the trie is the *cheap* win to take now, while §3a remains the thing that actually removes the
+download. Take the trie for the word list, keep the range-read postings, and the two compose: the
+vocabulary is small enough to ship whole, the postings are not.
 
 ---
 
@@ -326,15 +391,29 @@ invariant — so the fix is to make its output impossible to misread, not to mak
 
 ## 7. Open before building
 
-1. **Re-derive §3b from the store directly**, not from a `strings` recovery. The sizes are ±2% and the
-   posting distribution drives the format.
-2. **Does a `sorted` key-range scan page under `store_load_keys`** the way the roads path does? §3a
-   assumes it; nothing here has probed it, and it is the load-bearing assumption. If it does not, the
-   index is a flat file the app reads by range itself — which is what `coverage.pagesx` already is, so
-   the fallback is known and cheap.
+1. ~~**Re-derive §3b from the store directly**, not from a `strings` recovery.~~ **ANSWERED
+   2026-08-07** — `tools/trie_vocab.loft`: **220 032** distinct words, not 211 748. The recovery was
+   3.8% low. §3b and §3c carry the measured numbers; **the postings are still estimated** and want the
+   same treatment before the format is fixed.
+2. ~~**Does a key-range scan page under `store_load_keys`?**~~ **ANSWERED — NO, and it is not close**
+   (`tools/trie_paging.loft`, §3d). `store_load_key` requires an integer-keyed hash, `store_bind_lazy`
+   a hash, `store_lazy_range` a `sorted`/`index`. A `trie` is a **whole-image** structure. So the
+   fallback this question named is now the plan of record: **the index is a flat file the app reads by
+   range itself**, which is exactly what `coverage.pagesx` already is — known, cheap, and already
+   proven in this app.
 3. **Where does the index live** — beside the store, or inside it as a second collection? A second
    collection shares the store's schema hash, which loft#705 gates `store_load` on, so regenerating one
-   means regenerating both.
+   means regenerating both. ⚠ **Sharpened by C**: the `.dschema` now records the collection *kind*
+   (`trie<Word[w]> size=4 trie<Word[0]>`), so adding a trie beside the names hash changes the schema
+   hash and forces a regeneration of every published block.
 4. **One store or a covering set.** The index does not remove the reason the names store is one file
    (`NAMES` resolved once at boot, `store_load_url_trusted` ADOPTS, every store numbers records from 0
    — `gen-names.loft`). It makes that far cheaper to live with, which may be enough.
+5. ⚠ **NEW — a refused lazy binding is invisible to the program.** `store_bind_lazy` answered `true`
+   for a trie it can never serve; the refusal went to **stderr**, `store_lazy_error` returned `""` (its
+   documented meaning: *reachable, genuinely no such key*) and `store_lazy_faults` stayed **0**. A
+   caller therefore cannot tell "no such word" from "this source was never readable" — which is the one
+   distinction that API exists to make — proven against a **hash + unreachable URL control in the same
+   run**, which reports the connection error and a fault count of 1. Filed as
+   [loft#802](https://github.com/loft-lang/loft/issues/802); repro `tools/trie_paging.loft`. It costs
+   us nothing today (we load whole images) but it would silently empty a search box the day we do not.
