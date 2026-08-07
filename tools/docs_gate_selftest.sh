@@ -134,8 +134,14 @@ newrepo budget
 doc DESIGN.md reference current 2026-08-01
 for i in $(seq 1 900); do echo "line $i" >> "$repo/DESIGN.md"; done
 index HANDOFF.md DESIGN.md
-verdict "rule 5: 900 lines of reference — warns by default" pass
-verdict "rule 5: ...and fails when switched on" fail DOCS_GATE_BUDGETS=fail
+verdict "rule 5: 900 lines of reference — fails, since 2026-08-07" fail
+verdict "rule 5: ...and can be demoted for a WIP tree" pass DOCS_GATE_BUDGETS=warn
+
+newrepo budget-state
+doc HISTORY.md state current 2026-08-01
+for i in $(seq 1 900); do echo "line $i" >> "$repo/HISTORY.md"; done
+index HANDOFF.md HISTORY.md
+verdict "rule 5: a STATE doc has no budget — an archive grows by design" pass
 
 newrepo noindex
 doc DESIGN.md reference current 2026-08-01
@@ -144,4 +150,4 @@ verdict "the index section itself going missing" fail
 
 echo
 [ "$fail" -eq 0 ] || { echo "  FAIL: the docs gate self-test"; exit 1; }
-echo "  DOCS GATE SELF-TEST PASSES (14 cases)"
+echo "  DOCS GATE SELF-TEST PASSES (15 cases)"

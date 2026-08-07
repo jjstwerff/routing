@@ -34,8 +34,10 @@
 #
 #   tools/docs_gate.sh
 #     DOCS_GATE_VERBOSE=1   print every doc that passes, not just the failures
-#     DOCS_GATE_BUDGETS=fail  make rule 5 fail instead of warn (see §5 of the design: it lands
-#                             warning-only because PLAN-SCALE and PLAN-PERF are ~2 200 lines today)
+#     DOCS_GATE_BUDGETS=warn  demote rule 5 to a warning. It landed warning-only because PLAN-SCALE and
+#                             PLAN-PERF were ~2 200 lines each; both were split on 2026-08-07 and it now
+#                             FAILS (the design's step 7). Demoting it is for a work-in-progress tree,
+#                             never for a commit.
 #     DOCS_GATE_TODAY=YYYY-MM-DD   pin "now", so the gate's own behaviour is testable
 set -uo pipefail
 export LC_ALL=C
@@ -46,7 +48,7 @@ today="${DOCS_GATE_TODAY:-$(date +%F)}"
 stale_days="${DOCS_GATE_STALE_DAYS:-90}"
 plan_budget="${DOCS_GATE_PLAN_BUDGET:-300}"
 ref_budget="${DOCS_GATE_REF_BUDGET:-800}"
-budget_mode="${DOCS_GATE_BUDGETS:-warn}"
+budget_mode="${DOCS_GATE_BUDGETS:-fail}"
 exempt_file="tools/docs_gate.exempt"
 index_file="HANDOFF.md"
 index_section='## 4. Where the docs are'
@@ -57,11 +59,20 @@ ok()   { [ -n "${DOCS_GATE_VERBOSE:-}" ] && printf '  \342\234\223 %s\n' "$1"; r
 bad()  { printf '  FAIL: %s\n' "$1"; fail=1; }
 warn() { printf '  warn: %s\n' "$1"; warns=$((warns + 1)); }
 
-# The doc set: everything tracked, minus two trees that are documentation of something else.
+# The doc set: everything tracked OR newly written, minus two trees that are documentation of
+# something else.
 #   .github/ISSUE_TEMPLATE — GitHub forms with YAML front matter, not prose we own
 #   lib/*/README.md        — loft libraries whose home is the registry (loft.toml: server/web are
 #                            vendored); routing's own kernels carry no README
-docset() { git ls-files '*.md' | grep -Ev '^(\.github|lib)/'; }
+#
+# ⚠ `--others` is not optional. `git ls-files` alone sees only TRACKED files, so a doc you just wrote
+# is invisible to every rule below until you `git add` it — which is exactly the moment rule 1 exists
+# to catch you. Found by splitting PLAN-SCALE into five files and watching the gate report 38 docs.
+# `--exclude-standard` keeps .gitignore honoured, so scratch/ and _site/ stay out.
+docset() {
+  { git ls-files '*.md'; git ls-files --others --exclude-standard '*.md'; } \
+    | grep -Ev '^(\.github|lib)/' | sort -u
+}
 
 # exempt <doc> <rule> <subject> — both the doc column and the subject column are globs.
 exempt() {
@@ -158,7 +169,7 @@ while read -r doc; do
   if printf '%s' "$index" | grep -qE "(^|[^A-Za-z0-9._/-])$esc([^A-Za-z0-9._/-]|\$)"; then
     ok "$doc"
   else
-    bad "$doc is in the tree but not in $index_file \302\2474 — the next session will not find it"
+    bad "$doc is in the tree but not in $index_file $(printf '\302\247')4 — the next session will not find it"
   fi
 done < <(docset)
 

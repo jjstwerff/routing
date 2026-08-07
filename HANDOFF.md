@@ -43,9 +43,16 @@ the app's read strategy plus the instruments, again no data. Three strands:
 `tools/docs_gate_selftest.sh`, 4.6 s for both) checks orphans, dangling pointers, headers, declared
 staleness and budgets. **Nothing was renamed**, so no cross-reference moved. ⚠ **`Last verified` means
 someone re-checked the CLAIMS** — never bump it for an edit; `Status: stale — unverified since <date>`
-always passes, and the gate never fails for age alone. Six docs are marked stale today. Steps 5–7 (the
-`docs/` subdirectories) are open and deliberately unscheduled — and step 5 has a cost the design did not
-have: `docs/loft-feedback.md` is cited by path from loft-lang/loft issues, which nothing here can rewrite.
+always passes, and the gate never fails for age alone. Six docs are marked stale today.
+
+**AND THE BUDGETS NOW FAIL, not warn (step 7).** `PLAN-SCALE.md` (2 504 lines) and `PLAN-PERF.md`
+(2 231) are each a **spine plus four children**, every file under 600 — see each one's *Where each
+section lives* table. **§ numbers did NOT change**: `PLAN-PERF` §7g still means §7g, the spine says which
+file holds it, and no citation anywhere was invalidated. Nothing was rewritten; sections moved whole, and
+the audit was *every non-blank original line must still exist somewhere* — 0 lost of 4 735. 38 docs → 46.
+Steps 5–6 (the `docs/` subdirectories, one-per-session migration) stay open and unscheduled — and step 5
+has a cost the design did not have: `docs/loft-feedback.md` is cited by path from loft-lang/loft issues,
+which nothing here can rewrite.
 
 **The upstream arc closed.** loft#782/#783/#784/#785 are fixed and in; **#787 is verified closed** —
 the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted; the committed
@@ -672,9 +679,17 @@ and whether anyone still stands behind it. Rows below flag ⚠ only where the an
 | **where things stand / how to resume** | **`HANDOFF.md`** — this file · then `docs/handoff-archive.md` for the dated account behind a rule |
 | **how to work in this repo as an agent** | `CLAUDE.md` — and the `loft-write` skill BEFORE any `.loft` edit |
 | **a NEW multi-phase job** | **`plans/<issue>/`** — one directory per `jjstwerff/routing` issue, as `../loft`, `../crawler` and `../moros` do. `plans/README.md` is the binding and `plans/_TEMPLATE.md` the skeleton; claim the issue before naming the directory. The overview is DERIVED, so no plan is listed here: `gh issue list -R jjstwerff/routing --label plan --state all` |
-| **how the DATA is cut, hosted, published** | `PLAN-SCALE.md` · **`docs/hosting-cost-model.md`** — read before ANY hosting decision |
+| **how the DATA is cut, hosted, published** | **`PLAN-SCALE.md` is the spine** — sizing, the walls, the decisions and the S1–S11 ladder; its *Where each section lives* table maps every § to its file · **`docs/hosting-cost-model.md`** — read before ANY hosting decision |
+| **↳ what a country rung COST** | `docs/coverage-rungs.md` — §6b's ladder, and what NL (§6c), the Benelux (§6j) and the WE patterns check (§6h) each measured |
+| **↳ opening the app on a whole country** | `docs/overview-ladder.md` — the overview ladder O0–O3. ⚠ the unit of cost is the KEY, not the feature |
+| **↳ building a country's base map** | `docs/base-map-build.md` — the generation half (`PLAN-BASEMAP.md` owns how it is DRAWN) |
+| **↳ generating, hosting, publishing, refreshing** | `docs/block-pipeline.md` — the generator's memory ceiling, the CORS host, and §7's refresh procedure, the part that runs forever |
 | **what DRAWS, and at which zoom** | `PLAN-LAYERS.md` is the model and the invariants — **start here** · `PLAN-BASEMAP.md` the presentation layer · `PLAN-MAP.md` the renderer · `PLAN-TILES.md` the first NL slice |
-| **what the app COSTS in the browser** | `PLAN-PERF.md`, §0 is an executable step list · **`docs/prefetch-index-design.md`** the page index · `docs/loft-binary-bridge.md` ⚠ stale: its premise was re-measured and no longer holds — §2 |
+| **what the app COSTS in the browser** | **`PLAN-PERF.md` is the spine** — §0 the step list, §1 the one invariant, §2 the baseline, §7e the instrument discipline; its *Where each section lives* table maps every § to its file · **`docs/prefetch-index-design.md`** the page index · `docs/loft-binary-bridge.md` ⚠ stale: its premise was re-measured and no longer holds — §2 |
+| **↳ loft out of the view path** | `docs/view-path-bridge.md` — the `expose` bridge, its two rules, and why the naive viewport filter is a bug |
+| **↳ what a FRAME costs** | `docs/render-frame-cost.md` — the render budget, the growing line, the split, the raster cache |
+| **↳ the MATCH** | `docs/match-performance.md` — per-point presentation, the escalation, `par` over the stretches |
+| **↳ where a COLD match's time goes** | `docs/cold-match-cost.md` — corridor, `build_graph`, the anchor search, the route-parity gate, and what was tried and REJECTED |
 | **the app as a serverless product** | `PLAN-APP.md` is the capstone · `browser/README.md` is the shell it runs in · `PLAN-BROWSER.md` ⚠ stale: the earlier path to it |
 | **routing, editing, restored features** | `PLAN-MATCH.md` the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` the sketch and the route as an object · `PLAN-RESTORE.md` what the old client had |
 | **the build and the toolchain** | `PLAN-BUILD.md` ⚠ · `PLAN-STORE.md` ⚠ · `docs/loft-build-phase-adoption.md` ⚠ — all three stale, and the store schema has moved to v2 since (§0) |

@@ -129,11 +129,12 @@ Every defect in §1 is mechanically detectable, and *"a probe outside a gate is 
 4. **Staleness is declared, not discovered** — a doc whose `Last verified` is >90 days old must say
    `stale`, or the gate fails. It never fails for age alone; it fails for a **silent** claim of currency.
 5. **Budgets** — a plan over 300 lines, or a reference doc over ~800, fails with "split or move dated
-   narrative to STATE". *`PLAN-SCALE` and `PLAN-PERF` are 2 238 and 2 229.*
+   narrative to STATE". `state` is unbudgeted: an archive grows by design.
 
-⚠ **Rule 1 is the one that pays for itself immediately**, and rule 5 is the one to introduce last —
-turning it on today fails two files that nobody has time to split this week. **Land the gate with rule
-5 warning-only**, and promote it when the split happens.
+⚠ **Rule 1 is the one that pays for itself immediately**, and rule 5 was the one to introduce last —
+it landed warning-only because turning it on would have failed `PLAN-SCALE` and `PLAN-PERF` at 2 238 and
+2 229 lines. ✅ **Both were split on 2026-08-07 and rule 5 now FAILS** (step 7). `DOCS_GATE_BUDGETS=warn`
+demotes it for a work-in-progress tree; it is not for a commit.
 
 ### What building it added — and it is not decoration
 
@@ -186,7 +187,7 @@ break every cross-reference in one commit.
 | 4 | ✅ **done 2026-08-07** — rule 4 on; **6** marked stale: `PLAN.md`, `PLAN-BROWSER.md`, `PLAN-BUILD.md`, `PLAN-STORE.md`, plus `docs/loft-binary-bridge.md` and `docs/loft-build-phase-adoption.md` | no doc silently claims to be current |
 | 5 | `docs/` subdirectories; move the 8 existing `docs/` files first — **but see the warning below** | the shape exists before the big files move |
 | 6 | Migrate one root `PLAN-*.md` per session **as you touch it**, updating §4 in the same commit | no flag day |
-| 7 | Rule 5 from warning to failing, once `SCALE` and `PERF` are split | budgets hold |
+| 7 | ✅ **done 2026-08-07** — `PLAN-SCALE` (2 504) and `PLAN-PERF` (2 231) split into a spine + four children each; rule 5 promoted to failing | budgets hold, and are enforced |
 
 **Steps 1–4 shipped in one session, and delivered the whole benefit** — complete, verifiable,
 self-describing — with **zero renames** and therefore zero broken references. `make test` now fails on
@@ -199,10 +200,30 @@ say *"filed in `docs/loft-feedback.md`, <date>"*, and nothing here can rewrite t
 stays put while the other seven move, or step 5 accepts that cost knowingly. The same question applies,
 more weakly, to `docs/ARCHITECTURE.md`, which `README.md` links for the public.
 
-**Three docs are over budget and warn today** (rule 5): `PLAN-PERF.md` 2 231, `PLAN-SCALE.md` 2 240,
-`plans/51-coverage-past-nl/README.md` 410. The third is new information — a *current* plan already
-past the 300-line budget, which is the leak `plans/README.md` predicted, caught while it is still
-cheap to fix.
+### How a 2 500-line doc gets split without losing anything (step 7, done)
+
+Three docs were over budget; all three are now under it, and **no prose was rewritten** — whole sections
+moved by line range and the audit was *every non-blank original line must still exist somewhere*, which
+is a stronger check than reading the diff.
+
+| was | is |
+|---|---|
+| `PLAN-SCALE.md` 2 504 | spine **616** + `coverage-rungs` 565 + `overview-ladder` 599 + `base-map-build` 342 + `block-pipeline` 472 |
+| `PLAN-PERF.md` 2 231 | spine **473** + `view-path-bridge` 366 + `render-frame-cost` 388 + `match-performance` 519 + `cold-match-cost` 569 |
+| `plans/51-coverage-past-nl/README.md` 410 | **135**, its evidence moved to `PLAN-SCALE` §6j |
+
+**Two rules made the split cheap, and they are the reusable part.**
+
+1. **Split by the QUESTION, and give the parent a *Where each section lives* table.** The children are
+   `coverage-rungs`, `overview-ladder`, `base-map-build`, `block-pipeline` — not `scale-part-1..4`. §3's
+   naming rule applied one level down.
+2. ⚠ **Do NOT renumber.** `PLAN-SCALE` §6e still means §6e; the spine's table says which file holds it.
+   Renumbering would have invalidated every citation in every doc, the archive and the commit log — the
+   same objection §7 makes to a mass rename, and the reason a split is not one.
+
+**Headroom was chosen over doc count.** A three-way split would have left one child at 778/800, which
+fails on its next 25-line addition; four children leave every file under 600. Now that rule 5 fails,
+that margin is the difference between a budget that guides and a budget that nags.
 
 ---
 
