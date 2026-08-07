@@ -6,26 +6,33 @@
 `HANDOFF.md` §1 item 3 records that `coverage.names.store` "does not scale past this rung" and asks for
 the cost to be settled in @51 phase E. This is that costing.
 
-⚠ **THREE binaries in one day, and `--version` does not tell them apart.** Everything here was measured
-on 2026-08-07, and `/usr/local/bin/loft` was reinstalled **twice while this document was being
-written**. All three call themselves **2026.8.0**:
+⚠ **FOUR binaries in one day, and `--version` does not tell them apart.** Everything here was measured
+on 2026-08-07, and `/usr/local/bin/loft` was reinstalled **three times while this document was being
+written**. All four call themselves **2026.8.0**:
 
 | | md5 | installed | what moved |
 |---|---|---|---|
 | A | `759a417227355415fd7bd6e94657ede4` | 2026-08-06 18:46 | — |
 | B | `51e15f8a0bb3f93e3772e5d0e7f94b77` | 2026-08-07 13:35 | a text-keyed `spatial` RANGE is refused (§2a) |
-| **C** | **`d83e8f5d1d8fbd300445d941bb155917`** | **2026-08-07 22:56** | **`trie<T[k]>` exists (§2c); loft#799 fixed** |
+| C | `d83e8f5d1d8fbd300445d941bb155917` | 2026-08-07 22:56 | **`trie<T[k]>` exists (§2c); loft#799 fixed** |
+| **D** | **`ac54cc26983a51bb809d26efdb2540e6`** | **2026-08-07 23:45** | **loft#802 fixed (§7.5)** |
 
 §1's numbers are properties of the *data and the host*, not of loft, and are unchanged throughout.
 **§2 and §3 are properties of the compiler, and each re-probe changed a conclusion** — B corrected §2a,
-C obsoleted §3d *twice over* and answered two of §7's open questions. This is the `CLAUDE.md` rule
-*"anchor a finding to the binary you will report it against"* earning its place three times in one day:
-every version of §3d was correct when written, and two of them were wrong within hours.
+C obsoleted §3d *twice over* and answered two of §7's open questions, D closed §7.5. This is the
+`CLAUDE.md` rule *"anchor a finding to the binary you will report it against"* earning its place four
+times in one day: every version of §3d was correct when written, and two were wrong within hours.
+
+⚠ **Two of those moves were this document's own doing.** loft#799 and loft#802 were both filed from
+these probes and both fixed the same day, so the compiler this doc describes changed *because* the doc
+was being written. Re-read §2 against the binary in your hand before trusting it.
 
 **The short form.** The ceiling is real but **3× smaller than recorded**, the store is already as small
-as loft will make it, and a **word-prefix index of 7.2 MB replaces a 21.4 MB whole-store read with a
-0.1–16 kB range read** while returning a byte-identical top-8 for 91.5% of queries and a *shorter* list
-— never a wrong one — for the rest.
+as loft will make it, and a **word-prefix index of ~7.3 MB replaces a 21.4 MB whole-store read with a
+0.1–181 kB range read** while returning a byte-identical top-8 for 91.5% of queries and a *shorter*
+list — never a wrong one — for the rest. Since binary C there is also a **cheap partial win**: a
+`trie` over the vocabulary alone cuts the whole-file read to **5.9 MB gzipped** for almost no work,
+but it cannot page (§3d), so it reshapes the download rather than removing it.
 
 ---
 
@@ -409,11 +416,23 @@ invariant — so the fix is to make its output impossible to misread, not to mak
 4. **One store or a covering set.** The index does not remove the reason the names store is one file
    (`NAMES` resolved once at boot, `store_load_url_trusted` ADOPTS, every store numbers records from 0
    — `gen-names.loft`). It makes that far cheaper to live with, which may be enough.
-5. ⚠ **NEW — a refused lazy binding is invisible to the program.** `store_bind_lazy` answered `true`
-   for a trie it can never serve; the refusal went to **stderr**, `store_lazy_error` returned `""` (its
-   documented meaning: *reachable, genuinely no such key*) and `store_lazy_faults` stayed **0**. A
-   caller therefore cannot tell "no such word" from "this source was never readable" — which is the one
-   distinction that API exists to make — proven against a **hash + unreachable URL control in the same
-   run**, which reports the connection error and a fault count of 1. Filed as
-   [loft#802](https://github.com/loft-lang/loft/issues/802); repro `tools/trie_paging.loft`. It costs
-   us nothing today (we load whole images) but it would silently empty a search box the day we do not.
+5. ~~**A refused lazy binding is invisible to the program.**~~ **FIXED the same night**, on binary D
+   (`ac54cc26…`, 23:45). `store_bind_lazy` answered `true` for a trie it can never serve; the refusal
+   went to **stderr**, `store_lazy_error` returned `""` (its documented meaning: *reachable, genuinely
+   no such key*) and `store_lazy_faults` stayed **0** — proven against a hash + unreachable-URL control
+   in the same run, which reported the connection error and 1 fault. Filed as
+   [loft#802](https://github.com/loft-lang/loft/issues/802) and fixed at the **bind**, which was the
+   stronger of the two remedies asked for:
+
+   ```
+   store_bind_lazy: refusing `…/vocab.trie.store` — a lazily-bound `.store` image is read a page at a
+   time, which only a `hash` supports, and `trie<Word[w]>` is not one — read it whole with
+   `store_load` … which carries every kind
+   store_bind_lazy   -> false
+   ```
+
+   ⚠ **And the control still returns `true`, then reports the connection error and 1 fault** — the fix
+   did not overreach into "any source I cannot immediately read". A *kind* mismatch is knowable at bind
+   time and reachability is not, so the two are reported at different moments. That the control was
+   re-run is the point: a fix that silences the symptom by refusing more broadly would have looked
+   identical in the failing case.

@@ -2287,3 +2287,39 @@ with `store_lazy_faults` at **0**. The control in the same run (a `hash` against
 reports the connection error and 1 fault, so the API works; it simply picks the wrong side of the tie
 for a refused kind. Asked for `store_bind_lazy` to return `false` when the root kind cannot be served —
 it is known at bind time — or failing that for the refusal to reach `store_lazy_error`.
+
+## 2026-08-07 (late) — loft#799 and loft#802 both FIXED the same day, and the controls were re-run too
+
+⚠ **Fourth binary of the day** — `ac54cc26…` (23:45), after `d83e8f5d…` (22:56), `51e15f8a…` (13:35)
+and `759a4172…` (08-06). Still all `2026.8.0`. Both issues this consumer filed today are fixed in it.
+⚠ **Neither fix's commit is in `../loft` or `../loft2` HEAD**, so this is anchored to the *installed
+binary*, which is what we run — not to a commit we could cite.
+
+**loft#799 — fixed, and better than asked.** The request was to reject a text key on `spatial` at the
+declaration. What shipped also names the kind that does the job:
+
+```
+error: a spatial index interleaves its axes into a Morton code, which needs numbers, and `w` is
+       text — use `trie<Word[w]>`, which keys on text and answers a prefix
+```
+
+That second clause is the valuable half. We reached for `spatial` only because nothing pointed
+anywhere else; a diagnostic that redirects costs the next consumer a minute instead of a day.
+
+**loft#802 — fixed at the BIND, which was the stronger of the two remedies offered.**
+
+```
+store_bind_lazy: refusing `…` — a lazily-bound `.store` image is read a page at a time, which only a
+`hash` supports, and `trie<Word[w]>` is not one — read it whole with `store_load` … 
+store_bind_lazy   -> false
+```
+
+⚠ **And the control was re-run, which is the part worth recording.** A fix that silenced the symptom
+by refusing more broadly would look identical in the failing case. It does not: a `hash` bound to an
+unreachable URL still returns `true`, then reports the connection error with `faults` = 1. A *kind*
+mismatch is knowable at bind time; reachability is not; the two are now reported at different moments.
+**Re-running the passing control is how you tell a fix from a suppression.**
+
+**The meta-finding, and it is the one to carry forward.** This document's own probes moved the
+compiler twice in one day. A consumer doc that describes a language surface is describing a moving
+target, and `--version` will not warn you: re-probe §2 against the binary in your hand.
