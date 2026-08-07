@@ -50,6 +50,10 @@ try {
   // total would charge the names store for the map (HANDOFF §2: "a number is not a measurement until you
   // know what it is ATTRIBUTED to").
   await call('Page.enable', {});
+  // The sketch autosave lives in localStorage and every driver reuses its --user-data-dir, so one
+  // run's sketch restores into the next one's assertions. map_render_gate CHECKS for this line
+  // rather than trusting discipline — and it caught both of these probes on their first run.
+  await call('Storage.clearDataForOrigin', { origin: new URL(pageUrl).origin, storageTypes: 'local_storage' });
   await call('Page.navigate', { url: pageUrl });
 
   // Ready = the app has drawn, so the map's own fetching is out of the way before the search starts.

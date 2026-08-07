@@ -396,7 +396,12 @@ const ringCells = () => RING_ALL.slice(0, device.ringCells());
 // a whole-read block returns from there before reaching it, so a gate on that camera read `null` and
 // proved nothing, on a camera where the ring is correctly absent.
 const publishTier = () => { window.__storeApp = { ...(window.__storeApp || {}),
-  viewPad: viewPad(), ringCells: ringCells().length, tier: device.tier }; };
+  viewPad: viewPad(), ringCells: ringCells().length, tier: device.tier,
+  // Reported, not just read: an A/B that cannot confirm which arm it actually ran is one bad default
+  // away from measuring the same thing twice (§2 — "a probe outside a gate is a comment").
+  // ⚠ Reads the global rather than calling `prefetchScope()` — this runs at module load, where that
+  // `const` is still in its temporal dead zone, and the call would throw before the app ever started.
+  prefetchScope: window.__prefetchScope ?? 'both' }; };
 publishTier();
 
 // One ring cell as a box: the screen translated by (dx, dy) screens, then padded like a view so adjacent
@@ -600,7 +605,20 @@ let prefetchOn = true;
 // to download in one go. Measured on the boot camera, before this line existed. The overview is exactly
 // that store, and it is the fastest step in a journey precisely because it is whole (design §8.2).
 const isPaged = (m) => String(m || '').startsWith('paged');
-async function prefetchFor(box, zoom) {
+// ⚠ THE KNOB EXISTS TO HOLD THE WORK IDENTICAL WHILE THE SUSPEND COUNT MOVES. The wasm trap
+// (`RuntimeError: unreachable`, HANDOFF §1 item 5) was A/B'd to the serial paged read by turning
+// prefetching off wholesale — but that arm also ran one more kernel command than the passing one, so the
+// arms differed in WORK as well as in suspends, and the trigger could have been either. The view and the
+// ring both call this function, so scoping it to one of them keeps every command, every store and every
+// byte the same and changes only how many reads suspended wasm — which is the one variable worth having.
+//
+//   window.__prefetchScope = 'both' (default) | 'view' | 'ring' | 'none'
+//
+// It is a probe knob, not a setting: nothing in the app writes it.
+const prefetchScope = () => window.__prefetchScope ?? 'both';
+async function prefetchFor(box, zoom, scope = 'view') {
+  const want = prefetchScope();
+  if (want !== 'both' && want !== scope) return null;
   if (!prefetchOn || !kernel.prefetch) return null;
   const b = { mnlo: Math.round(box.mnlo * 1e7), mnla: Math.round(box.mnla * 1e7),
               mxlo: Math.round(box.mxlo * 1e7), mxla: Math.round(box.mxla * 1e7) };
@@ -682,7 +700,7 @@ async function ensureViewNow() {
   // It degrades to today's behaviour at every step: a block with no `.pagesx` returns [], a page the
   // index does not name simply misses and is fetched the old way. Nothing here can make the map WRONG —
   // the store is unchanged and every byte is still verified by the loader.
-  await prefetchFor(box, zoom);
+  await prefetchFor(box, zoom, 'view');
   // ⚠ A RANGE READ CAN FAIL WITHOUT THE COMMAND FAILING, and then the view is short of data while looking
   // finished. The kernel records the failure and carries on — a paged read of a cell that 404s or 5xxs
   // yields a store with that cell missing, not an error — so the map draws fewer roads and the app files
@@ -904,7 +922,7 @@ function postRingStep(gen, screen, zoom, i) {
       //
       // ⚠ It stays BEHIND the critical path by construction: the ring is chained, one cell at a time,
       // and this runs inside a cell's own job. Nothing here can be issued before the screen is drawn.
-      await prefetchFor(cell, zoom);
+      await prefetchFor(cell, zoom, 'ring');
       await kernel.runKernel(viewCmd(bboxOf(cell), roadsFor(cell, zoom), 'view', baseFor(cell, zoom), cell, zoom));
     } catch (err) {
       // ⚠ A FAILED CELL IS AN UNFILLED CELL, and until this counter existed it was indistinguishable from

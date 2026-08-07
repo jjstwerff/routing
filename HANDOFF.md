@@ -258,9 +258,34 @@ both backends. **Two of our three upstream findings this week were corrected by 
    are not identical in work — that is the loose end in this A/B.
    **So the app no longer trips it, and the DEFECT IS NOT FIXED**: a page the index does not name still
    falls through to a real read (58 per view), and `nl-east.base` / `nl-mideast.base` have no index at all
-   — a camera over them takes the old path in full. **The next probe:** hold the work identical and vary
-   only the suspend COUNT (prefetch the view but not the ring, and the reverse), then symbolise
-   `wasm-function[531]` against a debug build. `browser/cdp_nl_live.mjs` prints the session state before
+   — a camera over them takes the old path in full.
+
+   ⚠ **THE NEXT PROBE IS BUILT AND RUN, AND THE TRAP NO LONGER REPRODUCES** (2026-08-07 —
+   `window.__prefetchScope` + `browser/cdp_trap_scope.mjs`). The knob scopes prefetching to the view or
+   the ring ALONE, so every kernel command, store and byte stays identical and only the suspend count
+   moves — which closes the loose end above, where the trapping arm also ran one more command.
+
+   | scope | prefetch hits | prefetched | misses | commands | result |
+   |---|---|---|---|---|---|
+   | `both` | 2 129 | 157.4 MB | 589 | 11 | passed |
+   | `view` | 1 231 | 88.9 MB | 1 487 | 11 | passed |
+   | `ring` | 1 574 | 116.1 MB | 479 | 11 | passed |
+   | **`none`** | **0** | 0.0 MB | 0 | 11 | **passed, 3/3** |
+
+   **0 traps in 9 runs**, over Amsterdam z14 AND over `nl-east` — the unindexed-base camera this item
+   names as still taking the old path in full — with suspends spanning 0 → 2 129. The `none` arm is the
+   configuration recorded above as trapping 3/3.
+
+   **So the suspend hypothesis is neither confirmed nor refuted: there is no trap left to attribute**,
+   and symbolising `wasm-function[531]` is moot without one. ⚠ **This is NOT "the defect is fixed".** The
+   wasm has been rebuilt twice since that A/B (`6567484`, `89b30fc`; md5 `dbb64043` now), so the runtime
+   under test is not the one that trapped — the likeliest explanation is loft#785's own fix, *"a
+   prefetched page must still be resident when the walk reads it"*, which is exactly the shape of an
+   `unreachable`. What would settle it is the `none` arm against the LIVE site.
+   ⚠ **That run was ATTEMPTED and did not happen.** The deployed build predates the knob, so it ignored
+   the scope and prefetched fully — 2 131 hits — while the probe reported `app confirms "undefined"`. It
+   was a `both` run wearing a `none` label. **The readback is why that is known rather than believed**;
+   the live arm needs the knob deployed first. `browser/cdp_nl_live.mjs` prints the session state before
    the match now, which is how these numbers exist at all — every counter used to be read *after* it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
 6b. **THE MAP IS SLOW BECAUSE OF ROUND TRIPS, AND THE FIX IS WIRED AND GATED — but not published.**
