@@ -7,30 +7,38 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-04, late)
+## 0. Where things stand (2026-08-07)
 
-**THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
-PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
+**THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out when PR #55 merged
+`area-holes` into `main` (`1d1b199`). **Nothing is staged and nothing is pending on the DATA**, and
+nothing below touches it: every branch since has been app, instrument or upstream work.
 
-⚠ **THIRTEEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
-strands, in the order they were done:
+**Everything the old §0 warned was unmerged is IN.** `browser-owns-the-browser` merged;
+`view-ring-prefetch` is deleted. The browser reads the one v3 coverage index, the ring plans its cells,
+the retention cap follows the device — all live, all gated (PRs #59, #65–#69).
 
-1. **Browser/test-process hygiene** (`8f55a06`, `f5ab0c2`, `67bb7c8`). Every gate's browser is owned by
-   its driver over a CDP **pipe**, so it cannot outlive the process that started it — no traps, no kill
-   logic, no platform-specific code. `browser_leak_gate` proves it by SIGKILLing an owner and re-taking
-   the profile. The loft test server got the same treatment (`exec` + a bounded `LOFT_TIMEOUT`), and
-   `fuser -k` is gone from all seven scripts. **Earned:** five leaked browser trees, 50 processes,
-   1.7 GB, the oldest 2 days 18 h old, on a box whose swap was full — and 24 leaked loft servers, all
-   mine, from the old broken `kill`.
-2. **`be-mid` moved to its own Pages repo** (`96c9e95`, merged) — site 86% → **70%**. And the 62-block
-   index cap is gone AND gated at 70 blocks (`2a52ca0`) — it had been fixed in code a day earlier with
-   no test.
-3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
-   **The browser reads the one coverage index now** (v3: a quadtree over every store, read by range), the
-   RING plans its pages too, and both halves are gated — `browser/page-index.test.mjs` in `make test` for
-   the format, `tools/prefetch_gate.sh` for the wired path. **PUBLISHED and LIVE** — `coverage.pagesx` is
-   on `data-v2026-08-03d` and merged (PR #59). **1.53× to the view on a real link**, and the gate asserts
-   the map as well as the clock. ⚠ The 2.29× it first shipped with was a harness artefact — §1 item 6b.
+**`device-tier` LANDED as PR #71** (`36d635f`, 2026-08-07 05:40Z) — 15 commits, 30 files, +1488/−80,
+the app's read strategy plus the instruments, again no data. Three strands:
+
+1. **The tier is wired — declared first, corrected by what the machine MEASURES.**
+   `hardwareConcurrency` / `jsHeapSizeLimit` / `userAgentData.mobile` / saveData choose a tier before the
+   first frame; the first measured view then corrects it, because a declared signal is a claim about the
+   hardware and features-per-ms is a measurement of *this* page on *this* machine. One tier moves four
+   knobs together — `full` 128 MB/detail 0/pad 0.15/ring 8, `reduced` 64/1/0.08/4, `minimal` 24/2/0.04/0
+   — and `window.__deviceTier` pins it, which is the only reason the gates below are reproducible.
+2. **A SAVED ROUTE IS WALKABLE WITH THE RADIO OFF** — 100% of the online feature count, every step,
+   after a reload with the network down (`tools/offline_pack_gate.sh`). The pack asks the app's OWN
+   `boxAt`/`storesFor`/`pagesFor`, so there is no second notion of which store answers where. §2 has the
+   five things that all had to be true, and the one-line `httpTotal` bug that cost the most.
+3. **Two gates stopped costing minutes, and CI stopped reporting one line.** The trip gate 495 s → 10 s
+   (it was measuring the ring, which is not what it tests); `map_render_gate` 91 s → 59 s (50.5 s of it
+   was 30 FIXED sleeps — §2). CI now runs all eight offline gates and reports each with a duration,
+   instead of stopping at the first failure.
+
+**The upstream arc closed.** loft#782/#783/#784/#785 are fixed and in; **#787 is verified closed** —
+the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted; the committed
+`browser/store-kernel.wasm` is the runtime that does not triple a viewport's bytes (sources
+`9528328a…`).
 
 **READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
 Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
@@ -135,14 +143,15 @@ Each cost a wrong claim that was already written down, about to be, or already f
 
 ## 0c. The session after it: panning, and three gates that were measuring a moving app
 
-**On `view-ring-prefetch`, 4 commits, pushed and UNMERGED.** Nothing here touches the data or the live
-site; it is the app's read strategy plus the instruments that broke when the app grew background work.
+**Landed** (`view-ring-prefetch`, then #65–#69). Nothing here touches the data or the live site; it is
+the app's read strategy plus the instruments that broke when the app grew background work.
 
-> ⚠ **TWO branches are unmerged, and this file is on one of them.** `handoff-benelux-live` carries THIS
-> text; `view-ring-prefetch` carries the code it describes. **Land `view-ring-prefetch` first** — §0c is
-> written as though the ring is already in, so the other order leaves `main` describing code it does not
-> have. Until both land, the `HANDOFF.md` on `main` still says Benelux is staged and unmerged, which has
-> been false since PR #55. A session that resumes from `main` reads that first.
+> ⚠ **This section is why §0 is dated.** It once carried a warning that two branches were unmerged and
+> that *"a session that resumes from `main` reads that first"* — and the warning then outlived the merge
+> by three days, so `main` spent them telling every reader to land work that was already in. **A status
+> section that is not corrected on the way past is worse than no status section**, because it is read
+> with the authority of the rest of the file. Retire the warning in the SAME commit that removes its
+> cause.
 
 **The view no longer makes the screen wait for four screens it cannot show.** It read `viewportBox(0.6)`
 — 2.2 × 2.2 screens, 4.84 screens of area — in ONE kernel call. Now it reads ~one screen, and a RING of
@@ -433,6 +442,37 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   builds a fixture, runs the real builder and insists on the pages that went in (it fails 9 checks against
   the 4-byte regression), and `prefetch_gate.sh` requires the buffer to have actually ANSWERED. Same
   family as the paged spot check that passed while fetching nothing.
+* **EXTRACTING THE LIST IS NOT EXTRACTING THE SETUP.** `make test` opened with
+  `mkdir -p scratch scratch/tiles`, then ran eight gates. Moving the gate LIST into `tools/gates.offline`
+  so CI and `make test` could not drift left the `mkdir` behind in the Makefile — and CI, which no longer
+  calls `make test`, ran the gates into a tree with no `scratch/`. The server harnesses write
+  `scratch/srv.log` and exit when they cannot, so three gates failed on one missing directory. **A shared
+  list does not make two callers equivalent while one of them still owns a precondition.** It passed
+  locally for the least useful reason — `scratch/` was already there from earlier runs — which is the
+  general trap: **a clean-tree failure cannot be reproduced on a dirty tree.** Move the directory aside
+  before believing a green local run of anything CI runs from scratch.
+* **A CANCELLED JOB IS NOT A RED BUILD, AND A GREEN CHECK IS NOT A MERGE.** Both learned in one
+  GitHub Actions outage (2026-08-06, 6.5 h, webhooks throttled to ~15%), and both will recur:
+  — a `build-test` reporting `cancelled` had held **no runner and run zero steps** for 15 minutes; the
+  `pages` job in the SAME run got a runner in 18 s and passed. Distinguish by whether the job ever
+  executed a step, or a watcher stops on a build that never happened.
+  — and a check can be `completed/success` on the head while the merge is refused, because branch
+  protection reads the **status-check ROLLUP**, not the check runs. During the outage the rollup was
+  `null` with two suites plainly present. Close/reopen re-evaluates mergeability but does NOT rebuild it,
+  so the nudge everyone reaches for does nothing. **The only fix is waiting**, and `--admin` would bypass
+  a protection the maintainer set deliberately rather than satisfy it.
+  ⚠ Also: **every run on the branch came from `gh workflow run`, not one from a push or PR event** — a
+  dispatch bypasses the throttled webhook path. `workflow_dispatch` is on `ci.yml` for exactly this, but
+  it only helps once it is on the DEFAULT branch.
+* **A FIXED SLEEP IS A GUESS THAT IS NEVER REVISITED.** `cdp_verify_store.mjs` was 87 s of
+  `map_render_gate`'s 91, and timing it per check found the cost was not the work: the matches run
+  121–685 ms, while **50.5 s sat in 30 `sleep()` calls** — five of 2 500 ms, four of 3 500 ms — each one
+  written once as a guess at how long a sketch edit and its re-match might take. The app already answers
+  that: `__perfHooks.settled()` is false while any kernel job is queued or running. Wait on the CONDITION
+  with the old sleep as a ceiling, and the worst case is exactly the old behaviour. ⚠ **The floor is what
+  makes it safe** — `settled()` is true in the instant BEFORE an interaction's job is posted, so polling
+  it immediately sails straight past the work being waited for. Same family as *"wait for the view to
+  CHANGE before measuring it"*.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
@@ -539,11 +579,23 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 `601806ef` (re-run end to end after the binary moved mid-run; §2):
 
 ```bash
-make test          # offline: kernel suites + server harnesses            (~15 s)
+make test          # offline: kernel suites + server harnesses             (~8 s)
 make test-native   # the DATA gates, native backend — the slow, thorough one  (~5 min)
 make test-wasm     # wasip2 parity: geodesic + a byte-identical full match  (~15 s)
-make test-map      # the browser gates, headless Chromium                 (~4 min)
+make test-map      # the browser gates, headless Chromium                (~3.6 min)
 ```
+
+`test-map`'s twelve gates, timed on this box 2026-08-07 (all green): `map_render_gate` **59 s** and
+`base_paged_gate` **50 s** are half of it; then `overview` 20, `nl_live` 19, `cors_host` 17,
+`paged_http` 16, `network_zoom` 14, `offline_pack` **9**, `browser_leak` and `cross_block` 4, and
+`expose_probe` / `deliver_probe` 1 s each. ⚠ Two of those numbers were 495 s and 91 s a day ago — see
+§2 on fixed sleeps, and on a gate measuring the ring rather than the thing it tests.
+
+`make test`'s eight gates live in **`tools/gates.offline`** — ONE list, read by that target and by
+`tools/ci_gates.sh`. They differ only in how they REPORT: `make test` stops at the first failure (right
+while iterating on the one you just broke), and `ci_gates.sh` runs all eight, times each, and writes a
+pass/fail/duration table to the run summary (right for a build nobody is watching, where each hidden
+failure costs another ~5 min of toolchain build). Run the CI form locally with `tools/ci_gates.sh`.
 
 `test-native` already runs the gates below, so reach for one individually only to iterate on it:
 
