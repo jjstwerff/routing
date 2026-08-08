@@ -5,6 +5,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 
 # Debugging a client through the server, over WebSockets
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-07-30 · **Owns:** the live-debug WebSocket channel between the browser and a loft debugger
+
 The server mode (`server/server.loft` + `ws.js`) is one loft process speaking `"<opcode>:<payload>"` frames
 to browser clients over `/ws`. When something misbehaves there, the expensive mistake is starting in the
 browser: the client is the *least* observable end, and half the symptoms ("nothing happened") are the

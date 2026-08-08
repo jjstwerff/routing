@@ -83,6 +83,22 @@ step "3/8 names — street + place search index (PLAN-RESTORE R4)"
   "$out/$id.names.store" "$work/$id.geojsonseq" "$work/$id.places.geojsonseq" \
   || die "gen-names"
 
+# The three-collection SEARCH INDEX over the store just written (docs/name-search-index.md §8). Without
+# it the app reads the whole 21.4 MB names store before it can answer the first keystroke; with it the
+# names store is not fetched at all — the vocabulary is 5.5 MB gzipped and the rest arrives by range.
+#
+# ⚠ NOT `die` ON FAILURE, unlike every step above it. The index is an accelerator with an exact
+# fallback: a region without one scans, which is the behaviour that shipped for a year. Failing the
+# whole refresh — and losing the roads and the base map with it — because an optimisation did not build
+# would be the wrong trade. It says so loudly instead, the way bake-heights does.
+if "$loft" --native-release --lib "$here/lib" "$here/tools/gen-names-index.loft" \
+     "$out/$id.names.store" "$out/$id"; then
+  :
+else
+  echo "  ⚠ SEARCH INDEX NOT BUILT — search still works, by reading the whole names store."
+  echo "    Re-run on the built store: tools/gen-names-index.loft $out/$id.names.store $out/$id"
+fi
+
 if [ "$do_base" = 1 ]; then
   step "4/8 base map — landcover, buildings, lines, labels, pois"
   "$here/tools/build-base.sh" "$id" "$src" ${bbox:+"$bbox"} || die "build-base"

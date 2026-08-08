@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Request to loft — a zero-copy binary bridge (loft-wasm → JS)
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-13 · **Last verified:** 2026-07-13 · **Owns:** the @PLN105 binary bridge — ⚠ its premise was re-measured and no longer holds
+
 **Audience:** the loft agent (this is a `loft-lang/loft` capability request; `routing` is the first
 consumer). Written to be read cold.
 

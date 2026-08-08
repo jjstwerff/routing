@@ -119,6 +119,41 @@ names_json() {  # $1 = path relative to root
     "$url" "$(stat -c%s "$abs")" "$(sha256sum "$abs" | cut -d' ' -f1)"
 }
 
+# The three-collection SEARCH INDEX beside the names store (docs/name-search-index.md §8).
+#
+# ⚠ DECLARED HERE EVEN THOUGH THE KERNEL DERIVES THE SAME NAMES, and the reason is integrity, not
+# convenience: `fetch-site-blocks.sh` refuses to ship a block it cannot verify, and verification needs a
+# recorded size and sha256. A name can be derived; a hash cannot. `tools/nx_index_gate.sh` asserts the
+# two spellings agree, so the duplication is checked rather than trusted.
+#
+# ⚠ ALL THREE OR NONE. A partial index is worse than none — the app would fetch a vocabulary, resolve an
+# interval, and fail the postings read, having paid for the first two. A region built before the index
+# existed simply emits `null` and scans, exactly as it always did.
+search_json() {  # $1 = the names path relative to root
+  local rel="$1" stem=""
+  case "$rel" in
+    *.names.store) stem="${rel%.names.store}" ;;
+    *) printf null; return 0 ;;
+  esac
+  local out="" p="" prel="" pabs=""
+  for p in nxwords nxposts nxents; do
+    prel="$stem.$p.store"
+    pabs=""
+    local r; local IFS='|'
+    for r in $roots; do
+      if [ -f "$r/$prel" ]; then pabs="$r/$prel"; break; fi
+      if [ -f "$r/$(basename "$prel")" ]; then pabs="$r/$(basename "$prel")"; break; fi
+    done
+    unset IFS
+    [ -f "$pabs" ] || { printf null; return 0; }
+    local purl="$prel"
+    [ -n "${RELEASE_BASE:-}" ] && purl="$RELEASE_BASE/$(basename "$prel")"
+    [ -n "$out" ] && out="$out,"
+    out="$out\"$p\":{\"url\":\"$purl\",\"bytes\":$(stat -c%s "$pabs"),\"sha256\":\"$(sha256sum "$pabs" | cut -d' ' -f1)\"}"
+  done
+  printf '{%s}' "$out"
+}
+
 echo "== building the top index from $(basename "$manifest") =="
 regions=""; n=0
 # The manifest is TOML but only ever a list of flat [[region]] tables, so it is read line by line rather
@@ -215,6 +250,8 @@ flush() {
   # bytes are and whether they are the ones this index describes.
   local nj=null
   if [ -n "$names" ]; then nj="$(names_json "$names")" || exit 1; fi
+  sj=null
+  if [ -n "$names" ]; then sj="$(search_json "$names")" || exit 1; fi
   local entry
   # THE ZOOM BAND (§6i O2) — half-open [zmin, zmax), and absent means "every zoom", so a manifest that
   # says nothing behaves exactly as it did. It is what makes the overview and the detailed regions
@@ -234,7 +271,7 @@ flush() {
   # Exactly one block may claim it: the floor is a single whole-file read by construction (`ensureFloor`
   # binds one store and one extent), which is the same reason the overview must span the whole coverage
   # rather than be one block per country.
-  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"tierFloor":%s,"floor":%s,"roads":%s,"base":%s,"names":%s}' "$id" "$name" "$mode" "$zj" "${tfloor:-0}" "${fl:-false}" "$rj" "$bj" "$nj")"
+  entry="$(printf '{"id":"%s","name":"%s","readMode":"%s","zoom":%s,"tierFloor":%s,"floor":%s,"roads":%s,"base":%s,"names":%s,"search":%s}' "$id" "$name" "$mode" "$zj" "${tfloor:-0}" "${fl:-false}" "$rj" "$bj" "$nj" "$sj")"
   if [ -n "$regions" ]; then regions="$regions,$entry"; else regions="$entry"; fi
   n=$((n + 1))
   echo "  $id: roads $(echo "$rj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · base $(echo "$bj" | grep -oP '"tiles":\K[0-9]+' || echo none) tiles · read=$mode${zj:+ zoom=$zj}"

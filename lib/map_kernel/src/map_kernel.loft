@@ -13,7 +13,8 @@
 //   match <sketch> <profile>      → ROUTE lat,lon;… + SUMMARY ways=… len=…m  (server.loft's match_for path)
 
 use basemap::(Coord, Area, Building, Line, Poi, Label, PTile, to_fixed, NameRec, fold_name,
-              cell_ix, tier_cell, tier_key, LAYOUT_TIERS);
+              cell_ix, tier_cell, tier_key, LAYOUT_TIERS,
+              NxWord, NxPost, NxEntry, nx_id, nx_rank, nx_flags, nx_tier);
 use routing_kernel::(TRoute, GeoPoint, Way, TTile, TRoad, TStep, Barrier, Graph, MatchState, MatchQuality,
                      RF_ACCESS_NO, RF_FOOT_YES, NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE,
                      BF_FOOT_NO, BF_BIKE_NO, bbox_cell_keys,
@@ -550,6 +551,49 @@ fn near2(alat: integer, alon: integer, blat: integer, blon: integer) -> integer 
   (dla * dla) + (dlo * dlo)
 }
 
+// Keep only the best `limit` as we go: a full sort of 500k records to show 8 answers would be the
+// expensive half of this operation, and an insertion into a short list is not.
+//
+// ⚠ SHARED BY `do_find` AND `do_find_indexed` ON PURPOSE. These two must order identically or the
+// parity gate proves nothing — it would only be comparing two copies of the same idea, which drift
+// the first time one is edited. One function is the only way the claim stays true by construction.
+//
+// ⚠ AND THE ORDER IS TOTAL — score, rank, distance, then RECORD ID. That last tie-break is not
+// decoration. Three of the corpus's queries returned the same records in a different order because the
+// first two shared a coordinate, a kind AND a rank, leaving nothing to separate them but the order they
+// happened to be visited in: by id for a scan, by word for a prefix walk. Without it `do_find`'s own
+// output depends on the store's insertion order, which is a build artifact — so this fixes a latent
+// non-determinism in the scan and makes parity provable at the same time.
+//
+// Insertion sort into a list at most `limit` long, built fresh rather than shuffled in place: swapping
+// struct elements through a temp is the #338 trap (`tmp = v[j]` is a VIEW of the slot, `v[j] = v[k]` is
+// a COPY into it), and a list this short makes the safe form free.
+fn nh_insert(best: vector<NameHit>, sc: integer, rk: integer, d: integer,
+             rec: integer, limit: integer) -> vector<NameHit> {
+  // Worse than everything already held, and the list is full — the common case, so it is first.
+  if len(best) >= limit {
+    w = best[len(best) - 1] ?? NameHit { score: 9, rank: 9, dist2: 0, rec: 0 };
+    if sc < w.score { return best; }
+    if sc == w.score && rk < w.rank { return best; }
+    if sc == w.score && rk == w.rank && d > w.dist2 { return best; }
+    if sc == w.score && rk == w.rank && d == w.dist2 && rec >= w.rec { return best; }
+  }
+  next: vector<NameHit> = [];
+  placed = false;
+  for h in best {
+    if !placed && (sc > h.score
+                   || (sc == h.score && rk > h.rank)
+                   || (sc == h.score && rk == h.rank && d < h.dist2)
+                   || (sc == h.score && rk == h.rank && d == h.dist2 && rec < h.rec)) {
+      next += [NameHit { score: sc, rank: rk, dist2: d, rec: rec }];
+      placed = true;
+    }
+    if len(next) < limit { next += [h]; }
+  }
+  if !placed && len(next) < limit { next += [NameHit { score: sc, rank: rk, dist2: d, rec: rec }]; }
+  next
+}
+
 // `find`: emit at most `limit` matches for `q`, nearest-and-best first, as
 //   FOUND <lat>,<lon> <kind> <rank> <name>
 // Coordinates in degrees, so the caller can centre the map on one without knowing the store's unit.
@@ -571,29 +615,7 @@ pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limi
     if sc < 0 { continue; }
     d = near2(r.lat as integer, r.lon as integer, cla, clo);
     rk = r.rank as integer;
-    // Worse than everything already held, and the list is full — the common case, so it is first.
-    if len(best) >= limit {
-      w = best[len(best) - 1] ?? NameHit { score: 9, rank: 9, dist2: 0, rec: 0 };
-      if sc < w.score { continue; }
-      if sc == w.score && rk < w.rank { continue; }
-      if sc == w.score && rk == w.rank && d >= w.dist2 { continue; }
-    }
-    // Insertion sort into a list that is at most `limit` long. Built fresh rather than shuffled in
-    // place: swapping struct elements through a temp is the #338 trap (`tmp = v[j]` is a VIEW of the
-    // slot, `v[j] = v[k]` is a COPY into it), and a list this short makes the safe form free.
-    next: vector<NameHit> = [];
-    placed = false;
-    for h in best {
-      if !placed && (sc > h.score
-                     || (sc == h.score && rk > h.rank)
-                     || (sc == h.score && rk == h.rank && d < h.dist2)) {
-        next += [NameHit { score: sc, rank: rk, dist2: d, rec: r.id }];
-        placed = true;
-      }
-      if len(next) < limit { next += [h]; }
-    }
-    if !placed && len(next) < limit { next += [NameHit { score: sc, rank: rk, dist2: d, rec: r.id }]; }
-    best = next;
+    best = nh_insert(best, sc, rk, d, r.id, limit);
   }
 
   println("FOUNDCOUNT {len(best)}");
@@ -604,4 +626,141 @@ pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limi
     lo = (rec.lon as integer) as float / 10000000.0;
     println("FOUND {la:1.7},{lo:1.7} {rec.kind as integer} {rec.rank as integer} {rec.name}");
   }
+}
+
+// ===================================================================================================
+// SEARCH, INDEXED — the same answers without reading 21.4 MB of names first.
+//
+// `do_find` above is a linear scan over every NameRec, which means the whole names store is read before
+// the first keystroke can be answered (`HANDOFF` §1 item 3). This reads the three-collection index from
+// `tools/gen-names-index.loft` instead:
+//
+//   words   trie<NxWord[w]>    RESIDENT — 5.5 MB gzipped, the only thing fetched up front
+//   posts   sorted<NxPost[wid]> ONE `store_load_range` over a CONTIGUOUS interval — pass 2 earns that
+//   ents    hash<NxEntry[id]>  ONE lookup per DISPLAYED row — at most `limit`, never per candidate
+//
+// ⚠ IT DECLINES RATHER THAN GUESSES, and the caller must honour that. A word index answers "some word
+// starts with q"; `name_score` asks "where does q first appear in the fold". Those agree for a
+// single-token query and cannot for a multi-token one, so this returns `false` and the caller falls
+// back to `do_find`, which is exact. Returning a plausible answer instead is how a search box becomes
+// confidently wrong, which `basemap.loft` already warns is worse than finding nothing.
+// ⚠ SPLIT IN THREE, because the browser cannot use it as one call. The ids to display are only known
+// AFTER ranking, so a single function would have to read the entries store itself — and this file must
+// not load stores at all (see the header: it compiles for --native-wasm, where there is no filesystem).
+// So the caller pages between the halves:
+//
+//   nx_span      which wid INTERVAL a prefix occupies      — a resident trie walk, no I/O
+//   …caller does store_load_range(posts, url, lo, hi)…
+//   nx_rank_ids  the ordered record ids, ranked from postings alone — no entry read per candidate
+//   …caller does store_load_keys(ents, url, ids)…
+//   nx_emit      the FOUND lines for those ids
+//
+// `do_find_indexed` below is the all-resident composition of the three: it is what the parity gate runs,
+// so the browser path and the gated path are the same code with the loads moved outward.
+
+// The wid interval a prefix occupies, and how many words are in it. `words` is 0 when nothing matches,
+// and the caller must then emit an empty result rather than fetching an interval that does not exist.
+pub struct NxSpan { const lo: integer, const hi: integer, const words: integer }
+
+pub fn nx_span(words: trie<NxWord[w]>, fq: text) -> NxSpan {
+  lo = 0;
+  hi = 0;
+  n = 0;
+  for w in words[fq..] {
+    if n == 0 { lo = w.wid; hi = w.wid; }
+    if w.wid < lo { lo = w.wid; }
+    if w.wid > hi { hi = w.wid; }
+    n += 1;
+  }
+  NxSpan { lo: lo, hi: hi, words: n }
+}
+
+// The folded query if the index can answer it, or "" if it cannot.
+//
+// ⚠ A SEPARATOR MEANS DECLINE, and the caller must fall back to `do_find`. A word index answers "some
+// word starts with q"; `name_score` asks "where does q FIRST appear in the fold". Those agree for one
+// token and cannot for two, so a multi-token query is refused rather than answered plausibly — a search
+// box that is confidently wrong is worse than one that finds nothing (`basemap.loft`).
+pub fn nx_indexable(q: text) -> text {
+  fq = fold_name(q);
+  if fq == "" { return ""; }
+  if fq.find(" ") >= 0 || fq.find("-") >= 0 || fq.find("'") >= 0 { return ""; }
+  fq
+}
+
+// Rank the postings of an already-loaded interval and return the record ids, best first.
+//
+// ⚠ NOTHING HERE READS AN ENTRY. That is the point: `a` matches 36 991 postings, and if ranking needed a
+// name or a coordinate per candidate this would be 36 991 fetches to show 8. The rank and position ride
+// in the posting (`basemap.loft`), so the entries store is touched once, for the survivors.
+pub fn nx_rank_ids(posts: sorted<NxPost[wid]>, words: trie<NxWord[w]>, fq: text,
+                   clat: float, clon: float, limit: integer) -> vector<integer> {
+  cla = round(clat * 10000000.0) as integer;
+  clo = round(clon * 10000000.0) as integer;
+  qlen = fq.size();
+  best: vector<NameHit> = [];
+  for w in words[fq..] {
+    slot = posts[w.wid];
+    if slot == null { continue; }          // not in the loaded interval — a caller that paged less
+    wlen = w.w.size();
+    np = len(slot.p);
+    k = 0;
+    while k < np {
+      pk = slot.p[k] ?? 0;
+      sc = nx_tier(nx_flags(pk), qlen, wlen);
+      la = slot.la[k] ?? 0;
+      lo = slot.lo[k] ?? 0;
+      d = near2(la as integer, lo as integer, cla, clo);
+      best = nh_insert_uniq(best, sc, nx_rank(pk), d, nx_id(pk), limit);
+      k += 1;
+    }
+  }
+  ids: vector<integer> = [];
+  for h in best { ids += [h.rec]; }
+  ids
+}
+
+// Emit the FOUND block for `ids`, in the order given. The ONLY read of the entries store.
+pub fn nx_emit(ents: hash<NxEntry[id]>, ids: vector<integer>) {
+  println("FOUNDCOUNT {len(ids)}");
+  for i in ids {
+    e = ents[i];
+    if e == null { continue; }
+    la = (e.lat as integer) as float / 10000000.0;
+    lo = (e.lon as integer) as float / 10000000.0;
+    println("FOUND {la:1.7},{lo:1.7} {e.kind as integer} {e.rank as integer} {e.name}");
+  }
+}
+
+// The all-resident composition — what the parity gate runs, and what a caller with everything in memory
+// wants. Returns false when the index declines, and the caller must then run `do_find`.
+pub fn do_find_indexed(words: trie<NxWord[w]>, posts: sorted<NxPost[wid]>, ents: hash<NxEntry[id]>,
+                       q: text, clat: float, clon: float, limit: integer) -> boolean {
+  if fold_name(q) == "" { println("FOUNDCOUNT 0"); return true; }
+  fq = nx_indexable(q);
+  if fq == "" { return false; }
+  nx_emit(ents, nx_rank_ids(posts, words, fq, clat, clon, limit));
+  true
+}
+
+// ⚠ ONE RECORD, ONE ROW — even when several of its words match the prefix.
+//
+// A fold like "aa ab" has TWO words starting with `a`, so a prefix walk reaches the same record twice
+// and the scan it must agree with emits it once. Deduping at INSERT rather than by collecting a seen-set
+// keeps the memory bounded by `limit` instead of by the candidate count (`a` matches 36 991 postings),
+// and the list is 8 long, so the linear check is free. The better of the two occurrences wins, which is
+// what `name_score` would have produced for a record matched at its strongest position.
+fn nh_insert_uniq(best: vector<NameHit>, sc: integer, rk: integer, d: integer,
+                  rec: integer, limit: integer) -> vector<NameHit> {
+  held = 0 - 1;
+  for h in best { if h.rec == rec { held = h#index; } }
+  if held < 0 { return nh_insert(best, sc, rk, d, rec, limit); }
+  cur = best[held] ?? NameHit { score: 0 - 1, rank: 0, dist2: 0, rec: rec };
+  if sc < cur.score { return best; }
+  if sc == cur.score && rk < cur.rank { return best; }
+  if sc == cur.score && rk == cur.rank && d >= cur.dist2 { return best; }
+  // Same record, so the id tie-break cannot separate them — only a strictly better position replaces.
+  stripped: vector<NameHit> = [];
+  for h2 in best { if h2.rec != rec { stripped += [h2]; } }
+  nh_insert(stripped, sc, rk, d, rec, limit)
 }

@@ -1,3 +1,4 @@
+<!-- Kind: guide · Status: current · Last verified: 2026-08-03 · Owns: how to propose a change here: licence, branches, gates, conventions -->
 # Contributing
 
 Thanks for helping. This project is open in the same shape as [loft](https://github.com/loft-lang/loft):

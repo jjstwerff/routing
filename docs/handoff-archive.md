@@ -1,5 +1,7 @@
 # HANDOFF ARCHIVE — the dated rungs, 2026-07-07 → 2026-08-02
 
+**Kind:** state · **Status:** current · **Last verified:** 2026-08-07 · **Owns:** the dated account behind each rule in HANDOFF — history, never where things stand
+
 **This is history, not state.** `HANDOFF.md` is the resume state; this file is what it used to say, kept
 verbatim because each rung records what something COST to learn and those receipts outlive the status
 they were attached to.
@@ -12,6 +14,153 @@ gate must not write the tree it checks, why the toolchain claim is anchored to a
 newest-first, so the further down you read, the older the claim.
 
 ---
+
+## 0-2026-08-07b. The loft #785/#787 arc, lifted from `HANDOFF.md` §2
+
+Kept for the measurements and the retraction path; both issues are closed and the wasm pin is gone.
+
+* ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
+  [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
+  viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
+  binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
+  synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
+  key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
+  ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
+  it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
+  26.74 MB** on the 812 MB block, better than before it started.
+  ✅ **AND THE BROWSER REGRESSION IS CLOSED** on loft `759a4172` (2026-08-06 18:46): the same keyed load
+  is **694 ms at CPU 4x against the pre-arc baseline's 763**, with 42 fewer reads — faster than before the
+  arc started. The path there is worth keeping: **1.5x (measured with the arms in SEPARATE browser
+  sessions, always in the same order — withdrawn) → 1.14x (interleaved, real) → 1.03x**. The maintainer
+  refuted all three of my guessed mechanisms and found it: a heap `Vec` allocated per read in `u32_at`,
+  plus a page key hashed twice. ⚠ **The wasm may be rebuilt again** — the reason it was pinned is gone.
+  ⚠ **THE ORIGINAL REPORT SAID ~1.5x AND THAT NUMBER WAS METHOD, NOT RUNTIME** —
+  [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
+  sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
+  **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
+  sequential path by design (#784), so it pays the new relocate's CPU without collecting the batching's
+  round-trip saving. **`browser/store-kernel.wasm` therefore STAYS on the older runtime** — on Pages the
+  app is latency- and CPU-bound, and 1.5x decode on a phone outweighs 10% fewer requests.
+  ⚠ The earlier note that the fix arrived UNCOMMITTED still stands as a rule:
+  — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
+  (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
+  not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
+  the fix to land on a commit. This is HANDOFF §2's sibling-tree rule paying for itself twice in one day.
+
+## 0-2026-08-07. Lifted from `HANDOFF.md` — the Benelux build and the panning session
+
+Both sections were current on their dates and are kept verbatim for the receipts inside them: the
+five measurements that came out the opposite way, and the three gates that were sampling a moving
+app. `HANDOFF.md` §0 carries the state they used to carry.
+
+## 0b. How Benelux was built, and five upstream findings
+
+**Landed as PR #55** (`build-test` 4m23s, `deploy` 24s), on top of `data-v2026-08-03d` — 23 assets,
+784 MB, each verified by a ranged GET before the index pointed anywhere.
+
+⚠ **Only 784 MB was uploaded, not 3.91 GB.** The four NL base maps and `nl-mid` (3.12 GB) are unchanged
+and already served by their own Pages repos. `publish-release.sh` would have taken all of them — stage
+the referenced set and point `BLOCKS_OUT` at it, as HANDOFF has warned since §3.
+
+### The data, in the order it was built
+
+1. **Derived blocks** so Belgium is not blank below z14 — `overview` (renamed from `nl-overview`,
+   46.4 MB, spans the whole coverage), `be-mid` 149.3 MB, `lu-mid` 17.0 MB.
+2. **The border trim** (@51 phase C) — `tools/trim-borders.sh`. 6 blocks, 23 299 cells, disjoint.
+3. **Heights** for BE/LU, then **names**: `coverage.names.store`, 63.5 MB, 518 804 records.
+4. **Published** as `v2026-08-03d`.
+
+### Five things that were measured and came out the OPPOSITE way
+
+Each cost a wrong claim that was already written down, about to be, or already filed upstream:
+
+* **Binding a store FIRST is 3–5× CHEAPER, not 4.5× worse.** @51 said the reverse; it was measured
+  against loft#746 on a binary that no longer exists. `tools/bind_order_gate.sh` is the re-runnable form.
+  A bound store's pages are evictable — bind-first completes under a cgroup cap where bind-last is
+  OOM-killed. **`PLAN-SCALE` §6e's 130–270 GB is a bind-LAST number.**
+* **"Key order changes the file 2.3×" was RETRACTED.** A store's file is its CAPACITY, on a 7/3 ladder
+  (loft#752): 250k, 300k and 400k roads all persist to *exactly* 91 419 400 bytes. Real effect after
+  `store_reclaim` is ~1.5×. **"Stream in cell order" still stands** — @51 came one commit from recording
+  the opposite.
+* **z13 elevation is not worth adopting.** Belgium and Luxembourg baked both ways: mean |Δ| **1.15 m and
+  1.41 m**, and the RANGE is identical (568 m). Luxembourg is the hilliest ground in the dataset, so the
+  "sample by terrain, not by country" hypothesis is refuted too. `PLAN-RESTORE` §5 decision 3 is answered.
+* **The 0.8% of unsampled steps was a PADDING bug, not resolution.** `bake-heights` pads 0.35° now
+  (`TERRAIN_PAD`) and z12 fills 100%.
+* **loft#757, which WE filed, was refuted — the refusal we called a bug was the diagnosis.** A field bind
+  writes a container-rooted file *by design*; what we asked for would have made the load SUCCEED on
+  mismatched bytes. The rule survives, the reason did not (§2), and `loft_bug_gate` guards a CONTRACT now
+  instead of watching a defect.
+
+### The upstream ledger
+
+| | |
+|---|---|
+| **loft#739** | ✅ fixed; **both workarounds deleted**. `loft_bug_gate` FAILS if either returns |
+| **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
+| **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
+| **loft#757** | **filed by us, then REFUTED and closed** — the sidecar is honest; the rule survives (§2) |
+| **loft#762** | **filed by us, fixed same day** — and our diagnosis was corrected on the way (§0c) |
+
+### New tools, all gated
+
+`bind_order_gate`+`probe` · `trim_cells` · `trim-borders.sh` · `merge_blocks` · `reseat_schema` ·
+`height_diff` · `find_probe` · `loft_schema_probe` · `derived_scope_gate` (in `make test`) ·
+`seam_route_gate` (@51 D).
+
+---
+
+## 0c. The session after it: panning, and three gates that were measuring a moving app
+
+**Landed** (`view-ring-prefetch`, then #65–#69). Nothing here touches the data or the live site; it is
+the app's read strategy plus the instruments that broke when the app grew background work.
+
+> ⚠ **This section is why §0 is dated.** It once carried a warning that two branches were unmerged and
+> that *"a session that resumes from `main` reads that first"* — and the warning then outlived the merge
+> by three days, so `main` spent them telling every reader to land work that was already in. **A status
+> section that is not corrected on the way past is worse than no status section**, because it is read
+> with the authority of the rest of the file. Retire the warning in the SAME commit that removes its
+> cause.
+
+**The view no longer makes the screen wait for four screens it cannot show.** It read `viewportBox(0.6)`
+— 2.2 × 2.2 screens, 4.84 screens of area — in ONE kernel call. Now it reads ~one screen, and a RING of
+eight screen-sized cells is paged AFTERWARDS (3 × 3 = 9 screens), which the first paint pays nothing for.
+Measured `CPU_THROTTLE=4`, n=3 a side, quiet box:
+
+| | baseline | ring |
+|---|---|---|
+| **view call** | 83 ms *(82–85)* | **50 ms** *(49–51)* — **1.66×**, and the freeze halves with it |
+| wasm working set | 532.9 MB | **531.0 MB** — nine screens PAGED is not nine screens RESIDENT |
+| match / matchWarm | 2306 / 382 ms | unchanged; spreads too wide to claim either way |
+
+Four things the ring needed, each found by measuring rather than by design — the ring is **chained, not
+fanned out** (KernelQueue cannot preempt a running job, so eight queued cells would put the user's next
+click behind eight screens of paging); the ring is **PROMOTED** when complete (the index is rebuilt over
+the whole 3 × 3 from resident tiles, no fetch, or the smaller read would make the app hold LESS than the
+old box and re-view more often); a **cell must never change the SOURCE** (a neighbour can be another
+block, and pulling a foreign store into a session whose layout store is exposed TRAPS); and the **store
+can move under the drawn map**, so the index's `storeBase` is compared and rebuilt only on a change.
+
+`runKernel` now serialises internally, which is a fix older than the ring: `resolveRun` is ONE slot, so a
+second call orphans the first promise. The queue guarded the APP's road; the ~20 `__perfHooks` probes
+bypass it deliberately, and a ring cell landing between a probe's `reset` and its `match` returned an
+empty route. Serialising at the root fixes all twenty instead of twenty call sites.
+
+**A sidecar is fetched once now, not once per command** — 15 fetches → 2 + 13 cached, which is fewer than
+main's 5. See §2 for what that count had been hiding.
+
+### loft#762, and being wrong in public
+
+We filed `for _ in <hash>` failing `--native` and narrowed it to *(bound store, discarded loop variable)*.
+**The store was incidental and the narrowing was wrong.** `_` is ONE variable per function: `_ = delete(p)`
+typed it `u8`, and `for _ in a` then assigned a `DbRef` to the same slot. The store appeared only because
+our repro used `delete` to set one up. Fixed the same day — the loop binding now gets its own `let mut
+var____1` inside the loop, and body reads of `_` resolve to it, so `_` stays readable. Verified here on
+both backends. **Two of our three upstream findings this week were corrected by the maintainer** (#757,
+#762); both times the report was useful and the *cause* we attached to it was not.
+
+---
+
 
 ## 0. START HERE (2026-08-02, late) — THE APP OPENS ON THE NETHERLANDS, AND IT IS LIVE
 

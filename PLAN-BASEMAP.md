@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-BASEMAP — the presentation layer (terrain, buildings, names)
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the base map's presentation layer: what a block holds and how it is styled
+
 > **Status (2026-07-12):** the classifiers and the `PTile` store schema here are **live** — PLAN-BUILD's
 > `layout.store` carries them and the loft-wasm kernel emits the `view` text from them. The **`emit_*.loft`
 > → `browser/*.txt` → JS tile pyramid** pipeline is **retired** (see [PLAN-BUILD](PLAN-BUILD.md)); the browser

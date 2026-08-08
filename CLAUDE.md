@@ -1,5 +1,7 @@
 # CLAUDE.md — working notes for agents on this repo
 
+**Kind:** guide · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** how an agent works in this repo: what to read first, and what is expensive to get wrong
+
 `routing` is a bicycle/pedestrian route-matcher written in **loft** (a bespoke Rust-like language).
 It doubles as the **consumer test-bed** for loft, which is being given a formal language definition.
 Start with **`HANDOFF.md`** (resume state — short by design; its dated rungs are in
@@ -14,6 +16,32 @@ directory** — the number is the identity, and scanning the tree for a free one
 
 These notes carry context that isn't obvious from the code, so it survives across machines. (They
 mirror the maintainer's agent memory — keep both in sync when one changes.)
+
+## The docs are gated — `make test` fails on a doc, not just on code
+
+`tools/docs_gate.sh` (+ `tools/docs_gate_selftest.sh`) runs in `make test`. Four things follow, and all
+four are cheap to obey and annoying to discover from a red build:
+
+- **Every doc opens with a header line, and it is required.** `**Kind:** state·reference·plan·guide ·
+  **Status:** … · **Last verified:** YYYY-MM-DD · **Owns:** one line`. The four public files
+  (`README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `ATTRIBUTION.md`) carry the same fields as an
+  HTML comment instead. Copy an existing doc's line; `docs/doc-structure-design.md` §4 is the reference.
+- ⚠ **`Last verified` means you RE-CHECKED the claims, not that you edited the file.** Do not touch it
+  for a typo, a new section, or to get green. If a doc's claims are older than you can vouch for, say
+  `Status: stale — unverified since <date>` — **that always passes.** The gate never fails for age; it
+  fails only for a *silent* claim of currency. Bumping a date you have not earned is the one way to
+  break this permanently.
+- **Add a doc, add its row to `HANDOFF.md` §4, in the same commit.** That index is complete by
+  construction now. Dates do not go in §4 — the header owns them, and a second copy drifts.
+- **Budgets FAIL, they no longer warn: a plan ≤ 300 lines, a reference doc ≤ 800.** `state` (HANDOFF,
+  the archive) is unbudgeted, because an archive grows by design. Over budget means reference content is
+  leaking in — move it to the doc that owns it, and if that doc is full, **split it into a spine plus
+  children with a *Where each section lives* table**, as `PLAN-SCALE.md` and `PLAN-PERF.md` do. § numbers
+  survive a split: `PLAN-PERF` §7g still means §7g, and the spine says which file holds it.
+
+Exceptions live in `tools/docs_gate.exempt`, four columns, and **the fourth is a reason someone can
+check**. Read the existing five before adding a sixth; each is a place where a rule and a standing
+convention disagree.
 
 ## Read the reference before you write — this is the expensive one
 
@@ -176,7 +204,7 @@ Four things there that will otherwise cost you a day each:
   **`expose` pins the store read-only and loft then cannot ITERATE it** (reads are fine — bracket the walk
   in `release`/`expose`), and **`expose` is O(collection) per call**, so calling it per frame is not
   viable. Both filed in `docs/loft-feedback.md`.
-- **The viewport filter is exact, and the obvious version is a bug** (`PLAN-PERF` §7g). Features are keyed
+- **The viewport filter is exact, and the obvious version is a bug** (`docs/view-path-bridge.md` §7g). Features are keyed
   by their FIRST VERTEX and never clipped, overhanging their cell by up to 16 cells — an `ox`/`oy` screen
   provably drops features (measured: 54 of 33 481). `PTile` therefore carries its own sealed feature
   extent, and a viewport reads **6% of the tiles**. Re-run `tools/tile_overhang.loft` after any tile
@@ -189,7 +217,7 @@ Four things there that will otherwise cost you a day each:
   its spread is not a measurement** (sibling builds put this box at load 25 and produced a fake
   regression — check `uptime`), and **a corpus average is not a claim about a specific interaction**
   (step 22's first gate won on aggregate and made the app's own sketch 1.7× slower; that sketch is now in
-  the corpus). `PLAN-PERF` §7e/§7h are the write-ups.
+  the corpus). `PLAN-PERF` §7e and `docs/cold-match-cost.md` §7h are the write-ups.
 - **The invariant to design against:** *every interaction does work proportional to what CHANGED, never
   to the size of the data. Never do everything again; build from what you have.* Every measured cost is
   one violation of it.

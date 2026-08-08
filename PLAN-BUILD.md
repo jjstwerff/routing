@@ -1,6 +1,8 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-BUILD — the new build: loft-wasm compute + canvas render, from two stores
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-08 · **Last verified:** 2026-07-08 · **Owns:** the standalone build: how the site and its stores are produced
+
 The integrating design for the rebuilt app. It ties together **PLAN-STORE** (the two binary stores),
 **PLAN-MAP** (the canvas renderer), and **PLAN-EDIT** (the rough-sketch primitives), and adds the piece
 that closes the loop: **loft computes the matched route and hands it to JS to draw.** This restores the

@@ -1,0 +1,127 @@
+// Copyright (c) 2026 Jurjen Stellingwerff
+// SPDX-License-Identifier: LGPL-3.0-or-later
+//
+// gen-names-index — build the searchable NAME INDEX from a names store.
+//
+// The names store is read WHOLE on the first search: 63.5 MB, 21.4 MB gzipped, and the ceiling
+// `HANDOFF` §1 item 3 records. This builds the three-collection index that replaces it, split by how
+// each part is READ (`basemap.loft`, `docs/name-search-index.md` §3d):
+//
+//   <out>.nxwords.store   trie<NxWord[w]>    shipped whole   — a trie cannot page, and does not need to
+//   <out>.nxposts.store   sorted<NxPost[wid]> ONE range read      — store_load_range over the interval
+//   <out>.nxents.store    hash<NxEntry[id]>   paged by id       — store_load_keys, the DISPLAYED ids only
+//
+//   loft --native-release --lib lib tools/gen-names-index.loft <names.store> <out-prefix>
+//
+// ⚠ It reads the names store and writes three NEW files; it never binds the input. Regenerating is
+// always safe, and the output is a pure function of the input, so a mismatch is a real defect.
+#cwd
+
+use basemap::(NameRec, NxWord, NxPost, NxEntry, nx_pack);
+
+// Is `c` a word boundary? The SAME three characters `name_score` treats as a word start, because a
+// tier-1 match is defined by them — a fourth character here would index words the scan never scores.
+fn is_sep(c: text) -> boolean { c == " " || c == "-" || c == "'" }
+
+// Split `fold` into words and either REGISTER each (pass 1) or post it (pass 3).
+//
+// One function for both passes so the two can never disagree about what a word is — a split that
+// differs between them would silently drop postings for the words only one pass sees.
+fn each_word(fold: text, words: trie<NxWord[w]>, posts: sorted<NxPost[wid]>,
+             r: NameRec, posting: boolean, npost: &integer) {
+  flen = fold.size();
+  start = 0;
+  j = 0;
+  while j <= flen {
+    atend = j == flen;
+    brk = atend;
+    if !atend { brk = is_sep(fold[j..(j + 1)]); }
+    if brk {
+      if j > start {
+        piece = fold[start..j];
+        first = start == 0;
+        whole = first && j == flen;      // the fold IS this one word
+        have = words[piece];
+        if !posting {
+          if have == null { words += [NxWord { w: piece, wid: 0 }]; }
+        } else if have != null {
+          slot = posts[have.wid];
+          if slot == null {
+            posts += [NxPost { wid: have.wid, p: [], la: [], lo: [] }];
+            slot = posts[have.wid];
+          }
+          if slot != null {
+            slot.p += [nx_pack(r.id, r.rank as integer, first, whole)];
+            slot.la += [r.lat];
+            slot.lo += [r.lon];
+            npost += 1;
+          }
+        }
+      }
+      start = j + 1;
+    }
+    j += 1;
+  }
+}
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "";
+  out = a[1] ?? "";
+  if src == "" || out == "" { println("usage: gen-names-index.loft <names.store> <out-prefix>"); return; }
+
+  names: hash<NameRec[id]> = [];
+  if !store_load(names, src) { println("ERR store_load failed: {src}"); return; }
+  total = names.len();
+  println("names: {total} records");
+
+  words: trie<NxWord[w]> = [];
+  posts: sorted<NxPost[wid]> = [];
+  ents:  hash<NxEntry[id]> = [];
+  npost = 0;
+  skipped = 0;
+
+  // ⚠ WALKED BY INDEX, never `for r in names`. Hash iteration yields COPIES, and a NameRec copy copies
+  // its two `text` fields — the C86 cliff that cost a country build 12 minutes (`docs/loft-feedback.md`,
+  // 2026-08-03). `names[i]` is a live view.
+  //
+  // THREE PASSES, and the middle one is the whole reason this design works. See `assign` below.
+  i = 0;
+  while i < total {
+    r = names[i];
+    if r == null { i += 1; continue; }
+    fold = r.fold;
+    if fold == "" { skipped += 1; i += 1; continue; }
+    ents += [NxEntry { id: r.id, name: r.name, lat: r.lat, lon: r.lon, kind: r.kind, rank: r.rank }];
+    each_word(fold, words, posts, r, false, npost);
+    i += 1;
+  }
+  println("pass 1: {words.len()} distinct words · {ents.len()} entries · {skipped} folds skipped");
+
+  // ⚠ PASS 2 — `wid` IS ASSIGNED IN KEY ORDER, AND THAT IS THE DESIGN.
+  //
+  // Assigning ids in first-encounter order costs nothing to write and makes the index unusable: a
+  // prefix like `kerk` matches 459 words, whose postings would then be 459 unrelated keys and 459
+  // range reads (~45 ms each live). Walking the trie in KEY order instead makes every prefix a
+  // CONTIGUOUS wid interval, so the same query is one interval — `[lo..hi]` — that a reader can fetch
+  // as a single span. The trie is what makes this available: its iteration IS byte order, at no cost.
+  wid = 0;
+  for w in words { w.wid = wid; wid += 1; }
+  println("pass 2: wid 0..{wid - 1} assigned in KEY order");
+
+  // Pass 3: now that a word knows its wid, the postings can be built against it.
+  i = 0;
+  while i < total {
+    r2 = names[i];
+    if r2 == null { i += 1; continue; }
+    f2 = r2.fold;
+    if f2 != "" { each_word(f2, words, posts, r2, true, npost); }
+    i += 1;
+  }
+
+  println("index: {words.len()} words · {npost} postings · {ents.len()} entries");
+  w_ok = store_persist_bind(words, "{out}.nxwords.store");
+  p_ok = store_persist_bind(posts, "{out}.nxposts.store");
+  e_ok = store_persist_bind(ents,  "{out}.nxents.store");
+  println("persist words={w_ok} posts={p_ok} entries={e_ok}");
+}

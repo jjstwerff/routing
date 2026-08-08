@@ -1,5 +1,7 @@
 # loft feedback from the `routing` consumer
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-06 · **Owns:** what loft's formal definition owes us — the consumer's half, filed upstream
+
 **Date:** 2026-07-01 · **loft:** 2026.6.0 (git `e7c0f17b`) · **libs:** `loft-libs-net/web` 0.1.1 (local) / 0.2.0 (registry)
 **Last updated:** 2026-08-03 — see the dated sections at the bottom; the CURRENT upstream asks are
 consolidated in *"2026-07-03 — remaining upstream blockers"*.
@@ -2191,3 +2193,133 @@ like a phone-sized memory cost. Timed at CPU 1× and 4× with the pages prefetch
 0.92×** the wall time of `store_load_keys` — slightly FASTER, with identical footprints, and the
 amplification does not grow with the throttle. The extra reads are cheap; the field-at-a-time relocate is
 not.
+
+## 2026-08-07 — a text-keyed `spatial` is accepted, and then every point lookup answers NULL (loft#799)
+
+Found while asking whether loft exposes a prefix-capable collection for the name-search index
+(`docs/name-search-index.md` §2). ⚠ **Two binaries both calling themselves 2026.8.0** — md5
+`759a4172…` (2026-08-06 18:46) and `51e15f8a…` (2026-08-07 13:35) — and the finding CHANGED between
+them, so it is anchored to the second.
+
+`spatial<T[k]>` is documented as interleaving 1–3 **coordinate** axes into a Morton key. Declared with a
+single `text` key it compiles anyway, on both binaries:
+
+```loft
+struct Word { const w: text, const n: integer }
+words: spatial<Word[w]> = [];
+```
+
+**On `51e15f8a…` the range is now correctly refused**, with a message that teaches:
+
+```
+error: a `spatial` range is a COORDINATE slice, not a scalar one — write `s[(x1, y1)..(x2, y2)]`
+       (the bounding box), or iterate the whole collection with `for x in s`
+```
+
+That is a real improvement over `759a4172…`, where `words["kerk".."kerl"]` compiled and returned a wrong
+count. **But the declaration is still accepted, and the key still is not a key.** Five words inserted,
+identical on `--interpret` and `--native`:
+
+```
+#X len=5                                               ← correct, the records are there
+#X point: NULL                                         ← words["kerklaan"], which IS present
+#X order: kerkstraat kerklaan lonneker kerf kerkweg    ← INSERTION order, not key order
+```
+
+**The half that is left is the worse half to leave.** A refused range is a compile error the author
+fixes in seconds; a point lookup returning NULL reads as *"not found"* and is indistinguishable from an
+empty collection at the call site. Ours only surfaced because the probe asserted on a key it had just
+inserted.
+
+**Ask:** reject a non-coordinate key field at DECLARATION, the same way the range is now rejected, and
+with the same shape of message. This is the per-kind dispatch omission `DATABASE.md` warns about under
+*"Adding or changing a collection kind"* — one that "does not read as a missing feature" — the way
+loft#720 was three at once.
+
+**Not asking for a byte-string oracle.** An earlier draft did, and the same binary refuted the need:
+`07_reflect.loft`'s `CollectionKind` states that *"a `radix` is a Morton-order structure that no SQL
+shape means the same thing as"*, while `sorted`/`ordered`/`index` "answer a range in their declared
+direction". `sorted<Word[w]>` with `c["kerk".."kerl"]` returns exactly the prefix-matching words on both
+backends and both binaries — **the primitive we needed already exists and is correctly kinded.** So this
+is a soundness report, not a feature request.
+
+**Repro:** `tools/loft_repro/spatial_text_key.loft` — five `+=` inserts, one subscript, one `for`. No
+store, no data, and it carries the `sorted` control in the same file so a fix can be checked against a
+working kind rather than against a description. **Filed as
+[loft#799](https://github.com/loft-lang/loft/issues/799)** — `bug` · `sev:medium` · `area:parser` ·
+`both-backends` · `wa:clean` (the workaround is `sorted`, and it is the right answer anyway).
+
+## 2026-08-07 — `trie<T[k]>` lands and answers the name index; a refused lazy binding does not (loft#802)
+
+⚠ **Third binary of the day, all three saying 2026.8.0** — `d83e8f5d…` (22:56) after `51e15f8a…`
+(13:35) and `759a4172…` (2026-08-06). It carries `trie<T[k]>` and the fix for loft#799, filed hours
+earlier. Both were verified here rather than read.
+
+**loft#799 is fixed, and the diagnostic names the successor** — this is the shape to ask for:
+
+```
+error: a spatial index interleaves its axes into a Morton code, which needs numbers, and `w` is
+       text — use `trie<Word[w]>`, which keys on text and answers a prefix
+```
+
+**`trie<T[k]>` is the kind this consumer was hand-rolling**, and it does the job on both backends
+(`tools/trie_probe.loft`, with a `sorted` control in the same file): exact lookup; `t["kerkl"]` → NULL
+rather than a neighbour; byte-order iteration; `t["kerk"..]` with **no successor string**; capped
+`t["kerk"..:8]`; `t["zzz"..]` empty. Reflection names it (`collection=KeyedTrie`, `key w @8`). At real
+scale (`tools/trie_vocab.loft`, 518 804 name records): **220 032 distinct words built in 2.24 s**,
+persisted 23.4 MB raw / **5.9 MB gzipped**, reloaded in 42 ms with counts and key order intact, prefix
+queries **14 µs – 2.1 ms**.
+
+⚠ **The capped slice is the part that deletes a bug class, not just code.** A `sorted` prefix query
+needs the caller to construct the successor `"kerl"`; getting that wrong is a *silently wrong answer*.
+`t[a..b]` being refused — and naming `sorted` as the kind that answers an interval — is the right call.
+
+**What it cannot do is page**, and that is worth writing down because it decided our design.
+`store_load_key` wants an integer-keyed hash, `store_bind_lazy` a hash, `store_lazy_range` a
+`sorted`/`index`. A trie is a **whole-image** structure: for us that is 21.4 MB → 5.9 MB gzipped, a
+3.6× cut for nearly no work, but not the 0.1–181 kB per query a range-read index gives. Both stay on
+the table; they are different points on the curve.
+
+**[loft#802] A refused lazy binding is invisible to the program.** `store_bind_lazy` answered `true`
+for the trie source, every lookup returned `null`, the refusal went to **stderr only**, and
+`store_lazy_error` returned `""` — its documented meaning being *reachable, genuinely no such key* —
+with `store_lazy_faults` at **0**. The control in the same run (a `hash` against an unreachable URL)
+reports the connection error and 1 fault, so the API works; it simply picks the wrong side of the tie
+for a refused kind. Asked for `store_bind_lazy` to return `false` when the root kind cannot be served —
+it is known at bind time — or failing that for the refusal to reach `store_lazy_error`.
+
+## 2026-08-07 (late) — loft#799 and loft#802 both FIXED the same day, and the controls were re-run too
+
+⚠ **Fourth binary of the day** — `ac54cc26…` (23:45), after `d83e8f5d…` (22:56), `51e15f8a…` (13:35)
+and `759a4172…` (08-06). Still all `2026.8.0`. Both issues this consumer filed today are fixed in it.
+⚠ **Neither fix's commit is in `../loft` or `../loft2` HEAD**, so this is anchored to the *installed
+binary*, which is what we run — not to a commit we could cite.
+
+**loft#799 — fixed, and better than asked.** The request was to reject a text key on `spatial` at the
+declaration. What shipped also names the kind that does the job:
+
+```
+error: a spatial index interleaves its axes into a Morton code, which needs numbers, and `w` is
+       text — use `trie<Word[w]>`, which keys on text and answers a prefix
+```
+
+That second clause is the valuable half. We reached for `spatial` only because nothing pointed
+anywhere else; a diagnostic that redirects costs the next consumer a minute instead of a day.
+
+**loft#802 — fixed at the BIND, which was the stronger of the two remedies offered.**
+
+```
+store_bind_lazy: refusing `…` — a lazily-bound `.store` image is read a page at a time, which only a
+`hash` supports, and `trie<Word[w]>` is not one — read it whole with `store_load` … 
+store_bind_lazy   -> false
+```
+
+⚠ **And the control was re-run, which is the part worth recording.** A fix that silenced the symptom
+by refusing more broadly would look identical in the failing case. It does not: a `hash` bound to an
+unreachable URL still returns `true`, then reports the connection error with `faults` = 1. A *kind*
+mismatch is knowable at bind time; reachability is not; the two are now reported at different moments.
+**Re-running the passing control is how you tell a fix from a suppression.**
+
+**The meta-finding, and it is the one to carry forward.** This document's own probes moved the
+compiler twice in one day. A consumer doc that describes a language surface is describing a moving
+target, and `--version` will not warn you: re-probe §2 against the binary in your hand.

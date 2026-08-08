@@ -1,5 +1,7 @@
 # Route Planner — Basic Design
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the north star — what the product is and who it is for
+
 Working title: **routing** (lives at `/home/jurjen/workspace/routing`, a sibling consumer of
 the loft language at `../loft`).
 

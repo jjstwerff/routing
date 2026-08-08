@@ -1,3 +1,4 @@
+<!-- Kind: guide · Status: current · Last verified: 2026-07-07 · Owns: the conduct standard this project adopts -->
 # Code of Conduct
 
 This project adopts the [Contributor Covenant](https://www.contributor-covenant.org/), version 2.1.

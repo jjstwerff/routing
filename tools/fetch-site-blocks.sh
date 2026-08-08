@@ -35,7 +35,13 @@ mapfile -t rows < <(python3 - "$idx" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for b in d.get("blocks", []):
-    for st in (b.get("roads"), b.get("base"), b.get("names")):
+    # The search index rides along with the same verification as everything else — it is optional
+    # (`search` is null for a region built before it existed), but where it IS named it must arrive
+    # intact: a truncated postings store answers a prefix with silence, not an error.
+    parts = [b.get("roads"), b.get("base"), b.get("names")]
+    se = b.get("search") or {}
+    parts += [se.get("nxwords"), se.get("nxposts"), se.get("nxents")]
+    for st in parts:
         if not st or not st.get("url"): continue
         if "://" in st["url"]: continue
         print(f'{st["url"].rsplit("/",1)[-1]}\t{st.get("bytes",0)}\t{st.get("sha256","")}')

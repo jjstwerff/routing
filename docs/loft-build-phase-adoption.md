@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Adopting loft's build phase (@PLN100) for routing
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-08 · **Last verified:** 2026-07-08 · **Owns:** whether routing should adopt loft's build phases, and what it would buy
+
 **Status:** the **GitHub Pages build is now automated via `loft build`** (implemented + validated). @PLN100
 has since been installed — the **installed `/usr/local/bin/loft` now has the build phase**, so `loft build`
 works locally with plain `loft` (validated: `loft build` → `_site/index.html`, incremental). @PLN100 has now

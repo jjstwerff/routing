@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Hosting the blocks — what it costs, and what the bill is actually made of
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-04 · **Owns:** what each hosting option costs — read before any hosting decision
+
 **Answers `PLAN-SCALE` §9 item 6 (*R2 vs B2: Range + CORS behaviour and egress cost*) and prices §6h
 breakage 2 (*one Pages repo per region does not scale to ~58 repos*).** Prices checked 2026-08-04
 against the vendors' own pages; re-check before committing money, because this is the one input here

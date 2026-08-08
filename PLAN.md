@@ -1,5 +1,7 @@
 # Route Planner — Implementation Plan
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-03 · **Last verified:** 2026-07-03 · **Owns:** how this started: the server-era plan, superseded in almost every part, kept for the reasoning
+
 Concrete, small, independently-checkable steps toward the design in **[DESIGN.md](DESIGN.md)**.
 This is the *how* and *in what order*; DESIGN.md stays the *what* and *why*. Section references
 like (§5) point back into DESIGN.md.

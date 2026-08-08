@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Browser store app (PLAN-BUILD)
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-12 · **Last verified:** 2026-07-12 · **Owns:** the browser shell: what it fetches, what it renders, and how to run it
+
 The **standalone, no-server** base-map + routing app for the Enschede region. It fetches the two loft
 stores, runs the **loft-wasm kernel** for the visible viewport and the matched route, and renders on our
 **own HTML5 canvas** — terrain, buildings, roads (by class), water/barrier lines, POIs, place/street

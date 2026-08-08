@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # Plan template
 
+**Kind:** guide · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** the skeleton every new plan copies
+
 Copy this file to `plans/<N>-<slug>/README.md`, where **`<N>` is the `jjstwerff/routing` issue number**
 — claimed *before* the directory exists, never derived from the local tree. Delete the guidance blocks
 (marked *(delete)*) as you fill it in. Conventions and the lightest-workflow table:
@@ -14,8 +16,16 @@ body, leave it in the issue and skip the directory.
 
 # `<N>` — `<Plan title>`
 
+**Kind:** plan · **Status:** current · **Last verified:** `<YYYY-MM-DD>` · **Owns:** `<issue #N — one line>`
+
 **Issue:** [`jjstwerff/routing#<N>`](https://github.com/jjstwerff/routing/issues/<N>) ·
 **Value:** `<S|R|G|F|U|C|Q|N>` · **Effort:** `<XS|S|M|MH|H|VH>`
+
+*(delete)* The header line above is **required and gated** — `tools/docs_gate.sh` fails without it.
+`Status` is `current`, `stale — unverified since <date>` or `superseded by <path>`; `Last verified`
+means someone re-checked the claims, not that the file was edited. See `docs/doc-structure-design.md`
+§4. A plan README is also budgeted at **300 lines** (rule 5): past that, reference content is leaking
+in — move it to the doc that owns it.
 
 ## Status (REQUIRED)
 

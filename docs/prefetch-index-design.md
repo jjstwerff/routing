@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # The prefetch index — turning 764 round trips into one batch
 
+**Kind:** reference · **Status:** current · **Last verified:** 2026-08-04 · **Owns:** the page index that turns a paged read from 764 round trips into one batch
+
 **Status: BUILT, PUBLISHED and LIVE — §11 is the state; §0–§10 are how it was reached; §12 is the
 measurement that caught the harness lying and cut the claim from 2.29× to 1.53×.**
 

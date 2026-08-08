@@ -127,6 +127,22 @@ if (existsSync(blocks)) {
         for (const st of [b.roads, b.base, b.names]) {
           if (st && st.url && !/^[a-z]+:\/\//i.test(st.url)) wanted.add(st.url.split('/').pop());
         }
+        // THE SEARCH INDEX IS DERIVED FROM THE NAMES URL, NOT NAMED SEPARATELY — the same rule the
+        // kernel uses to find it (`docs/name-search-index.md` §8d): `x.names.store` implies
+        // `x.nx{words,posts,ents}.store` beside it. Deriving here rather than adding three index
+        // entries is what lets the index ship without republishing `coverage.json`, and keeps ONE
+        // place deciding what the three files are called — a second spelling in JSON could disagree
+        // with the kernel's, and the app would fall back to the scan with no error anywhere.
+        //
+        // ⚠ ABSENCE IS NOT AN ERROR. A region with no index simply has no such files to link; the app
+        // fetches the vocabulary once, fails, and scans as it always did. So this widens what MAY be
+        // copied and never requires anything.
+        const nm = b.names && b.names.url && !/^[a-z]+:\/\//i.test(b.names.url)
+          ? b.names.url.split('/').pop() : '';
+        if (nm.endsWith('.names.store')) {
+          const stem = nm.slice(0, -'.names.store'.length);
+          for (const part of ['nxwords', 'nxposts', 'nxents']) wanted.add(`${stem}.${part}.store`);
+        }
       }
     } catch { wanted = null; }   // an unreadable index must not silently ship nothing
   }

@@ -1,5 +1,7 @@
 # HANDOFF — resume state
 
+**Kind:** state · **Status:** current · **Last verified:** 2026-08-07 · **Owns:** where things stand and how to resume; §4 is the index every other doc is found through
+
 Single entry point for picking this up on another machine. **Plan of record:** `DESIGN.md` (north-star)
 + the `PLAN-*.md` docs; this file is the *status + how-to-resume* layer on top, and it is deliberately
 short. The dated rungs it used to carry live in **`docs/handoff-archive.md`** — read those for the
@@ -7,30 +9,67 @@ account behind a rule, never for where things stand.
 
 ---
 
-## 0. Where things stand (2026-08-04, late)
+## 0. Where things stand (2026-08-07)
 
-**THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out overnight when
-PR #55 merged `area-holes` into `main` (`1d1b199`). Nothing is staged and nothing is pending.
+**THE BENELUX IS LIVE.** `v2026-08-03d` — 10 blocks over three countries — went out when PR #55 merged
+`area-holes` into `main` (`1d1b199`). **Nothing is staged and nothing is pending on the DATA**, and
+nothing below touches it: every branch since has been app, instrument or upstream work.
 
-⚠ **THIRTEEN COMMITS SIT UNMERGED ON `browser-owns-the-browser`, and none of them touch the data.** Three
-strands, in the order they were done:
+**Everything the old §0 warned was unmerged is IN.** `browser-owns-the-browser` merged;
+`view-ring-prefetch` is deleted. The browser reads the one v3 coverage index, the ring plans its cells,
+the retention cap follows the device — all live, all gated (PRs #59, #65–#69).
 
-1. **Browser/test-process hygiene** (`8f55a06`, `f5ab0c2`, `67bb7c8`). Every gate's browser is owned by
-   its driver over a CDP **pipe**, so it cannot outlive the process that started it — no traps, no kill
-   logic, no platform-specific code. `browser_leak_gate` proves it by SIGKILLing an owner and re-taking
-   the profile. The loft test server got the same treatment (`exec` + a bounded `LOFT_TIMEOUT`), and
-   `fuser -k` is gone from all seven scripts. **Earned:** five leaked browser trees, 50 processes,
-   1.7 GB, the oldest 2 days 18 h old, on a box whose swap was full — and 24 leaked loft servers, all
-   mine, from the old broken `kill`.
-2. **`be-mid` moved to its own Pages repo** (`96c9e95`, merged) — site 86% → **70%**. And the 62-block
-   index cap is gone AND gated at 70 blocks (`2a52ca0`) — it had been fixed in code a day earlier with
-   no test.
-3. **The paged read is latency-bound, and a page index fixes it** — `docs/prefetch-index-design.md`.
-   **The browser reads the one coverage index now** (v3: a quadtree over every store, read by range), the
-   RING plans its pages too, and both halves are gated — `browser/page-index.test.mjs` in `make test` for
-   the format, `tools/prefetch_gate.sh` for the wired path. **PUBLISHED and LIVE** — `coverage.pagesx` is
-   on `data-v2026-08-03d` and merged (PR #59). **1.53× to the view on a real link**, and the gate asserts
-   the map as well as the clock. ⚠ The 2.29× it first shipped with was a harness artefact — §1 item 6b.
+**`device-tier` LANDED as PR #71** (`36d635f`, 2026-08-07 05:40Z) — 15 commits, 30 files, +1488/−80,
+the app's read strategy plus the instruments, again no data. Three strands:
+
+1. **The tier is wired — declared first, corrected by what the machine MEASURES.**
+   `hardwareConcurrency` / `jsHeapSizeLimit` / `userAgentData.mobile` / saveData choose a tier before the
+   first frame; the first measured view then corrects it, because a declared signal is a claim about the
+   hardware and features-per-ms is a measurement of *this* page on *this* machine. One tier moves four
+   knobs together — `full` 128 MB/detail 0/pad 0.15/ring 8, `reduced` 64/1/0.08/4, `minimal` 24/2/0.04/0
+   — and `window.__deviceTier` pins it, which is the only reason the gates below are reproducible.
+2. **A SAVED ROUTE IS WALKABLE WITH THE RADIO OFF** — 100% of the online feature count, every step,
+   after a reload with the network down (`tools/offline_pack_gate.sh`). The pack asks the app's OWN
+   `boxAt`/`storesFor`/`pagesFor`, so there is no second notion of which store answers where. §2 has the
+   five things that all had to be true, and the one-line `httpTotal` bug that cost the most.
+3. **Two gates stopped costing minutes, and CI stopped reporting one line.** The trip gate 495 s → 10 s
+   (it was measuring the ring, which is not what it tests); `map_render_gate` 91 s → 59 s (50.5 s of it
+   was 30 FIXED sleeps — §2). CI now runs all offline gates and reports each with a duration, instead of
+   stopping at the first failure.
+
+**THE DOCS ARE GATED NOW — `make test` fails on a doc.** `docs/doc-structure-design.md` steps 1–4 shipped
+2026-08-07: §4 below is complete by construction, all **38** docs carry a
+`Kind · Status · Last verified · Owns` header, and `tools/docs_gate.sh` (+ a 14-case
+`tools/docs_gate_selftest.sh`, 4.6 s for both) checks orphans, dangling pointers, headers, declared
+staleness and budgets. **Nothing was renamed**, so no cross-reference moved. ⚠ **`Last verified` means
+someone re-checked the CLAIMS** — never bump it for an edit; `Status: stale — unverified since <date>`
+always passes, and the gate never fails for age alone. Six docs are marked stale today.
+
+**AND THE BUDGETS NOW FAIL, not warn (step 7).** `PLAN-SCALE.md` (2 504 lines) and `PLAN-PERF.md`
+(2 231) are each a **spine plus four children**, every file under 600 — see each one's *Where each
+section lives* table. **§ numbers did NOT change**: `PLAN-PERF` §7g still means §7g, the spine says which
+file holds it, and no citation anywhere was invalidated. Nothing was rewritten; sections moved whole, and
+the audit was *every non-blank original line must still exist somewhere* — 0 lost of 4 735. 38 docs → 46.
+Steps 5–6 (the `docs/` subdirectories, one-per-session migration) stay open and unscheduled — and step 5
+has a cost the design did not have: `docs/loft-feedback.md` is cited by path from loft-lang/loft issues,
+which nothing here can rewrite.
+
+**The upstream arc closed.** loft#782/#783/#784/#785 are fixed and in; **#787 is verified closed** —
+the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted; the committed
+`browser/store-kernel.wasm` is the runtime that does not triple a viewport's bytes (sources
+`9528328a…`).
+
+**⚠ AND A NEW ONE OPENED AND CLOSED THE SAME DAY — loft gained `trie<T[k]>`, and the installed binary
+moved FOUR TIMES on 2026-08-07, every one of them calling itself `2026.8.0`.**
+`759a4172…` (08-06 18:46) → `51e15f8a…` (13:35) → `d83e8f5d…` (22:56) → `ac54cc26…` (23:45). Two of
+those moves were **caused by probes in this repo**: loft#799 (a text-keyed `spatial` was accepted, then
+answered every lookup NULL) and loft#802 (a refused `store_bind_lazy` was invisible to the program)
+were filed and fixed within hours, each verified here against the installed binary rather than a
+commit — neither fix is in `../loft` or `../loft2` HEAD. **`trie<T[k]>` is the collection this repo's
+name-search design was hand-rolling**: one text key, exact lookup, byte order, and a prefix slice
+`t["kerk"..]` / `t["kerk"..:8]` that needs no successor string. Evidence and the numbers:
+`docs/name-search-index.md`; runnable probes `tools/trie_probe.loft` (self-contained),
+`tools/trie_vocab.loft`, `tools/trie_roundtrip.loft`, `tools/trie_paging.loft`.
 
 **READ `docs/hosting-cost-model.md` BEFORE ANY HOSTING DECISION.** Its headline is not about Western
 Europe: ⚠ **GitHub Pages' 100 GB/month bandwidth caps the app at ~1 000 sessions a month**, and that
@@ -58,7 +97,7 @@ two and two data repos of its own. It draws from the overview below z12 and `be-
 above that it is roads on a plain background — a state `store-app.mjs` handles as a product, not a
 fallback. Luxembourg's base is 70.6 MB and ships, so it has a complete map. **Asymmetric on purpose.**
 
-**The site is at 664.9 MB of 950 (70%), and the headroom is real again.** It was live at 814.2 MB (86%),
+**The site is at 673.8 MB of 950 (71%) — re-measured 2026-08-07 on a rebuilt `_site`.** It was live at 814.2 MB (86%),
 where `site_size_gate`'s own margin note said the next region added is what crosses it. **`be-mid`
 (149.3 MB) now serves from its own Pages repo**, `jjstwerff.github.io/routing-data-be-mid`, as `nl-mid`
 and the four region base maps already did — same origin as the app, a different PATH, so no CORS is in
@@ -76,113 +115,6 @@ data it was built against.
 
 ---
 
-## 0b. How Benelux was built, and five upstream findings
-
-**Landed as PR #55** (`build-test` 4m23s, `deploy` 24s), on top of `data-v2026-08-03d` — 23 assets,
-784 MB, each verified by a ranged GET before the index pointed anywhere.
-
-⚠ **Only 784 MB was uploaded, not 3.91 GB.** The four NL base maps and `nl-mid` (3.12 GB) are unchanged
-and already served by their own Pages repos. `publish-release.sh` would have taken all of them — stage
-the referenced set and point `BLOCKS_OUT` at it, as HANDOFF has warned since §3.
-
-### The data, in the order it was built
-
-1. **Derived blocks** so Belgium is not blank below z14 — `overview` (renamed from `nl-overview`,
-   46.4 MB, spans the whole coverage), `be-mid` 149.3 MB, `lu-mid` 17.0 MB.
-2. **The border trim** (@51 phase C) — `tools/trim-borders.sh`. 6 blocks, 23 299 cells, disjoint.
-3. **Heights** for BE/LU, then **names**: `coverage.names.store`, 63.5 MB, 518 804 records.
-4. **Published** as `v2026-08-03d`.
-
-### Five things that were measured and came out the OPPOSITE way
-
-Each cost a wrong claim that was already written down, about to be, or already filed upstream:
-
-* **Binding a store FIRST is 3–5× CHEAPER, not 4.5× worse.** @51 said the reverse; it was measured
-  against loft#746 on a binary that no longer exists. `tools/bind_order_gate.sh` is the re-runnable form.
-  A bound store's pages are evictable — bind-first completes under a cgroup cap where bind-last is
-  OOM-killed. **`PLAN-SCALE` §6e's 130–270 GB is a bind-LAST number.**
-* **"Key order changes the file 2.3×" was RETRACTED.** A store's file is its CAPACITY, on a 7/3 ladder
-  (loft#752): 250k, 300k and 400k roads all persist to *exactly* 91 419 400 bytes. Real effect after
-  `store_reclaim` is ~1.5×. **"Stream in cell order" still stands** — @51 came one commit from recording
-  the opposite.
-* **z13 elevation is not worth adopting.** Belgium and Luxembourg baked both ways: mean |Δ| **1.15 m and
-  1.41 m**, and the RANGE is identical (568 m). Luxembourg is the hilliest ground in the dataset, so the
-  "sample by terrain, not by country" hypothesis is refuted too. `PLAN-RESTORE` §5 decision 3 is answered.
-* **The 0.8% of unsampled steps was a PADDING bug, not resolution.** `bake-heights` pads 0.35° now
-  (`TERRAIN_PAD`) and z12 fills 100%.
-* **loft#757, which WE filed, was refuted — the refusal we called a bug was the diagnosis.** A field bind
-  writes a container-rooted file *by design*; what we asked for would have made the load SUCCEED on
-  mismatched bytes. The rule survives, the reason did not (§2), and `loft_bug_gate` guards a CONTRACT now
-  instead of watching a defect.
-
-### The upstream ledger
-
-| | |
-|---|---|
-| **loft#739** | ✅ fixed; **both workarounds deleted**. `loft_bug_gate` FAILS if either returns |
-| **loft#747** | our finding refuted by the maintainer, ours retracted; the capability is there |
-| **loft#752** | filed by the maintainer — the capacity ladder should not be visible |
-| **loft#757** | **filed by us, then REFUTED and closed** — the sidecar is honest; the rule survives (§2) |
-| **loft#762** | **filed by us, fixed same day** — and our diagnosis was corrected on the way (§0c) |
-
-### New tools, all gated
-
-`bind_order_gate`+`probe` · `trim_cells` · `trim-borders.sh` · `merge_blocks` · `reseat_schema` ·
-`height_diff` · `find_probe` · `loft_schema_probe` · `derived_scope_gate` (in `make test`) ·
-`seam_route_gate` (@51 D).
-
----
-
-## 0c. The session after it: panning, and three gates that were measuring a moving app
-
-**On `view-ring-prefetch`, 4 commits, pushed and UNMERGED.** Nothing here touches the data or the live
-site; it is the app's read strategy plus the instruments that broke when the app grew background work.
-
-> ⚠ **TWO branches are unmerged, and this file is on one of them.** `handoff-benelux-live` carries THIS
-> text; `view-ring-prefetch` carries the code it describes. **Land `view-ring-prefetch` first** — §0c is
-> written as though the ring is already in, so the other order leaves `main` describing code it does not
-> have. Until both land, the `HANDOFF.md` on `main` still says Benelux is staged and unmerged, which has
-> been false since PR #55. A session that resumes from `main` reads that first.
-
-**The view no longer makes the screen wait for four screens it cannot show.** It read `viewportBox(0.6)`
-— 2.2 × 2.2 screens, 4.84 screens of area — in ONE kernel call. Now it reads ~one screen, and a RING of
-eight screen-sized cells is paged AFTERWARDS (3 × 3 = 9 screens), which the first paint pays nothing for.
-Measured `CPU_THROTTLE=4`, n=3 a side, quiet box:
-
-| | baseline | ring |
-|---|---|---|
-| **view call** | 83 ms *(82–85)* | **50 ms** *(49–51)* — **1.66×**, and the freeze halves with it |
-| wasm working set | 532.9 MB | **531.0 MB** — nine screens PAGED is not nine screens RESIDENT |
-| match / matchWarm | 2306 / 382 ms | unchanged; spreads too wide to claim either way |
-
-Four things the ring needed, each found by measuring rather than by design — the ring is **chained, not
-fanned out** (KernelQueue cannot preempt a running job, so eight queued cells would put the user's next
-click behind eight screens of paging); the ring is **PROMOTED** when complete (the index is rebuilt over
-the whole 3 × 3 from resident tiles, no fetch, or the smaller read would make the app hold LESS than the
-old box and re-view more often); a **cell must never change the SOURCE** (a neighbour can be another
-block, and pulling a foreign store into a session whose layout store is exposed TRAPS); and the **store
-can move under the drawn map**, so the index's `storeBase` is compared and rebuilt only on a change.
-
-`runKernel` now serialises internally, which is a fix older than the ring: `resolveRun` is ONE slot, so a
-second call orphans the first promise. The queue guarded the APP's road; the ~20 `__perfHooks` probes
-bypass it deliberately, and a ring cell landing between a probe's `reset` and its `match` returned an
-empty route. Serialising at the root fixes all twenty instead of twenty call sites.
-
-**A sidecar is fetched once now, not once per command** — 15 fetches → 2 + 13 cached, which is fewer than
-main's 5. See §2 for what that count had been hiding.
-
-### loft#762, and being wrong in public
-
-We filed `for _ in <hash>` failing `--native` and narrowed it to *(bound store, discarded loop variable)*.
-**The store was incidental and the narrowing was wrong.** `_` is ONE variable per function: `_ = delete(p)`
-typed it `u8`, and `for _ in a` then assigned a `DbRef` to the same slot. The store appeared only because
-our repro used `delete` to set one up. Fixed the same day — the loop binding now gets its own `let mut
-var____1` inside the loop, and body reads of `_` resolve to it, so `_` stays readable. Verified here on
-both backends. **Two of our three upstream findings this week were corrected by the maintainer** (#757,
-#762); both times the report was useful and the *cause* we attached to it was not.
-
----
-
 ## 1. What is open
 
 **Benelux is deployed. Nothing is half-landed — what remains is headroom and one design decision.**
@@ -194,13 +126,56 @@ both backends. **Two of our three upstream findings this week were corrected by 
    plus the built site, so a stale `_site` keeps the moved block on disk and the gate reclassifies it into
    "app shell" instead of dropping it: it reported the same 814.2 MB total with the correct index.
 2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
-   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14. **This
-   is what item 1's headroom was bought for**, and at 70% there is now room to land the halves.
-3. ⚠ **The names store does not scale past this rung.** `coverage.names.store` is 63.5 MB read WHOLE on
-   first search; Western Europe extrapolates to ~500 MB. It is one store because `NAMES` is resolved once
-   at boot, `store_load_url_trusted` ADOPTS, and every store numbers records from 0 — a covering set is
-   not available without changing all three. Same ceiling shape as the overview. **Cost it in @51 phase E**
-   rather than discovering it at C4.
+   (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
+   **Re-measured 2026-08-07 on a freshly rebuilt `_site`: 673.8 MB of the 950 MB budget (71%), so the
+   headroom is 276.2 MB.** ⚠ That headroom is NOT what the halves need — they go to their own Pages
+   repos, the way `be-mid`, `nl-mid` and the four region base maps already do, so the binding constraint
+   is two more repos under the ~1 GB per-site cap, not this budget. The 63.5 MB `coverage.names.store`
+   IS on this budget, which is where item 3 and this one meet.
+3. ⚠ **The names store does not scale past this rung — MEASURED now, not extrapolated**
+   (`browser/cdp_names_cost.mjs`, 2026-08-07). `coverage.names.store` is 63.5 MB and the first `find`
+   pays for all of it: `wholeLoads [coverage.names.store x1]`, **`rangeReads +0`** — it arrives WHOLE,
+   never by range, which is the structural claim now confirmed rather than asserted.
+
+   ⚠ **The numbers first recorded here were 3× too high, and the error was the INSTRUMENT's.**
+   `cdp_names_cost.mjs` ran against `_site` behind `tools/range_server.py`, which sends no
+   `Content-Encoding`; GitHub Pages gzips the same store **3.0×**. So a throttled harness run carried
+   63.5 MB where the live link carries **21.4 MB**, and that was reported as the product's ceiling.
+   Measured against the live site with the fixed probe (`docs/name-search-index.md` §1a, §6):
+
+   | link | first `find` | second |
+   |---|---|---|
+   | localhost — decode only | **262 ms** *(201–900, n=5)* | 1–2 ms |
+   | **live site, this box** | **2 182 / 3 907 ms** — 21.41 MB gzip → 63.47 MB | 0–3 ms |
+   | 82 Mbps / 45 ms — the real link | ~~7 199 ms~~ → **~2 100 ms** | — |
+   | 10 Mbps / 80 ms — a phone | ~~49 893 ms~~ → **~17 000 ms** | — |
+
+   So it is **transfer-bound and linear in the store**: 262 ms of that is decode and the rest is wire.
+   The second search is a `names_at` hit at 1 ms, so the cost is entirely the first one. Western Europe
+   at ~500 MB is 7.9× this store: ~~57 s / 6.5 min~~ → **~17 s on the real link and ~2.3 min on a
+   phone**. ⚠ **Still a wall at WE — but this rung is not on fire**, and phase E must not be decided
+   against the 3× figure. Same family as `prefetch_gate`'s harness (§2): *an emulator generous with one
+   resource is not a slower reality, it is a different question.*
+
+   ✅ **But the app does NOT freeze** — 58–60 fps throughout, on the harness's slowest run and on the
+   live site alike, measured by counting animation frames across the call. That is the difference between
+   a slow search and a broken product, and it was worth knowing before costing a fix: this is a spinner,
+   not a hang. ⚠ A throttled harness run still exceeds the 30 s CDP call timeout every gate uses, which
+   is why `CDP_TIMEOUT_MS` is overridable now (default unchanged).
+
+   It is one store because `NAMES` is resolved once at boot, `store_load_url_trusted` ADOPTS, and every
+   store numbers records from 0 — a covering set is not available without changing all three. Same ceiling
+   shape as the overview. **It is now costed for @51 phase E: `docs/name-search-index.md`** — a ~7.3 MB
+   word-prefix index turns the 21.4 MB whole-store read into a 0.1–181 kB range read, byte-identical for
+   91.5% of queries and never wrong, with today's scan as the lossless fallback for the rest.
+
+   ⚠ **Two options now, and they are different points on the curve — not rival versions of one design.**
+   loft's new `trie<T[k]>` (§0) holds the whole vocabulary: **220 032 distinct words** (derived from the
+   store, not `strings`, which was 3.8% low), built in 2.2 s, persisted **5.9 MB gzipped**, reloaded in
+   42 ms, prefix queries 14 µs–2.1 ms. That is a **3.6× cut for almost no work** — but a **trie cannot
+   page** (`store_load_key` wants an integer-keyed hash, `store_bind_lazy` a hash, `store_lazy_range` a
+   `sorted`/`index`), so it reshapes the download rather than removing it. The range-read index is still
+   the only thing that removes it. They compose: **vocabulary whole, postings by range.**
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
    world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
@@ -226,9 +201,73 @@ both backends. **Two of our three upstream findings this week were corrected by 
    are not identical in work — that is the loose end in this A/B.
    **So the app no longer trips it, and the DEFECT IS NOT FIXED**: a page the index does not name still
    falls through to a real read (58 per view), and `nl-east.base` / `nl-mideast.base` have no index at all
-   — a camera over them takes the old path in full. **The next probe:** hold the work identical and vary
-   only the suspend COUNT (prefetch the view but not the ring, and the reverse), then symbolise
-   `wasm-function[531]` against a debug build. `browser/cdp_nl_live.mjs` prints the session state before
+   — a camera over them takes the old path in full.
+
+   ⚠ **THE NEXT PROBE IS BUILT AND RUN, AND THE TRAP NO LONGER REPRODUCES** (2026-08-07 —
+   `window.__prefetchScope` + `browser/cdp_trap_scope.mjs`). The knob scopes prefetching to the view or
+   the ring ALONE, so every kernel command, store and byte stays identical and only the suspend count
+   moves — which closes the loose end above, where the trapping arm also ran one more command.
+
+   | scope | prefetch hits | prefetched | misses | commands | result |
+   |---|---|---|---|---|---|
+   | `both` | 2 129 | 157.4 MB | 589 | 11 | passed |
+   | `view` | 1 231 | 88.9 MB | 1 487 | 11 | passed |
+   | `ring` | 1 574 | 116.1 MB | 479 | 11 | passed |
+   | **`none`** | **0** | 0.0 MB | 0 | 11 | **passed, 3/3** |
+
+   **0 traps in 9 runs**, over Amsterdam z14 AND over `nl-east` — the unindexed-base camera this item
+   names as still taking the old path in full — with suspends spanning 0 → 2 129. The `none` arm is the
+   configuration recorded above as trapping 3/3.
+
+   ⚠⚠ **AND THE SUSPEND HYPOTHESIS IS REFUTED. IT IS NOT THE SERIAL READ — IT IS A CROSS-ORIGIN STORE
+   THAT NEVER OPENS.** Chasing why `none` drew 0 features found the mechanism, and it is the trap §2
+   already documents:
+
+   * `scope=none` over `nl-midwest` reads the base store **2 588 times for 2 588 BYTES** — exactly one
+     byte per read, loft's open probe, repeating and never progressing. `rangeFailed=0`: nothing failed.
+   * that base store is not in `_site`. `coverage.json` points it at
+     `jjstwerff.github.io/routing-data-nl-midwest`, so against a `127.0.0.1` app it is **CROSS-ORIGIN** —
+     and Pages sends `access-control-allow-origin: *` with a correct `content-range: bytes 0-0/812562696`
+     but **no `access-control-expose-headers`**. The JS reader cannot see that header, so the direct path
+     never learns the size and the store never opens.
+   * **the prefetch path is immune, which is the whole illusion**: it takes the size from `coverage.json`
+     (`sizeOf`), not from the response header. So prefetching MASKED a cross-origin limit and looked
+     load-bearing for correctness.
+   * ✅ **the control settles it** — Luxembourg's base store IS in `_site`, same-origin. There `none` and
+     `both` draw the **identical 40 941 features**. Turning prefetch off costs time and nothing else,
+     exactly as designed.
+
+   So the earlier `prefetchOn = false` arm did not trap because reads suspended wasm; it trapped because
+   the dev setup is cross-origin, the store never opened, and the older kernel met that as `unreachable`.
+   **One variable was measured and a different one was moving.**
+
+   ✅ **AND IT WAS A THREE-LINE APP BUG, NOW FIXED — the hosting constraint this looked like is GONE.**
+   For an hour this was written down as *"the app can read cross-origin paged data only while the index
+   names its pages"*, which would have been a hard limit on ever moving data to another origin (§1 item
+   4, R2 vs Pages). It was not a limit; it was `store-kernel.mjs` discarding the answer it already had.
+   `knownTotal = sizeOf(url)` comes from `coverage.json` and is correct — and the next line **overwrote
+   it with `Content-Length`, which on a 206 is the length of the PART**. The open probe is one byte, so
+   loft was told an 812 MB store was one byte long. Cross-origin only, because `Content-Range` is not
+   CORS-safelisted while `Content-Length` stays readable and looks like an answer.
+   **Cross-origin, prefetch off: 0 features → 103 299, identical to the prefetched arm.**
+   ⚠ **loft needed no change.** `loft_host_http_range_total()` is a HOST callback — loft asks, and the
+   host may answer from anywhere. The mechanism to do this right was already there and was being thrown
+   away. Before reaching for an upstream capability, check what the bridge already offers (`CLAUDE.md`).
+   Gated by `tools/crossorigin_paged_gate.sh` in `make test-map`: prefetch OFF, cross-origin, the map
+   must still draw — verified to FAIL on the reverted fix. **An optimisation that becomes load-bearing
+   for correctness has stopped being one**, and nothing else in the suite could see it, because the
+   prefetch masked it on every path the app normally takes.
+
+   **So there is no trap left to attribute**, and symbolising `wasm-function[531]` is moot. ⚠ **This is
+   still NOT "the defect is fixed".** The
+   wasm has been rebuilt twice since that A/B (`6567484`, `89b30fc`; md5 `dbb64043` now), so the runtime
+   under test is not the one that trapped — the likeliest explanation is loft#785's own fix, *"a
+   prefetched page must still be resident when the walk reads it"*, which is exactly the shape of an
+   `unreachable`. What would settle it is the `none` arm against the LIVE site.
+   ⚠ **That run was ATTEMPTED and did not happen.** The deployed build predates the knob, so it ignored
+   the scope and prefetched fully — 2 131 hits — while the probe reported `app confirms "undefined"`. It
+   was a `both` run wearing a `none` label. **The readback is why that is known rather than believed**;
+   the live arm needs the knob deployed first. `browser/cdp_nl_live.mjs` prints the session state before
    the match now, which is how these numbers exist at all — every counter used to be read *after* it.
 6. **`PLAN-LAYERS` step 11** — `holdFrame` vs the resident floor, two mechanisms for one job. Unchanged.
 6b. **THE MAP IS SLOW BECAUSE OF ROUND TRIPS, AND THE FIX IS WIRED AND GATED — but not published.**
@@ -306,6 +345,22 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 * **A GATE POINTED AT A STAGING DIRECTORY GOES GREEN WHEN THE STAGING ENDS.** `seam_route_gate` read
   `blocks/trim`, and the moment the trimmed set BECAME the real one it SKIPped — passing, having tested
   nothing. A gate must follow what ships, not where it was built.
+* **RE-RUN THE *PASSING* CONTROL WHEN YOU VERIFY A FIX — that is how you tell a fix from a suppression.**
+  loft#802 was "a refused lazy binding is invisible": `store_bind_lazy` said `true`, every lookup gave
+  `null`, `store_lazy_error` gave `""` and faults `0`. The fix could equally have been *refuse anything
+  I cannot immediately read* — **identical output in the failing case**. Only re-running the control
+  that was already green (a `hash` against an unreachable URL, which must still bind `true` and then
+  report the connection error with 1 fault) showed the fix was calibrated: a KIND mismatch is knowable
+  at bind time, reachability is not, so they are reported at different moments. Same shape as the trim
+  rule above — the negative control is the claim, and the positive one is what proves you did not buy
+  it by breaking something else.
+* **THE COMPILER MOVES UNDER YOU, AND `--version` DOES NOT SAY SO.** Four distinct
+  `/usr/local/bin/loft` binaries on 2026-08-07, all reporting `2026.8.0`; a conclusion drawn at 13:00
+  described a compiler that did not exist at 23:00. **Anchor every language finding to the binary's
+  md5**, and re-probe before trusting a doc that describes a surface — including one you wrote.
+  `docs/name-search-index.md` §3d was rewritten three times in a day, and every version was correct
+  when written. ⚠ Two of those moves were caused by *this repo's own probes*, so the target moves
+  fastest exactly when you are looking at it.
 
 * **A recipe that lives in a shell history is not a pipeline.** F3's four-region cut was performed by
   hand twice and written down nowhere a machine reads, so `data-refresh.yml` carried a COPY of an older
@@ -374,33 +429,37 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   SharedArrayBuffer is out. **The page index is therefore load-bearing for the app permanently, not until
   loft catches up** — and `docs/hosting-cost-model.md`'s R2 decision gains a second reason beside
   bandwidth: a host that can set those headers is the only route to browser-side batching.
-* ⚠ **AND THE SAME WORK COSTS A VIEWPORT 3-4x THE BYTES** —
-  [loft#785](https://github.com/loft-lang/loft/issues/785), filed. On `nl-midwest.base` (812 MB), one z14
-  viewport's 162 cells: **410 requests / 26.9 MB → 1 074 / 81.4 MB**, both backends, A/B'd against a
-  binary that predates the change. It is SIZE- and SCATTER-dependent, which is why it hides: the small
-  synthetic stores got 4-7x BETTER (21 requests → 3) on the same binaries. A large file plus a scattered
-  key set inverts it — and that is exactly a map viewport. `tools/loft_repro/` reproduces it in 138 MB.
-  ✅ **FIXED and committed** (`97210ff1`, *"a prefetched page must still be resident when the walk reads
-  it"* — a page-cache eviction). Natively the whole arc is now a WIN: **410 requests / 26.87 MB → 368 /
-  26.74 MB** on the 812 MB block, better than before it started.
-  ✅ **AND THE BROWSER REGRESSION IS CLOSED** on loft `759a4172` (2026-08-06 18:46): the same keyed load
-  is **694 ms at CPU 4x against the pre-arc baseline's 763**, with 42 fewer reads — faster than before the
-  arc started. The path there is worth keeping: **1.5x (measured with the arms in SEPARATE browser
-  sessions, always in the same order — withdrawn) → 1.14x (interleaved, real) → 1.03x**. The maintainer
-  refuted all three of my guessed mechanisms and found it: a heap `Vec` allocated per read in `u32_at`,
-  plus a page key hashed twice. ⚠ **The wasm may be rebuilt again** — the reason it was pinned is gone.
-  ⚠ **THE ORIGINAL REPORT SAID ~1.5x AND THAT NUMBER WAS METHOD, NOT RUNTIME** —
-  [loft#787](https://github.com/loft-lang/loft/issues/787), filed. Two `--html` kernels from IDENTICAL
-  sources (`7c007439b990`), differing only in the loft that built them, quiet box, medians of 3:
-  **177 → 254 ms at CPU 1x and 676 → 1 018 ms at CPU 4x**, for 10% fewer reads. The browser takes the
-  sequential path by design (#784), so it pays the new relocate's CPU without collecting the batching's
-  round-trip saving. **`browser/store-kernel.wasm` therefore STAYS on the older runtime** — on Pages the
-  app is latency- and CPU-bound, and 1.5x decode on a phone outweighs 10% fewer requests.
-  ⚠ The earlier note that the fix arrived UNCOMMITTED still stands as a rule:
-  — 368 requests / 26.74 MB, better than the 410 / 26.87 MB baseline. `../loft`'s tree is dirty
-  (`M src/paged_reader.rs`, a new `785-page-cache-amplification.loft`), so that number is in-flight work,
-  not a property. **Do not rebuild `browser/store-kernel.wasm` against an uncommitted runtime**; wait for
-  the fix to land on a commit. This is HANDOFF §2's sibling-tree rule paying for itself twice in one day.
+* ✅ **THE #782→#787 LOFT ARC IS CLOSED, AND THE WASM PIN WITH IT.** The full account — read
+  amplification on a large scattered store, the page-cache eviction that fixed it, and the browser
+  regression that followed — is in `docs/handoff-archive.md`. What survives as RULE:
+  **a ratio measured with the arms in separate sessions, always in the same order, is METHOD not
+  runtime.** Ours read 1.5x that way; interleaved it was 1.14x, and the landed fix took it to 694 ms
+  against a 763 ms pre-arc baseline — faster than before the arc started. The maintainer refuted all
+  three mechanisms we guessed at and found the real one (a heap `Vec` per read in `u32_at`, plus a page
+  key hashed twice). **Two of our findings in one week were right about the symptom and wrong about the
+  cause**, which is the reason to file the repro and let the owner diagnose.
+  ⚠ And: **never rebuild `browser/store-kernel.wasm` against an UNCOMMITTED runtime.** `../loft`'s tree
+  is another agent's live workspace; a number measured against its dirty state is in-flight work, not a
+  property of anything you can ship.
+
+* ⚠ **ON A `206`, `Content-Length` IS THE PART — AND USING IT AS THE FILE SIZE COSTS THE WHOLE MAP.**
+  `store-kernel.mjs` knew the right total (`sizeOf(url)`, from `coverage.json`) and then overwrote it
+  with the response header. The open probe is one byte, so loft was told an **812 MB store was 1 byte**;
+  it could not open it and re-probed **2 588 times for 2 588 bytes**, with `rangeFailed=0`, no console
+  error and a blank base map. **Cross-origin ONLY**, which is why it hid for so long: `Content-Range` is
+  not CORS-safelisted and Pages sends no `access-control-expose-headers`, so the good header is missing
+  exactly when the data is on another origin — while `Content-Length` stays readable and looks like an
+  answer. **And the prefetch masked it entirely**, because that path takes the size from `coverage.json`
+  rather than from a header. Fixed; gated by `tools/crossorigin_paged_gate.sh` (prefetch OFF,
+  cross-origin, the map must still draw).
+  **The general form: an optimisation that becomes load-bearing for CORRECTNESS has stopped being one** —
+  and it will not be caught by any gate that leaves the optimisation on. ⚠ It also looked for an hour
+  like a hosting LIMIT ("cross-origin paged data only works where the index names its pages"), which
+  would have constrained the R2 decision. It was a three-line bug. **Before recording a constraint,
+  check whether it is a defect.**
+  ⚠ **And loft needed no change.** `loft_host_http_range_total()` is a HOST callback: loft asks, the host
+  may answer from anywhere. The mechanism was already there and was being thrown away — the same shape as
+  `CLAUDE.md`'s rule about reading the reference before concluding loft cannot do something.
 * **A LISTEN BACKLOG OF 5 IS A ~1 SECOND STALL, ONCE READS GO CONCURRENT.** `tools/range_server.py` used
   `socketserver`'s default `request_queue_size`, so the moment loft started issuing a store's ranges
   together, the kernel dropped SYNs and each one cost a TCP retransmit: **1 066 / 1 285 / 1 075 ms against
@@ -433,6 +492,37 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
   builds a fixture, runs the real builder and insists on the pages that went in (it fails 9 checks against
   the 4-byte regression), and `prefetch_gate.sh` requires the buffer to have actually ANSWERED. Same
   family as the paged spot check that passed while fetching nothing.
+* **EXTRACTING THE LIST IS NOT EXTRACTING THE SETUP.** `make test` opened with
+  `mkdir -p scratch scratch/tiles`, then ran eight gates. Moving the gate LIST into `tools/gates.offline`
+  so CI and `make test` could not drift left the `mkdir` behind in the Makefile — and CI, which no longer
+  calls `make test`, ran the gates into a tree with no `scratch/`. The server harnesses write
+  `scratch/srv.log` and exit when they cannot, so three gates failed on one missing directory. **A shared
+  list does not make two callers equivalent while one of them still owns a precondition.** It passed
+  locally for the least useful reason — `scratch/` was already there from earlier runs — which is the
+  general trap: **a clean-tree failure cannot be reproduced on a dirty tree.** Move the directory aside
+  before believing a green local run of anything CI runs from scratch.
+* **A CANCELLED JOB IS NOT A RED BUILD, AND A GREEN CHECK IS NOT A MERGE.** Both learned in one
+  GitHub Actions outage (2026-08-06, 6.5 h, webhooks throttled to ~15%), and both will recur:
+  — a `build-test` reporting `cancelled` had held **no runner and run zero steps** for 15 minutes; the
+  `pages` job in the SAME run got a runner in 18 s and passed. Distinguish by whether the job ever
+  executed a step, or a watcher stops on a build that never happened.
+  — and a check can be `completed/success` on the head while the merge is refused, because branch
+  protection reads the **status-check ROLLUP**, not the check runs. During the outage the rollup was
+  `null` with two suites plainly present. Close/reopen re-evaluates mergeability but does NOT rebuild it,
+  so the nudge everyone reaches for does nothing. **The only fix is waiting**, and `--admin` would bypass
+  a protection the maintainer set deliberately rather than satisfy it.
+  ⚠ Also: **every run on the branch came from `gh workflow run`, not one from a push or PR event** — a
+  dispatch bypasses the throttled webhook path. `workflow_dispatch` is on `ci.yml` for exactly this, but
+  it only helps once it is on the DEFAULT branch.
+* **A FIXED SLEEP IS A GUESS THAT IS NEVER REVISITED.** `cdp_verify_store.mjs` was 87 s of
+  `map_render_gate`'s 91, and timing it per check found the cost was not the work: the matches run
+  121–685 ms, while **50.5 s sat in 30 `sleep()` calls** — five of 2 500 ms, four of 3 500 ms — each one
+  written once as a guess at how long a sketch edit and its re-match might take. The app already answers
+  that: `__perfHooks.settled()` is false while any kernel job is queued or running. Wait on the CONDITION
+  with the old sleep as a ceiling, and the worst case is exactly the old behaviour. ⚠ **The floor is what
+  makes it safe** — `settled()` is true in the instant BEFORE an interaction's job is posted, so polling
+  it immediately sails straight past the work being waited for. Same family as *"wait for the view to
+  CHANGE before measuring it"*.
 * **A rule is not in force until the code that DRAWS asks it.** The area debut ladder lived in six
   copies; consolidating five and leaving a sixth was worse than leaving five, because the survivor looked
   authoritative. Gates assert on the drawn result, never on the table.
@@ -539,11 +629,41 @@ Each of these cost a session or a wrong dataset to learn. The full account is in
 `601806ef` (re-run end to end after the binary moved mid-run; §2):
 
 ```bash
-make test          # offline: kernel suites + server harnesses            (~15 s)
+make test          # offline: kernel suites + server harnesses             (~8 s)
 make test-native   # the DATA gates, native backend — the slow, thorough one  (~5 min)
 make test-wasm     # wasip2 parity: geodesic + a byte-identical full match  (~15 s)
-make test-map      # the browser gates, headless Chromium                 (~4 min)
+make test-map      # the browser gates, headless Chromium                (~3.6 min)
 ```
+
+Two probes that are NOT gates, because each answers a question rather than defending an invariant:
+`browser/cdp_names_cost.mjs` (what a first search costs, §1 item 3 — takes `THROTTLE_KBPS`, and needs
+`CDP_TIMEOUT_MS` above 30 s at phone speeds) and `browser/cdp_trap_scope.mjs` (`window.__prefetchScope`
+= `both|view|ring|none`, which holds the work identical while the suspend count moves — §1 item 5).
+
+**And four `trie` probes, kept runnable because the compiler moves (§2).** They are not gates either —
+`trie_probe` could be, but it would fail on any binary older than `d83e8f5d…`, which is a call for the
+maintainer rather than a default:
+
+```bash
+loft tools/trie_probe.loft                      # self-contained: prefix slice + a `sorted` control
+loft --native --lib lib tools/trie_vocab.loft <names.store> <out.store>   # 220 032 words, 2.2 s
+loft --native tools/trie_roundtrip.loft <out.store>                       # counts + key order survive
+loft --native tools/trie_paging.loft <url-or-path> [local]                # a trie CANNOT page (§1.3)
+loft tools/loft_repro/spatial_text_key.loft     # loft#799 — must now REFUSE to compile
+```
+
+`test-map`'s gates, timed on this box 2026-08-07 (all green; `crossorigin_paged_gate` added since, ~35 s
+and it needs the network): `map_render_gate` **59 s** and
+`base_paged_gate` **50 s** are half of it; then `overview` 20, `nl_live` 19, `cors_host` 17,
+`paged_http` 16, `network_zoom` 14, `offline_pack` **9**, `browser_leak` and `cross_block` 4, and
+`expose_probe` / `deliver_probe` 1 s each. ⚠ Two of those numbers were 495 s and 91 s a day ago — see
+§2 on fixed sleeps, and on a gate measuring the ring rather than the thing it tests.
+
+`make test`'s eight gates live in **`tools/gates.offline`** — ONE list, read by that target and by
+`tools/ci_gates.sh`. They differ only in how they REPORT: `make test` stops at the first failure (right
+while iterating on the one you just broke), and `ci_gates.sh` runs all eight, times each, and writes a
+pass/fail/duration table to the run summary (right for a build nobody is watching, where each hidden
+failure costs another ~5 min of toolchain build). Run the CI form locally with `tools/ci_gates.sh`.
 
 `test-native` already runs the gates below, so reach for one individually only to iterate on it:
 
@@ -603,17 +723,45 @@ The FORMAT half needs no data at all and runs in `make test` (`browser/page-inde
 
 ## 4. Where the docs are
 
-| doc | what it owns |
+**Grouped by the QUESTION you are asking, not by filename** — the names grew by artifact (`MAP`,
+`BASEMAP`, `TILES`, `LAYERS` are four docs about what draws) and by date, so a name alone no longer says
+which one answers you. **Every doc in the tree is listed here, and `tools/docs_gate.sh` fails the build
+when one is not** — so this table is complete by construction, not by anyone remembering.
+
+**Dates live in the docs, not here.** Each file opens with its own
+`**Kind:** · **Status:** · **Last verified:** · **Owns:**` line, and that is the single copy — a second
+one in this table is the thing certain to drift. Open a doc and its first line tells you what it is for
+and whether anyone still stands behind it. Rows below flag ⚠ only where the answer is *no*.
+
+| you want to know | read |
 |---|---|
-| **`plans/`** | **new multi-phase work — one directory per tracker issue, the way `../loft`, `../crawler` and `../moros` do it.** `plans/README.md` is the binding. The overview is DERIVED, not curated: `gh issue list -R jjstwerff/routing --label plan --state all`. ⚠ The 16 root-level `PLAN-*.md` predate this and stay where they are — they are reference docs with step ladders inside them, and they migrate opportunistically or not at all |
-| `DESIGN.md` | the north star — what the product is |
-| `PLAN-LAYERS.md` | **current work**: the layer model, the signposted networks, the coverage floor |
-| `PLAN-SCALE.md` | blocks, bands, regions, publishing — how the data is cut and hosted |
-| `PLAN-PERF.md` | what the app costs and why, including the loft store fixes |
-| `PLAN-EDIT.md` | the sketch editor, and the route as an object (distance, GPX, autosave) |
-| `PLAN-MATCH.md` | the matcher's ladder (the get-me-there fork moved to `plans/50-get-me-there/`) |
-| `PLAN-BUILD.md` / `PLAN-APP.md` / `PLAN-MAP.md` / `PLAN-BROWSER.md` | the standalone app and its renderer |
-| `PLAN-RESTORE.md` / `PLAN-TILES.md` / `PLAN-BASEMAP.md` | features restored from the old client, and the data they need |
-| `docs/ARCHITECTURE.md` | which file does what |
-| `docs/loft-feedback.md` | findings for loft's formal definition — the consumer's half of that work |
-| `docs/handoff-archive.md` | the dated rungs this file used to carry |
+| **what the product IS** | `DESIGN.md` — the north star |
+| **where things stand / how to resume** | **`HANDOFF.md`** — this file · then `docs/handoff-archive.md` for the dated account behind a rule |
+| **how to work in this repo as an agent** | `CLAUDE.md` — and the `loft-write` skill BEFORE any `.loft` edit |
+| **a NEW multi-phase job** | **`plans/<issue>/`** — one directory per `jjstwerff/routing` issue, as `../loft`, `../crawler` and `../moros` do. `plans/README.md` is the binding and `plans/_TEMPLATE.md` the skeleton; claim the issue before naming the directory. The overview is DERIVED, so no plan is listed here: `gh issue list -R jjstwerff/routing --label plan --state all` |
+| **how the DATA is cut, hosted, published** | **`PLAN-SCALE.md` is the spine** — sizing, the walls, the decisions and the S1–S11 ladder; its *Where each section lives* table maps every § to its file · **`docs/hosting-cost-model.md`** — read before ANY hosting decision |
+| **↳ what a country rung COST** | `docs/coverage-rungs.md` — §6b's ladder, and what NL (§6c), the Benelux (§6j) and the WE patterns check (§6h) each measured |
+| **↳ opening the app on a whole country** | `docs/overview-ladder.md` — the overview ladder O0–O3. ⚠ the unit of cost is the KEY, not the feature |
+| **↳ building a country's base map** | `docs/base-map-build.md` — the generation half (`PLAN-BASEMAP.md` owns how it is DRAWN) |
+| **↳ generating, hosting, publishing, refreshing** | `docs/block-pipeline.md` — the generator's memory ceiling, the CORS host, and §7's refresh procedure, the part that runs forever |
+| **what DRAWS, and at which zoom** | `PLAN-LAYERS.md` is the model and the invariants — **start here** · `PLAN-BASEMAP.md` the presentation layer · `PLAN-MAP.md` the renderer · `PLAN-TILES.md` the first NL slice |
+| **what the app COSTS in the browser** | **`PLAN-PERF.md` is the spine** — §0 the step list, §1 the one invariant, §2 the baseline, §7e the instrument discipline; its *Where each section lives* table maps every § to its file · **`docs/prefetch-index-design.md`** the page index · `docs/loft-binary-bridge.md` ⚠ stale: its premise was re-measured and no longer holds — §2 |
+| **↳ loft out of the view path** | `docs/view-path-bridge.md` — the `expose` bridge, its two rules, and why the naive viewport filter is a bug |
+| **↳ what a FRAME costs** | `docs/render-frame-cost.md` — the render budget, the growing line, the split, the raster cache |
+| **↳ the MATCH** | `docs/match-performance.md` — per-point presentation, the escalation, `par` over the stretches |
+| **↳ where a COLD match's time goes** | `docs/cold-match-cost.md` — corridor, `build_graph`, the anchor search, the route-parity gate, and what was tried and REJECTED |
+| **↳ what a NAME SEARCH costs** | `docs/name-search-index.md` — the whole-store read re-measured (3× smaller than §1 item 3 recorded), the ~7.3 MB word-prefix index that replaces it, and why `trie<T[k]>` is a 3.6× cut that does **not** remove the download |
+| **the app as a serverless product** | `PLAN-APP.md` is the capstone · `browser/README.md` is the shell it runs in · `PLAN-BROWSER.md` ⚠ stale: the earlier path to it |
+| **routing, editing, restored features** | `PLAN-MATCH.md` the matcher's ladder (get-me-there forked to `plans/50-get-me-there/`) · `PLAN-EDIT.md` the sketch and the route as an object · `PLAN-RESTORE.md` what the old client had |
+| **the build and the toolchain** | `PLAN-BUILD.md` ⚠ · `PLAN-STORE.md` ⚠ · `docs/loft-build-phase-adoption.md` ⚠ — all three stale, and the store schema has moved to v2 since (§0) |
+| **which file does what** | `docs/ARCHITECTURE.md` · `docs/debug-websocket.md` for the live-debug channel |
+| **what loft's definition owes us** | `docs/loft-feedback.md` — the consumer's half of the formal-definition work · `tools/loft_repro/README.md` and `tools/loft_repro/787-workload/README.md` are the reproducers filed upstream, kept runnable |
+| **how the docs themselves are organised** | `docs/doc-structure-design.md` — the measured defects, the four kinds, and `tools/docs_gate.sh` (+ `tools/docs_gate.exempt`) that keeps this table honest |
+| **how this all started** | `PLAN.md` ⚠ stale — the original server-era plan; superseded in almost every part, kept for the reasoning |
+| **the public face: licence, contributing, credit** | `README.md` · `CONTRIBUTING.md` · `CODE_OF_CONDUCT.md` · `ATTRIBUTION.md` — these carry their header as an HTML comment, so a visitor does not see our currency banner |
+
+⚠ **TWO CONVENTIONS COEXIST, AND THE BOUNDARY IS A DATE, NOT A SUBJECT.** `plans/` is where new work
+goes; the 16 root `PLAN-*.md` predate it, hold ~10 000 lines of still-valid reference, and migrate
+opportunistically or not at all. **So a subject can be in either place, and the only reliable way in is
+this table.** Adding a doc without adding its row now fails `make test` — before the gate existed, five
+of the eight `docs/` files were missing here while §0 and §1 told people to read two of them.

@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: LGPL-3.0-or-later -->
 # 49 — Nautical navigation: paddling on the mapped waterway network
 
+**Kind:** plan · **Status:** current · **Last verified:** 2026-08-03 · **Owns:** issue #49 — paddling on the mapped waterway network
+
 **Issue:** [`jjstwerff/routing#49`](https://github.com/jjstwerff/routing/issues/49) ·
 **Value:** `G` · **Effort:** `H`
 

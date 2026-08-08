@@ -1,5 +1,7 @@
 # Route Planner — Browser-Only (Serverless) Plan
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-06 · **Last verified:** 2026-07-06 · **Owns:** the earlier path from the server client to the browser app
+
 A path to running the whole app **in the browser**: map-data retrieval and route computation happen
 client-side, and a server becomes **optional** — used only to *store* routes (and sync individual
 edits across devices), never required to compute or draw. Companion to **[PLAN.md](PLAN.md)** (the

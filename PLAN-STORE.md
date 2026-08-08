@@ -1,6 +1,8 @@
 <!-- Copyright (c) 2026 Jurjen Stellingwerff  SPDX-License-Identifier: LGPL-3.0-or-later -->
 # PLAN-STORE — two loft stores, served static, read in-browser by loft-wasm
 
+**Kind:** reference · **Status:** stale — unverified since 2026-07-08 · **Last verified:** 2026-07-08 · **Owns:** the loft store layout the blocks are written in
+
 **The data architecture the browser app rides on** (supersedes PLAN-MAP's JS-baked text tiles). The
 browser holds **no bespoke format**: loft's own binary **store** *is* the format; loft is the only thing
 that reads/writes it; text is a temporary projection loft emits over its **native host bridge**.

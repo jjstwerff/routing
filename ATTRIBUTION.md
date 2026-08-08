@@ -1,3 +1,4 @@
+<!-- Kind: reference · Status: current · Last verified: 2026-07-08 · Owns: where the map data comes from and what each source requires you to credit -->
 # Attribution & data sources
 
 This project builds on open data and open tooling. Credit is required for the

@@ -1,0 +1,79 @@
+// CAN A TRIE PAGE? The one question that decides whether it removes the download or reshapes it.
+//
+// docs/name-search-index.md §3a hand-rolls a sparse sample precisely so a query reads a RANGE instead
+// of the whole file. A store-backed trie would make that unnecessary — IF a prefix slice can be served
+// without adopting the whole image. The API doc comments say otherwise:
+//
+//   store_load_key   "the collection is not an integer-keyed hash" -> false
+//   store_bind_lazy  "a collection that is not a `hash` ... is REFUSED"
+//   store_lazy_range "must be ORDERED (`sorted` or `index`)"
+//
+// …but those were written before `trie` existed, and a doc comment is not the authority. So this ASKS
+// the runtime, and reports what it actually does rather than what it should do.
+//
+//   loft --native tools/trie_paging.loft <url-or-path>
+#cwd
+
+struct Word { const w: text, hits: integer, best: integer }
+
+fn main() {
+  a = arguments();
+  src = a[0] ?? "";
+  if src == "" { println("usage: trie_paging.loft <url-or-path>"); return; }
+
+  // 1. LAZY BIND. If a trie can bind, a miss should fetch exactly that key.
+  lazy: trie<Word[w]> = [];
+  bound = store_bind_lazy(lazy, src);
+  println("store_bind_lazy   -> {bound}");
+  if bound {
+    t0 = ticks();
+    one = lazy["kerkstraat"];
+    dt = (ticks() - t0) / 1000;
+    if one == null { println("  lookup kerkstraat -> NULL after {dt} ms"); }
+    else { println("  lookup kerkstraat -> {one.hits} hits after {dt} ms"); }
+    println("  resident len      -> {lazy.len()}   (1 would mean it paged; 220032 means it adopted)");
+    // ⚠ PRINTED UNCONDITIONALLY. This is the designated way to tell "genuinely absent" from "could
+    // not reach the source" after a null. If it is "" here, a caller cannot tell a REFUSED binding
+    // from a missing key — and the refusal went to stderr, where no program can read it.
+    why = store_lazy_error(lazy);
+    println("  store_lazy_error  -> \"{why}\"   (\"\" claims: reachable, genuinely no such key)");
+    println("  faults            -> {store_lazy_faults(lazy)}");
+
+    // 2. Does a PREFIX SLICE fault the range in, or only see what is resident?
+    n = 0;
+    for p in lazy["kerk"..] { n += 1; }
+    println("  [\"kerk\"..] over a lazily-bound trie -> {n} words");
+  }
+
+  // 3. The honest baseline: a whole-image load, which is what today's names store does. Two forms,
+  //    because `store_load` takes a local path and `store_load_url_trusted` takes a URL — reporting
+  //    a URL failure of the local-path call as "a trie cannot load" would be the instrument lying.
+  local = a[1] ?? "";
+  if local != "" {
+    whole: trie<Word[w]> = [];
+    t1 = ticks();
+    ok = store_load(whole, local);
+    println("store_load(local) -> {ok}, {whole.len()} words in {(ticks() - t1) / 1000} ms");
+  }
+  viaurl: trie<Word[w]> = [];
+  t2 = ticks();
+  uok = store_load_url_trusted(viaurl, src);
+  println("store_load_url    -> {uok}, {viaurl.len()} words in {(ticks() - t2) / 1000} ms");
+
+  // 4. THE CONTROL, and the reason this is a report rather than a shrug. Same three calls against a
+  //    HASH — the kind lazy binding does support — pointed at a URL that cannot be reached. If
+  //    `store_lazy_error` speaks up here and stayed silent above, the API is not simply uncovering
+  //    the trie case: it is answering "" (its documented "reachable, genuinely no such key") for a
+  //    binding that was REFUSED.
+  ctl: hash<Row[id]> = [];
+  cbound = store_bind_lazy(ctl, "http://127.0.0.1:9/nope.store");
+  println("");
+  println("CONTROL hash + unreachable url");
+  println("  store_bind_lazy   -> {cbound}");
+  miss = ctl[42];
+  if miss == null { println("  lookup 42         -> NULL"); }
+  println("  store_lazy_error  -> \"{store_lazy_error(ctl)}\"");
+  println("  faults            -> {store_lazy_faults(ctl)}");
+}
+
+struct Row { const id: integer, v: integer }
