@@ -31,8 +31,8 @@ was being written. Re-read §2 against the binary in your hand before trusting i
 as small as loft will make it (§1b). **§8 is what has since been BUILT and proven**: a three-collection
 index whose resident part is **5.48 MB gzipped** against today's 21.4 MB whole-store read, answering
 **byte-identically for 93.0% of a 603-query corpus, a shorter list for the rest, and never a different
-one** — with the exact scan as the fallback. **§8d: it is now WIRED INTO THE APP** — the names store is
-no longer fetched at all on an indexed query.
+one** — with the exact scan as the fallback. **§8i: it is LIVE** — on the deployed site a search takes
+~1 358 ms against 4 024, and the names store is never requested.
 
 ⚠ **Read §8b before re-deriving any size here.** §3's byte figures were sized on a hand-rolled varint
 format; the built index is made of loft store records, which are **~3× less dense**, and that single
@@ -578,7 +578,28 @@ search that costs ~7.5 MB instead of 21.4 MB moves that cap by nearly 3×, and 1
 141 MB still free is the cheaper side of the ledger. ⚠ But the headroom is now thin enough that **the
 next region added crosses it**, which was already true at 71% and is more true now.
 
-### 8h. What is left
+### 8i. Live (2026-08-08)
+
+Merged as PR #72 (`58356f6c`) and measured on the DEPLOYED site, not the harness:
+
+| | before | after |
+|---|---|---|
+| first `find` | 4 024 ms *(n=1)* | **1 138 / 1 358 / 1 708 ms** *(median 1 358)* |
+| `coverage.names.store` | 21.41 MB gzip, whole | **never requested** |
+| what it reads | one whole store | `nxwords` 5 510 010 B gzip + **33 ranges, 2.03 MB** |
+
+⚠ **The live vocabulary is within 0.6% of the projection** (5.51 MB against 5.48 predicted from the
+local build), so §1a's harness→live correction held on the number this design turns on. ⚠ And the
+before-figure is a SINGLE run, captured in the window before the deploy landed — one sample against
+three, so the honest claim is ~3×, not a ratio to two decimal places.
+
+**The fallback is exercised against the real origin**: `"oude markt"` declines and takes the scan —
+`wholeLoads [nxwords x1, coverage.names.store x1]`, 21.41 MB, 8 hits. ⚠ So a declining query now costs
+slightly MORE than before: it fetches the vocabulary, finds it cannot answer, then reads the store.
+That is ~7% of queries paying for the 93% that come back byte-identical, and it is the shape of the
+trade rather than a defect — but it is the number to watch if the decline rate ever rises.
+
+### 8j. What is left
 
 * ~~**Wire it in**~~ (§8d) · ~~**teach `build-site` to ship it**~~ (§8f) — both done.
 * **Publish, and regenerate first.** Nothing here has touched live data: the stores were built from a

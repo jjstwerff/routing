@@ -59,6 +59,15 @@ the browser is 694 ms against the pre-arc baseline's 763. The wasm pin is lifted
 `browser/store-kernel.wasm` is the runtime that does not triple a viewport's bytes (sources
 `9528328a…`).
 
+**A NAME SEARCH NO LONGER DOWNLOADS THE NAMES STORE — LIVE since PR #72 (`58356f6c`, 2026-08-08).**
+Measured on the deployed site: **4 024 → ~1 358 ms** and `coverage.names.store` is **never requested**;
+a 5.51 MB gzipped vocabulary plus 33 range reads (2.03 MB) replaces a 21.4 MB whole-store read. Three
+collections split by HOW EACH IS READ — `trie` whole, `sorted` postings by one `store_load_range`,
+`hash` entries by `store_load_keys` — with the exact scan as the fallback for the ~7% of queries a word
+index cannot answer. ⚠ **It cost the site 135.4 MB (71% → 85% of budget)**, because the names store has
+to stay for that fallback. §1 item 3 has the numbers and the trade; `docs/name-search-index.md` §8 the
+design, the parity gate and the two measurements that killed the obvious version.
+
 **⚠ AND A NEW ONE OPENED AND CLOSED THE SAME DAY — loft gained `trie<T[k]>`, and the installed binary
 moved FOUR TIMES on 2026-08-07, every one of them calling itself `2026.8.0`.**
 `759a4172…` (08-06 18:46) → `51e15f8a…` (13:35) → `d83e8f5d…` (22:56) → `ac54cc26…` (23:45). Two of
@@ -127,55 +136,53 @@ data it was built against.
    "app shell" instead of dropping it: it reported the same 814.2 MB total with the correct index.
 2. **Belgium's base map above z14** — 1202.5 MB needs cutting in two and ~2 Pages data repos
    (`tools/publish-pages-data.sh`). Until then Belgium has roads on a plain background above z14.
-   **Re-measured 2026-08-07 on a freshly rebuilt `_site`: 673.8 MB of the 950 MB budget (71%), so the
-   headroom is 276.2 MB.** ⚠ That headroom is NOT what the halves need — they go to their own Pages
+   **Re-measured 2026-08-08 after the search index shipped: 809.3 MB of the 950 MB budget (85%), so the
+   headroom is 140.7 MB** — the index added 135.4 MB and the names store STAYS, because the fallback needs it (item 3). ⚠ That headroom is NOT what the halves need — they go to their own Pages
    repos, the way `be-mid`, `nl-mid` and the four region base maps already do, so the binding constraint
    is two more repos under the ~1 GB per-site cap, not this budget. The 63.5 MB `coverage.names.store`
    IS on this budget, which is where item 3 and this one meet.
-3. ⚠ **The names store does not scale past this rung — MEASURED now, not extrapolated**
-   (`browser/cdp_names_cost.mjs`, 2026-08-07). `coverage.names.store` is 63.5 MB and the first `find`
-   pays for all of it: `wholeLoads [coverage.names.store x1]`, **`rangeReads +0`** — it arrives WHOLE,
-   never by range, which is the structural claim now confirmed rather than asserted.
+3. ✅ **CLOSED — the names store no longer gates a search, and it is LIVE** (PR #72, merged
+   2026-08-08, `58356f6c`). It used to be read WHOLE before the first keystroke could be answered.
+   Measured on the DEPLOYED site with `browser/cdp_names_cost.mjs`, same query, same 8 hits:
 
-   ⚠ **The numbers first recorded here were 3× too high, and the error was the INSTRUMENT's.**
-   `cdp_names_cost.mjs` ran against `_site` behind `tools/range_server.py`, which sends no
-   `Content-Encoding`; GitHub Pages gzips the same store **3.0×**. So a throttled harness run carried
-   63.5 MB where the live link carries **21.4 MB**, and that was reported as the product's ceiling.
-   Measured against the live site with the fixed probe (`docs/name-search-index.md` §1a, §6):
-
-   | link | first `find` | second |
+   | | before | after |
    |---|---|---|
-   | localhost — decode only | **262 ms** *(201–900, n=5)* | 1–2 ms |
-   | **live site, this box** | **2 182 / 3 907 ms** — 21.41 MB gzip → 63.47 MB | 0–3 ms |
-   | 82 Mbps / 45 ms — the real link | ~~7 199 ms~~ → **~2 100 ms** | — |
-   | 10 Mbps / 80 ms — a phone | ~~49 893 ms~~ → **~17 000 ms** | — |
+   | first `find` | 4 024 ms *(n=1)* | **1 138 / 1 358 / 1 708 ms** *(median 1 358, 1.5× spread)* |
+   | `coverage.names.store` | 21.41 MB gzip, whole | **never requested** |
+   | what it reads | one whole store | `nxwords` 5 510 010 B gzip + **33 ranges, 2.03 MB** |
 
-   So it is **transfer-bound and linear in the store**: 262 ms of that is decode and the rest is wire.
-   The second search is a `names_at` hit at 1 ms, so the cost is entirely the first one. Western Europe
-   at ~500 MB is 7.9× this store: ~~57 s / 6.5 min~~ → **~17 s on the real link and ~2.3 min on a
-   phone**. ⚠ **Still a wall at WE — but this rung is not on fire**, and phase E must not be decided
-   against the 3× figure. Same family as `prefetch_gate`'s harness (§2): *an emulator generous with one
-   resource is not a slower reality, it is a different question.*
+   ⚠ The 5.51 MB live figure is within **0.6%** of the 5.48 MB projected from the local build, so the
+   harness→live extrapolation held. ⚠ The before-number is a SINGLE run captured in the window before
+   the deploy landed — one sample against three, so read the ratio as ~3× and not as a precise one.
 
-   ✅ **But the app does NOT freeze** — 58–60 fps throughout, on the harness's slowest run and on the
-   live site alike, measured by counting animation frames across the call. That is the difference between
-   a slow search and a broken product, and it was worth knowing before costing a fix: this is a spinner,
-   not a hang. ⚠ A throttled harness run still exceeds the 30 s CDP call timeout every gate uses, which
-   is why `CDP_TIMEOUT_MS` is overridable now (default unchanged).
+   **The fallback is exercised live, not just gated.** A multi-token query (`"oude markt"`) declines and
+   takes the scan — `wholeLoads [nxwords x1, coverage.names.store x1]`, 21.41 MB, 8 hits. So a declining
+   query now costs slightly MORE than before (it fetches the vocabulary, finds it cannot answer, then
+   reads the store). That is ~7% of queries paying for the 93% that are byte-identical, and it is the
+   honest shape of the trade rather than a regression to fix.
 
-   It is one store because `NAMES` is resolved once at boot, `store_load_url_trusted` ADOPTS, and every
-   store numbers records from 0 — a covering set is not available without changing all three. Same ceiling
-   shape as the overview. **It is now costed for @51 phase E: `docs/name-search-index.md`** — a ~7.3 MB
-   word-prefix index turns the 21.4 MB whole-store read into a 0.1–181 kB range read, byte-identical for
-   91.5% of queries and never wrong, with today's scan as the lossless fallback for the rest.
+   **Why it works, in one line:** three collections split by HOW EACH IS READ — a `trie` vocabulary
+   whole (a trie cannot page), `sorted` postings by ONE `store_load_range` over a contiguous interval,
+   `hash` entries by `store_load_keys` for the displayed rows only. `docs/name-search-index.md` §8 owns
+   the design, the parity gate and the two measurements that killed the obvious version.
 
-   ⚠ **Two options now, and they are different points on the curve — not rival versions of one design.**
-   loft's new `trie<T[k]>` (§0) holds the whole vocabulary: **220 032 distinct words** (derived from the
-   store, not `strings`, which was 3.8% low), built in 2.2 s, persisted **5.9 MB gzipped**, reloaded in
-   42 ms, prefix queries 14 µs–2.1 ms. That is a **3.6× cut for almost no work** — but a **trie cannot
-   page** (`store_load_key` wants an integer-keyed hash, `store_bind_lazy` a hash, `store_lazy_range` a
-   `sorted`/`index`), so it reshapes the download rather than removing it. The range-read index is still
-   the only thing that removes it. They compose: **vocabulary whole, postings by range.**
+   ⚠ **THE LESSON OUTLASTS THE ITEM: the ceiling recorded here was 3× too high, and the error was the
+   INSTRUMENT's.** `cdp_names_cost.mjs` ran against `_site` behind `tools/range_server.py`, which sends
+   no `Content-Encoding`, while Pages gzips the same store 3.0× — so a throttled run carried 63.5 MB
+   where the live link carries 21.4, and 7 199 ms / 49 893 ms were reported as the product's ceiling.
+   @51 phase E was about to be decided against them. Same family as `prefetch_gate`'s harness (§2): *an
+   emulator generous with one resource is not a slower reality, it is a different question.*
+
+   ✅ **The app never froze, before or after** — 58–61 fps throughout, by counting animation frames
+   across the call. That is the difference between a slow search and a broken product. ⚠ A throttled
+   harness run still exceeds the 30 s CDP call timeout every gate uses, which is why `CDP_TIMEOUT_MS`
+   is overridable (default unchanged).
+
+   **What is left.** Western Europe still multiplies the vocabulary, so this bought a rung and not the
+   war. `name_index_gate.sh` is deliberately NOT in `gates.offline` — it needs a names store the repo
+   does not carry, so it would SKIP in CI, passing having tested nothing (§2). And §3b's POSTINGS
+   figures are still scaled estimates; only the word list has been derived from the store, which is
+   where the `strings` recovery turned out to be 3.8% low rather than ±2%.
 4. **@51 phase E — now the live question**, since A–D are done and the rung is entered. Decide C4/C5.
    `PLAN-SCALE` §8b holds the cadence half (per-region refresh keyed on MEASURED CHANGE, not density; the
    world is a funding decision). **The hosting half is now costed — `docs/hosting-cost-model.md`.** Its
