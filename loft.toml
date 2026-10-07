@@ -12,3 +12,9 @@ loft    = ">=0.8"
 # The GitHub Pages app is the loft-free canvas base-map viewer (PLAN-MAP): `node browser/build-site.mjs`
 # bakes the tile pyramid + inlines the renderer into _site/. It needs no loft build, so there is no
 # [build]/[library] section here. The routing kernels/server (native + wasi) still build via the Makefile.
+
+# `server/server.loft` sits beside a `server` the library: an undeclared `use server;` resolves to
+# that file first (the script's own directory outranks `--lib`), so the library's types vanish.
+# A declared dependency is never shadowed by a same-named file inside the package.
+[dependencies]
+server = { path = "lib/server" }
