@@ -120,7 +120,7 @@ pub fn key_tier(key: integer) -> integer { (key / TIER_STRIDE) ?? 0 }
 // loft keyword). Area/Building are polygons; Line is a stroked line (streams/ditches/rivers, railways);
 // Label is text; Poi is a point icon (trees, benches, viewpoints, towers, ruins — and stream crossings:
 // fords, stepping-stones, footbridges). The map matcher reads none of it.
-pub struct Coord    { const x: i32, const y: i32 }
+pub struct Coord    { pub const x: i32, pub const y: i32 }
 // A filled polygon (landcover + parking/camp/ruin/playground).
 //
 // ⚠ `ring` holds EVERY ring of the feature, concatenated: the outer boundary first, then any interior
@@ -135,17 +135,17 @@ pub struct Coord    { const x: i32, const y: i32 }
 //
 // A renderer draws it as one path with a subpath per ring and an EVEN-ODD fill, which gets holes and
 // disjoint parts from the same mechanism.
-pub struct Area     { const cover: text, const ring: vector<Coord>, const parts: vector<i32> }
-pub struct Building { const name: text, const ring: vector<Coord> }         // footprint polygon
-pub struct Line     { const kind: text, const name: text, const geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
-pub struct Label    { const name: text, const kind: text, const rank: integer, const line: vector<Coord> }
-pub struct Poi      { const kind: text, const name: text, const at: Coord }       // point icon (tree/bench/viewpoint/tower/ruin/crossing)
+pub struct Area     { pub const cover: text, pub const ring: vector<Coord>, pub const parts: vector<i32> }
+pub struct Building { pub const name: text, pub const ring: vector<Coord> }         // footprint polygon
+pub struct Line     { pub const kind: text, pub const name: text, pub const geom: vector<Coord> }  // stroked line (stream/ditch/river, railway)
+pub struct Label    { pub const name: text, pub const kind: text, pub const rank: integer, pub const line: vector<Coord> }
+pub struct Poi      { pub const kind: text, pub const name: text, pub const at: Coord }       // point icon (tree/bench/viewpoint/tower/ruin/crossing)
 // All fields const: tkey/ox/oy are set at construction, and the 5 geometry vectors are only ever GROWN
 // (`t.areas += [Area{…}]` in client/basemap/build_store.loft, encode_areas.loft, store_probe.loft),
 // never rebound — an append is a contents mutation, which const permits on a collection field.
-pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
-                      const areas: vector<Area>, const buildings: vector<Building>,
-                      const lines: vector<Line>, const labels: vector<Label>, const pois: vector<Poi>,
+pub struct PTile    { pub const tkey: integer, pub const ox: integer, pub const oy: integer,
+                      pub const areas: vector<Area>, pub const buildings: vector<Building>,
+                      pub const lines: vector<Line>, pub const labels: vector<Label>, pub const pois: vector<Poi>,
                       // The tile's ACTUAL feature extent, absolute fixed-point (PLAN-PERF §7g). A
                       // viewport filter cannot use ox/oy: a feature is keyed by its FIRST VERTEX and
                       // never clipped, so it overhangs its cell by up to 16 cells and an origin screen
@@ -158,8 +158,8 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
                       // grown, so the slot must still be writable then. `fcount == 0` means "no extent"
                       // (an empty tile, or a store written before this field existed) — treat it as
                       // "cannot skip" rather than "empty", so an old store degrades to today's full scan.
-                      fcount: integer = 0,
-                      fmnla: integer = 0, fmnlo: integer = 0, fmxla: integer = 0, fmxlo: integer = 0 }
+                      pub fcount: integer = 0,
+                      pub fmnla: integer = 0, pub fmnlo: integer = 0, pub fmxla: integer = 0, pub fmxlo: integer = 0 }
 
 // ===================================================================================================
 // SEARCHABLE NAMES (PLAN-RESTORE R4) — a store of its own, not a view of the base map.
@@ -178,14 +178,14 @@ pub struct PTile    { const tkey: integer, const ox: integer, const oy: integer,
 // finding nothing. The cell is coarse (NAME_CELL below) so one long street yields a handful of entries
 // rather than one per way — a search offers you the nearest, and the others are still reachable.
 pub struct NameRec {
-  const id: integer,       // insertion order — the store's key; nothing outside reads it
-  const name: text,        // exactly as OSM spells it, including diacritics
-  const fold: text,        // `name` case- and diacritic-folded: what a query is matched against, so the
+  pub const id: integer,       // insertion order — the store's key; nothing outside reads it
+  pub const name: text,        // exactly as OSM spells it, including diacritics
+  pub const fold: text,        // `name` case- and diacritic-folded: what a query is matched against, so the
                            // match does not have to fold 400k names on every keystroke (see `fold_name`)
-  const kind: u8,          // NK_* below
-  const rank: u8,          // place_rank for a place (6 city … 1 locality); 0 for a street
-  const lat: i32,          // a representative point, fixed-point 1e-7 — the store's own unit
-  const lon: i32,
+  pub const kind: u8,          // NK_* below
+  pub const rank: u8,          // place_rank for a place (6 city … 1 locality); 0 for a street
+  pub const lat: i32,          // a representative point, fixed-point 1e-7 — the store's own unit
+  pub const lon: i32,
 }
 
 pub const NK_STREET = 0;
@@ -217,9 +217,9 @@ pub const NK_PLACE  = 1;
 // ⚠ `wid` is NOT `const`: the generator registers every word first, then walks the trie in KEY order
 // to number them, because a prefix must map to a CONTIGUOUS wid interval (see `gen-names-index.loft`
 // pass 2). Write-once would force first-encounter numbering, which is the version that does not work.
-pub struct NxWord  { const w: text, wid: integer }
-pub struct NxPost  { const wid: integer, const p: vector<integer>, const la: vector<i32>, const lo: vector<i32> }
-pub struct NxEntry { const id: integer, const name: text, const lat: i32, const lon: i32, const kind: u8, const rank: u8 }
+pub struct NxWord  { pub const w: text, pub wid: integer }
+pub struct NxPost  { pub const wid: integer, pub const p: vector<integer>, pub const la: vector<i32>, pub const lo: vector<i32> }
+pub struct NxEntry { pub const id: integer, pub const name: text, pub const lat: i32, pub const lon: i32, pub const kind: u8, pub const rank: u8 }
 
 // A posting packs the record id with the two bits that decide the tier, because a tier is a property of
 // WHERE the word sits in its fold and nothing else survives dropping the fold:

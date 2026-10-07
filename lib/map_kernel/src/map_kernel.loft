@@ -660,7 +660,7 @@ pub fn do_find(names: hash<NameRec[id]>, q: text, clat: float, clon: float, limi
 
 // The wid interval a prefix occupies, and how many words are in it. `words` is 0 when nothing matches,
 // and the caller must then emit an empty result rather than fetching an interval that does not exist.
-pub struct NxSpan { const lo: integer, const hi: integer, const words: integer }
+pub struct NxSpan { pub const lo: integer, pub const hi: integer, pub const words: integer }
 
 pub fn nx_span(words: trie<NxWord[w]>, fq: text) -> NxSpan {
   lo = 0;
