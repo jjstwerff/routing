@@ -4,7 +4,7 @@
 //   loft --interpret tools/make_terrarium_tile.loft --lib lib <z> <x> <y>   (run from repo root)
 #cwd
 
-use imaging;
+use imaging::*;
 
 fn main() {
   z = -1;
