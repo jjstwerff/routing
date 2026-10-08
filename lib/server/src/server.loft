@@ -16,7 +16,7 @@
 // --- Types (must come before all functions) ---
 
 pub struct Server {
-  const handle: integer   // Rust-side server slot, set at construction
+  pub const handle: integer   // Rust-side server slot, set at construction
 }
 
 pub struct WebSocket {
@@ -271,12 +271,12 @@ fn ws_idle_sleep_ms_native(ms: integer);
 // is parsed by `run` so msg_id and payload come pre-split.
 pub struct WsEvent {
   const connected: boolean,
-  const message:   boolean,
-  const http:      boolean,    // true for a plain HTTP request (serve a page etc.)
-  const cid:       integer,    // WS client id; -1 for http events
-  const msg_id:    integer,    // 0 for connected / http events
-  const payload:   text,       // "" for connected / http events
-  const path:      text        // request path for http events; "" otherwise
+  pub const message:   boolean,
+  pub const http:      boolean,    // true for a plain HTTP request (serve a page etc.)
+  pub const cid:       integer,    // WS client id; -1 for http events
+  pub const msg_id:    integer,    // 0 for connected / http events
+  pub const payload:   text,       // "" for connected / http events
+  pub const path:      text        // request path for http events; "" otherwise
 }
 
 // Block forever, draining events and calling the handler.

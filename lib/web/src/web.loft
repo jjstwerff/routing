@@ -6,8 +6,8 @@
 
 // The result of an HTTP request.
 pub struct HttpResponse {
-  const status: integer,
-  const body: text
+  pub const status: integer,
+  pub const body: text
 }
 
 // Returns true when the status code is in the 200-299 range.

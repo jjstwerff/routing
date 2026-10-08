@@ -500,8 +500,8 @@ fn main() {
       cls = r0.cls;
       chain = r0.chain;         // the route this chain belongs to — 0 for a spine class
       cx: vector<integer> = []; cy: vector<integer> = [];
-      for xv in r0.xs { cx += [xv]; }
-      for yv in r0.ys { cy += [yv]; }
+      for xv in r0?.xs { cx += [xv]; }
+      for yv in r0?.ys { cy += [yv]; }
       // Grow the chain at BOTH ends. A run is picked up in tile order, so it is usually somewhere in the
       // middle of a road: extending only the tail would capture half of it and leave the other half to
       // start a second chain, which is the fragmentation this whole step exists to remove.
