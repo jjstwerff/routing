@@ -21,7 +21,8 @@ const stripExport = (s) => s.replace(/^export\s+/gm, '');
 const loftDeliverJs = stripExport(readFileSync(join(here, 'loft-deliver.js'), 'utf8'));
 const loftStoreMjs = stripExport(readFileSync(join(here, 'loft-store.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/loft-deliver\.js';\s*$/m, '');
-const storeGeomMjs = stripExport(readFileSync(join(here, 'store-geom.mjs'), 'utf8'));
+const storeGeomMjs = stripExport(readFileSync(join(here, 'store-geom.mjs'), 'utf8'))
+  .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/loft-store\.mjs';\s*$/m, '');
 const mapMjs = stripExport(readFileSync(join(here, 'map.mjs'), 'utf8'))
   .replace(/^import\s+\{[^}]*\}\s+from\s+'\.\/store-geom\.mjs';\s*$/m, '');
 const roughMjs = stripExport(readFileSync(join(here, 'rough.mjs'), 'utf8'));

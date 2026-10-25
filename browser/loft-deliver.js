@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Jurjen Stellingwerff
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// VENDORED VERBATIM from loft's `doc/loft-deliver.js` (loft `40daabd0`, @PLN105 #580, 2026-07-16).
+// VENDORED VERBATIM from loft's `doc/loft-deliver.js` (loft `c69f7c1a`, @PLN135 arc H #842, 2026-08-10 —
+// a hash's elements became (record, offset) PAIRS, stride 8; identical at the installed build `b36d0449`).
 // DO NOT EDIT — re-copy it instead, and keep the routing-side extensions in `loft-store.mjs`.
 // loft's release does not install this file (it ships only default/ + deps/), so a browser app that
 // wants the reader has to carry a copy; upstream's `tests/deliver_wasm.rs` is its byte-parity gate,
 // and diverging locally would silently lose that. Verify a refresh with:
-//   diff ../loft2/doc/loft-deliver.js browser/loft-deliver.js
+//   diff <(sed 1,11d browser/loft-deliver.js) <(sed 1,3d ../loft/doc/loft-deliver.js)
 //
 // @PLN105 Phase 2c — the generic descriptor-driven reader: reconstruct a delivered loft value
 // from wasm linear memory using ONLY its layout descriptor + the store base address, with no
@@ -113,14 +114,23 @@ function readLoftValue(mem, storeBase, desc, typeId, rec, pos) {
         // @PLN105 Phase 3 — a keyed collection pre-flattened at deliver time. The materialised data
         // record is NOT in the (type-shared) node; it is looked up in the `flat` redirect map by
         // this collection's `(rec, pos)` — so ONE `flatarray` node serves every instance (e.g. each
-        // element of a `vector<Bag>`). Otherwise identical to `array`.
+        // element of a `vector<Bag>`).
+        //
+        // `stride` says what an element is, and it is not always the same: 4 means a record
+        // number whose payload starts at byte 8 (radix, trie, index), 8 means a
+        // `(record, offset)` PAIR — a hash, whose entries are slots inside a chunked arena and
+        // have no record of their own. Defaulting to 4 keeps a descriptor written before the
+        // field existed readable.
         const dRec = (desc.flat && desc.flat[rec + "_" + pos]) || 0;
         if (dRec === 0) return [];
+        const stride = node.stride || 4;
         const len = view.getUint32(storeBase + dRec * 8 + 4, true);
         const a = new Array(len);
         for (let i = 0; i < len; i++) {
-          const elmRec = view.getUint32(storeBase + dRec * 8 + 8 + 4 * i, true);
-          a[i] = read(node.elem, elmRec, 8);
+          const at = storeBase + dRec * 8 + 8 + stride * i;
+          const elmRec = view.getUint32(at, true);
+          const elmPos = stride === 8 ? view.getUint32(at + 4, true) : 8;
+          a[i] = read(node.elem, elmRec, elmPos);
         }
         return a;
       }

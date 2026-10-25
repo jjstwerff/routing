@@ -14,7 +14,7 @@ import * as diag from './diag.mjs';
 import { createDevice } from './device.mjs';
 import * as pageCache from './page-cache.mjs';
 import { planPack, buildPack, describePlan } from './route-pack.mjs';
-import { flatCount, flatElement, flatField, flatFields } from './loft-store.mjs';
+import { flatCount, flatElement, flatField, flatFields, flatSlot } from './loft-store.mjs';
 import { buildIndex, storeLayout } from './store-geom.mjs';
 import { RoughLayer, KernelQueue } from './rough.mjs';
 import { resolveCoverage, roadsUrlsFor, baseUrlsFor, blocksChosenFor } from './coverage.mjs';
@@ -1893,9 +1893,9 @@ window.__perfHooks = {
     const layout = { coordId, kind: coord.kind, size: sizeOf(coordId), areaSize: sizeOf(areaId),
                      fields: (coord.fields || []).map((f) => ({ name: f.name, pos: f.pos, kind: d.nodes[f.content]?.kind })) };
     for (let i = 0; i < nTiles; i++) {
-      const tRec = u32(sb + dRec * 8 + 8 + 4 * i);
-      if (!tRec) continue;
-      const aRec = u32(sb + tRec * 8 + 8 + Number(fAreas.pos));
+      const slot = flatSlot(new DataView(mem.buffer), sb, d, h.typeId, dRec, i);   // a hash element: (rec, pos)
+      if (!slot.rec) continue;
+      const aRec = u32(sb + slot.rec * 8 + slot.pos + Number(fAreas.pos));
       if (!aRec) continue;
       const nAreas = u32(sb + aRec * 8 + 4);
       if (!nAreas) continue;
