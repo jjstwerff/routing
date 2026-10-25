@@ -11,6 +11,10 @@
 # by baking heights into Belgium and Luxembourg, which left both blocks readable only by the tool that
 # wrote them.
 #
+# ⚠ BINDING IS GONE (loft removed `store_persist_bind`, 2026-11). Both probes that used it now ask the
+# same question of what replaced it — `store_load`, and `store_persist_copy` from a wrapper field — and
+# keep their markers, so this gate reads them unchanged. The history below is in binding's terms.
+#
 # ⚠ WE FILED THIS AS A BUG AND WERE REFUTED — the behaviour below is BY DESIGN, and the probe is a
 # CONTRACT GUARD, not a defect watch. `store_persist_bind` binds the whole store the collection lives in;
 # a keyed FIELD shares its container's store, a keyed LOCAL owns one. So a field bind genuinely writes a
@@ -25,10 +29,10 @@
 # stays green while the generator-side tools break — which is exactly why this gate exists. #757 is not:
 # it reproduces on both backends and needs no library at all.
 #
-#   loft_store_key_probe   a keyed lookup on a `store_persist_bind`-bound store ABORTS the process
+#   loft_store_key_probe   a keyed lookup on a store read from a file ABORTED the process (was: bound)
 #                          (`find called on non-collection type: <varies> (db=128)`)
 #   loft_seek_probe        one of the sized binary reads (`f#read as u16`/`as i16`) returns NULL
-#   loft_schema_probe      a wrapper-struct bind leaves the store unreadable by a bare-local reader
+#   loft_schema_probe      a wrapper-struct write-back leaves the store unreadable by a bare-local reader
 #
 # ⚠ IT DID ITS JOB, AND THAT FLIPPED ITS EXIT CODE (2026-08-03). Both bugs are fixed upstream and both
 # workarounds are DELETED — `gen_heights.loft` reads one `i16` again, and nothing forbids a keyed lookup
@@ -56,10 +60,9 @@ fixed=0
 bad=0
 
 echo
-echo "-- keyed lookup on a bound store (loft#739; workaround deleted 2026-08-03)"
-# ⚠ ON A COPY, never the committed fixture. `store_persist_bind` rewrites the `.dschema` sidecar to name
-# the binding program's own wrapper struct and changes the schema hash — which loft#705 gates `store_load`
-# on. A gate that merely READS a block must not be able to make it unloadable.
+echo "-- keyed lookup on a store read from a file (loft#739; workaround deleted 2026-08-03)"
+# ON A COPY, never the committed fixture. The probe only loads now, but it used to BIND, and binding
+# rewrote the `.dschema` sidecar — a gate that merely reads a block must never be able to damage it.
 cp "$here/browser/stores/enschede.roads.store" "$work/fixture.store"
 cp "$here/browser/stores/enschede.roads.store.dschema" "$work/fixture.store.dschema" 2>/dev/null || true
 out="$("$loft" --native --lib "$here/lib" "$here/tools/loft_store_key_probe.loft" "$work/fixture.store" 2>&1)"
@@ -92,7 +95,7 @@ else
 fi
 
 echo
-echo "-- store_persist_bind through a wrapper struct (loft#757 — BY DESIGN; rule: bind a bare local)"
+echo "-- writing a store back through a wrapper struct (loft#757 — BY DESIGN; rule: use a bare local)"
 # ⚠ NOT a --native-only bug, unlike the two above: it reproduces on the interpreter too, which is why the
 # probe takes no library and this check does not care which backend ran it.
 out3="$("$loft" --native "$here/tools/loft_schema_probe.loft" "$work/schema.store" 2>&1)"

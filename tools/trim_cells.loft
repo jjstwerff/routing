@@ -64,12 +64,6 @@ fn main() {
   out_path = a[1] ?? "";
   key_path = a[2] ?? "";
 
-  // ⚠ `store_persist_bind` over an existing file ADOPTS the old image and returns true, so a re-run
-  // without this reports fresh counts over the previous run's bytes (HANDOFF §2).
-  if file(out_path).exists() {
-    println("#T FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
-    return;
-  }
   if !file(key_path).exists() { println("#T FAIL no key file at {key_path}"); return; }
 
   ds = DropSet { keys: [] };
@@ -92,7 +86,7 @@ fn main() {
     if ds.keys[t.tkey] != null { tdrop += 1; wdrop += nw; }
     else { wout += copy_into(out, t); tout += 1; }
   }
-  ok = store_persist_bind(out, out_path);
+  ok = store_persist_copy(out, out_path);
   // The arithmetic, printed rather than asserted: this tool is told what to remove, so "did it remove the
   // right thing" is the caller's question. What it CAN prove is that nothing else moved.
   println("#T in {tin} cells / {win} ways · asked {nkeys} keys · dropped {tdrop} cells / {wdrop} ways · out {tout} cells / {wout} ways · persist {ok}");

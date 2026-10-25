@@ -19,11 +19,10 @@
 // coordinate outside the grid (or in a tile the cache never had) keeps its zero and is COUNTED, so a
 // half-covered block reports itself instead of publishing as finished.
 //
-// ⚠ IT EDITS THE BLOCK IN PLACE, and it is the ONE tool here that WANTS `store_persist_bind` to adopt an
-// existing image. Everywhere else that is the hazard the `#PERSIST FAIL` guards exist for. Here adopting
-// IS the operation — the block is opened, its steps are given heights, and the same file is written back.
-// That makes it IDEMPOTENT: the same grid gives the same heights, so a run that dies half way is fixed by
-// running it again, not by regenerating the block.
+// ⚠ IT REWRITES THE BLOCK IT IS GIVEN: the block is loaded whole, its steps are given heights in memory,
+// and `store_persist_copy` writes it back to the same path. That makes it IDEMPOTENT: the same grid gives
+// the same heights, so a run that dies half way is fixed by running it again, not by regenerating the
+// block — and a run that dies before the write leaves the file exactly as it was.
 #cwd
 
 use routing_kernel::(TTile, TRoad, TStep, tile_xf, tile_yf);
@@ -32,11 +31,13 @@ TILE_PX = 256;             // a terrarium tile is 256x256 samples
 UNIT = 10000000.0;         // fixed-point units per degree (1e-7°), as TTile stores them
 HDR_BYTES = 24;            // "LTH1" + zoom, x0, y0, cols, rows — see pack_terrain.py
 
-// ⚠ NO WRAPPER STRUCT. `store_persist_bind` RECORDS THE BINDING PROGRAM'S OWN ROOT SHAPE in the
-// `.dschema` sidecar, so binding through a `struct Block { roads: … }` rewrote the sidecar to name it and
-// changed the schema hash — after which loft#705 makes every OTHER tool fail to load the block, because
-// they all bind a bare `hash<TTile[tkey]>` (gen-tiles, split_block, store_extent, cell_diff, the lot).
+// ⚠ NO WRAPPER STRUCT. A store image records the ROOT SHAPE of the collection that wrote it: a file
+// written from a bare `hash<TTile[tkey]>` is refused by a load into `struct Block { roads: … }`, and one
+// written back from that field is refused by every OTHER tool, because they all use a bare
+// `hash<TTile[tkey]>` (gen-tiles, split_block, store_extent, cell_diff, the lot). Re-checked on loft
+// 2026.10.20261024 with `store_persist_copy`: still true, and now refused at the load, with the reason.
 //
+// The history, from when this tool used `store_persist_bind` (removed from loft, 2026-11):
 // Measured on a copy of the Enschede fixture, 2026-08-03, loft 2026.8.0 md5 276cf8f9: heights filled
 // 289 117/289 117 and the block was then unreadable — `store_extent` returned 0 0 0 0 0 0. The damage is
 // SIDECAR-ONLY (the records are intact and correct), which is what makes it survivable and also what
@@ -100,18 +101,13 @@ fn main() {
   if !file(gpath).exists() { println("#H FAIL no height grid at {gpath} (tools/pack_terrain.py)"); return; }
 
   b: hash<TTile[tkey]> = [];
-  bound = store_persist_bind(b, path);
-  if !bound { println("#H FAIL could not bind {path}"); return; }
+  if !store_load(b, path) { println("#H FAIL could not load {path}"); return; }
 
-  // ⚠ ITERATE, and the reason is the WRITE, not a bug. The loop variable of a bound store's own hash is a
-  // LIVE VIEW, so `t.steps[i] = …` writes through to the file — which is what makes this an in-place edit
-  // rather than a copier. Proven directly: a step written in one run reads back changed in the next.
-  // (Narrower than it sounds — the "iteration yields copies" rule (loft C86) still bites on an inner
-  // collection walked for its scalar and text fields. Here the record's vector is shared, so it lands.)
-  //
-  // This comment used to forbid a keyed lookup outright, because `b.roads[k]` on a bound store ABORTED
-  // the runtime (loft#739, `src/database/search.rs:229`). That is fixed as of 2026-08-03, so the
-  // prohibition is gone — but nothing here wants a lookup anyway: every tile is visited.
+  // ⚠ ITERATE, and the reason is the WRITE. The loop variable of a hash is a LIVE VIEW of its record, so
+  // `t.steps[i] = …` lands in `b`, and the `store_persist_copy` below carries it to the file. (Narrower
+  // than it sounds — the "iteration yields copies" rule (loft C86) still bites on an inner collection
+  // walked for its scalar and text fields. Here the record's vector is shared, so it lands.) Nothing here
+  // wants a keyed lookup: every tile is visited.
   g = Grid { zoom: 0, x0: 0, y0: 0, cols: 0, rows: 0, present: [] };
   ntiles2 = 0;
   total = 0;
@@ -171,5 +167,6 @@ fn main() {
   if filled > 0 { println("#H height min={hmin}m max={hmax}m"); }
   // A block where nothing was sampled is a failure, not an empty result: it means the grid is for the
   // wrong area or the wrong zoom, and the block would publish looking finished.
-  if filled == 0 { println("#H FAIL no step got a height — does {gpath} cover this block?"); }
+  if filled == 0 { println("#H FAIL no step got a height — does {gpath} cover this block?"); return; }
+  if !store_persist_copy(b, path) { println("#H FAIL could not write {path} back"); return; }
 }

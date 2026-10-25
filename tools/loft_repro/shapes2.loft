@@ -16,7 +16,7 @@ fn main() {
       for tj in 0..each { tns += [Named { x: ti + tj, y: ti - tj, name: "n{tj}" }]; }
       tw += [TxtCell { key: 1000 + ti, ns: tns }];
     }
-    println("txt persist={store_persist_bind(tw, path)}");
+    println("txt persist={store_persist_copy(tw, path)}");
   } else {
     nw: hash<NestCell[key]> = [];
     for ni in 0..cells {
@@ -24,6 +24,6 @@ fn main() {
       for nj in 0..each { nrs += [Ring { x: nj, pts: [nj, nj + 1] }]; }
       nw += [NestCell { key: 1000 + ni, rs: nrs }];
     }
-    println("nest persist={store_persist_bind(nw, path)}");
+    println("nest persist={store_persist_copy(nw, path)}");
   }
 }

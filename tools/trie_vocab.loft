@@ -84,7 +84,7 @@ fn main() {
   println("[\"a\"..:8]  -> {capped} in {(ticks() - t2) / 1000} ms   <- the capped form a search box issues");
 
   t3 = ticks();
-  ok = store_persist_bind(words, dst);
+  ok = store_persist_copy(words, dst);
   println("persist {ok} in {(ticks() - t3) / 1000} ms");
 }
 

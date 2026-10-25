@@ -59,9 +59,9 @@ fn main() {
   before = tally(src);
   println("before: {before}");
 
-  ok = store_persist_bind(src, path);
+  ok = store_persist_copy(src, path);
   println("persist {ok}");
-  if !ok { println("S5.0 FAIL: store_persist_bind returned false"); return; }
+  if !ok { println("S5.0 FAIL: store_persist_copy returned false"); return; }
 
   dst: hash<PTile[tkey]> = [];
   lok = store_load(dst, path);

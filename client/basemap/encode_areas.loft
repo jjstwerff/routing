@@ -62,7 +62,7 @@ fn roundtrip(osm: text, cell: integer, path: text) -> integer {
   idx = build(osm, cell);
   nt = 0; na = 0;
   for t in idx { nt += 1; for _a in t.areas { na += 1; } }
-  ok = store_persist_bind(idx, path);
+  ok = store_persist_copy(idx, path);
   dst: hash<PTile[tkey]> = [];
   lok = store_load(dst, path);
   vok = store_verify(dst);
@@ -116,7 +116,7 @@ fn main() {
 
   // S5.3 — persist the REAL store to its own file, reload into a fresh store, verify, and recount.
   if out_path != "" {
-    ok = store_persist_bind(idx, out_path);
+    ok = store_persist_copy(idx, out_path);
     dst: hash<PTile[tkey]> = [];
     lok = store_load(dst, out_path);
     vok = store_verify(dst);

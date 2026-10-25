@@ -44,11 +44,6 @@ fn main() {
   for x in arguments() { a += [x]; }
   if len(a) < 3 { println("usage: merge_blocks <out.store> <in.store> <in.store> [more…]"); return; }
   out_path = a[0] ?? "";
-  if file(out_path).exists() {
-    println("#M FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
-    return;
-  }
-
   out: hash<TTile[tkey]> = [];
   tin = 0; win = 0;
   i = 1;
@@ -73,7 +68,7 @@ fn main() {
     i += 1;
   }
 
-  ok = store_persist_bind(out, out_path);
+  ok = store_persist_copy(out, out_path);
   // Counted on the way OUT as well as the way in, because "the merge kept everything" is the one property
   // a reference block must have — a reference that quietly lost a cell makes every comparison against it
   // pass for the wrong reason.

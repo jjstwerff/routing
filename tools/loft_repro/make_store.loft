@@ -24,6 +24,6 @@ fn main() {
     for pi in 0..each { pts += [ci * 7 + pi]; }
     ws += [Cell { key: 1000 + ci, name: "cell-{ci}", ox: ci * 400, oy: ci * 300, xs: pts }];
   }
-  ok = store_persist_bind(ws, path);
+  ok = store_persist_copy(ws, path);
   println("wrote {path}: {cells} cells x {each} ints  persist={ok}");
 }

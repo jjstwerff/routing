@@ -509,14 +509,13 @@ fn main() {
   println("tiles={nt} areas={na} buildings={nb} labels={nl} lines={nln} pois={npo} | named_building={named_bld} A1_label={a1}");
 
   if out_path != "" {
-    // ⚠ Remove an existing image first. `store_persist_bind` BINDS to whatever is already at the path
-    // rather than replacing it, so regenerating over a previous run's file can report persist/load/verify
-    // all true and reload the OLD contents. That cost an hour here: a first draft wrote 1089 empty tiles
-    // (a C86 copy bug), and every corrected run afterwards kept reloading those empty tiles from the file
-    // the broken run had left behind — the fix looked like it had not worked.
+    // Remove an existing image first, so a write that fails cannot leave the previous run's file to be
+    // reloaded and verified as this one. `store_persist_copy` overwrites; the old `store_persist_bind`
+    // ADOPTED whatever was at the path, which cost an hour here once: every corrected run kept reloading
+    // the 1089 empty tiles a broken first draft had left behind.
     _ = delete(out_path);
     _ = delete("{out_path}.dschema");
-    ok = store_persist_bind(idx, out_path);
+    ok = store_persist_copy(idx, out_path);
     dst: hash<PTile[tkey]> = [];
     lok = store_load(dst, out_path);
     vok = store_verify(dst);

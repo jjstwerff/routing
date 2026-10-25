@@ -7,7 +7,7 @@
 //   loft --native-release --lib lib tools/gen-tiles.loft <out.tiles> <overpass.json> [networks]
 // The optional third argument is `tools/route_networks.py`'s way→network sidecar; omit it and the block
 // carries no RF_NET_* bits, which is exactly the pre-R3 behaviour.
-// NOTE: writes an mmap store via store_persist_bind — native only; wasm loads via a codec (PLAN-APP §3).
+// NOTE: writes the block with store_persist_copy (an image sized to its content); the app pages it by range.
 // Regenerate blocks whenever loft's store format changes (loft#513 changed it — old .tiles read empty).
 #cwd                          // CLI tool: <out.tiles> / <overpass.json> resolve against the working dir
 
@@ -340,6 +340,6 @@ fn main() {
   // the price of a reader that never leaves the tile it already holds, and printing it is how it stays
   // a known price rather than a surprise in the block's size.
   println("built: tiles={nt} roads={nr} barriers={nb} route-records={nrt} links={nrl}");
-  ok = store_persist_bind(idx, a[0]);
+  ok = store_persist_copy(idx, a[0]);
   println("persist {ok}");
 }

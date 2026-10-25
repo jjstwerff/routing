@@ -21,7 +21,7 @@ fn main() {
       for fj in 0..each { fxs += [fi + fj, fi - fj]; }     // 2 ints per element — same as Pt
       fw += [FlatCell { key: 1000 + fi, xs: fxs }];
     }
-    println("flat persist={store_persist_bind(fw, path)}");
+    println("flat persist={store_persist_copy(fw, path)}");
   } else {
     rw: hash<RecCell[key]> = [];
     for ri in 0..cells {
@@ -29,6 +29,6 @@ fn main() {
       for rj in 0..each { rps += [Pt { x: ri + rj, y: ri - rj }]; }
       rw += [RecCell { key: 1000 + ri, ps: rps }];
     }
-    println("record persist={store_persist_bind(rw, path)}");
+    println("record persist={store_persist_copy(rw, path)}");
   }
 }
