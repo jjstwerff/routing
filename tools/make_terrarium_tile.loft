@@ -4,7 +4,7 @@
 //   loft --interpret tools/make_terrarium_tile.loft --lib lib <z> <x> <y>   (run from repo root)
 #cwd
 
-use imaging;
+use imaging::*;
 
 fn main() {
   z = -1;
@@ -27,7 +27,7 @@ fn main() {
     h = 100;
     if i % 256 >= 128 { h = 200; }
     v = h + 32768;                          // terrarium: h = r·256 + g + b/256 − 32768
-    px += [Pixel { r: v / 256, g: v % 256, b: 0 }];
+    px += [Pixel { r: (v / 256) & 255, g: (v % 256) & 255, b: 0 }];   // v is 32868..33068: both already fit a byte
   }
   img = Image { name: "tile", width: 256, height: 256, data: px };
   _ = mkdir_all("scratch/tiles");

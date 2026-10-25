@@ -233,6 +233,16 @@ export async function createKernel(wasmUrl) {
       loft_host_input_len: () => (inQ.length ? inQ[0].length : 0),
       loft_host_input_copy: (ptr) => { const b = inQ.shift(); if (b) new Uint8Array(mem.buffer, ptr, b.length).set(b); },
       loft_host_output: (/* ptr, len */) => {},               // structured out — unused by this kernel
+      // loft#851: `--html` binds a page filesystem now, so the runtime's file calls import these. This
+      // page HAS no filesystem and needs none — every store is named by an absolute http(s) URL (each one
+      // goes through `new URL(…).href` in store-app.mjs), which loft reads over `loft_host_http_*`. Only
+      // a NON-URL source reaches here, and it must fail as ABSENT (loft's own sentinels: size -1, a read
+      // of usize::MAX), so loft reports "no such file" instead of the page dying at instantiation.
+      loft_host_fs_file_size: (/* ptr, len */) => -1,
+      loft_host_fs_seek: (/* ptr, len, pos */) => {},
+      loft_host_fs_read_text: (/* ptr, len */) => 0xFFFFFFFF,
+      loft_host_fs_read_bytes: (/* ptr, len, want */) => 0xFFFFFFFF,
+      loft_host_fs_copy: (/* ptr */) => {},
       loft_host_http_get: (ptr, len) => {
         if (ctrl.ac && ctrl.ac.exports.asyncify_get_state() === 2) { ctrl.ac.suspend(); return ctrl.httpBytes ? ctrl.httpBytes.length : 0xFFFFFFFF; }
         const url = dec.decode(new Uint8Array(mem.buffer, ptr, len));

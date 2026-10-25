@@ -65,7 +65,14 @@ SKETCHES = [
 // four sketches now cover three distinct routes. Left as-is deliberately: perturbing sketch 1 to force
 // them apart would change what the corpus MEANS mid-baseline, and the border splice is equally exercised
 // by a route two sketches agree on. Worth revisiting if a third collapses.
-GOLDEN = [13745388917202, 13745388917202, 2260294265658, 2364394022486];
+//
+// Re-baselined 2026-10-25 — the fixture was REGENERATED (loft 2026.10's hash layout cannot read the old
+// one) from a 2026-10-25 Geofabrik extract, and sketches 0 and 1 moved, again together; 2 and 3 did not.
+// The cause is the DATA, and that was MEASURED rather than assumed: the same extract built and probed
+// with the August toolchain (loft 2026.8.0 + rustc 1.97.1 + routing at 59014ec) gives these four values
+// exactly, with the same ways/tiles/route_pts/crossings on every sketch. So the new loft routes
+// identically; only the map changed under it.
+GOLDEN = [13873313601409, 13873313601409, 2260294265658, 2364394022486];
 PROFILE = "cycling_road";
 CELL    = 200000;          // tile edge in fixed-point units — TILE_CELL in routing_kernel
 

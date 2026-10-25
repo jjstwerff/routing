@@ -21,7 +21,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 block="${1:-}"; kind="${2:-PTile}"
 [ -f "$block" ] || { echo "usage: add_cell_coords.sh <block.store> <PTile|TTile>"; exit 2; }
-name="$(basename "$block")"; idx="$here/blocks/$name.pages.json"
+dir="$(cd "$(dirname "$block")" && pwd)"     # the block's own directory — see build_page_index.sh
+name="$(basename "$block")"; idx="$dir/$name.pages.json"
 [ -f "$idx" ] || { echo "SKIP: no index at $idx — run build_page_index.sh first"; exit 2; }
 
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
@@ -31,7 +32,7 @@ use basemap::PTile;
 use routing_kernel::TTile;
 fn main() {
   ws: hash<$kind[tkey]> = [];
-  store_load(ws, "$here/blocks/$name");
+  store_load(ws, "$dir/$name");
   for t in ws { println("C {t.tkey} {t.ox} {t.oy}"); }
 }
 LOFT

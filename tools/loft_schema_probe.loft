@@ -1,11 +1,18 @@
 // Copyright (c) 2026 Jurjen Stellingwerff
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// DOES `store_persist_bind` THROUGH A WRAPPER STRUCT MAKE A STORE UNREADABLE? — minimal, no libraries.
+// DOES WRITING A STORE THROUGH A WRAPPER STRUCT MAKE IT UNREADABLE? — minimal, no libraries (loft#757).
 //
-// The sidecar records the BINDING PROGRAM'S root shape. A store written from a bare `hash<Rec[k]>` and
-// later ADOPTED through `struct Wrap { recs: hash<Rec[k]> }` — the ordinary shape for an in-place editor
-// — comes back with a sidecar naming `Wrap`, and loft#705 then refuses the original bare-local reader.
+// A store image records the ROOT SHAPE of the collection that wrote it. A store written from a bare
+// `hash<Rec[k]>`, then opened and edited through `struct Wrap { recs: hash<Rec[k]> }` — the ordinary
+// shape for an in-place editor — and written back from that field, comes back rooted at `Wrap`, which the
+// original bare-local reader refuses. Upstream: by design, not a bug (a keyed field is not its own store).
+//
+// This used to ADOPT the file with `store_persist_bind`; loft removed it (2026-11), so the editor is now
+// `store_load` → edit → `store_persist_copy`, the shape `tools/gen_heights.loft` uses. On loft
+// 2026.10.20261024 the load into the wrapper is itself refused, so the edit never happens and the file
+// the wrapper writes back holds nothing a bare reader accepts. The markers are unchanged, because
+// `tools/loft_bug_gate.sh` reads them: `#P BUG PRESENT` there means "the contract holds".
 //
 //   loft --native --lib lib tools/loft_schema_probe.loft <scratch.store>
 #cwd
@@ -24,14 +31,15 @@ fn main() {
   // WRITE from a bare local — what every generator in the consumer does.
   a: hash<Rec[k]> = [];
   for i in 0..10 { a += Rec { k: i, v: i }; }
-  w1 = store_persist_bind(a, path);
+  w1 = store_persist_copy(a, path);
 
-  // ADOPT through a WRAPPER and edit in place — what an in-place editor naturally looks like, because a
-  // hash is usually reached for as a struct field.
+  // OPEN through a WRAPPER, edit, and write back — what an in-place editor naturally looks like, because
+  // a hash is usually reached for as a struct field.
   w = Wrap { recs: [] };
-  w2 = store_persist_bind(w.recs, path);
+  w2 = store_load(w.recs, path);
   nw = 0;
   for r in w.recs { r.v = r.v + 100; nw += 1; }
+  _ = store_persist_copy(w.recs, path);
 
   // READ BACK with the shape it was WRITTEN with.
   b: hash<Rec[k]> = [];
@@ -39,7 +47,7 @@ fn main() {
   nb = 0;
   for r2 in b { nb += 1; }
 
-  println("#P write={w1} adopt={w2} edited={nw} reload={ok} records={nb}");
-  if ok && nb == 10 { println("#P FIXED — a wrapper bind leaves the store readable by its original shape"); }
-  else { println("#P BUG PRESENT — after a wrapper bind, the bare-local reader gets {nb} of 10 records (load={ok})"); }
+  println("#P write={w1} wrapper-load={w2} edited={nw} reload={ok} records={nb}");
+  if ok && nb == 10 { println("#P FIXED — a wrapper write-back leaves the store readable by its original shape"); }
+  else { println("#P BUG PRESENT — after a wrapper write-back, the bare-local reader gets {nb} of 10 records (load={ok})"); }
 }

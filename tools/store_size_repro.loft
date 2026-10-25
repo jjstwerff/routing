@@ -70,6 +70,6 @@ fn main() {
 
   recs = 0; coords = 0;
   for r in idx { recs += 1; coords += len(r.pts); }
-  ok = store_persist_bind(idx, path);
+  ok = store_persist_copy(idx, path);
   println("records {recs} coords {coords} persist {ok}");
 }

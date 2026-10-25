@@ -25,7 +25,12 @@ command -v node >/dev/null || { echo "SKIP: node not found"; exit 2; }
 # The site is rebuilt here rather than assumed: a gate that reads whatever _site happened to hold last is
 # a gate on a previous tree. SITE_LOCAL_ONLY keeps it offline — the fixture block is all this needs.
 SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" >/dev/null || exit 1
-"$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
+# ⚠ NEVER the default output. `build_index.sh` with no argument rewrites the COMMITTED browser/coverage.json
+# — harmless while the loft in hand reads the published blocks, and it ZEROED every extent in the live
+# index the day a loft format change made them unreadable (2026-10-25). The gate only needs to know the
+# index BUILDS; the site already has its own from build-site, and index_fresh_gate owns the committed one.
+mkdir -p "$here/scratch"
+"$here/tools/build_index.sh" "$here/scratch/gate-coverage.json" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 [ -f "$here/_site/stores/enschede.roads.store" ] || { echo "SKIP: no roads fixture in _site"; exit 2; }
 
 rm -rf "$profile"; mkdir -p "$here/scratch"

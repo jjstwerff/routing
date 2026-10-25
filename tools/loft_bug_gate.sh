@@ -11,6 +11,10 @@
 # by baking heights into Belgium and Luxembourg, which left both blocks readable only by the tool that
 # wrote them.
 #
+# ⚠ BINDING IS GONE (loft removed `store_persist_bind`, 2026-11). Both probes that used it now ask the
+# same question of what replaced it — `store_load`, and `store_persist_copy` from a wrapper field — and
+# keep their markers, so this gate reads them unchanged. The history below is in binding's terms.
+#
 # ⚠ WE FILED THIS AS A BUG AND WERE REFUTED — the behaviour below is BY DESIGN, and the probe is a
 # CONTRACT GUARD, not a defect watch. `store_persist_bind` binds the whole store the collection lives in;
 # a keyed FIELD shares its container's store, a keyed LOCAL owns one. So a field bind genuinely writes a
@@ -25,10 +29,10 @@
 # stays green while the generator-side tools break — which is exactly why this gate exists. #757 is not:
 # it reproduces on both backends and needs no library at all.
 #
-#   loft_store_key_probe   a keyed lookup on a `store_persist_bind`-bound store ABORTS the process
+#   loft_store_key_probe   a keyed lookup on a store read from a file ABORTED the process (was: bound)
 #                          (`find called on non-collection type: <varies> (db=128)`)
 #   loft_seek_probe        one of the sized binary reads (`f#read as u16`/`as i16`) returns NULL
-#   loft_schema_probe      a wrapper-struct bind leaves the store unreadable by a bare-local reader
+#   loft_schema_probe      a wrapper-struct write-back leaves the store unreadable by a bare-local reader
 #
 # ⚠ IT DID ITS JOB, AND THAT FLIPPED ITS EXIT CODE (2026-08-03). Both bugs are fixed upstream and both
 # workarounds are DELETED — `gen_heights.loft` reads one `i16` again, and nothing forbids a keyed lookup
@@ -56,10 +60,9 @@ fixed=0
 bad=0
 
 echo
-echo "-- keyed lookup on a bound store (loft#739; workaround deleted 2026-08-03)"
-# ⚠ ON A COPY, never the committed fixture. `store_persist_bind` rewrites the `.dschema` sidecar to name
-# the binding program's own wrapper struct and changes the schema hash — which loft#705 gates `store_load`
-# on. A gate that merely READS a block must not be able to make it unloadable.
+echo "-- keyed lookup on a store read from a file (loft#739; workaround deleted 2026-08-03)"
+# ON A COPY, never the committed fixture. The probe only loads now, but it used to BIND, and binding
+# rewrote the `.dschema` sidecar — a gate that merely reads a block must never be able to damage it.
 cp "$here/browser/stores/enschede.roads.store" "$work/fixture.store"
 cp "$here/browser/stores/enschede.roads.store.dschema" "$work/fixture.store.dschema" 2>/dev/null || true
 out="$("$loft" --native --lib "$here/lib" "$here/tools/loft_store_key_probe.loft" "$work/fixture.store" 2>&1)"
@@ -92,7 +95,7 @@ else
 fi
 
 echo
-echo "-- store_persist_bind through a wrapper struct (loft#757 — BY DESIGN; rule: bind a bare local)"
+echo "-- writing a store back through a wrapper struct (loft#757 — BY DESIGN; rule: use a bare local)"
 # ⚠ NOT a --native-only bug, unlike the two above: it reproduces on the interpreter too, which is why the
 # probe takes no library and this check does not care which backend ran it.
 out3="$("$loft" --native "$here/tools/loft_schema_probe.loft" "$work/schema.store" 2>&1)"
@@ -118,6 +121,24 @@ else
 fi
 
 echo
+echo "-- a same-named pub fn in two libraries vs the cached cdylib (loft#2180 — status, never a failure)"
+# `basemap::cell_ix` and `routing_kernel::cell_ix` share a name, and a library's auto-built cdylib names
+# that bridge by the view of whichever program built it FIRST: a later program with a different view
+# misses the symbol and runs the function interpreted. Correct either way, only slower — so this reports
+# and never fails. It runs on a FRESH copy each time, because the first builder is the whole question.
+dup="$work/dupname"; cp -r "$here/tools/loft_repro/dupname_bridge" "$dup"
+( cd "$dup" && "$loft" --lib lib both.loft >/dev/null 2>&1 && "$loft" --lib lib both.loft >/dev/null 2>&1 )
+out4="$(cd "$dup" && "$loft" --lib lib one.loft 2>&1)"
+if ! grep -q '^one: 9 2' <<<"$out4"; then
+  echo "   ⚠ UNKNOWN — the reproducer did not print its answer:"; sed 's/^/     /' <<<"$out4" | tail -3
+elif grep -q 'function(s) interpreted this run' <<<"$out4"; then
+  echo "   ⏳ still present — one.loft runs alpha::cell interpreted after both.loft built the cdylib"
+else
+  echo "   ✅ FIXED upstream — the second program dispatches natively. Re-check loft#2180, and the"
+  echo "      cell_ix rename it would have needed can stay un-done."
+fi
+echo
+
 if [ "$bad" -gt 0 ]; then
   echo "FAIL — $bad upstream bug(s) are back, and the workarounds for them are gone."
   echo "       tools/height_gate.sh is what breaks next; git log tools/gen_heights.loft has the old shape."

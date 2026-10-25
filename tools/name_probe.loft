@@ -52,6 +52,7 @@ fn main() {
     // test the formatter too.
     fq = fold_name(f.q);
     best_sc = 0 - 1; best_d = 0.0; best_name = ""; best_kind = 0; found = false;
+    best_lat = 0.0; best_lon = 0.0;   // read only when `found`, which also set them
     for r in names {
       sc = name_score(r.fold, fq);
       if sc < 0 { continue; }

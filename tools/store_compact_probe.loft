@@ -1,29 +1,31 @@
 // Copyright (c) 2026 Jurjen Stellingwerff
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// Does BINDING a block compact it — here, on this box, with the loft that is installed?
+// Does REWRITING a block compact it — here, on this box, with the loft that is installed?
 //
 // loft#730 reports that a store carries the 7/4 slack its vectors grew to, that compaction could not see
 // it (the slack is INSIDE records, and the gate measured the space BETWEEN them), and that binding a
-// store now sheds it: `nl-east.roads.store` 161 793 096 -> 81 271 776, content digest unchanged. That
-// number was measured upstream, on this repo's own block — which is exactly why it must be re-measured
-// HERE before anything in this tree is planned around it (CLAUDE.md: anchor a finding to the binary).
+// store shed it: `nl-east.roads.store` 161 793 096 -> 81 271 776, content digest unchanged. Binding is
+// gone (loft removed `store_persist_bind`, 2026-11); `store_persist_copy` now writes every image
+// rebuilt and "sized to its content, with none of the growth slack the live store keeps". So a block a
+// generator writes today should already be compact, and this measures whether that holds — on this
+// box, with this binary (CLAUDE.md: anchor a finding to the binary).
 //
-// So this does the smallest thing that can answer it: bind the store, read its record count back so the
-// bind is not optimised into nothing, and report the file size on both sides of the bind.
+// The smallest thing that answers it: load the block, count its records (so the read is a real one),
+// write it back with `store_persist_copy`, and report the file size on both sides.
 //
 //   loft --native --lib lib tools/store_compact_probe.loft <block.store>
 //
-// ⚠ IT REWRITES THE FILE IT IS GIVEN. Point it at a COPY. `store_persist_bind` adopts the image, and an
-// adopted image that compacts is the whole point of the measurement — there is no read-only form of it.
+// ⚠ IT REWRITES THE FILE IT IS GIVEN. Point it at a COPY — or at a block you mean to compact, which is
+// how `tools/cut-regions.sh` uses it. A block that fails to load is left untouched.
 #cwd
 
 use routing_kernel::(TTile, TRoad, TStep);
 
 // ⚠ A BARE LOCAL, not a wrapper struct. This bound through `struct Block { roads: … }` until
-// 2026-08-03, which means it COMPACTED AND CORRUPTED in one pass: loft#757 makes the sidecar record the
-// binding program's root shape, so every other tool then fails to load the block it just shrank. Found by
-// sweeping every `store_persist_bind` in tools/ after gen_heights did exactly this to Belgium.
+// 2026-08-03, which means it COMPACTED AND CORRUPTED in one pass: loft#757 makes the image record the
+// writing collection's root shape, so every other tool then fails to load the block it just shrank.
+// Still true under `store_persist_copy` — a load into a wrapper is refused outright now.
 
 fn main() {
   a: vector<text> = [];
@@ -33,13 +35,13 @@ fn main() {
 
   before = file(path).size;
   b: hash<TTile[tkey]> = [];
-  ok = store_persist_bind(b, path);
-  // Read something real back: a bind whose result is never used is a bind a compiler may skip, and a
-  // "compaction" measured on a store nobody opened is not a measurement.
+  if !store_load(b, path) { println("#C FAIL could not load {path} — left untouched"); return; }
+  // Read something real back: a "compaction" measured on a store nobody read is not a measurement.
   tiles = 0;
   roads = 0;
   for t in b { tiles += 1; roads += len(t.roads); }
+  ok = store_persist_copy(b, path);
   after = file(path).size;
-  println("#C bind={ok} tiles={tiles} roads={roads}");
+  println("#C write={ok} tiles={tiles} roads={roads}");
   println("#C bytes before={before} after={after}");
 }

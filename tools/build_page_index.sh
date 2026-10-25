@@ -25,7 +25,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 loft="${LOFT_BIN:-$(command -v loft || echo /usr/local/bin/loft)}"
 block="${1:-}"; kind="${2:-PTile}"; out="${3:-}"
 [ -f "$block" ] || { echo "usage: build_page_index.sh <block.store> <PTile|TTile> [out.json]"; exit 2; }
-name="$(basename "$block")"; out="${out:-$here/blocks/$name.pages.json}"
+# The block's OWN directory, never a hard-coded `blocks/`: a dataset is staged beside the live one
+# (BLOCKS_OUT), and indexing it must not write into — or serve from — the live set.
+dir="$(cd "$(dirname "$block")" && pwd)"
+name="$(basename "$block")"; out="${out:-$dir/$name.pages.json}"
 port="${PAGEIDX_PORT:-8477}"; PAGE=65536
 command -v python3 >/dev/null || { echo "SKIP: python3"; exit 2; }
 
@@ -42,7 +45,7 @@ bytes="$(stat -c%s "$block")"
 # browser gate here; it now logs what was ASKED FOR under RANGE_LOG, so the recording cannot drift from
 # what the app actually experiences.
 : > "$w/reads.log"
-RANGE_LOG="$w/reads.log" python3 "$here/tools/range_server.py" "$port" "$here/blocks" /dev/null >/dev/null 2>&1 &
+RANGE_LOG="$w/reads.log" python3 "$here/tools/range_server.py" "$port" "$dir" /dev/null >/dev/null 2>&1 &
 srv=$!
 sleep 1
 
@@ -57,7 +60,7 @@ fn main() {
   for t in ws { println("K {t.tkey}"); }
 }
 LOFT
-sed -i "s|BLOCKPATH|$here/blocks/$name|" "$w/keys.loft"
+sed -i "s|BLOCKPATH|$dir/$name|" "$w/keys.loft"
 mapfile -t keys < <(cd "$w" && "$loft" --native --lib "$here/lib" keys.loft 2>/dev/null | sed -n 's/^K //p')
 [ "${#keys[@]}" -gt 0 ] || { echo "FAIL: no cells read out of $name (wrong record type? tried $kind)"; exit 1; }
 echo "== page index for $name =="

@@ -8,8 +8,8 @@
 
 // A rough or matched point. lat/lon in degrees (WGS84).
 pub struct GeoPoint {
-  const lat: float,
-  const lon: float,
+  pub const lat: float,
+  pub const lon: float,
 }
 
 // Discharge sentinel for an UNREACHABLE `v[i]` null. Indexing is fallible under @PLN25, so `pts[i]`
@@ -97,38 +97,38 @@ pub fn path_length_m(pts: vector<GeoPoint>) -> float {
 // it stays target-agnostic.
 
 pub struct BBox {
-  const min_lat: float,
-  const min_lon: float,
-  const max_lat: float,
-  const max_lon: float,
+  pub const min_lat: float,
+  pub const min_lon: float,
+  pub const max_lat: float,
+  pub const max_lon: float,
 }
 
 // One OSM way from the corridor: its activity-relevant tags + its geometry.
 pub struct Way {
-  const highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
-  const surface:   text,   // `surface=` or "" when absent
-  const tracktype: text,   // `tracktype=` or ""
-  const bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
-  const access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
-  const foot:      text = "",  // `foot=` (yes/designated/no/private/…) — legal WALKING access, or ""
+  pub const highway:   text,   // the `highway=` value (residential / footway / cycleway / …)
+  pub const surface:   text,   // `surface=` or "" when absent
+  pub const tracktype: text,   // `tracktype=` or ""
+  pub const bicycle:   text,   // `bicycle=` (yes/designated/no/dismount/…) — legal cycling access, or ""
+  pub const access:    text,   // `access=` (no/private/destination/…) — general traffic access, or ""
+  pub const foot:      text = "",  // `foot=` (yes/designated/no/private/…) — legal WALKING access, or ""
                            // Defaulted so the 40-odd existing Way{} sites need no edit; set it where
                            // the tags are actually known (parse_way_feature, append_tile_ways).
-  const oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
-  const onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
-  const svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
-  const cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
-  const cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
-  const name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
-  const wid:       integer = 0,  // the OSM way id, or 0 when the source did not carry one.
+  pub const oneway:    text,   // `oneway=` (yes/-1/no/…) — travel direction restriction, or ""
+  pub const onewaybike:text,   // `oneway:bicycle=` — bike-specific override (e.g. contraflow "no"), or ""
+  pub const svc:       text,   // `service=` (driveway/alley/parking_aisle/…) — not a through-route, or ""
+  pub const cycleway:  text,   // `cycleway=` (lane/track/…) — on-road cycle infrastructure, or ""
+  pub const cyclestreet:text,  // `cyclestreet=`/`bicycle_road=` — a fietsstraat (cars are guests), or ""
+  pub const name:      text,   // `name=` — road identity, to detect an out-and-back BESIDE the same road, or ""
+  pub const wid:       integer = 0,  // the OSM way id, or 0 when the source did not carry one.
                            // Only the geojsonseq path knows it (osmium's `-u type_id`), and only the
                            // generator uses it: it is the join key against the route-relation sidecar
                            // that says whether this way carries a signposted network (PLAN-RESTORE R3).
                            // Defaulted like `foot` above, so the 40-odd existing Way{} sites need no edit.
-  const net:       integer = 0,  // signposted-network membership: RF_NET_WALK|CYCLE|MTB, or 0.
+  pub const net:       integer = 0,  // signposted-network membership: RF_NET_WALK|CYCLE|MTB, or 0.
                            // Not a tag — OSM keeps it in route RELATIONS, which are memberships and not
                            // geometry, so no per-way export can carry it. It is joined in by the
                            // generator and rides in the stored flags from there.
-  const coords:    vector<GeoPoint>,
+  pub const coords:    vector<GeoPoint>,
 }
 
 // Bounding box of the rough points, expanded by `margin_m` metres on every side. (A true narrow
@@ -362,7 +362,7 @@ TICK_EVERY = 64;
 TILE_UNIT = 10000000.0;   // fixed-point units per degree (1e-7°)
 TILE_CELL = 200000;       // grid cell edge in units (0.02° ≈ 2 km)
 
-pub struct TStep { const x: i32, const y: i32, const h: i32 }
+pub struct TStep { pub const x: i32, pub const y: i32, pub const h: i32 }
 
 // PLAN-LAYERS §3 (L1) — WHICH ROUTE, not just whether there is one.
 //
@@ -376,8 +376,8 @@ pub struct TStep { const x: i32, const y: i32, const h: i32 }
 // region the reader never asked for. A route crossing many tiles is written into each of them — measured
 // duplication is small (a route record is a few dozen bytes, and the country holds 83 762 of them), and
 // it buys a reader that never leaves the tile it already has.
-pub struct TRoute { const rid: integer, const kind: u8, const level: u8, const flags: u8,
-                    const colour: text, const rref: text, const name: text }
+pub struct TRoute { pub const rid: integer, pub const kind: u8, pub const level: u8, pub const flags: u8,
+                    pub const colour: text, pub const rref: text, pub const name: text }
 pub const NET_WALK  = 1;    // route=hiking|foot   (iwn/nwn/rwn/lwn)
 pub const NET_CYCLE = 2;    // route=bicycle       (icn/ncn/rcn/lcn)
 pub const NET_MTB   = 4;    // route=mtb
@@ -394,7 +394,7 @@ pub const RT_NODE_NETWORK = 1;
 // country's 2.78M ways are on any route at all (17%), so a nested vector per road would be 2.78M little
 // heap records to express 945 000 memberships — and loft#730 has just finished teaching this repo that a
 // record costs about twice its modelled contents. One entry per membership is ~3.8 MB nationally.
-pub struct TRLink { const road: u16, const route: u16 }
+pub struct TRLink { pub const road: u16, pub const route: u16 }
 
 // `flags` is u16, not u8, and the extra byte is spent deliberately: the low 8 bits are the RF_* way tags,
 // and there is room left for `oneway=`, which the store still drops for exactly this reason (§9).
@@ -404,7 +404,7 @@ pub struct TRLink { const road: u16, const route: u16 }
 // (2 166 relations) and inline-skating routes as well as walk/cycle/MTB. A u16 of its own holds sixteen,
 // eleven of them free, and the numbering is now the SAME on the wire, in the sidecar and here (NET_*),
 // which removes the deliberate two-numbering dance the generator used to perform.
-pub struct TRoad { const tp: u8, const flags: u16, const nets: u16, const steps: u8 }
+pub struct TRoad { pub const tp: u8, pub const flags: u16, pub const nets: u16, pub const steps: u8 }
 
 // --- barriers ---------------------------------------------------------------------------------
 // A gate across a path is a NODE, not a tag on the way, so nothing in a way-only pipeline can see it:
@@ -419,10 +419,10 @@ pub struct TRoad { const tp: u8, const flags: u16, const nets: u16, const steps:
 // ⚠ Adding this field does NOT invalidate existing blocks: a store written without it reads back with an
 // empty vector (verified against a block generated before the field existed). Blocks that predate it
 // simply have no barriers — missing data, not breakage.
-pub struct TBarrier { const x: i32, const y: i32, const flags: u8 }
+pub struct TBarrier { pub const x: i32, pub const y: i32, pub const flags: u8 }
 
 // A barrier resolved to world coordinates, as the corridor read hands it to the graph.
-pub struct Barrier { const lat: float, const lon: float, const flags: integer }
+pub struct Barrier { pub const lat: float, pub const lon: float, pub const flags: integer }
 
 // What a barrier STOPS. Most barriers stop nobody we route: a bollard, a lift gate and a jersey barrier
 // are all there to keep cars out, and a router that treated them as walls would be more wrong than one
@@ -433,8 +433,8 @@ pub const BF_BIKE_DISMOUNT = 4;   // passable, but you are getting off (cycle ba
 // All fields const: tkey/ox/oy/oh are set at construction, and roads/steps are only ever GROWN
 // (`t.roads += […]` in tools/gen-tiles.loft), never rebound — an append is a contents mutation, which
 // const permits on a collection field.
-pub struct TTile { const tkey: integer, const ox: integer, const oy: integer, const oh: integer, const roads: vector<TRoad>, const steps: vector<TStep>,
-                   const barriers: vector<TBarrier>, const routes: vector<TRoute>, const rlinks: vector<TRLink> }
+pub struct TTile { pub const tkey: integer, pub const ox: integer, pub const oy: integer, pub const oh: integer, pub const roads: vector<TRoad>, pub const steps: vector<TStep>,
+                   pub const barriers: vector<TBarrier>, pub const routes: vector<TRoute>, pub const rlinks: vector<TRLink> }
 
 // RoadType code → a representative OSM highway value, so the existing tag-based cost model works
 // unchanged on tile-sourced ways. ("" → skip: platform/unknown are not routable ways.)
@@ -898,12 +898,12 @@ pub struct Graph {
   // records for a corridor that has ~37.6k edges — the whole point.
   wtags: vector<WayTags>,
   index: hash<CoordIdx[coord]>,   // packed fixed-point coord → node idx (dedup)
-  nodes: vector<GNode>,
+  pub nodes: vector<GNode>,
   // Parallel to `nodes`: the barrier flags AT that node, 0 for the overwhelming majority. A column
   // rather than a field on GNode because it is filled in a second pass — the nodes do not exist until
   // the ways have been walked, and a barrier is located by coordinate, not by way.
   nbar: vector<integer>,
-  edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
+  pub edges: vector<GEdge>,           // one entry per undirected way-segment (holds the tags)
   // CSR adjacency (FLAT vectors — not nested, so no O(n^2) interpreter trap): the arcs leaving node
   // u are adj_to[adj_head[u] .. adj_head[u+1]]. Each undirected edge contributes two arcs (a→b, b→a);
   // adj_edge[k] is the GEdge index for arc k (for its tags/cost + digitised direction). Built once in
@@ -1605,7 +1605,7 @@ fn push_pt(out: &vector<GeoPoint>, p: GeoPoint) {
 // pts = the matched polyline. bridges = how many gaps were bridged. bseg = a FLAT list of the bridge
 // segments' endpoints (a0,b0,a1,b1,…): each consecutive pair is a straight gap crossing (drawn along
 // the sketch, not a real way), which the client renders as a DOTTED line so it never looks like a road.
-pub struct MatchResult { const pts: vector<GeoPoint>, const bridges: integer, const bseg: vector<GeoPoint> }
+pub struct MatchResult { pub const pts: vector<GeoPoint>, pub const bridges: integer, pub const bseg: vector<GeoPoint> }
 
 // ===================================================================================================
 // THE map-matcher (DESIGN §5) — a two-pass scheme that treats the drawn points as NOISY SAMPLES of a
@@ -1931,7 +1931,7 @@ fn stitch(g: Graph, st: MatchState) -> MatchResult {
 //   pen_m     — Σ way_penalty × edge_length: the suitability-penalty-weighted length. pen_m/len_m is
 //               the per-metre "how unsuitable were the ways I was forced onto" tell (the §3 PEN_TOL gate).
 //   class_m   — metres per road-class bucket (see road_class): the human-legible "bigger streets" view.
-pub struct MatchQuality { const dev_max: float, const dev_mean: float, const bridged_m: float, const len_m: float, const pen_m: float, const class_m: vector<float> }
+pub struct MatchQuality { pub const dev_max: float, pub const dev_mean: float, pub const bridged_m: float, pub const len_m: float, pub const pen_m: float, pub const class_m: vector<float> }
 
 // Road-class buckets for the metres-per-class mix. Coarse on purpose — the human question is "was I put
 // on a big road?", not the exact OSM value. 0 arterial · 1 through · 2 local · 3 cycleway · 4 foot/path · 5 other.
@@ -2389,18 +2389,18 @@ ELEV_TILE_PX = 256;   // terrarium tile edge in pixels
 // text — a constructed-text argument to a `float?`-returning fn zeroes the result under --native
 // (loft codegen bug, minimal repro in docs/loft-feedback.md; text keys stay in the fetch API).
 pub struct TileHeights {
-  const tx: integer,           // slippy tile column at the profile's zoom
-  const ty: integer,           // slippy tile row
-  const heights: vector<float>,   // filled once at decode, then read-only
+  pub const tx: integer,           // slippy tile column at the profile's zoom
+  pub const ty: integer,           // slippy tile row
+  pub const heights: vector<float>,   // filled once at decode, then read-only
 }
 
 // One profile sample: `d` metres along the route, `e` metres elevation.
-pub struct ElevSample { const d: float, const e: float }
+pub struct ElevSample { pub const d: float, pub const e: float }
 
 pub struct ElevProfile {
-  const up: float,             // total ascent (m)
-  const down: float,           // total descent (m)
-  const samples: vector<ElevSample>,
+  pub const up: float,             // total ascent (m)
+  pub const down: float,           // total descent (m)
+  pub const samples: vector<ElevSample>,
 }
 
 // Fractional slippy-map tile column for a longitude (tile = floor, pixel = fraction · 256).

@@ -100,13 +100,15 @@ def verify(path, leaves):
 
 
 def main():
-    out = 'blocks/coverage.pagesx'
+    # BLOCKS_OUT / COVERAGE_INDEX: a staged dataset and its own index, as every build script reads them.
+    blocks = os.environ.get('BLOCKS_OUT', 'blocks')
+    out = os.path.join(blocks, 'coverage.pagesx')
     max_cells = 512
     for a in sys.argv[1:]:
         if a.startswith('--max-cells'): max_cells = int(a.split('=')[1])
         elif not a.startswith('--'): out = a
 
-    cov = json.load(open('browser/coverage.json'))
+    cov = json.load(open(os.environ.get('COVERAGE_INDEX', 'browser/coverage.json')))
     url_of, sha_of = {}, {}
     for b in cov['blocks']:
         for k in ('roads', 'base'):
@@ -116,7 +118,7 @@ def main():
                 if s.get('sha256'): sha_of[s['url'].split('/')[-1]] = s['sha256']
 
     stores, cells = [], []          # cells: (ox, oy, store_id, pages)
-    for f in sorted(glob.glob('blocks/*.pages.json')):
+    for f in sorted(glob.glob(os.path.join(blocks, '*.pages.json'))):
         d = json.load(open(f))
         xy = d.get('xy')
         if not xy:

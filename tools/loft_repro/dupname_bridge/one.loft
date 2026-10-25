@@ -1,0 +1,2 @@
+use alpha;
+fn main() { println("one: {alpha::cell(95)} {alpha::other(1)}"); }

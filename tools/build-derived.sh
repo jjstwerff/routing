@@ -146,10 +146,9 @@ for i in $(seq 0 $((${#dids[@]} - 1))); do
   # Print the plan and build nothing. The scoping above is the kind of thing that is only ever exercised
   # by a full build, which is an hour of CPU — so it gets a way to be checked in a second.
   [ "${DRY_RUN:-0}" = 1 ] && { echo "  DRY_RUN — would build $dst"; continue; }
-  # ⚠ DELETE FIRST. `store_persist_bind` over an existing file ADOPTS the old image, writes none of the
-  # new contents and returns TRUE, so a rebuild without this is exactly the stale-but-fresh-looking
-  # artifact this script exists to prevent. build_overview refuses an existing target for the same
-  # reason; the `rm` is what makes a re-run work rather than fail.
+  # DELETE FIRST, so a build that fails cannot leave the previous run's block looking fresh — the
+  # `[ -f "$dst" ]` check below would pass on it. (`store_persist_copy` overwrites; the old
+  # `store_persist_bind` adopted an existing image and reported success, which is why this was added.)
   rm -f "$dst" "$dst.dschema"
   log="$(mktemp)"
   # ⚠ It reports failure on STDOUT and exits ZERO — like every store tool here (see cut-regions.sh).
@@ -169,6 +168,3 @@ echo
 # successful run — the one outcome this script exists to prevent.
 [ "$built" -gt 0 ] || die "no derived block reads any region of '$only' — is that a country in $manifest?"
 echo "  Derived $built of ${#dids[@]} block(s). NOT published — see tools/refresh-region.sh step 6."
-echo "  ⚠ Not compacted: a derived block is written fresh and has never been bound, so it carries the"
-echo "    slack loft#730 sheds at bind (the region blocks lose ~half). Shrinking these changes published"
-echo "    bytes, which is a decision of its own — tools/store_compact_probe.loft does it in place."

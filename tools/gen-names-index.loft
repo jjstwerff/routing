@@ -120,8 +120,8 @@ fn main() {
   }
 
   println("index: {words.len()} words · {npost} postings · {ents.len()} entries");
-  w_ok = store_persist_bind(words, "{out}.nxwords.store");
-  p_ok = store_persist_bind(posts, "{out}.nxposts.store");
-  e_ok = store_persist_bind(ents,  "{out}.nxents.store");
+  w_ok = store_persist_copy(words, "{out}.nxwords.store");
+  p_ok = store_persist_copy(posts, "{out}.nxposts.store");
+  e_ok = store_persist_copy(ents,  "{out}.nxents.store");
   println("persist words={w_ok} posts={p_ok} entries={e_ok}");
 }

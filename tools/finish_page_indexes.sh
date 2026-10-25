@@ -23,9 +23,10 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 stage=0; [ "${1:-}" = "--stage" ] && stage=1
+blocks="${BLOCKS_OUT:-$here/blocks}"      # a staged set, never the live one — see build_all_page_indexes.sh
 
 shopt -s nullglob
-idxs=("$here"/blocks/*.pages.json)
+idxs=("$blocks"/*.pages.json)
 [ ${#idxs[@]} -gt 0 ] || { echo "no indexes yet — run tools/build_all_page_indexes.sh"; exit 2; }
 echo "== finishing ${#idxs[@]} index(es) =="
 done_n=0; skip=0
@@ -35,7 +36,7 @@ for idx in "${idxs[@]}"; do
   hasxy="$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(1 if d.get('xy') else 0)" "$idx" 2>/dev/null || echo 0)"
   printf '\n-- %s (%s)\n' "$name" "$kind"
   if [ "$hasxy" = "0" ]; then
-    "$here/tools/add_cell_coords.sh" "$here/blocks/$name" "$kind" 2>&1 | sed 's/^/  /' || { echo "  FAIL: coords"; continue; }
+    "$here/tools/add_cell_coords.sh" "$blocks/$name" "$kind" 2>&1 | sed 's/^/  /' || { echo "  FAIL: coords"; continue; }
   else
     echo "   coordinates already present"
   fi
@@ -47,10 +48,10 @@ done
 # assembled incrementally is the one thing that could disagree with the data it names.
 echo
 echo "== one index over every coordinated store =="
-( cd "$here" && python3 tools/build_coverage_index.py ) || { echo "  FAIL: coverage index"; exit 1; }
+( cd "$here" && BLOCKS_OUT="$blocks" python3 tools/build_coverage_index.py ) || { echo "  FAIL: coverage index"; exit 1; }
 if [ "$stage" = 1 ]; then
   if [ -d "$here/_site" ]; then
-    cp "$here/blocks/coverage.pagesx" "$here/_site/coverage.pagesx"
+    cp "$blocks/coverage.pagesx" "$here/_site/coverage.pagesx"
     echo "   staged -> _site/coverage.pagesx"
   else
     echo "   ⚠ no _site — run node browser/build-site.mjs first (it stages the index itself)"

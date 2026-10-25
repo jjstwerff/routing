@@ -225,7 +225,12 @@ fi
 # The index is generated from the manifest and the blocks themselves, never edited, so the gate rebuilds
 # it rather than trusting the copy in the tree — a stale index is the failure it exists to prevent.
 SITE_LOCAL_ONLY=1 node "$here/browser/build-site.mjs" || exit 1
-"$here/tools/build_index.sh" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
+# ⚠ NEVER the default output. `build_index.sh` with no argument rewrites the COMMITTED browser/coverage.json
+# — harmless while the loft in hand reads the published blocks, and it ZEROED every extent in the live
+# index the day a loft format change made them unreadable (2026-10-25). The gate only needs to know the
+# index BUILDS; the site already has its own from build-site, and index_fresh_gate owns the committed one.
+mkdir -p "$here/scratch"
+"$here/tools/build_index.sh" "$here/scratch/gate-coverage.json" >/dev/null || { echo "  FAIL: could not build the coverage index"; exit 1; }
 echo "  ✓ coverage index: $(grep -oP '"id":"\K[^"]+' "$here/_site/coverage.json" | tr '\n' ' ')"
 [ -f "$here/browser/store-kernel.wasm" ] || { echo "SKIP: browser/store-kernel.wasm missing (run: node browser/build-store-kernel.mjs)"; exit 2; }
 

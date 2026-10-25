@@ -104,14 +104,6 @@ fn main() {
 
   cover = (a[4] ?? "") == "cover";
 
-  // ⚠ `store_persist_bind` ADOPTS AN EXISTING IMAGE. Pointed at a file that already exists it keeps the
-  // old contents, writes none of the new ones, and still returns TRUE — so a re-run silently produces
-  // the previous answer. It cost a wrong three-region cut on 2026-08-01: the trim reported the new
-  // feature counts, `persist true`, a fresh mtime, and the file still held the old map.
-  if file(a[1] ?? "").exists() {
-    println("#PERSIST FAIL {a[1] ?? ""} already exists — store_persist_bind would keep the OLD image and report success. Remove it first.");
-    return;
-  }
   src: hash<PTile[tkey]> = [];
   if !store_load(src, a[0] ?? "") { println("#T FAIL store_load"); return; }
 
@@ -141,6 +133,6 @@ fn main() {
     else { dropped += 1; df += n; }
   }
   seal_extents(out);
-  ok = store_persist_bind(out, a[1] ?? "");
+  ok = store_persist_copy(out, a[1] ?? "");
   println("#T band [{lo_deg},{hi_deg}) cells [{lo_cell},{hi_cell}) · kept tiles={kept} features={kf} · dropped tiles={dropped} features={df} · persist {ok}");
 }

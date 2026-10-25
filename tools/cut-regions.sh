@@ -100,9 +100,9 @@ ways_in() {   # count roads.ways in a block — the same arithmetic `conservatio
 
 # ⚠ THESE TOOLS REPORT FAILURE ON STDOUT AND EXIT ZERO. `split_block`, `trim_base` and `merge_base` each
 # print `FAIL:` or `#PERSIST FAIL` and then `return` from main — which is a normal exit — so a caller
-# written as `tool … || die` is blind to every failure they have. That is not hypothetical: the
-# `#PERSIST FAIL` guard exists precisely because a re-run over an existing file kept the OLD image and
-# reported success, and a `||` caller would sail straight past the guard that catches it.
+# written as `tool … || die` is blind to every failure they have. That is not hypothetical: a
+# `#PERSIST FAIL` guard used to catch a re-run over an existing file keeping the OLD image and reporting
+# success (the old `store_persist_bind`), and a `||` caller would have sailed straight past it.
 #
 # So run them through here: non-zero exit OR a FAIL line is a failure, and only the lines worth reading
 # reach the log (loft prints pages of compile advice to stderr on every --native invocation).
@@ -153,15 +153,16 @@ produced+=("$out/${ids[$((n - 1))]}.roads.store")
 
 # COMPACTION — the step that was only ever a sentence in HANDOFF, and it halves the file.
 #
-# loft 2026.8.0 (#730) sheds the slack a store's vectors grew to when the store is BOUND, so a block
-# shrinks by being opened and re-persisted: nl-east 166.0 -> 84.2 MB, content identical. A freshly cut
-# block has never been bound, so it is the raw size — which is what the four blocks came out at until
-# this pass existed, and twice what the published ones cost.
+# loft 2026.8.0 (#730) shed the slack a store's vectors grew to only when the store was BOUND, so a block
+# shrank by being opened and re-persisted: nl-east 166.0 -> 84.2 MB, content identical. That is why this
+# pass exists. Since loft removed `store_persist_bind` (2026-11), every image is written by
+# `store_persist_copy`, rebuilt and sized to its content — so a freshly cut block is ALREADY compact, and
+# this pass rewrites it to the same size (measured 2026-10-25: a grown 74 000-record store, fresh image
+# 1 298 776 B, loaded and rewritten 1 298 776 B).
 #
-# `store_compact_probe.loft` is the compaction: it binds the store in place. There is no read-only form
-# of it (binding IS the rewrite), and giving the same code a second name would just be two things to keep
-# in step. What makes it safe to use as a pipeline step rather than a probe is the check below — the ways
-# are counted again AFTER, so a compaction that ever lost a record fails here instead of shipping.
+# It stays because the check below is worth having on its own: `store_compact_probe.loft` loads and
+# rewrites the block, and the ways are counted again AFTER, so a rewrite that ever lost a record fails
+# here instead of shipping.
 sum=0
 for b in "${produced[@]}"; do
   raw="$(stat -c%s "$b")"

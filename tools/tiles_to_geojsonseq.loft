@@ -22,12 +22,47 @@
 // closed; omit it and the regenerated block silently loses every RF_NET_* bit — which is a route change,
 // so the parity check would fail somewhere far from the cause.
 //
+// BARRIERS AND THE ROUTE TABLE have to come back too, and for two years of the gate's life they did not:
+// the emitter wrote ways and network bits only, so the regenerated block had no barriers and no `TRoute`
+// table, and the parity check passed only while no barrier or route preference happened to move a gate
+// route. The 2026-10-25 extract has one that does (sketches 0-3), and the August toolchain fails the gate
+// on it identically — a lossy writer checked against a full reader, exactly what the header above warns
+// about. So each `TBarrier` is written as the Point feature `parse_barrier_feature` turns back into its
+// flags, and each tile's routes as the sidecar's `R` (route) and `M` (membership) lines.
+//
 //   loft --native --lib lib tools/tiles_to_geojsonseq.loft <roads.store> <out.geojsonseq>
 #cwd
 
-use routing_kernel::(TTile, TRoad, TStep,
+use routing_kernel::(TTile, TRoad, TStep, TBarrier, TRoute, TRLink,
                      RF_CYCLEWAY, RF_UNPAVED, RF_ACCESS_NO, RF_BIKE_NO, RF_BIKE_YES, RF_FOOT_NO, RF_FOOT_YES, RF_SVC_LOCAL,
-                     NET_WALK, NET_CYCLE, NET_MTB);
+                     NET_WALK, NET_CYCLE, NET_MTB, NET_HORSE, NET_SKATE, oneway_tags,
+                     BF_FOOT_NO, BF_BIKE_NO, BF_BIKE_DISMOUNT);
+
+// A route id already written to the sidecar. Every tile a route crosses carries its own `TRoute` copy,
+// and `gen-tiles` keys its route table by id, so each id is written once.
+struct SeenRoute { const rid: integer }
+
+// The inverse of `gen-tiles`' `kind_bit`.
+fn kind_text(kind: integer) -> text {
+  if kind == NET_WALK { return "walk"; }
+  if kind == NET_CYCLE { return "cycle"; }
+  if kind == NET_MTB { return "mtb"; }
+  if kind == NET_HORSE { return "horse"; }
+  if kind == NET_SKATE { return "skate"; }
+  ""
+}
+
+// The inverse of the kernel's `barrier_flags`, for the three bits a `TBarrier` keeps. `gate` contributes
+// nothing on its own, `cycle_barrier` contributes exactly BF_BIKE_DISMOUNT, and `foot=no` / `bicycle=no`
+// each OR in their bit — so every one of the eight flag values maps back to itself.
+fn barrier_props(flags: integer) -> text {
+  bar = "gate";
+  if (flags & BF_BIKE_DISMOUNT) == BF_BIKE_DISMOUNT { bar = "cycle_barrier"; }
+  props = "\"barrier\":\"{bar}\"";
+  if (flags & BF_FOOT_NO) == BF_FOOT_NO { props += ",\"foot\":\"no\""; }
+  if (flags & BF_BIKE_NO) == BF_BIKE_NO { props += ",\"bicycle\":\"no\""; }
+  props
+}
 
 // The inverse of `class_of` — one representative highway value per class, chosen so `class_of` maps it
 // straight back. Class 12 is `track`, which used to share class 8 with `path` (see gen-tiles).
@@ -62,11 +97,17 @@ fn main() {
   out = file(a[1] ?? "");
   body = "";
   netbody = "";
-  nnet = 0;
+  routebody = "";
+  memberbody = "";
+  seen: hash<SeenRoute[rid]> = [];
+  nnet = 0; nroutes = 0; nmembers = 0; nbarriers = 0;
   nways = 0; ncoords = 0;
   for t in tiles {
     o = 0;
-    for r in t.roads {
+    // Walk by INDEX: the membership lookup below needs each road's position in `t.roads`, which is what
+    // a `TRLink.road` names.
+    for ri in 0..len(t.roads) {
+      r = t.roads[ri] ?? TRoad { tp: 0, flags: 0, nets: 0, steps: 0 };
       cnt = r.steps as integer;
       // `flags_of` inverted — every bit it sets must come back out, or the round-trip gate is checking
       // a lossy writer against a lossy reader and passing. The access bits (2–7) are the ones that make
@@ -81,6 +122,10 @@ fn main() {
       if (fl & RF_FOOT_NO) == RF_FOOT_NO { ft = "no"; }
       else if (fl & RF_FOOT_YES) == RF_FOOT_YES { ft = "yes"; }
       if (fl & RF_SVC_LOCAL) == RF_SVC_LOCAL { sv = "driveway"; }
+      // Bits 8-11 are `oneway=` and `oneway:bicycle=` (PLAN-SCALE §9 item 7), added after this emitter
+      // was written and missed by it — every one-way street came back two-way. The kernel's own decoder
+      // is used rather than a second copy of the bit layout, so the two cannot drift.
+      (ow, owb) = oneway_tags(fl);
       // ⚠ Literal braces are DOUBLED: `{` opens interpolation in a loft string, and JSON is mostly
       // braces. `{{` / `}}` emit one.
       // RFC 8142 record separator (0x1E), because that is what `osmium export -f geojsonseq` writes —
@@ -91,7 +136,28 @@ fn main() {
       // is exactly the kind of seam a round-trip can pass through backwards without anyone noticing.
       mask = r.nets as integer;
       wid = nways + 1;
-      if mask > 0 { netbody += "{wid} {mask}\n"; nnet += 1; }
+      if mask > 0 {
+        netbody += "{wid} {mask}\n"; nnet += 1;
+        // This road's routes, in LINK order — the order `gen-tiles` appended them in, so it assigns the
+        // same per-tile route slots. `load_networks` attaches an `M` line only to a way it already read a
+        // mask for, which is why this sits inside `mask > 0`, as it does in `route_networks.py`'s output.
+        rids = "";
+        for lk in t.rlinks {
+          if (lk.road as integer) == ri {
+            rt = t.routes[lk.route as integer];
+            if rt != null {
+              if rids != "" { rids += ","; }
+              rids += "{rt.rid}";
+              if seen[rt.rid] == null {
+                seen += [SeenRoute { rid: rt.rid }];
+                routebody += "R\t{rt.rid}\t{kind_text(rt.kind as integer)}\t{rt.level as integer}\t{rt.flags as integer}\t{rt.colour}\t{rt.rref}\t{rt.name}\n";
+                nroutes += 1;
+              }
+            }
+          }
+        }
+        if rids != "" { memberbody += "M\t{wid}\t{rids}\n"; nmembers += 1; }
+      }
       line = "{RS}{{\"type\":\"Feature\",\"id\":\"w{wid}\",\"properties\":{{\"highway\":\"{hw_of_class(r.tp as integer)}\"";
       if cw != "" { line += ",\"cycleway\":\"{cw}\""; }
       if surf != "" { line += ",\"surface\":\"{surf}\""; }
@@ -99,6 +165,8 @@ fn main() {
       if bike != "" { line += ",\"bicycle\":\"{bike}\""; }
       if ft   != "" { line += ",\"foot\":\"{ft}\""; }
       if sv   != "" { line += ",\"service\":\"{sv}\""; }
+      if ow   != "" { line += ",\"oneway\":\"{ow}\""; }
+      if owb  != "" { line += ",\"oneway:bicycle\":\"{owb}\""; }
       line += "}},\"geometry\":{{\"type\":\"LineString\",\"coordinates\":[";
       for j in 0..cnt {
         s = t.steps[o + j] ?? TStep { x: 0, y: 0, h: 0 };
@@ -116,9 +184,17 @@ fn main() {
       o = o + cnt;
       nways += 1;
     }
+    for b in t.barriers {
+      blon = ((t.ox + (b.x as integer)) as float) / 10000000.0;
+      blat = ((t.oy + (b.y as integer)) as float) / 10000000.0;
+      body += "{RS}{{\"type\":\"Feature\",\"properties\":{{{barrier_props(b.flags as integer)}}},\"geometry\":{{\"type\":\"Point\",\"coordinates\":[{blon:1.7},{blat:1.7}]}}}}\n";
+      nbarriers += 1;
+    }
   }
   out.write(body);
+  // Ways first, then routes, then memberships: an `M` line is attached to a way the sidecar has already
+  // named, so it must come after that way's mask line.
   netfile = file("{a[1] ?? \"\"}.networks");
-  netfile.write(netbody);
-  println("wrote {nways} features / {ncoords} coords / {nnet} network ways");
+  netfile.write(netbody + routebody + memberbody);
+  println("wrote {nways} features / {ncoords} coords / {nnet} network ways / {nbarriers} barriers / {nroutes} routes / {nmembers} memberships");
 }

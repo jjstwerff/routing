@@ -33,9 +33,6 @@
 // ⚠ Regions carry a 0.10° MARGIN of their neighbours, so a feature in a margin band exists in two region
 // stores and will be written twice. The geometry is identical, so it draws identically; it costs bytes,
 // not correctness. Building from ONE country store avoids it and is preferred when one exists.
-//
-// Refuses an existing output: `store_persist_bind` ADOPTS an existing image, keeps the old contents and
-// still returns true (PLAN-SCALE §6f). Delete before regenerating.
 #cwd
 
 use basemap::(PTile, Area, Building, Line, Label, Poi, Coord,
@@ -440,11 +437,6 @@ fn main() {
   // a few hundred tiles instead of tens of thousands.
   mintier = argv[4] as integer ?? 2;
 
-  if file(out_path).exists() {
-    println("#PERSIST FAIL {out_path} already exists — store_persist_bind would keep the OLD image and report success. Remove it first.");
-    return;
-  }
-
   // One pixel at `zmax`, in metres on the ground: the tolerance at which decimation is INVISIBLE, which
   // is the property that makes the handover to the detailed blocks unseeable rather than blended.
   sc = 1.0;
@@ -500,8 +492,8 @@ fn main() {
       cls = r0.cls;
       chain = r0.chain;         // the route this chain belongs to — 0 for a spine class
       cx: vector<integer> = []; cy: vector<integer> = [];
-      for xv in r0.xs { cx += [xv]; }
-      for yv in r0.ys { cy += [yv]; }
+      for xv in r0?.xs { cx += [xv]; }
+      for yv in r0?.ys { cy += [yv]; }
       // Grow the chain at BOTH ends. A run is picked up in tile order, so it is usually somewhere in the
       // middle of a road: extending only the tail would capture half of it and leave the other half to
       // start a second chain, which is the fragmentation this whole step exists to remove.
@@ -582,7 +574,7 @@ fn main() {
   println("#O spine: {nways} ways -> {chains} chains -> {c.spine} lines, {c.spine_coords} coords");
 
   seal_extents(out);
-  ok = store_persist_bind(out, out_path);
+  ok = store_persist_copy(out, out_path);
   dst: hash<PTile[tkey]> = [];
   lok = store_load(dst, out_path);
   vok = store_verify(dst);

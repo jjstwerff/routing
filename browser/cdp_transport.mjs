@@ -45,7 +45,7 @@ import { spawn } from 'node:child_process';
 const CDP_TIMEOUT_MS = Number(process.env.CDP_TIMEOUT_MS || 30_000);
 
 export async function launch({
-  bin, userDataDir, url = 'about:blank', args = [], maxLifetimeMs = 600_000, clearStorage = true,
+  bin, userDataDir, url = 'about:blank', args = [], maxLifetimeMs = Number(process.env.CDP_MAX_LIFETIME_MS || 600_000), clearStorage = true,
   // ⚠ NOT A COSMETIC DEFAULT. The window size sets the map viewport, which sets which terrain/base tiles
   // a camera needs. The browser/ gates all launched at 1000x700; the three server-app tests in tools/
   // launched with chrome's own default and `windowSize: null` keeps them there. Forcing 1000x700 on

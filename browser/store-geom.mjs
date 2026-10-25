@@ -29,7 +29,10 @@
 //   value at (rec, pos)     -> byte  storeBase + rec*8 + pos
 //   vector field at (r, p)  -> vRec = u32 there; len = u32 at (vRec, 4); elements inline at (vRec, 8 + stride*j)
 //   text field at (r, p)    -> sRec = u32 there; len = u32 at (sRec, 4); bytes at (sRec, 8); 0 / >0x7fffffff = null
-//   the exposed collection  -> dRec = desc.flat[`${rec}_${pos}`]; count at (dRec, 4); element i's rec at (dRec, 8 + 4i)
+//   the exposed collection  -> dRec = desc.flat[`${rec}_${pos}`]; count at (dRec, 4); element i at (dRec, 8 + stride*i):
+//                              stride 4 = its rec, payload at pos 8; stride 8 (a hash, loft #842) = (rec, pos) — `flatSlot`
+
+import { flatSlot } from './loft-store.mjs';
 
 const NULL_STR = 0x7fffffff;
 
@@ -171,9 +174,11 @@ export function buildIndex(mem, h, L, fbox, kinds) {
   };
 
   for (let t = 0; t < nTiles; t++) {
-    const tRec = u32(sb + dRec * 8 + 8 + 4 * t);
-    if (!tRec) continue;
-    const tAt = sb + tRec * 8 + 8;                            // element data starts at pos 8
+    // A tile is a HASH element — a (record, offset) pair since loft #842, not a record of its own — so
+    // its payload is located by `flatSlot`, never by `rec*8 + 8`.
+    const slot = flatSlot(dv, sb, d, h.typeId, dRec, t);
+    if (!slot.rec) continue;
+    const tAt = sb + slot.rec * 8 + slot.pos;
     // §7g's sealed feature extent: five scalars decide the tile before any geometry is touched.
     const fcount = i64(tAt + L.fcount);
     if (fcount > 0) {

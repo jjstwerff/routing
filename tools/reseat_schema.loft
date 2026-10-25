@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Jurjen Stellingwerff
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
-// RECOVER A BLOCK WHOSE SIDECAR NAMES A WRAPPER STRUCT — the repair for the `store_persist_bind` trap.
+// RECOVER A BLOCK WHOSE SIDECAR NAMES A WRAPPER STRUCT — the repair for the old `store_persist_bind` trap.
 //
 // WHAT WENT WRONG, so this is recognisable when it happens again. `store_persist_bind` records the
 // BINDING PROGRAM'S OWN ROOT SHAPE in the `.dschema`. A tool that binds through
@@ -53,11 +53,6 @@ fn main() {
   if len(a) < 2 { println("usage: reseat_schema <in.store> <out.store>"); return; }
   in_path = a[0] ?? "";
   out_path = a[1] ?? "";
-  if file(out_path).exists() {
-    println("#S FAIL {out_path} already exists — store_persist_bind would keep the OLD image. Remove it first.");
-    return;
-  }
-
   src = Block { roads: [] };
   if !store_load(src.roads, in_path) {
     println("#S FAIL cannot load {in_path} through the wrapper either — this is not the damage this repairs");
@@ -73,7 +68,7 @@ fn main() {
     // worth asserting: a copier that dropped `h` would produce a perfectly readable, perfectly wrong block.
     for s2 in t.steps { if (s2.h as integer) != 0 { hn += 1; } }
   }
-  ok = store_persist_bind(out, out_path);
+  ok = store_persist_copy(out, out_path);
   tout = 0; wout = 0;
   for t2 in out { tout += 1; wout += len(t2.roads); }
   println("#S in {tin} cells / {win} ways · out {tout} cells / {wout} ways · {hn} step(s) carry a height · persist {ok}");

@@ -83,6 +83,6 @@ fn main() {
     }
   }
   println("reordered {written} tiles ({mode}) roads={roads} steps={steps}");
-  ok = store_persist_bind(fresh, a[1] ?? "");
+  ok = store_persist_copy(fresh, a[1] ?? "");
   println("persist {ok}");
 }
