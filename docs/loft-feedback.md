@@ -2323,3 +2323,39 @@ mismatch is knowable at bind time; reachability is not; the two are now reported
 **The meta-finding, and it is the one to carry forward.** This document's own probes moved the
 compiler twice in one day. A consumer doc that describes a language surface is describing a moving
 target, and `--version` will not warn you: re-probe §2 against the binary in your hand.
+
+## 2026-10-25 — moving to loft 2026.10.20261024: one format break, one API removal, one gap left by #802
+
+Measured on the installed `~/.local/bin/loft` (`loft 2026.10.20261024`, built from `b36d0449`), which now
+shadows `/usr/local/bin/loft` (`2026.8.0`) on `PATH`. The old binary cannot build here at all any more:
+rustc moved 1.97.1 → 1.99.0 and it refuses to build a library's native half.
+
+**Every routing block is unreadable, by design.** `store_load` on `browser/stores/enschede.roads.store`:
+*"the store's a hash was written by a build that lays it out differently (placement 1), which this
+build cannot read."* The new layout pads records to 4 bytes (`TBarrier` 9→12, `TRoute` 23→24, `TTile`
+52→56) and records `placement=3` on the hash. This is the format break @PLN135 weighed — it refuses
+loudly, which is the contract, and the cure is the documented one: regenerate (code → regenerate →
+publish → merge). Not a finding; recorded so the next reader knows why the fixtures stopped loading.
+
+**`store_persist_bind` removed (2026-11) — a migration, not a regression.** Every call site here was
+one of three shapes, and each has a direct replacement: build-then-save → `store_persist_copy`;
+open-to-read → `store_load`; open-and-edit-in-place (`gen_heights`) → `store_load`, edit,
+`store_persist_copy` to the same path. Probed on both backends before relying on it: the copy
+**overwrites** an existing file (so the adopt-and-report-success trap that cost two wrong regenerations
+is gone, and the `#PERSIST FAIL` guards against it went with it); an edit through a `for` variable on a
+loaded hash, including a replaced inner-vector element, lands in the written image; and a fresh image
+is already compact (a grown 74 000-record store: 1 298 776 B fresh, 1 298 776 B loaded and rewritten).
+loft#757's rule survives in a louder form: a load into a struct FIELD of a file written from a bare
+local is refused at the load, with the reason. What goes away with binding is loft#747's route around a
+generator's memory floor (file-backed pages that can be evicted) — `PLAN-SCALE` §6e's premise is back.
+
+**[gap left by loft#802] A lazy bind to a local image with a DIFFERENT LAYOUT answers `true`.**
+`store_bind_lazy(h, "enschede.roads.store")` → `true`; 200 000 lookups → 0 hits; `store_lazy_error` →
+*"its recorded layout differs from this program's (verdict: Changed(…TTile…)); not range-reading
+foreign bytes"*. Nothing is read wrongly and the reason does reach the program, so this is #802's
+second remedy, not its bug. But #802 was fixed at the BIND on the principle *"a mismatch knowable at
+bind time is refused at bind time"*, and for a local image the layout is exactly that: the `.dschema`
+sits beside the file. A consumer that checks `store_bind_lazy`'s result and not `store_lazy_error`
+starts up "bound" and answers every query from nothing. That is why `server/server.loft` uses a whole
+`store_load` instead, though every read it makes is keyed. **Ask:** refuse a layout mismatch at the
+bind for a local image (a URL source may still have to wait for the first fault). Not filed yet.
