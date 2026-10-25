@@ -1,0 +1,5 @@
+// loft#2180 — reproducer: `alpha::cell` and `beta::cell` share a name, so alpha's auto-built cdylib
+// names `cell`'s bridge by whichever program built it first. Run both.loft, then one.loft.
+use alpha;
+use beta;
+fn main() { println("both: {alpha::cell(95)} {beta::cell(95, 5)} {alpha::other(1)}"); }

@@ -1,0 +1,2 @@
+pub fn cell(x: integer) -> integer { x / 10 }
+pub fn other(x: integer) -> integer { x + 1 }

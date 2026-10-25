@@ -121,6 +121,24 @@ else
 fi
 
 echo
+echo "-- a same-named pub fn in two libraries vs the cached cdylib (loft#2180 — status, never a failure)"
+# `basemap::cell_ix` and `routing_kernel::cell_ix` share a name, and a library's auto-built cdylib names
+# that bridge by the view of whichever program built it FIRST: a later program with a different view
+# misses the symbol and runs the function interpreted. Correct either way, only slower — so this reports
+# and never fails. It runs on a FRESH copy each time, because the first builder is the whole question.
+dup="$work/dupname"; cp -r "$here/tools/loft_repro/dupname_bridge" "$dup"
+( cd "$dup" && "$loft" --lib lib both.loft >/dev/null 2>&1 && "$loft" --lib lib both.loft >/dev/null 2>&1 )
+out4="$(cd "$dup" && "$loft" --lib lib one.loft 2>&1)"
+if ! grep -q '^one: 9 2' <<<"$out4"; then
+  echo "   ⚠ UNKNOWN — the reproducer did not print its answer:"; sed 's/^/     /' <<<"$out4" | tail -3
+elif grep -q 'function(s) interpreted this run' <<<"$out4"; then
+  echo "   ⏳ still present — one.loft runs alpha::cell interpreted after both.loft built the cdylib"
+else
+  echo "   ✅ FIXED upstream — the second program dispatches natively. Re-check loft#2180, and the"
+  echo "      cell_ix rename it would have needed can stay un-done."
+fi
+echo
+
 if [ "$bad" -gt 0 ]; then
   echo "FAIL — $bad upstream bug(s) are back, and the workarounds for them are gone."
   echo "       tools/height_gate.sh is what breaks next; git log tools/gen_heights.loft has the old shape."
